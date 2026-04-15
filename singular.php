@@ -4,7 +4,8 @@
  */
 get_header();
 ?>
-<main class="shell-zone shell-zone--main">
+<div class="shell-grid">
+<main class="shell-zone zone--main">
     <?php if ( have_posts() ) : while ( have_posts() ) : the_post(); ?>
         <article id="post-<?php the_ID(); ?>" <?php post_class(); ?>>
             <header>

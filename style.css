@@ -88,7 +88,8 @@ body {
 }
 
 /* Content styles */
-.shell-zone--main {
+.shell-zone.zone--main,
+.zone--main {
     max-width: 1200px;
     margin: 0 auto;
     padding: 2rem 1rem;

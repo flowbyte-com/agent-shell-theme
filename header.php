@@ -44,4 +44,3 @@ $config = agentshell_get_config();
         }
     }
     ?>
-    <div class="shell-grid">
