@@ -5,7 +5,7 @@
 get_header();
 ?>
 <main class="shell-zone shell-zone--main">
-    <?php while ( have_posts() ) : the_post(); ?>
+    <?php if ( have_posts() ) : while ( have_posts() ) : the_post(); ?>
         <article id="post-<?php the_ID(); ?>" <?php post_class(); ?>>
             <header>
                 <?php if ( is_single() ) : ?>
@@ -18,6 +18,6 @@ get_header();
                 <?php the_content(); ?>
             </div>
         </article>
-    <?php endwhile; ?>
+    <?php endwhile; endif; ?>
 </main>
 <?php get_footer();
