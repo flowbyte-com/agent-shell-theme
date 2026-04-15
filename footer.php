@@ -1,5 +1,5 @@
     <?php
-    // Render footer zone (inside grid)
+    // Render sidebar and footer zones (inside grid)
     $config   = agentshell_get_config();
     $nav      = $config['navigation']    ?? array();
     $mapping  = $config['content_mapping'] ?? array();
@@ -10,6 +10,13 @@
         foreach ( $cells as $cell ) {
             if ( isset( $seen[ $cell ] ) ) continue;
             $seen[ $cell ] = true;
+            // Skip main zone - templates render it manually
+            if ( $cell === 'main' ) continue;
+            if ( $cell === 'sidebar' ) {
+                echo '<aside class="shell-zone zone--sidebar">';
+                echo agentshell_render_zone( $mapping['sidebar'] ?? array() );
+                echo '</aside>';
+            }
             if ( $cell === 'footer' ) {
                 echo '<footer class="shell-zone zone--footer">';
                 echo agentshell_render_zone( $mapping['footer'] ?? array() );
@@ -17,12 +24,10 @@
                     echo agentshell_render_nav( $nav['footer_links'] );
                 }
                 echo '</footer>';
-                break 2;
             }
         }
     }
-    ?>
-    </div><!-- .shell-grid -->
+            </div><!-- .shell-grid -->
 
     <!-- Configurator panel -->
     <div id="agentshell-config-panel"></div>

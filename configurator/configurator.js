@@ -1,15 +1,29 @@
 (function() {
     'use strict';
 
-    const panel = document.getElementById('agentshell-config-panel');
-    const trigger = document.getElementById('agentshell-config-trigger');
-
+    let panel = null;
+    let trigger = null;
     let config = null;
+    let initDone = false;
+
+    // Initialize DOM elements (call once, idempotent)
+    function initElements() {
+        if (initDone) return;
+        initDone = true;
+
+        panel = document.getElementById('agentshell-config-panel');
+        trigger = document.getElementById('agentshell-config-trigger');
+
+        // Bind trigger click immediately — don't wait for config load
+        if (trigger) {
+            trigger.addEventListener('click', openPanel);
+        }
+    }
 
     // Load current config from REST API
     async function loadConfig() {
         try {
-            const resp = await fetch(AgentShellConfig.restUrl + '/wp/v2/agentshell/config', {
+            const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/config', {
                 headers: {
                     'X-WP-Nonce': AgentShellConfig.nonce
                 }
@@ -25,7 +39,7 @@
     // Save config to REST API
     async function saveConfig(newConfig) {
         try {
-            const resp = await fetch(AgentShellConfig.restUrl + '/wp/v2/agentshell/config', {
+            const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/config', {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
@@ -58,7 +72,7 @@
 
     // Render the configurator panel form
     function renderPanel() {
-        if (!config) return;
+        if (!config || !panel) return;
 
         const sections = [
             {
@@ -132,22 +146,28 @@
 
         panel.innerHTML = html;
 
-        // Bind events
-        trigger.addEventListener('click', openPanel);
-        panel.querySelector('.panel-close').addEventListener('click', closePanel);
+        // Bind close button
+        const closeBtn = panel.querySelector('.panel-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', closePanel);
+        }
 
-        document.getElementById('agentshell-save').addEventListener('click', () => {
-            // Gather all field values back into config (including color inputs)
-            panel.querySelectorAll('input[type="text"], input[type="url"], input[type="color"], textarea').forEach(el => {
-                const path = el.dataset.path.split('.');
-                if (el.type === 'number') {
-                    setInConfig(path, parseFloat(el.value));
-                } else {
-                    setInConfig(path, el.value);
-                }
+        // Bind save button
+        const saveBtn = document.getElementById('agentshell-save');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', () => {
+                // Gather all field values back into config (including color inputs)
+                panel.querySelectorAll('input[type="text"], input[type="url"], input[type="color"], textarea').forEach(el => {
+                    const path = el.dataset.path.split('.');
+                    if (el.type === 'number') {
+                        setInConfig(path, parseFloat(el.value));
+                    } else {
+                        setInConfig(path, el.value);
+                    }
+                });
+                saveConfig(config);
             });
-            saveConfig(config);
-        });
+        }
     }
 
     // Helper: get nested config value by path array
@@ -166,25 +186,31 @@
     }
 
     function openPanel() {
-        panel.classList.add('is-open');
-        document.body.classList.add('config-panel-open');
+        if (panel) {
+            panel.classList.add('is-open');
+            document.body.classList.add('config-panel-open');
+        }
     }
 
     function closePanel() {
-        panel.classList.remove('is-open');
-        document.body.classList.remove('config-panel-open');
+        if (panel) {
+            panel.classList.remove('is-open');
+            document.body.classList.remove('config-panel-open');
+        }
     }
 
     // Make helper functions available
     window.getFromConfig = getFromConfig;
     window.setInConfig = setInConfig;
 
-    // Initialize panel HTML (hidden)
-    if (!panel) {
-        const div = document.createElement('div');
-        div.id = 'agentshell-config-panel';
-        document.body.appendChild(div);
+    // Initialize when DOM is ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function() {
+            initElements();
+            loadConfig();
+        });
+    } else {
+        initElements();
+        loadConfig();
     }
-
-    loadConfig();
 })();

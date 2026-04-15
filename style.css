@@ -9,3 +9,97 @@ License: GNU General Public License v2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 Text Domain: agentshell
 */
+
+/* Reset and base styles */
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: var(--font-family, system-ui, -apple-system, sans-serif);
+    font-size: var(--type-base, 16px);
+    background-color: var(--color-background, #ffffff);
+    color: var(--color-text, #333333);
+    line-height: 1.6;
+}
+
+/* Shell wrapper */
+.shell-wrapper {
+    min-height: 100vh;
+}
+
+/* Shell grid zones */
+.shell-zone {
+    padding: 1rem;
+}
+
+.zone--header {
+    background-color: var(--color-primary, #1a1a2e);
+    color: #fff;
+}
+
+.zone--footer {
+    background-color: var(--color-secondary, #16213e);
+    color: #fff;
+}
+
+/* Navigation styles */
+.shell-nav ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    gap: 1.5rem;
+}
+
+.shell-nav li {
+    position: relative;
+}
+
+.shell-nav a {
+    color: inherit;
+    text-decoration: none;
+    transition: opacity 0.2s;
+}
+
+.shell-nav a:hover {
+    opacity: 0.8;
+}
+
+.shell-nav .sub-menu {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    background: var(--color-primary, #1a1a2e);
+    min-width: 180px;
+    flex-direction: column;
+    gap: 0;
+    padding: 0.5rem 0;
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+.shell-nav li:hover > .sub-menu,
+.shell-nav li:focus-within > .sub-menu {
+    display: flex;
+}
+
+/* Content styles */
+.shell-zone--main {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem 1rem;
+}
+
+.entry-content {
+    max-width: 75ch;
+}
+
+/* Responsive images */
+img {
+    max-width: 100%;
+    height: auto;
+}
