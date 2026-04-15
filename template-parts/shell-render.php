@@ -15,20 +15,33 @@ function agentshell_render_css_vars( array $design ) {
 
     $vars = ":root {\n";
     foreach ( $colors as $name => $value ) {
-        $vars .= "  --color-{$name}: " . esc_attr( $value ) . ";\n";
+        // Sanitize key for CSS context (alphanumeric + hyphens only)
+        $safe_name = sanitize_key( $name );
+        // Sanitize value: strip anything not valid in a CSS declaration value
+        $safe_value = preg_replace( '/[^a-zA-Z0-9#.%,_-]/', '', $value );
+        if ( $safe_name && $safe_value ) {
+            $vars .= "  --color-{$safe_name}: {$safe_value};\n";
+        }
     }
     if ( ! empty( $typography['baseSize'] ) ) {
-        $vars .= "  --type-base: " . esc_attr( $typography['baseSize'] ) . ";\n";
+        $safe_size = preg_replace( '/[^0-9pxemrem%]/', '', $typography['baseSize'] );
+        if ( $safe_size ) {
+            $vars .= "  --type-base: {$safe_size};\n";
+        }
     }
     if ( ! empty( $typography['scale'] ) ) {
-        $vars .= "  --type-scale: " . esc_attr( $typography['scale'] ) . ";\n";
+        $vars .= "  --type-scale: " . floatval( $typography['scale'] ) . ";\n";
     }
     if ( ! empty( $typography['fontFamily'] ) ) {
-        $vars .= "  --font-family: " . esc_attr( $typography['fontFamily'] ) . ";\n";
+        // Strip braces and semicolons from font family
+        $safe_font = preg_replace( '/[;{}]/', '', $typography['fontFamily'] );
+        if ( $safe_font ) {
+            $vars .= "  --font-family: {$safe_font};\n";
+        }
     }
     $vars .= "}\n";
 
-    return "<style id='agentshell-design-css'>\n{$vars}</style>";
+    return "<style id='agentshell-design-css'>\n{$vars}</style>\n";
 }
 
 /**
@@ -40,8 +53,8 @@ function agentshell_render_css_vars( array $design ) {
 function agentshell_render_nav( array $items ) {
     $html = '<nav class="shell-nav"><ul>';
     foreach ( $items as $item ) {
-        $label    = esc_html( $item['label'] );
-        $url      = esc_url( $item['url'] );
+        $label    = esc_html( $item['label'] ?? '' );
+        $url      = esc_url( $item['url'] ?? '#' );
         $has_kids = ! empty( $item['children'] ) && is_array( $item['children'] );
 
         $html .= '<li>';
@@ -49,7 +62,7 @@ function agentshell_render_nav( array $items ) {
         if ( $has_kids ) {
             $html .= '<ul class="sub-menu">';
             foreach ( $item['children'] as $child ) {
-                $html .= '<li><a href="' . esc_url( $child['url'] ) . '">' . esc_html( $child['label'] ) . '</a></li>';
+                $html .= '<li><a href="' . esc_url( $child['url'] ?? '#' ) . '">' . esc_html( $child['label'] ?? '' ) . '</a></li>';
             }
             $html .= '</ul>';
         }
@@ -62,11 +75,10 @@ function agentshell_render_nav( array $items ) {
 /**
  * Render a content zone based on its mapping config
  *
- * @param string $zone_name  e.g. "header", "sidebar", "main"
- * @param array  $mapping    e.g. [source => "wp_loop"], [source => "wp_widget_area", id => "..."]
+ * @param array $mapping e.g. [source => "wp_loop"], [source => "wp_widget_area", id => "..."]
  * @return string HTML content
  */
-function agentshell_render_zone( $zone_name, array $mapping ) {
+function agentshell_render_zone( array $mapping ) {
     $source = $mapping['source'] ?? '';
 
     switch ( $source ) {
@@ -116,17 +128,6 @@ function agentshell_render_shell( array $config ) {
     // Open shell grid container
     $output .= '<div class="shell-grid">' . "\n";
 
-    // Collect all zone names from all breakpoints
-    $all_zones = array();
-    foreach ( $layout as $breakpoint_layout ) {
-        foreach ( $breakpoint_layout as $row ) {
-            $cells = preg_split( '/\s+/', trim( $row ) );
-            foreach ( $cells as $cell ) {
-                $all_zones[ $cell ] = true;
-            }
-        }
-    }
-
     // Render each zone in the order they first appear (mobile-first)
     $rendered = array();
     foreach ( $layout as $breakpoint_layout ) {
@@ -137,7 +138,7 @@ function agentshell_render_shell( array $config ) {
                 $rendered[ $cell ] = true;
 
                 $zone_class = 'shell-zone zone--' . esc_attr( $cell );
-                $zone_html  = agentshell_render_zone( $cell, $mapping[ $cell ] ?? array() );
+                $zone_html  = agentshell_render_zone( $mapping[ $cell ] ?? array() );
 
                 // Inject nav for header zone
                 if ( $cell === 'header' && ! empty( $nav['primary'] ) ) {
