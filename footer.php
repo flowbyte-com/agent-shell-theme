@@ -1,34 +1,9 @@
-    <?php
-    // Render sidebar and footer zones (inside grid)
-    $config   = agentshell_get_config();
-    $nav      = $config['navigation']    ?? array();
-    $mapping  = $config['content_mapping'] ?? array();
-
-    $seen = array();
-    foreach ( $config['layout']['mobile'] as $row ) {
-        $cells = preg_split( '/\s+/', trim( $row ) );
-        foreach ( $cells as $cell ) {
-            if ( isset( $seen[ $cell ] ) ) continue;
-            $seen[ $cell ] = true;
-            // Skip main zone - templates render it manually
-            if ( $cell === 'main' ) continue;
-            if ( $cell === 'sidebar' ) {
-                echo '<aside class="shell-zone zone--sidebar">';
-                echo agentshell_render_zone( $mapping['sidebar'] ?? array() );
-                echo '</aside>';
-            }
-            if ( $cell === 'footer' ) {
-                echo '<footer class="shell-zone zone--footer">';
-                echo agentshell_render_zone( $mapping['footer'] ?? array() );
-                if ( ! empty( $nav['footer_links'] ) ) {
-                    echo agentshell_render_nav( $nav['footer_links'] );
-                }
-                echo '</footer>';
-            }
-        }
-    }
-            </div><!-- .shell-grid -->
-
+<?php
+/**
+ * Footer template
+ */
+$config = agentshell_get_config();
+?>
     <!-- Configurator panel -->
     <div id="agentshell-config-panel"></div>
 
@@ -39,7 +14,7 @@
         </svg>
     </button>
 
-    <?php wp_footer(); ?>
+<?php wp_footer(); ?>
 </div><!-- .shell-wrapper -->
 </body>
 </html>

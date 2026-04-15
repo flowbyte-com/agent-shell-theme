@@ -117,7 +117,12 @@ add_action( 'rest_api_init', function() {
             $updated = agentshell_update_config( $config );
             return $updated ? agentshell_get_config() : new WP_Error( 'update_failed', 'Failed to update config', array( 'status' => 500 ) );
         },
-        'permission_callback' => function() {
+        'permission_callback' => function( WP_REST_Request $request ) {
+            // Verify the nonce passed in the request header
+            $nonce = $request->get_header( 'X-WP-Nonce' );
+            if ( ! $nonce || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
+                return false;
+            }
             return current_user_can( 'edit_theme_options' );
         },
     ) );
