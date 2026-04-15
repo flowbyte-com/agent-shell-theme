@@ -22,7 +22,7 @@ function agentshell_enqueue_assets() {
     wp_enqueue_script( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.js', array(), '1.0.0', true );
     wp_localize_script( 'agentshell-configurator', 'AgentShellConfig', array(
         'adminUrl'   => admin_url( 'admin-ajax.php' ),
-        'restUrl'    => rest_url( 'wp/v2/settings' ),
+        'restUrl'    => rest_url(),
         'nonce'      => wp_create_nonce( 'wp_rest' ),
     ) );
 }
