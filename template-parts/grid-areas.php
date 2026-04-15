@@ -69,6 +69,16 @@ function agentshell_generate_grid_css( array $layout, $query, $zone_prefix = 'zo
 function agentshell_get_layout_css( array $layout, array $breakpoints ) {
     $css = "<style id='agentshell-layout-css'>\n";
 
+    // Normalize: each breakpoint value must be an array of row strings.
+    // If a string is stored (e.g. from manual REST edits), split by newline.
+    foreach ( $layout as $name => $value ) {
+        if ( is_string( $value ) ) {
+            $layout[ $name ] = array_filter(
+                array_map( 'trim', explode( "\n", $value ) )
+            );
+        }
+    }
+
     // Base rules — outside any media query, applies to all breakpoints
     $css .= "  .shell-grid {\n";
     $css .= "    display: grid;\n";
@@ -80,8 +90,9 @@ function agentshell_get_layout_css( array $layout, array $breakpoints ) {
         if ( ! isset( $layout[ $name ] ) || ! isset( $threshold ) ) {
             continue;
         }
+        $layout_value = is_array( $layout[ $name ] ) ? $layout[ $name ] : array();
         $query = $threshold === '0px' ? '' : "(min-width: {$threshold})";
-        $css .= agentshell_generate_grid_css( $layout[ $name ], $query );
+        $css .= agentshell_generate_grid_css( $layout_value, $query );
     }
 
     $css .= "</style>\n";

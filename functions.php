@@ -118,12 +118,29 @@ add_action( 'rest_api_init', function() {
             return $updated ? agentshell_get_config() : new WP_Error( 'update_failed', 'Failed to update config', array( 'status' => 500 ) );
         },
         'permission_callback' => function( WP_REST_Request $request ) {
-            // Verify the nonce passed in the request header
-            $nonce = $request->get_header( 'X-WP-Nonce' );
-            if ( ! $nonce || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
-                return false;
+            // Replicate what WP Application Passwords does internally:
+            // decode the Basic Auth header and call wp_set_current_user().
+            // This is needed because determine_current_user may not have
+            // run before this callback depending on plugin load order.
+            static $done = false;
+            if ( ! $done ) {
+                $done = true;
+                $header = $request->get_header( 'authorization' );
+                if ( $header && str_starts_with( strtolower( $header ), 'basic ' ) ) {
+                    $creds = base64_decode( substr( $header, 6 ), true );
+                    if ( $creds && str_contains( $creds, ':' ) ) {
+                        $parts    = explode( ':', $creds, 2 );
+                        $username = trim( $parts[0] );
+                        $user     = get_user_by( 'slug', $username )
+                                 ?: get_user_by( 'login', $username )
+                                 ?: get_user_by( 'email', $username );
+                        if ( $user && WP_Application_Passwords::check_app_password( $user->ID, $parts[1] ) ) {
+                            wp_set_current_user( $user->ID );
+                        }
+                    }
+                }
             }
-            return current_user_can( 'edit_theme_options' );
+            return get_current_user_id() > 0 && current_user_can( 'edit_theme_options' );
         },
     ) );
 } );
