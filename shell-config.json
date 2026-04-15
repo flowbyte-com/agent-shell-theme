@@ -1,0 +1,46 @@
+{
+  "design": {
+    "breakpoints": {
+      "mobile": "0px",
+      "tablet": "768px",
+      "desktop": "1024px"
+    },
+    "colors": {
+      "primary": "#1a1a2e",
+      "secondary": "#16213e",
+      "accent": "#e94560",
+      "background": "#ffffff",
+      "text": "#333333"
+    },
+    "typography": {
+      "fontFamily": "system-ui, sans-serif",
+      "baseSize": "16px",
+      "scale": "1.25"
+    },
+    "logo": {
+      "url": "/wp-content/themes/agentshell/assets/logo.png",
+      "width": "140px",
+      "height": "40px"
+    },
+    "favicon": ""
+  },
+  "layout": {
+    "mobile": ["header", "main", "footer"],
+    "tablet": ["header header", "main main", "footer footer"],
+    "desktop": ["header header", "main sidebar", "footer footer"]
+  },
+  "navigation": {
+    "primary": [
+      { "label": "Home", "url": "/" }
+    ],
+    "footer_links": [
+      { "label": "Privacy Policy", "url": "/privacy" }
+    ]
+  },
+  "content_mapping": {
+    "header": { "source": "json_block", "html": "<span>© 2026</span>" },
+    "sidebar": { "source": "wp_widget_area", "id": "primary-sidebar" },
+    "main": { "source": "wp_loop" },
+    "footer": { "source": "json_block", "html": "<p>Built with AgentShell</p>" }
+  }
+}
