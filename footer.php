@@ -12,7 +12,7 @@
             $seen[ $cell ] = true;
             if ( $cell === 'footer' ) {
                 echo '<footer class="shell-zone zone--footer">';
-                echo agentshell_render_zone( 'footer', $mapping['footer'] ?? array() );
+                echo agentshell_render_zone( $mapping['footer'] ?? array() );
                 if ( ! empty( $nav['footer_links'] ) ) {
                     echo agentshell_render_nav( $nav['footer_links'] );
                 }

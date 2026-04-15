@@ -36,7 +36,7 @@ $config = agentshell_get_config();
                     if ( ! empty( $nav['primary'] ) ) {
                         echo agentshell_render_nav( $nav['primary'] );
                     }
-                    echo agentshell_render_zone( 'header', $mapping['header'] ?? array() );
+                    echo agentshell_render_zone( $mapping['header'] ?? array() );
                     echo '</header>';
                     break 2;
                 }
