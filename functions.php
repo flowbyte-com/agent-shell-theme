@@ -8,7 +8,7 @@
  */
 function agentshell_theme_activation() {
     $default_config = json_decode( file_get_contents( get_template_directory() . '/shell-config.json' ), true );
-    if ( get_option( 'agentshell_config' ) === false ) {
+    if ( get_option( 'agentshell_config' ) === false && is_array( $default_config ) ) {
         add_option( 'agentshell_config', $default_config );
     }
 }
@@ -50,8 +50,9 @@ add_action( 'widgets_init', 'agentshell_widgets_init' );
  */
 function agentshell_get_config() {
     $config = get_option( 'agentshell_config' );
-    if ( ! $config || is_wp_error( $config ) ) {
-        $config = json_decode( file_get_contents( get_template_directory() . '/shell-config.json' ), true );
+    if ( ! $config ) {
+        $fallback = json_decode( file_get_contents( get_template_directory() . '/shell-config.json' ), true );
+        $config = is_array( $fallback ) ? $fallback : array();
     }
     return $config;
 }
