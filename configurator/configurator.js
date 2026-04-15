@@ -3,7 +3,6 @@
 
     const panel = document.getElementById('agentshell-config-panel');
     const trigger = document.getElementById('agentshell-config-trigger');
-    const closeBtn = document.querySelector('.panel-close');
 
     let config = null;
 
@@ -15,6 +14,7 @@
                     'X-WP-Nonce': AgentShellConfig.nonce
                 }
             });
+            if (!resp.ok) throw new Error('Failed to load config: ' + resp.status);
             config = await resp.json();
             renderPanel();
         } catch (e) {
@@ -134,11 +134,11 @@
 
         // Bind events
         trigger.addEventListener('click', openPanel);
-        closeBtn.addEventListener('click', closePanel);
+        panel.querySelector('.panel-close').addEventListener('click', closePanel);
 
         document.getElementById('agentshell-save').addEventListener('click', () => {
-            // Gather all field values back into config
-            panel.querySelectorAll('input[type="text"], input[type="url"], textarea').forEach(el => {
+            // Gather all field values back into config (including color inputs)
+            panel.querySelectorAll('input[type="text"], input[type="url"], input[type="color"], textarea').forEach(el => {
                 const path = el.dataset.path.split('.');
                 if (el.type === 'number') {
                     setInConfig(path, parseFloat(el.value));
