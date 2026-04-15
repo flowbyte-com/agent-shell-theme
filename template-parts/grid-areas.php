@@ -2,11 +2,10 @@
 /**
  * Parses layout arrays into CSS grid-template-areas strings
  *
- * @param array  $areas  e.g. ["header header", "main sidebar", "footer footer"]
- * @param string $prefix Optional class prefix
+ * @param array $areas e.g. ["header header", "main sidebar", "footer footer"]
  * @return string CSS grid-template-areas value
  */
-function agentshell_parse_grid_areas( array $areas, $prefix = 'zone--' ) {
+function agentshell_parse_grid_areas( array $areas ) {
     $css = '';
     foreach ( $areas as $row ) {
         $cells = preg_split( '/\s+/', trim( $row ) );
