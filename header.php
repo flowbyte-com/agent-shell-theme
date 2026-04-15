@@ -53,5 +53,3 @@ $config = agentshell_get_config();
     ?>
     </div><!-- .shell-grid -->
 </div><!-- .shell-wrapper -->
-</body>
-</html>

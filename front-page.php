@@ -1,14 +1,11 @@
 <?php
 /**
  * Front page template
+ *
+ * All content zones are rendered by header.php's shell-grid via
+ * the config's zones[] and content_mapping[]. This template
+ * intentionally renders nothing extra — the zone system owns
+ * the entire page layout.
  */
 get_header();
-?>
-<main class="shell-zone zone--main">
-    <?php if ( have_posts() ) : while ( have_posts() ) : the_post(); ?>
-        <article id="post-<?php the_ID(); ?>" <?php post_class(); ?>>
-            <?php the_content(); ?>
-        </article>
-    <?php endwhile; endif; ?>
-</main>
-<?php get_footer();
+get_footer();

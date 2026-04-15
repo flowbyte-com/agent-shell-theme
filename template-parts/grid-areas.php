@@ -21,11 +21,22 @@ function agentshell_parse_grid_areas( array $areas ) {
  * Generates a full CSS block for a breakpoint
  *
  * @param array  $layout      e.g. ["header header", "main sidebar", "footer footer"]
- * @param string $query      Media query string, e.g. "(min-width: 1024px)"
- * @param string $zone_prefix CSS class prefix for zones
+ * @param string $query        Media query string, e.g. "(min-width: 1024px)"
+ * @param string $zone_prefix  CSS class prefix for zones
  * @return string Complete CSS block
  */
 function agentshell_generate_grid_css( array $layout, $query, $zone_prefix = 'zone--' ) {
+    // Determine column count from the first non-empty row.
+    // All rows are expected to have the same number of cells.
+    $cols = 1;
+    foreach ( $layout as $row ) {
+        $cells = array_filter( preg_split( '/\s+/', trim( $row ) ) );
+        if ( count( $cells ) > 1 ) {
+            $cols = count( $cells );
+            break;
+        }
+    }
+
     $opening = $query ? "@media $query {\n" : "";
 
     $css  = $opening;
@@ -39,6 +50,9 @@ function agentshell_generate_grid_css( array $layout, $query, $zone_prefix = 'zo
         $css .= "\n";
     }
     $css .= "    grid-template-rows: auto;\n";
+    if ( $cols > 1 ) {
+        $css .= "    grid-template-columns: repeat( {$cols}, 1fr );\n";
+    }
     $css .= "  }\n";
 
     // Zone class rules — only for zones that appear in this breakpoint
@@ -80,9 +94,17 @@ function agentshell_get_layout_css( array $layout, array $breakpoints ) {
     }
 
     // Base rules — outside any media query, applies to all breakpoints
+    $css .= "  .shell-wrapper {\n";
+    $css .= "    display: grid;\n";
+    $css .= "    place-content: center;\n";
+    $css .= "    padding: 0 1rem;\n";
+    $css .= "  }\n";
     $css .= "  .shell-grid {\n";
     $css .= "    display: grid;\n";
     $css .= "    gap: 1rem;\n";
+    $css .= "    max-width: 1200px;\n";
+    $css .= "    margin: 0 auto;\n";
+    $css .= "    width: 100%;\n";
     $css .= "  }\n";
 
     // Breakpoint-specific rules
