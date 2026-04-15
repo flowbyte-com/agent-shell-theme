@@ -1,0 +1,39 @@
+<h2>Theme Architecture Approaches</h2>
+<p class="subtitle">How should the theme handle header, footer, menus, and sidebars?</p>
+
+<div class="options">
+  <div class="option" data-choice="block-based" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Full Block-Based (Gutenberg Native)</h3>
+      <p>Header/Footer/Sidebar are WordPress template parts using Gutenberg blocks. Menus are block-ized. Agents work via block JSON/REST API.</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="json-config" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>JSON Config + Minimal Templates</h3>
+      <p>Header/Footer/Menu structure defined in JSON config files. Templates are dumb PHP shells. Agents edit JSON directly; humans use a settings UI.</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="headless-decoupled" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Decoupled / Headless-Ready</h3>
+      <p>Theme is a clean HTML/JS layer over WordPress as a headless CMS. Agents talk to WP REST/GraphQL, render via static files or CDN. Max agent compatibility.</p>
+    </div>
+  </div>
+</div>
+
+<div class="pros-cons" style="margin-top: 2rem;">
+  <div class="pros">
+    <h4>Key Tradeoffs</h4>
+    <ul>
+      <li><strong>A:</strong> Native feel, but Gutenberg still fights agents</li>
+      <li><strong>B:</strong> Simple, predictable, agent-friendly JSON</li>
+      <li><strong>C:</strong> Maximum agent compatibility, harder human editing</li>
+    </ul>
+  </div>
+</div>

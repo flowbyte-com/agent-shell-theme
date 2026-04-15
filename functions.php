@@ -4,13 +4,26 @@
  */
 
 /**
- * Register agentshell_config option on theme activation
+ * Register agentshell_config option on theme activation.
+ *
+ * Uses default-config.json ONLY as a seed to populate wp_options on first
+ * install. After activation, wp_options is the sole source of truth.
+ * The physical default-config.json file exists for IDE reference and
+ * re-seeding, but agents always read/write via wp_options.
  */
 function agentshell_theme_activation() {
-    $default_config = json_decode( file_get_contents( get_template_directory() . '/shell-config.json' ), true );
-    if ( get_option( 'agentshell_config' ) === false && is_array( $default_config ) ) {
-        add_option( 'agentshell_config', $default_config );
+    if ( get_option( 'agentshell_config' ) !== false ) {
+        return; // already installed, preserve existing config
     }
+    $seed_file = get_template_directory() . '/default-config.json';
+    if ( ! file_exists( $seed_file ) ) {
+        return;
+    }
+    $seed = json_decode( file_get_contents( $seed_file ), true );
+    if ( ! is_array( $seed ) ) {
+        return;
+    }
+    add_option( 'agentshell_config', $seed );
 }
 add_action( 'after_switch_theme', 'agentshell_theme_activation' );
 
@@ -29,32 +42,48 @@ function agentshell_enqueue_assets() {
 add_action( 'wp_enqueue_scripts', 'agentshell_enqueue_assets' );
 
 /**
- * Register primary sidebar widget area
+ * Dynamically register widget areas from content_mapping.
+ *
+ * Iterates over the config's content_mapping object. Any zone with
+ * "source": "wp_widget_area" automatically gets a sidebar registered.
+ * This lets agents add new widget zones without hardcoding calls.
  */
 function agentshell_widgets_init() {
-    register_sidebar( array(
-        'name'          => 'Primary Sidebar',
-        'id'            => 'primary-sidebar',
-        'description'   => 'Widgets for the primary sidebar zone',
-        'before_widget' => '<div id="%1$s" class="widget %2$s">',
-        'after_widget'  => '</div>',
-        'before_title'  => '<h3 class="widget-title">',
-        'after_title'   => '</h3>',
-    ) );
+    $config = get_option( 'agentshell_config' );
+    if ( ! is_array( $config ) || empty( $config['content_mapping'] ) ) {
+        return;
+    }
+    foreach ( $config['content_mapping'] as $zone_name => $mapping ) {
+        if ( ! is_array( $mapping ) || ( $mapping['source'] ?? '' ) !== 'wp_widget_area' ) {
+            continue;
+        }
+        $id = ! empty( $mapping['id'] ) ? $mapping['id'] : $zone_name;
+        $label = ucfirst( str_replace( '_', ' ', $zone_name ) );
+        register_sidebar( array(
+            'name'          => $label,
+            'id'            => $id,
+            'description'   => "Widgets for the {$zone_name} zone",
+            'before_widget' => '<div id="%1$s" class="widget %2$s">',
+            'after_widget'  => '</div>',
+            'before_title'  => '<h3 class="widget-title">',
+            'after_title'   => '</h3>',
+        ) );
+    }
 }
 add_action( 'widgets_init', 'agentshell_widgets_init' );
 
 /**
- * Get the full shell config
+ * Get the full shell config.
+ *
+ * wp_options is the SOLE source of truth at runtime. The physical
+ * default-config.json file is only a seed for fresh installs.
+ * Agents must always read/write via this function or the REST API.
+ *
  * @return array
  */
 function agentshell_get_config() {
     $config = get_option( 'agentshell_config' );
-    if ( ! $config ) {
-        $fallback = json_decode( file_get_contents( get_template_directory() . '/shell-config.json' ), true );
-        $config = is_array( $fallback ) ? $fallback : array();
-    }
-    return $config;
+    return is_array( $config ) ? $config : array();
 }
 
 /**
@@ -67,7 +96,7 @@ function agentshell_update_config( array $config ) {
 }
 
 /**
- * REST API: PUT /wp/v1/agentshell/config
+ * REST API: GET/PUT /wp/v2/agentshell/config
  */
 add_action( 'rest_api_init', function() {
     register_rest_route( 'wp/v2', '/agentshell/config', array(

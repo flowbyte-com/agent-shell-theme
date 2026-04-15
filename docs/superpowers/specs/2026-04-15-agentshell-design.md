@@ -35,12 +35,13 @@
 
 **Storage:** WordPress `wp_options` table, key `agentshell_config`. JSON serialized.
 
-**Collision avoidance:** File-based themes read from `shell-config.json` in the theme root; the running WordPress site stores in `wp_options`. The PHP templates always read from `wp_options` at runtime.
+**Collision avoidance:** The physical file `default-config.json` in the theme root is a **seed only** — it populates `wp_options` on first theme activation. After installation, **`wp_options` is the sole source of truth.** Agents always read and write to the live config via the REST API or PHP helpers. The `default-config.json` file exists for IDE reference and for users who want to reset to defaults, but it is never read at runtime.
 
 ### Root Schema
 
 ```json
 {
+  "zones": ["header", "main", "sidebar", "footer"],
   "design": {
     "breakpoints": { "mobile": "0px", "tablet": "768px", "desktop": "1024px" },
     "colors": { "primary", "secondary", "accent", "background", "text" },
@@ -54,14 +55,16 @@
     "desktop": ["header header", "main sidebar", "footer footer"]
   },
   "navigation": {
-    "primary":      [{ "label", "url", "children[]" }],
-    "footer_links": [{ "label", "url", "children[]" }]
+    "primary":      [{ "label", "url", "post_id", "children[]" }],
+    "footer_links": [{ "label", "url", "post_id", "children[]" }]
   },
   "content_mapping": {
     "<zone_name>": { "source": "wp_loop | wp_widget_area | json_block", ... }
   }
 }
 ```
+
+`zones` is a strict whitelist — it defines the authoritative list of zone names in rendering order. The JS configurator iterates this array to build zone forms. Layout arrays derive from this list; adding a zone requires adding its name to `zones` first.
 
 ---
 
@@ -134,13 +137,13 @@ Each string is a CSS `grid-template-areas` row. Whitespace-separated identifiers
 ```json
 "navigation": {
   "primary": [
-    { "label": "Home",   "url": "/" },
-    { "label": "About",  "url": "/about", "children": [
-      { "label": "Team", "url": "/about/team" }
+    { "label": "Home",   "url": "/",          "post_id": null },
+    { "label": "About",  "url": "/about",     "post_id": null, "children": [
+      { "label": "Team", "url": "/about/team", "post_id": null }
     ]}
   ],
   "footer_links": [
-    { "label": "Privacy Policy", "url": "/privacy" }
+    { "label": "Privacy Policy", "url": "/privacy", "post_id": null }
   ]
 }
 ```
@@ -150,6 +153,7 @@ Each string is a CSS `grid-template-areas` row. Whitespace-separated identifiers
 - Nested `children` arrays render as `<ul>` dropdowns
 - Agents append new nav items by pushing objects to the named menu array
 - No WordPress menu taxonomy involved
+- **Resilient links:** Each nav item accepts an optional `post_id`. If set and the post exists, the URL is resolved via `get_permalink($post_id)` — making nav links slug-change-safe. If `post_id` is absent or invalid, the explicit `url` field is used as a fallback.
 
 ---
 
@@ -186,6 +190,19 @@ Each string is a CSS `grid-template-areas` row. Whitespace-separated identifiers
 ### json_block Sanitization
 
 `wp_kses_post()` strips dangerous tags/attributes while preserving semantic HTML. All json_block HTML passes through this filter on render.
+
+**Sanitization limits — agents must not emit inline JS:**
+
+`wp_kses_post()` removes:
+- `<script>` tags and inline event handlers (`onclick`, `onerror`, `onload`, `onmouseover`, etc.)
+- `javascript:` URLs in href/src attributes
+- `<style>` tags and inline `style=""` attributes
+
+**Agent output guidelines for json_block:**
+- Use CSS class-based JavaScript (e.g., `document.querySelectorAll('.my-class')` with event delegation) instead of inline onclick handlers
+- Use `<link>` tags for stylesheets, not inline `<style>` blocks or style attributes
+- Rely on semantic HTML for structure; styling must come from the theme's design token system or CSS classes
+- Do not include `data:` URLs — these can be used for injection
 
 ---
 
@@ -229,7 +246,7 @@ The JS configurator adapts form fields automatically as agents update the JSON s
 agentshell/
 ├── style.css              # Theme header only
 ├── functions.php          # Theme setup, enqueue, config read/write API
-├── shell-config.json      # File mirror of wp_options (for IDE/editing)
+├── default-config.json    # Seed file for fresh installs (wp_options source)
 ├── front-page.php         # Static front page template
 ├── singular.php           # Single post/page template
 ├── index.php              # Fallback
@@ -247,28 +264,34 @@ agentshell/
 
 **Theme Header Only** — `style.css` contains only the theme declaration. All CSS is generated dynamically from `shell-config.json` design tokens and injected as inline `<style>` in `header.php`.
 
+**Config Storage** — `default-config.json` seeds `wp_options` on activation. After install, all reads and writes go through `agentshell_get_config()` / REST API. `default-config.json` is never read at runtime.
+
 ---
 
 ## WordPress Integration Points
 
 ### Config Read
 
-`get_option('agentshell_config')` — returns the full JSON object. Used in all templates.
+`agentshell_get_config()` — returns the full JSON object from `wp_options`. Used in all templates. **Never reads default-config.json at runtime.**
 
 ### Config Write
 
-`update_option('agentshell_config', $json)` — atomic JSON update. Agents write via `wp-json/wp/v2/settings` REST endpoint or direct PHP call.
+`agentshell_update_config(array $config)` — calls `update_option()`. Agents write via the REST API. Atomic single-write operation.
 
 ### REST API Endpoint
 
 Theme registers a custom REST route:
 
 ```
-PUT /wp/v1/agentshell/config
-Body: { "config": { ...完整的shell-config.json... } }
+GET /wp/v2/agentshell/config
+PUT /wp/v2/agentshell/config
 ```
 
-Returns updated config on success. Agents authenticate via WP cookie/Nonce or application password.
+Agents authenticate via WordPress cookie/nonce or application password. The PUT endpoint requires `edit_theme_options` capability.
+
+### Dynamic Widget Registration
+
+`widgets_init` iterates over `content_mapping`. Any zone with `"source": "wp_widget_area"` automatically gets `register_sidebar()` called for it. Agents can add new widget zones by adding a new entry to `content_mapping` — no hardcoded sidebar calls required.
 
 ### No Block Hijacking
 

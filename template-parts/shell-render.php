@@ -45,16 +45,33 @@ function agentshell_render_css_vars( array $design ) {
 }
 
 /**
- * Render a single navigation menu from the navigation config
+ * Render a single navigation menu from the navigation config.
  *
- * @param array  $items  Array of nav items [{label, url, children[]}]
+ * Nav items support two URL strategies:
+ * 1. "post_id" (optional) — resolved via get_permalink() for slug-safe links.
+ *    If the post exists and get_permalink succeeds, that URL is used.
+ * 2. "url" — a hardcoded URL, used as fallback or when no post_id is given.
+ *
+ * @param array $items Array of nav items [{label, url, post_id, children[]}]
  * @return string HTML <nav> with nested <ul>
  */
 function agentshell_render_nav( array $items ) {
     $html = '<nav class="shell-nav"><ul>';
     foreach ( $items as $item ) {
         $label    = esc_html( $item['label'] ?? '' );
-        $url      = esc_url( $item['url'] ?? '#' );
+        $url      = '#';
+
+        if ( ! empty( $item['post_id'] ) ) {
+            $permalink = get_permalink( (int) $item['post_id'] );
+            if ( $permalink ) {
+                $url = $permalink;
+            }
+        }
+        if ( $url === '#' && ! empty( $item['url'] ) ) {
+            $url = $item['url'];
+        }
+
+        $url = esc_url( $url );
         $has_kids = ! empty( $item['children'] ) && is_array( $item['children'] );
 
         $html .= '<li>';
@@ -62,7 +79,17 @@ function agentshell_render_nav( array $items ) {
         if ( $has_kids ) {
             $html .= '<ul class="sub-menu">';
             foreach ( $item['children'] as $child ) {
-                $html .= '<li><a href="' . esc_url( $child['url'] ?? '#' ) . '">' . esc_html( $child['label'] ?? '' ) . '</a></li>';
+                $child_url = '#';
+                if ( ! empty( $child['post_id'] ) ) {
+                    $child_permalink = get_permalink( (int) $child['post_id'] );
+                    if ( $child_permalink ) {
+                        $child_url = $child_permalink;
+                    }
+                }
+                if ( $child_url === '#' && ! empty( $child['url'] ) ) {
+                    $child_url = $child['url'];
+                }
+                $html .= '<li><a href="' . esc_url( $child_url ) . '">' . esc_html( $child['label'] ?? '' ) . '</a></li>';
             }
             $html .= '</ul>';
         }
@@ -102,6 +129,18 @@ function agentshell_render_zone( array $mapping ) {
             return ob_get_clean();
 
         case 'json_block':
+            /**
+             * json_block HTML is sanitized with wp_kses_post().
+             *
+             * IMPORTANT: wp_kses_post() strips inline event handlers
+             * (onclick, onerror, onload, etc.) and <script> tags.
+             * Agent outputs must use class-based JavaScript (event
+             * delegation via document-level listeners) or semantic HTML
+             * instead of inline JS. Inline style attributes are also
+             * stripped. Use CSS class-based styling instead.
+             *
+             * @see https://developer.wordpress.org/reference/functions/wp_kses_post/
+             */
             $html = $mapping['html'] ?? '';
             return wp_kses_post( $html );
 
@@ -111,16 +150,21 @@ function agentshell_render_zone( array $mapping ) {
 }
 
 /**
- * Render the complete Shell (CSS vars + layout CSS + zone grid)
+ * Render the complete Shell (CSS vars + layout CSS + zone grid).
+ *
+ * Zone order is determined by the "zones" whitelist in config root.
+ * This makes the zone list self-documenting and lets the JS configurator
+ * iterate a strict list rather than parsing layout arrays.
  *
  * @param array $config Full shell config array
  * @return string Complete HTML for the shell
  */
 function agentshell_render_shell( array $config ) {
-    $design   = $config['design']   ?? array();
-    $layout   = $config['layout']   ?? array();
-    $nav      = $config['navigation'] ?? array();
-    $mapping  = $config['content_mapping'] ?? array();
+    $design  = $config['design']   ?? array();
+    $layout  = $config['layout']   ?? array();
+    $nav     = $config['navigation'] ?? array();
+    $mapping = $config['content_mapping'] ?? array();
+    $zones   = $config['zones']   ?? array();
 
     $output = agentshell_render_css_vars( $design );
     $output .= agentshell_get_layout_css( $layout, $design['breakpoints'] ?? array() );
@@ -128,30 +172,21 @@ function agentshell_render_shell( array $config ) {
     // Open shell grid container
     $output .= '<div class="shell-grid">' . "\n";
 
-    // Render each zone in the order they first appear (mobile-first)
-    $rendered = array();
-    foreach ( $layout as $breakpoint_layout ) {
-        foreach ( $breakpoint_layout as $row ) {
-            $cells = preg_split( '/\s+/', trim( $row ) );
-            foreach ( $cells as $cell ) {
-                if ( isset( $rendered[ $cell ] ) ) continue;
-                $rendered[ $cell ] = true;
+    // Render zones in the order defined by the zones whitelist
+    foreach ( $zones as $zone_name ) {
+        $zone_class = 'shell-zone zone--' . esc_attr( $zone_name );
+        $zone_html  = agentshell_render_zone( $mapping[ $zone_name ] ?? array() );
 
-                $zone_class = 'shell-zone zone--' . esc_attr( $cell );
-                $zone_html  = agentshell_render_zone( $mapping[ $cell ] ?? array() );
-
-                // Inject nav for header zone
-                if ( $cell === 'header' && ! empty( $nav['primary'] ) ) {
-                    $zone_html = agentshell_render_nav( $nav['primary'] ) . $zone_html;
-                }
-                // Inject nav for footer zone
-                if ( $cell === 'footer' && ! empty( $nav['footer_links'] ) ) {
-                    $zone_html .= agentshell_render_nav( $nav['footer_links'] );
-                }
-
-                $output .= '<div class="' . $zone_class . '">' . $zone_html . '</div>' . "\n";
-            }
+        // Inject nav for header zone
+        if ( $zone_name === 'header' && ! empty( $nav['primary'] ) ) {
+            $zone_html = agentshell_render_nav( $nav['primary'] ) . $zone_html;
         }
+        // Inject nav for footer zone
+        if ( $zone_name === 'footer' && ! empty( $nav['footer_links'] ) ) {
+            $zone_html .= agentshell_render_nav( $nav['footer_links'] );
+        }
+
+        $output .= '<div class="' . $zone_class . '">' . $zone_html . '</div>' . "\n";
     }
 
     $output .= '</div>' . "\n";

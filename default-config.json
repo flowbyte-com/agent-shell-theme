@@ -1,4 +1,5 @@
 {
+  "zones": ["header", "main", "sidebar", "footer"],
   "design": {
     "breakpoints": {
       "mobile": "0px",
@@ -31,10 +32,10 @@
   },
   "navigation": {
     "primary": [
-      { "label": "Home", "url": "/" }
+      { "label": "Home", "url": "/", "post_id": null }
     ],
     "footer_links": [
-      { "label": "Privacy Policy", "url": "/privacy" }
+      { "label": "Privacy Policy", "url": "/privacy", "post_id": null }
     ]
   },
   "content_mapping": {
