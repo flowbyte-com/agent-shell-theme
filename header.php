@@ -29,7 +29,8 @@ $sidebar_enabled = ! empty( agentshell_get_config()['sidebar_enabled'] );
             <?php wp_nav_menu( array(
                 'theme_location' => 'primary',
                 'container'       => false,
-                'fallback_cb'     => false,
+                'fallback_cb'     => 'wp_page_menu',
+                'items_wrap'      => '<ul id="%1$s" class="%2$s">%3$s</ul>',
             ) ); ?>
         </nav>
     </header>
