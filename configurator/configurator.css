@@ -1,6 +1,10 @@
 /**
- * Configurator panel and trigger — single source of truth.
- * Loaded after style.css; replaces any style.css configurator rules.
+ * Configurator panel and trigger.
+ *
+ * The panel is self-contained: all internal styling uses hardcoded neutral
+ * values so the form is always readable regardless of the site's theme.
+ * The accent color (trigger, focus, save button) intentionally reflects
+ * the site's --theme-accent.
  */
 
 /* ── Trigger button ── */
@@ -12,8 +16,8 @@
     width: 48px;
     height: 48px;
     border-radius: 50%;
-    background: var(--theme-accent, #3b82f6);
-    color: #fff;
+    background: var(--theme-accent, #3b82f6); /* intentionally uses accent */
+    color: #ffffff;
     border: none;
     cursor: pointer;
     display: flex;
@@ -24,7 +28,7 @@
 }
 
 #agentshell-config-trigger:hover {
-    background: color-mix(in srgb, var(--theme-accent, #3b82f6) 85%, #000);
+    background: color-mix(in srgb, var(--theme-accent, #3b82f6) 80%, #000);
     transform: scale(1.05);
 }
 
@@ -39,12 +43,13 @@
     right: -420px;
     width: 400px;
     height: 100vh;
-    background: var(--theme-bg, #ffffff);
-    border-left: 1px solid var(--theme-border, #e4e4e7);
+    background: #ffffff; /* hardcoded — always light, never inherits dark site themes */
+    color: #18181b;
+    border-left: 1px solid #e4e4e7;
     z-index: 99999;
     overflow-y: auto;
     transition: right 0.25s ease;
-    box-shadow: -4px 0 24px rgba(0,0,0,0.08);
+    box-shadow: -4px 0 24px rgba(0,0,0,0.10);
 }
 
 #agentshell-config-panel.is-open {
@@ -61,8 +66,8 @@ body.config-panel-open {
     align-items: center;
     justify-content: space-between;
     padding: 1rem 1.25rem;
-    border-bottom: 1px solid var(--theme-border, #e4e4e7);
-    background: var(--theme-surface, #f4f4f5);
+    border-bottom: 1px solid #e4e4e7;
+    background: #f4f4f5;
     position: sticky;
     top: 0;
     z-index: 1;
@@ -72,60 +77,90 @@ body.config-panel-open {
     margin: 0;
     font-size: 0.95rem;
     font-weight: 600;
-    color: var(--theme-text, #18181b);
+    color: #18181b;
 }
 
 #agentshell-config-panel .panel-close {
     background: none;
     border: none;
     cursor: pointer;
-    color: var(--theme-text, #18181b);
-    padding: 0.25rem;
-    font-size: 1.1rem;
+    color: #555555;
+    padding: 0.25rem 0.5rem;
+    font-size: 1.25rem;
     line-height: 1;
     border-radius: 4px;
-    transition: background 0.15s;
+    transition: background 0.15s, color 0.15s;
 }
 
 #agentshell-config-panel .panel-close:hover {
-    background: var(--theme-border, #e4e4e7);
+    background: #e4e4e7;
+    color: #18181b;
 }
 
 /* ── Panel sections ── */
 #agentshell-config-panel .panel-section {
     padding: 1rem 1.25rem;
-    border-bottom: 1px solid var(--theme-border, #e4e4e7);
+    border-bottom: 1px solid #e4e4e7;
 }
 
 #agentshell-config-panel .panel-section h3 {
     margin: 0 0 0.75rem;
-    font-size: 0.7rem;
+    font-size: 0.68rem;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: #888;
+    letter-spacing: 0.09em;
+    color: #888888;
     font-weight: 600;
 }
 
-#agentshell-config-panel label {
-    display: block;
-    font-size: 0.82rem;
-    font-weight: 500;
-    margin-bottom: 0.3rem;
-    color: var(--theme-text, #18181b);
+/* ── Toggle row ── */
+#agentshell-config-panel .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
 }
 
-/* ── Form inputs ── */
+#agentshell-config-panel .toggle-row label {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: #18181b;
+    margin-bottom: 0;
+}
+
+/* ── Read-only info line ── */
+#agentshell-config-panel .read-only-info {
+    font-size: 0.73rem;
+    color: #888888;
+    margin: 0;
+    padding: 0.4rem 0;
+    border-top: 1px solid #e4e4e7;
+}
+
+/* ── Field rows ── */
+#agentshell-config-panel .field-row {
+    margin-bottom: 0.65rem;
+}
+
+#agentshell-config-panel .field-row label {
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: #333333;
+    margin-bottom: 0.3rem;
+}
+
+/* ── Text / URL inputs ── */
 #agentshell-config-panel input[type="text"],
 #agentshell-config-panel input[type="url"] {
     width: 100%;
     padding: 0.4rem 0.6rem;
-    border: 1px solid var(--theme-border, #e4e4e7);
-    border-radius: var(--radius-base, 8px);
+    border: 1px solid #d0d0d0;
+    border-radius: 6px;
     font-size: 0.85rem;
-    background: var(--theme-bg, #ffffff);
-    color: var(--theme-text, #18181b);
+    background: #ffffff; /* always white, never inherits dark site bg */
+    color: #18181b;       /* always dark text */
     box-sizing: border-box;
-    margin-bottom: 0.6rem;
+    margin-bottom: 0;
     transition: border-color 0.15s;
 }
 
@@ -133,112 +168,56 @@ body.config-panel-open {
 #agentshell-config-panel input[type="url"]:focus {
     outline: none;
     border-color: var(--theme-accent, #3b82f6);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
 }
 
-#agentshell-config-panel input[type="color"] {
-    width: 100%;
-    height: 36px;
-    border: 1px solid var(--theme-border, #e4e4e7);
-    border-radius: var(--radius-base, 8px);
-    cursor: pointer;
-    padding: 2px 4px;
-    background: var(--theme-bg, #ffffff);
-    box-sizing: border-box;
-    margin-bottom: 0.6rem;
-}
-
-#agentshell-config-panel textarea {
-    width: 100%;
-    min-height: 80px;
-    padding: 0.4rem 0.6rem;
-    border: 1px solid var(--theme-border, #e4e4e7);
-    border-radius: var(--radius-base, 8px);
-    font-size: 0.82rem;
-    font-family: monospace;
-    background: var(--theme-bg, #ffffff);
-    color: var(--theme-text, #18181b);
-    box-sizing: border-box;
-    resize: vertical;
-    margin-bottom: 0.6rem;
-    transition: border-color 0.15s;
-}
-
-#agentshell-config-panel textarea:focus {
-    outline: none;
-    border-color: var(--theme-accent, #3b82f6);
-}
-
-/* ── Toggle switch (sidebar) ── */
-.toggle-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 0.75rem;
-}
-
-/* ── Read-only info line ── */
-.read-only-info {
-    font-size: 0.75rem;
-    color: #888;
-    margin: 0;
-    padding: 0.35rem 0;
-    border-top: 1px solid var(--theme-border, #e4e4e7);
-}
-
-/* ── Field rows (label + input) ── */
-.field-row {
-    margin-bottom: 0.6rem;
-}
-
-.field-row label {
-    display: block;
-    font-size: 0.8rem;
-    font-weight: 500;
-    margin-bottom: 0.25rem;
-    color: var(--theme-text, #18181b);
-}
-
-.field-row input[type="text"] {
-    width: 100%;
-    padding: 0.35rem 0.5rem;
-    border: 1px solid var(--theme-border, #e4e4e7);
-    border-radius: var(--radius-base, 8px);
-    font-size: 0.85rem;
-    background: var(--theme-bg, #ffffff);
-    color: var(--theme-text, #18181b);
-    box-sizing: border-box;
-    transition: border-color 0.15s;
-}
-
-.field-row input[type="text"]:focus {
-    outline: none;
-    border-color: var(--theme-accent, #3b82f6);
+#agentshell-config-panel input[type="text"]::placeholder {
+    color: #aaaaaa;
 }
 
 /* ── Color fields (color picker + hex text side by side) ── */
-.color-field {
+#agentshell-config-panel .color-field {
     display: flex;
     gap: 0.4rem;
     align-items: center;
 }
 
-.color-field input[type="color"] {
+#agentshell-config-panel .color-field input[type="color"] {
     width: 36px;
     height: 32px;
-    border: 1px solid var(--theme-border, #e4e4e7);
-    border-radius: var(--radius-base, 8px);
+    border: 1px solid #d0d0d0;
+    border-radius: 6px;
     cursor: pointer;
     padding: 2px;
-    background: var(--theme-bg, #ffffff);
+    background: #ffffff;
     flex-shrink: 0;
 }
 
-.color-field .color-hex {
-    flex: 1;
-    font-family: monospace;
-    text-transform: uppercase;
+#agentshell-config-panel .color-field input[type="color"]:focus {
+    outline: none;
+    border-color: var(--theme-accent, #3b82f6);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
 }
 
+#agentshell-config-panel .color-field .color-hex {
+    flex: 1;
+    font-family: 'Courier New', monospace;
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    background: #ffffff;
+    color: #18181b;
+    border: 1px solid #d0d0d0;
+    border-radius: 6px;
+    padding: 0.3rem 0.5rem;
+}
+
+#agentshell-config-panel .color-field .color-hex:focus {
+    outline: none;
+    border-color: var(--theme-accent, #3b82f6);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+/* ── Toggle switch ── */
 .toggle-switch {
     position: relative;
     width: 44px;
@@ -255,7 +234,7 @@ body.config-panel-open {
 .toggle-slider {
     position: absolute;
     inset: 0;
-    background: var(--theme-border, #e4e4e7);
+    background: #d0d0d0;
     border-radius: 24px;
     cursor: pointer;
     transition: background 0.2s;
@@ -268,14 +247,14 @@ body.config-panel-open {
     height: 18px;
     left: 3px;
     bottom: 3px;
-    background: #fff;
+    background: #ffffff;
     border-radius: 50%;
     transition: transform 0.2s;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
 }
 
 .toggle-switch input:checked + .toggle-slider {
-    background: var(--theme-accent, #3b82f6);
+    background: var(--theme-accent, #3b82f6); /* uses site accent */
 }
 
 .toggle-switch input:checked + .toggle-slider::before {
@@ -287,20 +266,20 @@ body.config-panel-open {
     display: block;
     width: 100%;
     padding: 0.65rem;
-    background: var(--theme-accent, #3b82f6);
-    color: #fff;
+    background: var(--theme-accent, #3b82f6); /* uses site accent */
+    color: #ffffff;
     border: none;
-    border-radius: var(--radius-base, 8px);
+    border-radius: 6px;
     font-size: 0.9rem;
     font-weight: 500;
     cursor: pointer;
     text-align: center;
-    transition: background 0.2s;
+    transition: background 0.2s, transform 0.1s;
     margin-top: 0.5rem;
 }
 
 #agentshell-config-panel .panel-save:hover {
-    background: color-mix(in srgb, var(--theme-accent, #3b82f6) 85%, #000);
+    background: color-mix(in srgb, var(--theme-accent, #3b82f6) 82%, #000);
 }
 
 #agentshell-config-panel .panel-save:active {
