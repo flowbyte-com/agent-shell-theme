@@ -55,29 +55,19 @@ function agentshell_enqueue_assets() {
 add_action( 'wp_enqueue_scripts', 'agentshell_enqueue_assets' );
 
 /**
- * Dynamically register widget areas from content_mapping.
+ * Register the primary sidebar widget area.
+ * Used by #zone-sidebar in header.php when sidebar_enabled is true.
  */
 function agentshell_widgets_init() {
-    $config = get_option( 'agentshell_config' );
-    if ( ! is_array( $config ) || empty( $config['content_mapping'] ) ) {
-        return;
-    }
-    foreach ( $config['content_mapping'] as $zone_name => $mapping ) {
-        if ( ! is_array( $mapping ) || ( $mapping['source'] ?? '' ) !== 'wp_widget_area' ) {
-            continue;
-        }
-        $id = ! empty( $mapping['id'] ) ? $mapping['id'] : $zone_name;
-        $label = ucfirst( str_replace( '_', ' ', $zone_name ) );
-        register_sidebar( array(
-            'name'          => $label,
-            'id'            => $id,
-            'description'   => "Widgets for the {$zone_name} zone",
-            'before_widget' => '<div id="%1$s" class="widget %1$s">',
-            'after_widget'  => '</div>',
-            'before_title'  => '<h3 class="widget-title">',
-            'after_title'   => '</h3>',
-        ) );
-    }
+    register_sidebar( array(
+        'name'          => esc_html__( 'Primary Sidebar', 'agentshell' ),
+        'id'            => 'primary-sidebar',
+        'description'   => esc_html__( 'Widgets for the sidebar zone.', 'agentshell' ),
+        'before_widget' => '<div id="%1$s" class="widget %2$s">',
+        'after_widget'  => '</div>',
+        'before_title'  => '<h3 class="widget-title">',
+        'after_title'   => '</h3>',
+    ) );
 }
 add_action( 'widgets_init', 'agentshell_widgets_init' );
 
