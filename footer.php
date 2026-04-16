@@ -2,9 +2,10 @@
 /**
  * Footer template
  */
-$config = agentshell_get_config();
 ?>
-    <!-- Configurator panel -->
+    <?php wp_footer(); ?>
+
+    <?php if ( is_user_logged_in() ) : ?>
     <div id="agentshell-config-panel"></div>
 
     <button id="agentshell-config-trigger" aria-label="Open theme configurator">
@@ -13,8 +14,7 @@ $config = agentshell_get_config();
             <path d="M10 6v8M6 10h8" stroke="currentColor" stroke-width="2"/>
         </svg>
     </button>
+    <?php endif; ?>
 
-<?php wp_footer(); ?>
-</div><!-- .shell-wrapper -->
 </body>
 </html>

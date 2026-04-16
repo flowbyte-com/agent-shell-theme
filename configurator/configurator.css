@@ -1,144 +1,287 @@
-/* Push sidebar panel — docked right, pushes main content */
+/**
+ * Configurator panel and trigger.
+ *
+ * The panel is self-contained: all internal styling uses hardcoded neutral
+ * values so the form is always readable regardless of the site's theme.
+ * The accent color (trigger, focus, save button) intentionally reflects
+ * the site's --theme-accent.
+ */
+
+/* ── Trigger button ── */
+#agentshell-config-trigger {
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    z-index: 99998;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: var(--theme-accent, #3b82f6); /* intentionally uses accent */
+    color: #ffffff;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+    transition: background 0.2s, transform 0.15s;
+}
+
+#agentshell-config-trigger:hover {
+    background: color-mix(in srgb, var(--theme-accent, #3b82f6) 80%, #000);
+    transform: scale(1.05);
+}
+
+#agentshell-config-trigger:active {
+    transform: scale(0.97);
+}
+
+/* ── Config panel (slides in from right) ── */
 #agentshell-config-panel {
     position: fixed;
     top: 0;
-    right: 0;
-    width: 350px;
+    right: -420px;
+    width: 400px;
     height: 100vh;
-    background: #1a1a2e;
-    color: #e0e0e0;
+    background: #ffffff; /* hardcoded — always light, never inherits dark site themes */
+    color: #18181b;
+    border-left: 1px solid #e4e4e7;
     z-index: 99999;
     overflow-y: auto;
-    transform: translateX(100%);
-    transition: transform 0.25s ease;
-    font-family: system-ui, -apple-system, sans-serif;
-    font-size: 14px;
-    box-sizing: border-box;
+    transition: right 0.25s ease;
+    box-shadow: -4px 0 24px rgba(0,0,0,0.10);
 }
 
 #agentshell-config-panel.is-open {
-    transform: translateX(0);
+    right: 0;
 }
 
+body.config-panel-open {
+    overflow: hidden;
+}
+
+/* ── Panel header ── */
 #agentshell-config-panel .panel-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 1rem;
-    border-bottom: 1px solid #333;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid #e4e4e7;
+    background: #f4f4f5;
     position: sticky;
     top: 0;
-    background: #1a1a2e;
     z-index: 1;
 }
 
 #agentshell-config-panel .panel-header h2 {
     margin: 0;
-    font-size: 1rem;
+    font-size: 0.95rem;
     font-weight: 600;
-    color: #fff;
+    color: #18181b;
 }
 
 #agentshell-config-panel .panel-close {
     background: none;
     border: none;
-    color: #e0e0e0;
     cursor: pointer;
-    padding: 0.25rem;
+    color: #555555;
+    padding: 0.25rem 0.5rem;
+    font-size: 1.25rem;
     line-height: 1;
+    border-radius: 4px;
+    transition: background 0.15s, color 0.15s;
 }
 
+#agentshell-config-panel .panel-close:hover {
+    background: #e4e4e7;
+    color: #18181b;
+}
+
+/* ── Panel sections ── */
 #agentshell-config-panel .panel-section {
-    padding: 1rem;
-    border-bottom: 1px solid #2a2a4e;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid #e4e4e7;
 }
 
 #agentshell-config-panel .panel-section h3 {
     margin: 0 0 0.75rem;
-    font-size: 0.75rem;
+    font-size: 0.68rem;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: #888;
+    letter-spacing: 0.09em;
+    color: #888888;
+    font-weight: 600;
 }
 
-#agentshell-config-panel label {
+/* ── Toggle row ── */
+#agentshell-config-panel .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+}
+
+#agentshell-config-panel .toggle-row label {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: #18181b;
+    margin-bottom: 0;
+}
+
+/* ── Read-only info line ── */
+#agentshell-config-panel .read-only-info {
+    font-size: 0.73rem;
+    color: #888888;
+    margin: 0;
+    padding: 0.4rem 0;
+    border-top: 1px solid #e4e4e7;
+}
+
+/* ── Field rows ── */
+#agentshell-config-panel .field-row {
+    margin-bottom: 0.65rem;
+}
+
+#agentshell-config-panel .field-row label {
     display: block;
     font-size: 0.8rem;
-    margin-bottom: 0.25rem;
-    color: #aaa;
+    font-weight: 500;
+    color: #333333;
+    margin-bottom: 0.3rem;
 }
 
+/* ── Text / URL inputs ── */
 #agentshell-config-panel input[type="text"],
 #agentshell-config-panel input[type="url"] {
     width: 100%;
-    padding: 0.4rem 0.5rem;
-    background: #2a2a4e;
-    border: 1px solid #3a3a5e;
-    border-radius: 4px;
-    color: #e0e0e0;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid #d0d0d0;
+    border-radius: 6px;
     font-size: 0.85rem;
+    background: #ffffff; /* always white, never inherits dark site bg */
+    color: #18181b;       /* always dark text */
     box-sizing: border-box;
-    margin-bottom: 0.5rem;
+    margin-bottom: 0;
+    transition: border-color 0.15s;
 }
 
-#agentshell-config-panel input[type="color"] {
-    width: 100%;
-    height: 32px;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    background: transparent;
-    margin-bottom: 0.5rem;
+#agentshell-config-panel input[type="text"]:focus,
+#agentshell-config-panel input[type="url"]:focus {
+    outline: none;
+    border-color: var(--theme-accent, #3b82f6);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
 }
 
-#agentshell-config-panel textarea {
-    width: 100%;
-    min-height: 80px;
-    padding: 0.4rem 0.5rem;
-    background: #2a2a4e;
-    border: 1px solid #3a3a5e;
-    border-radius: 4px;
-    color: #e0e0e0;
-    font-size: 0.8rem;
-    font-family: monospace;
-    box-sizing: border-box;
-    resize: vertical;
-    margin-bottom: 0.5rem;
+#agentshell-config-panel input[type="text"]::placeholder {
+    color: #aaaaaa;
 }
 
-/* Trigger button */
-#agentshell-config-trigger {
-    position: fixed;
-    bottom: 1.5rem;
-    right: 1.5rem;
-    width: 48px;
-    height: 48px;
-    border-radius: 50%;
-    background: #e94560;
-    color: #fff;
-    border: none;
-    cursor: pointer;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+/* ── Color fields (color picker + hex text side by side) ── */
+#agentshell-config-panel .color-field {
     display: flex;
+    gap: 0.4rem;
     align-items: center;
-    justify-content: center;
-    z-index: 99998;
+}
+
+#agentshell-config-panel .color-field input[type="color"] {
+    width: 36px;
+    height: 32px;
+    border: 1px solid #d0d0d0;
+    border-radius: 6px;
+    cursor: pointer;
+    padding: 2px;
+    background: #ffffff;
+    flex-shrink: 0;
+}
+
+#agentshell-config-panel .color-field input[type="color"]:focus {
+    outline: none;
+    border-color: var(--theme-accent, #3b82f6);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+#agentshell-config-panel .color-field .color-hex {
+    flex: 1;
+    font-family: 'Courier New', monospace;
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    background: #ffffff;
+    color: #18181b;
+    border: 1px solid #d0d0d0;
+    border-radius: 6px;
+    padding: 0.3rem 0.5rem;
+}
+
+#agentshell-config-panel .color-field .color-hex:focus {
+    outline: none;
+    border-color: var(--theme-accent, #3b82f6);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+/* ── Toggle switch ── */
+.toggle-switch {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    flex-shrink: 0;
+}
+
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: #d0d0d0;
+    border-radius: 24px;
+    cursor: pointer;
     transition: background 0.2s;
 }
 
-#agentshell-config-trigger:hover {
-    background: #d63850;
+.toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    left: 3px;
+    bottom: 3px;
+    background: #ffffff;
+    border-radius: 50%;
+    transition: transform 0.2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
 }
 
-/* Main content push when panel is open */
-.shell-wrapper {
-    transition: padding-right 0.25s ease;
+.toggle-switch input:checked + .toggle-slider {
+    background: var(--theme-accent, #3b82f6); /* uses site accent */
 }
 
-body.config-panel-open .shell-wrapper {
-    padding-right: 350px;
+.toggle-switch input:checked + .toggle-slider::before {
+    transform: translateX(20px);
 }
 
-body.config-panel-open .shell-grid {
-    max-width: calc(100% - 350px);
+/* ── Save button ── */
+#agentshell-config-panel .panel-save {
+    display: block;
+    width: 100%;
+    padding: 0.65rem;
+    background: var(--theme-accent, #3b82f6); /* uses site accent */
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: center;
+    transition: background 0.2s, transform 0.1s;
+    margin-top: 0.5rem;
+}
+
+#agentshell-config-panel .panel-save:hover {
+    background: color-mix(in srgb, var(--theme-accent, #3b82f6) 82%, #000);
+}
+
+#agentshell-config-panel .panel-save:active {
+    transform: translateY(1px);
 }

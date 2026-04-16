@@ -1,16 +1,48 @@
 /*
 Theme Name: AgentShell
-Theme URI: https://example.com/agentshell
-Author: Your Name
-Author URI: https://example.com
+
 Description: JSON-driven WordPress theme for human-agent collaboration
 Version: 1.0.0
-License: GNU General Public License v2 or later
-License URI: http://www.gnu.org/licenses/gpl-2.0.html
 Text Domain: agentshell
 */
 
-/* Reset and base styles */
+/*
+ * ╔══════════════════════════════════════════════════════════════╗
+ * ║  AGENT EDITING GUIDE — style.css                            ║
+ * ║  Edit :root variables below to reskin the entire site.      ║
+ * ║  Do NOT edit the grid layout (Section 3). It is fixed.      ║
+ * ╚══════════════════════════════════════════════════════════════╝
+ */
+
+/* ── SECTION 1: PERSONA + CONTAINER VARIABLES ── */
+:root {
+    /* Typography */
+    --font-base: system-ui, -apple-system, sans-serif;
+    --font-mono: monospace;
+
+    /* Persona (overwritten by configurator / agent payloads) */
+    --theme-bg: #ffffff;
+    --theme-surface: #f4f4f5;
+    --theme-text: #18181b;
+    --theme-border: #e4e4e7;
+    --theme-accent: #3b82f6;
+
+    --theme-header-bg: #1a1a2e;
+    --theme-header-text: #ffffff;
+    --theme-footer-bg: #16213e;
+    --theme-footer-text: #ffffff;
+
+    /* Geometry */
+    --spacing-base: 1rem;
+    --radius-base: 8px;
+
+    /* Container Bounds (read-only for agents) */
+    --content-max-width: 1280px;
+    --sidebar-width: 320px;
+    --container-padding: 2rem;
+}
+
+/* ── SECTION 2: BASE RESETS & WIRING ── */
 *, *::before, *::after {
     box-sizing: border-box;
 }
@@ -18,54 +50,133 @@ Text Domain: agentshell
 body {
     margin: 0;
     padding: 0;
-    font-family: var(--font-family, system-ui, -apple-system, sans-serif);
-    font-size: var(--type-base, 16px);
-    background-color: var(--color-background, #ffffff);
-    color: var(--color-text, #333333);
+    font-family: var(--font-base);
+    font-size: 16px;
     line-height: 1.6;
+    
+    /* Variable Wiring */
+    background-color: var(--theme-bg);
+    color: var(--theme-text);
+    transition: background-color 0.4s ease, color 0.4s ease; 
 }
 
-/* Shell wrapper */
-.shell-wrapper {
-    min-height: 100vh;
+img {
+    max-width: 100%;
+    height: auto;
 }
 
-/* Shell grid zones */
+/* ── SECTION 3: THE UNBREAKABLE GRID ── */
+#agentshell-root {
+    display: grid;
+    width: 100%;
+    max-width: var(--content-max-width);
+    margin: 0 auto;
+    padding: 0 var(--container-padding);
+    gap: var(--spacing-base);
+
+    /* Mobile default: single column */
+    grid-template-columns: 1fr;
+    grid-template-areas:
+        "header"
+        "main"
+        "footer";
+}
+
+/* Sidebar enabled (adds sidebar row on mobile too) */
+.sidebar-enabled #agentshell-root {
+    grid-template-areas:
+        "header"
+        "main"
+        "sidebar"
+        "footer";
+}
+
+@media (min-width: 1024px) {
+    /* Default desktop: main centered, no sidebar */
+    #agentshell-root {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            "header"
+            "main"
+            "footer";
+    }
+
+    /* Desktop with sidebar: main fills remaining space, sidebar fixed */
+    .sidebar-enabled #agentshell-root {
+        grid-template-columns: 1fr var(--sidebar-width);
+        grid-template-areas:
+            "header  header"
+            "main    sidebar"
+            "footer  footer";
+    }
+}
+
+/* ── SECTION 4: ZONE MAPPING ── */
+#zone-header  { grid-area: header; }
+#zone-main    { grid-area: main; }
+#zone-sidebar { grid-area: sidebar; display: none; }
+#zone-footer  { grid-area: footer; }
+
+.sidebar-enabled #zone-sidebar {
+    display: block;
+}
+
+/* ── SECTION 5: ZONE STYLING & WIRING ── */
 .shell-zone {
-    padding: 1rem;
+    background-color: var(--theme-surface);
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-base);
+    padding: calc(var(--spacing-base) * 2);
+    transition: background-color 0.4s ease, border-color 0.4s ease;
 }
 
-.zone--header {
-    background-color: var(--color-primary, #1a1a2e);
-    color: #fff;
+/* Header */
+#zone-header {
+    background-color: var(--theme-header-bg);
+    color: var(--theme-header-text);
+    border-color: transparent;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--spacing-base);
 }
 
-.zone--footer {
-    background-color: var(--color-secondary, #16213e);
-    color: #fff;
+/* Footer */
+#zone-footer {
+    background-color: var(--theme-footer-bg);
+    color: var(--theme-footer-text);
+    border-color: transparent;
 }
 
-/* Navigation styles */
+/* Link Resets for Header/Footer */
+#zone-header a, 
+#zone-footer a {
+    color: inherit;
+    text-decoration: none;
+}
+
+/* ── SECTION 6: NAVIGATION ── */
 .shell-nav ul {
     list-style: none;
     margin: 0;
     padding: 0;
     display: flex;
-    gap: 1.5rem;
-}
-
-.shell-nav li {
-    position: relative;
+    flex-wrap: wrap;
+    gap: var(--spacing-base);
 }
 
 .shell-nav a {
-    color: inherit;
-    text-decoration: none;
-    transition: opacity 0.2s;
+    transition: opacity 0.2s, text-shadow 0.2s, color 0.2s;
 }
 
 .shell-nav a:hover {
-    opacity: 0.8;
+    opacity: 0.75;
+}
+
+/* Sub-menu (dropdown) */
+.shell-nav li {
+    position: relative;
 }
 
 .shell-nav .sub-menu {
@@ -73,13 +184,14 @@ body {
     position: absolute;
     top: 100%;
     left: 0;
-    background: var(--color-primary, #1a1a2e);
+    background-color: var(--theme-header-bg);
     min-width: 180px;
     flex-direction: column;
     gap: 0;
     padding: 0.5rem 0;
-    border-radius: 4px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    border-radius: var(--radius-base);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    z-index: 100;
 }
 
 .shell-nav li:hover > .sub-menu,
@@ -87,20 +199,14 @@ body {
     display: flex;
 }
 
-/* Content styles */
-.shell-zone.zone--main,
-.zone--main {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 2rem 1rem;
+/* ── SECTION 7: CONTENT ── */
+#zone-main {
+    width: 100%;
+    min-width: 0; /* Prevents CSS Grid blowout from large child elements */
 }
 
-.entry-content {
-    max-width: 75ch;
-}
-
-/* Responsive images */
-img {
-    max-width: 100%;
-    height: auto;
+/* Agent escape hatch — Use when content must span the full container width 
+   (e.g., code terminals, wide tables). */
+.u-full-width {
+    width: 100%;
 }

@@ -76,11 +76,12 @@ function agentshell_generate_grid_css( array $layout, $query, $zone_prefix = 'zo
 /**
  * Generate all breakpoint CSS from layout config
  *
- * @param array $layout      e.g. { mobile: [...], tablet: [...], desktop: [...] }
+ * @param array $zones       All zone names, e.g. ["header", "main", "sidebar", "footer"]
+ * @param array $layout      Per-breakpoint row arrays, e.g. { mobile: [...], desktop: [...] }
  * @param array $breakpoints e.g. { mobile: "0px", tablet: "768px", desktop: "1024px" }
  * @return string Complete CSS string
  */
-function agentshell_get_layout_css( array $layout, array $breakpoints ) {
+function agentshell_get_layout_css( array $zones, array $layout, array $breakpoints ) {
     $css = "<style id='agentshell-layout-css'>\n";
 
     // Normalize: each breakpoint value must be an array of row strings.
@@ -106,6 +107,13 @@ function agentshell_get_layout_css( array $layout, array $breakpoints ) {
     $css .= "    margin: 0 auto;\n";
     $css .= "    width: 100%;\n";
     $css .= "  }\n";
+
+    // Emit a grid-area rule for EVERY zone, so any zone that appears in
+    // HTML (header.php renders all zones from the `zones` whitelist) is
+    // always accounted for even if absent from a particular breakpoint layout.
+    foreach ( $zones as $zone ) {
+        $css .= "  .zone--{$zone} { grid-area: {$zone}; }\n";
+    }
 
     // Breakpoint-specific rules
     foreach ( $breakpoints as $name => $threshold ) {

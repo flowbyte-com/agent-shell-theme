@@ -15,7 +15,7 @@ function agentshell_render_css_vars( array $design ) {
 
     $vars = ":root {\n";
     foreach ( $colors as $name => $value ) {
-        $safe_name  = sanitize_key( $name );
+        $safe_name  = preg_replace( '/[^a-z0-9_]/', '', strtolower( $name ) );
         $safe_value = preg_replace( '/[^a-zA-Z0-9#.,_%()-]/', '', $value );
         if ( $safe_name && $safe_value ) {
             $vars .= "  --color-{$safe_name}: {$safe_value};\n";
