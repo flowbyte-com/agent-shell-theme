@@ -28,17 +28,18 @@ add_action( 'after_switch_theme', 'agentshell_theme_activation' );
  * Enqueue theme assets
  */
 function agentshell_enqueue_assets() {
-    // Only load configurator assets for logged-in users
-    if ( ! is_user_logged_in() ) {
-        return;
-    }
-    // Main theme stylesheet — explicit enqueue with filemtime cache busting
+    // Main theme stylesheet — always enqueued with filemtime cache busting
     wp_enqueue_style(
         'agentshell-style',
         get_template_directory_uri() . '/style.css',
         array(),
         filemtime( get_template_directory() . '/style.css' )
     );
+
+    // Configurator assets: logged-in users only
+    if ( ! is_user_logged_in() ) {
+        return;
+    }
     wp_enqueue_style( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.css', array( 'agentshell-style' ), '1.0.0' );
     wp_enqueue_script( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.js', array(), '1.0.0', true );
     wp_localize_script( 'agentshell-configurator', 'AgentShellConfig', array(
