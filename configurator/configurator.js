@@ -106,7 +106,11 @@
                         label: 'grid-template-areas rows',
                         type: 'textarea',
                         getValue: () => (config.layout?.desktop || []).join('\n'),
-                        setValue: (v) => { config.layout.desktop = v.split('\n').map(s => s.trim()).filter(Boolean); }
+                        setValue: (v) => {
+                            const lines = v.split('\n').map(s => s.trim()).filter(Boolean);
+                            // Preserve existing layout if textarea is cleared (empty array would break CSS grid)
+                            config.layout.desktop = lines.length ? lines : (config.layout?.desktop || []);
+                        }
                     }
                 ]
             }

@@ -1,5 +1,5 @@
 {
-  "zones": ["header", "main", "sidebar", "footer"],
+  "sidebar_enabled": false,
   "design": {
     "breakpoints": {
       "mobile": "0px",
@@ -28,7 +28,7 @@
   "layout": {
     "mobile": ["header", "main", "footer"],
     "tablet": ["header header", "main main", "footer footer"],
-    "desktop": ["header header", "main sidebar", "footer footer"]
+    "desktop": ["header", "main", "footer"]
   },
   "navigation": {
     "primary": [
