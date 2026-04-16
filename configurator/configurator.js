@@ -14,9 +14,8 @@
         panel = document.getElementById('agentshell-config-panel');
         trigger = document.getElementById('agentshell-config-trigger');
 
-        // Bind trigger click immediately — don't wait for config load
         if (trigger) {
-            trigger.addEventListener('click', openPanel);
+            trigger.addEventListener('click', togglePanel);
         }
     }
 
@@ -47,13 +46,20 @@
                 },
                 body: JSON.stringify(newConfig)
             });
-            if (!resp.ok) throw new Error('Save failed');
+            if (!resp.ok) throw new Error('Save failed: ' + resp.status);
             config = await resp.json();
             location.reload();
         } catch (e) {
             console.error('AgentShell: Failed to save config', e);
             alert('Failed to save config. Please try again.');
         }
+    }
+
+    // Toggle panel open/closed
+    function togglePanel() {
+        if (!panel) return;
+        const isOpen = panel.classList.toggle('is-open');
+        document.body.classList.toggle('config-panel-open', isOpen);
     }
 
     // Infer form field type from value
@@ -64,9 +70,6 @@
         if (typeof value === 'string' && /^\d+(\.\d+)?(px|em|rem|%)$/.test(value)) {
             return 'text';
         }
-        if (typeof value === 'string' || typeof value === 'number') {
-            return 'text';
-        }
         return 'text';
     }
 
@@ -75,6 +78,18 @@
         if (!config || !panel) return;
 
         const sections = [
+            {
+                title: 'Layout',
+                fields: [
+                    {
+                        path: ['sidebar_enabled'],
+                        label: 'Enable Sidebar',
+                        type: 'toggle',
+                        getValue: () => !!config.sidebar_enabled,
+                        setValue: (v) => { config.sidebar_enabled = v; }
+                    }
+                ]
+            },
             {
                 title: 'Logo',
                 fields: [
@@ -97,29 +112,13 @@
                     { path: ['design', 'typography', 'fontFamily'], label: 'Font Family' },
                     { path: ['design', 'typography', 'baseSize'], label: 'Base Size' },
                 ]
-            },
-            {
-                title: 'Layout (Desktop)',
-                fields: [
-                    {
-                        path: ['layout', 'desktop'],
-                        label: 'grid-template-areas rows',
-                        type: 'textarea',
-                        getValue: () => (config.layout?.desktop || []).join('\n'),
-                        setValue: (v) => {
-                            const lines = v.split('\n').map(s => s.trim()).filter(Boolean);
-                            // Preserve existing layout if textarea is cleared (empty array would break CSS grid)
-                            config.layout.desktop = lines.length ? lines : (config.layout?.desktop || []);
-                        }
-                    }
-                ]
             }
         ];
 
         let html = `
             <div class="panel-header">
                 <h2>Shell Config</h2>
-                <button class="panel-close" aria-label="Close">✕</button>
+                <button class="panel-close" aria-label="Close panel">&times;</button>
             </div>
         `;
 
@@ -129,14 +128,20 @@
                 const value = field.getValue
                     ? field.getValue()
                     : field.path.reduce((o, k) => (o || {})[k], config);
-                const type = field.type || inferFieldType(field.path.join('.'), value);
 
-                if (type === 'color') {
+                if (field.type === 'toggle') {
+                    const checked = value ? 'checked' : '';
+                    html += `
+                        <div class="toggle-row">
+                            <label>${field.label}</label>
+                            <label class="toggle-switch">
+                                <input type="checkbox" data-path="${field.path.join('.')}" ${checked}>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>`;
+                } else if (field.type === 'color') {
                     html += `<label>${field.label}</label>`;
                     html += `<input type="color" data-path="${field.path.join('.')}" value="${value || '#000000'}">`;
-                } else if (type === 'textarea') {
-                    html += `<label>${field.label}</label>`;
-                    html += `<textarea data-path="${field.path.join('.')}">${value || ''}</textarea>`;
                 } else {
                     html += `<label>${field.label}</label>`;
                     html += `<input type="text" data-path="${field.path.join('.')}" value="${value || ''}">`;
@@ -145,26 +150,24 @@
             html += '</div>';
         });
 
-        // Add save button
-        html += `<div class="panel-section"><button id="agentshell-save" style="width:100%;padding:0.6rem;background:#e94560;color:#fff;border:none;border-radius:4px;cursor:pointer;">Save & Reload</button></div>`;
+        html += `<div class="panel-section"><button class="panel-save">Save & Reload</button></div>`;
 
         panel.innerHTML = html;
 
         // Bind close button
         const closeBtn = panel.querySelector('.panel-close');
         if (closeBtn) {
-            closeBtn.addEventListener('click', closePanel);
+            closeBtn.addEventListener('click', togglePanel);
         }
 
         // Bind save button
-        const saveBtn = document.getElementById('agentshell-save');
+        const saveBtn = panel.querySelector('.panel-save');
         if (saveBtn) {
             saveBtn.addEventListener('click', () => {
-                // Gather all field values back into config (including color inputs)
-                panel.querySelectorAll('input[type="text"], input[type="url"], input[type="color"], textarea').forEach(el => {
+                panel.querySelectorAll('input[type="text"], input[type="url"], input[type="color"], input[type="checkbox"]').forEach(el => {
                     const path = el.dataset.path.split('.');
-                    if (el.type === 'number') {
-                        setInConfig(path, parseFloat(el.value));
+                    if (el.type === 'checkbox') {
+                        setInConfig(path, el.checked);
                     } else {
                         setInConfig(path, el.value);
                     }
@@ -172,11 +175,6 @@
                 saveConfig(config);
             });
         }
-    }
-
-    // Helper: get nested config value by path array
-    function getFromConfig(path) {
-        return path.reduce((o, k) => (o || {})[k], config);
     }
 
     // Helper: set nested config value by path array
@@ -188,24 +186,6 @@
         }
         o[path[path.length - 1]] = value;
     }
-
-    function openPanel() {
-        if (panel) {
-            panel.classList.add('is-open');
-            document.body.classList.add('config-panel-open');
-        }
-    }
-
-    function closePanel() {
-        if (panel) {
-            panel.classList.remove('is-open');
-            document.body.classList.remove('config-panel-open');
-        }
-    }
-
-    // Make helper functions available
-    window.getFromConfig = getFromConfig;
-    window.setInConfig = setInConfig;
 
     // Initialize when DOM is ready
     if (document.readyState === 'loading') {
