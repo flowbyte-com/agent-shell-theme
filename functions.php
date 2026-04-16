@@ -55,6 +55,52 @@ function agentshell_enqueue_assets() {
 add_action( 'wp_enqueue_scripts', 'agentshell_enqueue_assets' );
 
 /**
+ * 1. Inject Saved CSS Variables into the <head>
+ * This runs after style.css loads, overwriting the defaults with the user's saved choices.
+ */
+function agentshell_inject_saved_styles() {
+    // Get the saved nested config from the DB
+    $config = get_option( 'agentshell_config', array() );
+
+    // If the agent built the flatten function, use it to get our flat keys (like --theme-bg)
+    if ( function_exists( 'agentshell_flatten_config' ) ) {
+        $flat_keys = agentshell_flatten_config( $config );
+    } else {
+        $flat_keys = $config; // Fallback
+    }
+
+    if ( empty( $flat_keys ) ) return;
+
+    echo "<style id='agentshell-saved-config'>\n:root {\n";
+    foreach ( $flat_keys as $key => $value ) {
+        // Only print keys that start with '--' to avoid printing 'sidebar_enabled' as CSS
+        if ( strpos( $key, '--' ) === 0 && ! empty( $value ) ) {
+            echo '    ' . esc_attr( $key ) . ': ' . esc_attr( $value ) . ";\n";
+        }
+    }
+    echo "}\n</style>\n";
+}
+// Priority 100 ensures this prints AFTER style.css
+add_action( 'wp_head', 'agentshell_inject_saved_styles', 100 );
+
+
+/**
+ * 2. Persist the Sidebar State
+ * Reads the DB and injects the 'sidebar-enabled' class into the <body> tag on load.
+ */
+function agentshell_persist_sidebar( $classes ) {
+    $config = get_option( 'agentshell_config', array() );
+
+    // Check if sidebar is enabled in the nested config OR flat config
+    if ( ! empty( $config['sidebar_enabled'] ) || ! empty( $config['layout']['sidebar_enabled'] ) ) {
+        $classes[] = 'sidebar-enabled';
+    }
+
+    return $classes;
+}
+add_filter( 'body_class', 'agentshell_persist_sidebar' );
+
+/**
  * Pre-load approved libraries for agent-built Web Component widgets.
  * Agents do NOT need to inject <script src="..."> for these.
  * Currently available: d3 (window.d3), mathjs (window.math)

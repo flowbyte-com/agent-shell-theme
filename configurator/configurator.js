@@ -80,12 +80,13 @@
         document.body.classList.toggle('sidebar-enabled', !!enabled);
     }
 
-    // ── Build the field value map from CSS + REST API state ─────
+    // ── Build the field value map from REST API config + CSS fallback ──
+    // Priority: config value (just loaded from DB) > computed CSS > DEFAULTS
     function buildState(config) {
         const state = { sidebar_enabled: !!config.sidebar_enabled };
         Object.keys(DEFAULTS).forEach(key => {
             if (key !== 'sidebar_enabled') {
-                state[key] = readCssVar(key);
+                state[key] = config[key] || readCssVar(key) || DEFAULTS[key];
             }
         });
         return state;
