@@ -55,6 +55,34 @@ function agentshell_enqueue_assets() {
 add_action( 'wp_enqueue_scripts', 'agentshell_enqueue_assets' );
 
 /**
+ * Pre-load approved libraries for agent-built Web Component widgets.
+ * Agents do NOT need to inject <script src="..."> for these.
+ * Currently available: d3 (window.d3), mathjs (window.math)
+ *
+ * To add more libraries, add another wp_enqueue_script line here.
+ * Keep pre-loaded libraries minimal — each adds load time.
+ */
+function agentshell_enqueue_widget_libs() {
+    // D3.js — data visualizations, charts, graphs
+    wp_enqueue_script(
+        'agentshell-d3',
+        'https://d3js.org/d3.v7.min.js',
+        array(),
+        null,
+        true
+    );
+    // Math.js — math expressions, calculators
+    wp_enqueue_script(
+        'agentshell-mathjs',
+        'https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.min.js',
+        array(),
+        null,
+        true
+    );
+}
+add_action( 'wp_enqueue_scripts', 'agentshell_enqueue_widget_libs' );
+
+/**
  * Register the primary sidebar widget area.
  * Used by #zone-sidebar in header.php when sidebar_enabled is true.
  */

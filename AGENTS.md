@@ -143,10 +143,75 @@ With sidebar enabled (≥1024px):
 
 ---
 
+## Interactive Widgets: Web Component Protocol
+
+For complex interactive content (charts, calculators, visualizers, terminals), agents **must** use native Web Components with Shadow DOM. This is the only safe way to inject JS and HTML into `#zone-main`.
+
+**Why Web Components:**
+- Shadow DOM CSS is fully encapsulated — widget styles cannot break the shell
+- `customElements.define` is idempotent — defining the same component twice is safe (throws on the second call, which you catch)
+- No build tools, no React/Vue — vanilla JS, works in any browser
+- Theme variables (`--theme-accent`, `--theme-surface`, etc.) inherit through the Shadow DOM boundary
+
+**Pre-loaded libraries** (already available — do NOT inject `<script src="">` tags):
+- `window.d3` — D3.js v7 (charts, graphs, data visualizations)
+- `window.math` — Math.js (calculators, expressions)
+
+**Protocol:**
+
+```
+PUT /wp-json/wp/v2/pages/<id>
+Body: { "content": { "raw": "<mpm-memory-chart data-used=\"75\"></mpm-memory-chart><script>...custom element definition...</script>" } }
+```
+
+The payload must follow this exact pattern:
+
+```html
+<mpm-[widget-name] data-key="value"></mpm-[widget-name]>
+
+<script>
+if (!customElements.get('mpm-[widget-name]')) {
+    class MyWidget extends HTMLElement {
+        constructor() {
+            super();
+            this.attachShadow({ mode: 'open' });
+        }
+        connectedCallback() {
+            // Use window.d3 and window.math here if needed
+            // All CSS inside shadowRoot is isolated — safe to use any selectors
+            this.shadowRoot.innerHTML = `
+                <style>
+                    /* Inherits shell theme: color: var(--theme-text); etc. */
+                    .container { background: var(--theme-surface); }
+                </style>
+                <div class="container">
+                    <!-- widget HTML -->
+                </div>
+            `;
+        }
+    }
+    customElements.define('mpm-[widget-name]', MyWidget);
+}
+</script>
+```
+
+**Rules:**
+1. Always guard `customElements.define` with `if (!customElements.get('name'))`
+2. Place ALL widget CSS inside `shadowRoot.innerHTML` `<style>` — never in the main document
+3. Use `var(--theme-*)` in Shadow DOM styles to inherit the shell theme
+4. `customElements.get()` check makes re-renders safe — never double-define
+5. Do NOT use `document.getElementById` or `document.querySelector` inside the widget — use `this.shadowRoot.querySelector` instead
+
+**Widget naming:** Prefix all custom elements with `mpm-` (e.g., `<mpm-memory-chart>`, `<mpm-calculator>`, `<mpm-logger>`).
+
+---
+
 ## Common Mistakes
 
 - **Editing header.php or footer.php for content** — shell structure is immutable
 - **Setting colors via REST API config** — edit `style.css :root` directly
 - **Injecting HTML outside `#zone-main`** — only `#zone-main` accepts content
-- **Inline JS or `<script>` in post content** — stripped by WordPress; use CSS classes + enqueued scripts
+- **Inline `<script>` in post content without Web Component wrapper** — stripped by WordPress; use the Web Component protocol above
 - **Exceeding 75ch in `#zone-main`** — normal paragraphs should stay within the 75ch cap; use `.u-full-width` for wide content
+- **Using `id="..."` attributes in widget HTML** — use classes inside Shadow DOM; IDs are isolated but should be avoided to prevent confusion
+- **Injecting `<script src="...">` tags for libraries** — use pre-loaded `window.d3` and `window.math` instead
