@@ -173,7 +173,70 @@ body.config-panel-open {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    margin-bottom: 0.75rem;
+}
+
+/* ── Read-only info line ── */
+.read-only-info {
+    font-size: 0.75rem;
+    color: #888;
+    margin: 0;
+    padding: 0.35rem 0;
+    border-top: 1px solid var(--theme-border, #e4e4e7);
+}
+
+/* ── Field rows (label + input) ── */
+.field-row {
     margin-bottom: 0.6rem;
+}
+
+.field-row label {
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 500;
+    margin-bottom: 0.25rem;
+    color: var(--theme-text, #18181b);
+}
+
+.field-row input[type="text"] {
+    width: 100%;
+    padding: 0.35rem 0.5rem;
+    border: 1px solid var(--theme-border, #e4e4e7);
+    border-radius: var(--radius-base, 8px);
+    font-size: 0.85rem;
+    background: var(--theme-bg, #ffffff);
+    color: var(--theme-text, #18181b);
+    box-sizing: border-box;
+    transition: border-color 0.15s;
+}
+
+.field-row input[type="text"]:focus {
+    outline: none;
+    border-color: var(--theme-accent, #3b82f6);
+}
+
+/* ── Color fields (color picker + hex text side by side) ── */
+.color-field {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+}
+
+.color-field input[type="color"] {
+    width: 36px;
+    height: 32px;
+    border: 1px solid var(--theme-border, #e4e4e7);
+    border-radius: var(--radius-base, 8px);
+    cursor: pointer;
+    padding: 2px;
+    background: var(--theme-bg, #ffffff);
+    flex-shrink: 0;
+}
+
+.color-field .color-hex {
+    flex: 1;
+    font-family: monospace;
+    text-transform: uppercase;
 }
 
 .toggle-switch {

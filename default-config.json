@@ -2,21 +2,22 @@
   "sidebar_enabled": false,
   "design": {
     "colors": {
-      "primary": "#1a1a2e",
-      "secondary": "#16213e",
-      "accent": "#e94560",
       "background": "#ffffff",
-      "text": "#333333"
+      "surface":    "#f4f4f5",
+      "text":       "#18181b",
+      "border":     "#e4e4e7",
+      "accent":     "#3b82f6",
+      "primary":    "#1a1a2e",
+      "secondary":  "#16213e"
     },
     "typography": {
       "fontFamily": "system-ui, sans-serif",
-      "baseSize": "16px",
-      "scale": "1.25"
+      "mono":      "monospace",
+      "baseSize":  "1rem",
+      "scale":     "1.25"
     },
-    "logo": {
-      "url": "/wp-content/themes/agent-shell-theme/assets/logo.png",
-      "width": "140px",
-      "height": "40px"
+    "layout": {
+      "radius": "8px"
     }
   }
 }

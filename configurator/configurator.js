@@ -1,119 +1,107 @@
 (function() {
     'use strict';
 
-    let panel = null;
-    let trigger = null;
-    let config = null;
-    let initDone = false;
+    const DEFAULTS = {
+        // Layout
+        sidebar_enabled: false,
+        // Typography & Geometry
+        '--font-base':     'system-ui, -apple-system, sans-serif',
+        '--font-mono':     'monospace',
+        '--spacing-base':  '1rem',
+        '--radius-base':   '8px',
+        // Global Theme
+        '--theme-bg':       '#ffffff',
+        '--theme-surface':  '#f4f4f5',
+        '--theme-text':     '#18181b',
+        '--theme-accent':   '#3b82f6',
+        '--theme-border':   '#e4e4e7',
+        // Shell Zones
+        '--theme-header-bg':  '#1a1a2e',
+        '--theme-footer-bg':  '#16213e',
+    };
 
-    // Initialize DOM elements (call once, idempotent)
+    const META = {
+        '--font-base':     { section: 'Typography & Geometry', label: 'Base Font' },
+        '--font-mono':     { section: 'Typography & Geometry', label: 'Mono Font' },
+        '--spacing-base':  { section: 'Typography & Geometry', label: 'Base Spacing' },
+        '--radius-base':   { section: 'Typography & Geometry', label: 'Border Radius' },
+        '--theme-bg':      { section: 'Global Theme', label: 'Background' },
+        '--theme-surface': { section: 'Global Theme', label: 'Surface' },
+        '--theme-text':    { section: 'Global Theme', label: 'Text' },
+        '--theme-accent':  { section: 'Global Theme', label: 'Accent' },
+        '--theme-border':  { section: 'Global Theme', label: 'Border' },
+        '--theme-header-bg': { section: 'Shell Zones', label: 'Header Background' },
+        '--theme-footer-bg': { section: 'Shell Zones', label: 'Footer Background' },
+    };
+
+    let panel     = null;
+    let trigger   = null;
+    let initDone  = false;
+    // Holds live values: { sidebar_enabled: bool, '--css-var': value, ... }
+    let liveState = {};
+
+    // ── DOM init ───────────────────────────────────────────────
     function initElements() {
         if (initDone) return;
         initDone = true;
-
-        panel = document.getElementById('agentshell-config-panel');
+        panel   = document.getElementById('agentshell-config-panel');
         trigger = document.getElementById('agentshell-config-trigger');
-
-        if (trigger) {
-            trigger.addEventListener('click', togglePanel);
-        }
+        if (trigger) trigger.addEventListener('click', togglePanel);
     }
 
-    // Load current config from REST API
-    async function loadConfig() {
-        try {
-            const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/config', {
-                headers: {
-                    'X-WP-Nonce': AgentShellConfig.nonce
-                }
-            });
-            if (!resp.ok) throw new Error('Failed to load config: ' + resp.status);
-            config = await resp.json();
-            renderPanel();
-        } catch (e) {
-            console.error('AgentShell: Failed to load config', e);
-        }
+    // ── Read current value of a CSS custom property from :root ──
+    function readCssVar(name) {
+        return getComputedStyle(document.documentElement)
+            .getPropertyValue(name)
+            .trim() || DEFAULTS[name];
     }
 
-    // Save config to REST API
-    async function saveConfig(newConfig) {
-        try {
-            const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/config', {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-WP-Nonce': AgentShellConfig.nonce
-                },
-                body: JSON.stringify(newConfig)
-            });
-            if (!resp.ok) throw new Error('Save failed: ' + resp.status);
-            config = await resp.json();
-            location.reload();
-        } catch (e) {
-            console.error('AgentShell: Failed to save config', e);
-            alert('Failed to save config. Please try again.');
-        }
+    // ── Write a CSS custom property live to :root ──
+    function writeCssVar(name, value) {
+        document.documentElement.style.setProperty(name, value);
     }
 
-    // Toggle panel open/closed
+    // ── Toggle panel ────────────────────────────────────────────
     function togglePanel() {
         if (!panel) return;
-        const isOpen = panel.classList.toggle('is-open');
-        document.body.classList.toggle('config-panel-open', isOpen);
+        panel.classList.toggle('is-open');
+        document.body.classList.toggle('config-panel-open', panel.classList.contains('is-open'));
     }
 
-    // Infer form field type from value
-    function inferFieldType(key, value) {
-        if (typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)) {
-            return 'color';
-        }
-        if (typeof value === 'string' && /^\d+(\.\d+)?(px|em|rem|%)$/.test(value)) {
-            return 'text';
-        }
-        return 'text';
+    // ── Close panel ─────────────────────────────────────────────
+    function closePanel() {
+        if (!panel) return;
+        panel.classList.remove('is-open');
+        document.body.classList.remove('config-panel-open');
     }
 
-    // Render the configurator panel form
-    function renderPanel() {
-        if (!config || !panel) return;
+    // ── Sync body class with sidebar state ──
+    function syncSidebarBody(enabled) {
+        document.body.classList.toggle('sidebar-enabled', !!enabled);
+    }
 
-        const sections = [
-            {
-                title: 'Layout',
-                fields: [
-                    {
-                        path: ['sidebar_enabled'],
-                        label: 'Enable Sidebar',
-                        type: 'toggle',
-                        getValue: () => !!config.sidebar_enabled,
-                        setValue: (v) => { config.sidebar_enabled = v; }
-                    }
-                ]
-            },
-            {
-                title: 'Logo',
-                fields: [
-                    { path: ['design', 'logo', 'url'], label: 'Logo URL' },
-                    { path: ['design', 'logo', 'width'], label: 'Width' },
-                    { path: ['design', 'logo', 'height'], label: 'Height' },
-                ]
-            },
-            {
-                title: 'Colors',
-                fields: Object.entries(config.design?.colors || {}).map(([name, value]) => ({
-                    path: ['design', 'colors', name],
-                    label: name.charAt(0).toUpperCase() + name.slice(1),
-                    type: 'color'
-                }))
-            },
-            {
-                title: 'Typography',
-                fields: [
-                    { path: ['design', 'typography', 'fontFamily'], label: 'Font Family' },
-                    { path: ['design', 'typography', 'baseSize'], label: 'Base Size' },
-                ]
+    // ── Build the field value map from CSS + REST API state ─────
+    function buildState(config) {
+        const state = { sidebar_enabled: !!config.sidebar_enabled };
+        Object.keys(DEFAULTS).forEach(key => {
+            if (key !== 'sidebar_enabled') {
+                state[key] = readCssVar(key);
             }
-        ];
+        });
+        return state;
+    }
+
+    // ── Render panel HTML ────────────────────────────────────────
+    function renderPanel() {
+        if (!panel) return;
+
+        // Group fields by section
+        const sections = {};
+        Object.keys(META).forEach(key => {
+            const sec = META[key].section;
+            if (!sections[sec]) sections[sec] = [];
+            sections[sec].push({ key, label: META[key].label });
+        });
 
         let html = `
             <div class="panel-header">
@@ -122,77 +110,145 @@
             </div>
         `;
 
-        sections.forEach(sec => {
-            html += `<div class="panel-section"><h3>${sec.title}</h3>`;
-            sec.fields.forEach(field => {
-                const value = field.getValue
-                    ? field.getValue()
-                    : field.path.reduce((o, k) => (o || {})[k], config);
+        // ── Layout section ──
+        html += `<div class="panel-section">`;
+        html += `<h3>Layout</h3>`;
+        html += `
+            <div class="toggle-row">
+                <label>Enable Sidebar</label>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="f-sidebar" ${liveState.sidebar_enabled ? 'checked' : ''}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <p class="read-only-info">Grid Limits: Max-Width 1280px | Sidebar 320px</p>
+        `;
+        html += `</div>`;
 
-                if (field.type === 'toggle') {
-                    const checked = value ? 'checked' : '';
+        // ── Grouped sections ──
+        Object.keys(sections).forEach(secTitle => {
+            html += `<div class="panel-section"><h3>${secTitle}</h3>`;
+            sections[secTitle].forEach(({ key, label }) => {
+                const val = liveState[key] || DEFAULTS[key];
+                const isColor = val.match?.(/^#[0-9a-f]{6}$/i) || false;
+                if (isColor) {
                     html += `
-                        <div class="toggle-row">
-                            <label>${field.label}</label>
-                            <label class="toggle-switch">
-                                <input type="checkbox" data-path="${field.path.join('.')}" ${checked}>
-                                <span class="toggle-slider"></span>
-                            </label>
+                        <div class="field-row">
+                            <label for="f-${cssVarToId(key)}">${label}</label>
+                            <div class="color-field">
+                                <input type="color" id="f-${cssVarToId(key)}" data-var="${key}" value="${val}">
+                                <input type="text" data-var="${key}" value="${val}" class="color-hex" maxlength="7" placeholder="#000000">
+                            </div>
                         </div>`;
-                } else if (field.type === 'color') {
-                    html += `<label>${field.label}</label>`;
-                    html += `<input type="color" data-path="${field.path.join('.')}" value="${value || '#000000'}">`;
                 } else {
-                    html += `<label>${field.label}</label>`;
-                    html += `<input type="text" data-path="${field.path.join('.')}" value="${value || ''}">`;
+                    html += `
+                        <div class="field-row">
+                            <label for="f-${cssVarToId(key)}">${label}</label>
+                            <input type="text" id="f-${cssVarToId(key)}" data-var="${key}" value="${val}">
+                        </div>`;
                 }
             });
-            html += '</div>';
+            html += `</div>`;
         });
 
-        html += `<div class="panel-section"><button class="panel-save">Save & Reload</button></div>`;
+        // ── Save section ──
+        html += `<div class="panel-section">`;
+        html += `<button class="panel-save" id="agentshell-save">Save &amp; Reload</button>`;
+        html += `</div>`;
 
         panel.innerHTML = html;
 
-        // Bind close button
-        const closeBtn = panel.querySelector('.panel-close');
-        if (closeBtn) {
-            closeBtn.addEventListener('click', togglePanel);
-        }
+        // ── Wire events ────────────────────────────────────────
+        panel.querySelector('.panel-close')?.addEventListener('click', closePanel);
 
-        // Bind save button
-        const saveBtn = panel.querySelector('.panel-save');
-        if (saveBtn) {
-            saveBtn.addEventListener('click', () => {
-                panel.querySelectorAll('input[type="text"], input[type="url"], input[type="color"], input[type="checkbox"]').forEach(el => {
-                    const path = el.dataset.path.split('.');
-                    if (el.type === 'checkbox') {
-                        setInConfig(path, el.checked);
-                    } else {
-                        setInConfig(path, el.value);
-                    }
-                });
-                saveConfig(config);
-            });
-        }
-    }
-
-    // Helper: set nested config value by path array
-    function setInConfig(path, value) {
-        let o = config;
-        for (let i = 0; i < path.length - 1; i++) {
-            if (!o[path[i]]) o[path[i]] = {};
-            o = o[path[i]];
-        }
-        o[path[path.length - 1]] = value;
-    }
-
-    // Initialize when DOM is ready
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function() {
-            initElements();
-            loadConfig();
+        // Sidebar toggle
+        panel.querySelector('#f-sidebar')?.addEventListener('change', e => {
+            liveState.sidebar_enabled = e.target.checked;
+            syncSidebarBody(e.target.checked);
         });
+
+        // All CSS variable inputs — live preview
+        panel.querySelectorAll('[data-var]').forEach(el => {
+            el.addEventListener('input', e => {
+                const key = e.target.dataset.var;
+                let val = e.target.value;
+
+                // Sync the companion field if it exists (color picker + hex text)
+                const id = cssVarToId(key);
+                const colorPicker = panel.querySelector(`input[type="color"][data-var="${key}"]`);
+                const hexInput    = panel.querySelector(`.color-hex[data-var="${key}"]`);
+
+                if (e.target.type === 'color') {
+                    // Color picker changed — sync hex text
+                    val = e.target.value;
+                    if (hexInput) hexInput.value = val;
+                } else if (e.target.classList.contains('color-hex')) {
+                    // Hex text changed — validate and sync picker
+                    val = val.startsWith('#') ? val : '#' + val;
+                    if (/^#[0-9a-fA-F]{6}$/.test(val) && colorPicker) {
+                        colorPicker.value = val;
+                    }
+                }
+
+                liveState[key] = val;
+                writeCssVar(key, val);
+            });
+        });
+
+        // Save button
+        panel.querySelector('#agentshell-save')?.addEventListener('click', saveConfig);
+    }
+
+    // ── Convert CSS var name to safe HTML id ──
+    function cssVarToId(name) {
+        return name.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+/, '');
+    }
+
+    // ── Load config from REST API ──────────────────────────────
+    async function loadConfig() {
+        try {
+            const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/config', {
+                headers: { 'X-WP-Nonce': AgentShellConfig.nonce }
+            });
+            if (!resp.ok) throw new Error('Failed to load config: ' + resp.status);
+            const config = await resp.json();
+            liveState = buildState(config);
+            renderPanel();
+        } catch (e) {
+            console.error('AgentShell: Failed to load config', e);
+        }
+    }
+
+    // ── Save config to REST API ────────────────────────────────
+    async function saveConfig() {
+        // Gather current live state (sidebar_enabled + all CSS vars)
+        const payload = { sidebar_enabled: !!liveState.sidebar_enabled };
+        Object.keys(DEFAULTS).forEach(key => {
+            if (key !== 'sidebar_enabled') {
+                payload[key] = liveState[key] || DEFAULTS[key];
+            }
+        });
+
+        try {
+            const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/config', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-WP-Nonce': AgentShellConfig.nonce
+                },
+                body: JSON.stringify(payload)
+            });
+            if (!resp.ok) throw new Error('Save failed: ' + resp.status);
+            location.reload();
+        } catch (e) {
+            console.error('AgentShell: Failed to save config', e);
+            alert('Failed to save. Check console for details.');
+        }
+    }
+
+    // ── Bootstrap ───────────────────────────────────────────────
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => { initElements(); loadConfig(); });
     } else {
         initElements();
         loadConfig();

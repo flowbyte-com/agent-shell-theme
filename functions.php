@@ -170,13 +170,101 @@ add_filter( 'rest_authentication_errors', function( $errors ) {
 }, 1 );
 
 /**
+ * Flatten nested config to CSS-variable key space for configurator form.
+ * e.g. { design: { colors: { bg: "#fff" } } } → { "--theme-bg": "#fff" }
+ *
+ * @param array $config
+ * @return array
+ */
+function agentshell_flatten_config( array $config ) {
+    $flat = array( 'sidebar_enabled' => ! empty( $config['sidebar_enabled'] ) );
+
+    $map = array(
+        '--theme-bg'        => array( 'design', 'colors', 'background' ),
+        '--theme-surface'   => array( 'design', 'colors', 'surface' ),
+        '--theme-text'      => array( 'design', 'colors', 'text' ),
+        '--theme-accent'    => array( 'design', 'colors', 'accent' ),
+        '--theme-border'    => array( 'design', 'colors', 'border' ),
+        '--theme-header-bg' => array( 'design', 'colors', 'primary' ),
+        '--theme-footer-bg' => array( 'design', 'colors', 'secondary' ),
+        '--font-base'       => array( 'design', 'typography', 'fontFamily' ),
+        '--font-mono'       => array( 'design', 'typography', 'mono' ),
+        '--spacing-base'    => array( 'design', 'typography', 'baseSize' ),
+        '--radius-base'     => array( 'design', 'layout', 'radius' ),
+    );
+
+    foreach ( $map as $var => $path ) {
+        $val = $config;
+        foreach ( $path as $k ) {
+            $val = is_array( $val ) ? ( $val[ $k ] ?? null ) : null;
+            if ( $val === null ) break;
+        }
+        if ( $val !== null ) {
+            $flat[ $var ] = $val;
+        }
+    }
+
+    return $flat;
+}
+
+/**
+ * Expand flat CSS-variable keys back into nested config structure,
+ * then merge into the existing stored config so no keys are lost.
+ *
+ * @param array $flat   Flat key-value pairs from configurator
+ * @param array $existing Existing stored config to merge into
+ * @return array Merged nested config
+ */
+function agentshell_unflatten_config( array $flat, array $existing ) {
+    $css_to_path = array(
+        '--theme-bg'        => array( 'design', 'colors', 'background' ),
+        '--theme-surface'   => array( 'design', 'colors', 'surface' ),
+        '--theme-text'      => array( 'design', 'colors', 'text' ),
+        '--theme-accent'    => array( 'design', 'colors', 'accent' ),
+        '--theme-border'    => array( 'design', 'colors', 'border' ),
+        '--theme-header-bg' => array( 'design', 'colors', 'primary' ),
+        '--theme-footer-bg' => array( 'design', 'colors', 'secondary' ),
+        '--font-base'       => array( 'design', 'typography', 'fontFamily' ),
+        '--font-mono'       => array( 'design', 'typography', 'mono' ),
+        '--spacing-base'    => array( 'design', 'typography', 'baseSize' ),
+        '--radius-base'     => array( 'design', 'layout', 'radius' ),
+    );
+
+    // Deep-merge $flat into a copy of $existing
+    $merged = $existing;
+    foreach ( $flat as $key => $value ) {
+        if ( $key === 'sidebar_enabled' ) {
+            $merged['sidebar_enabled'] = (bool) $value;
+            continue;
+        }
+        if ( isset( $css_to_path[ $key ] ) ) {
+            $path = $css_to_path[ $key ];
+            $ref  = &$merged;
+            foreach ( $path as $i => $k ) {
+                if ( $i === count( $path ) - 1 ) {
+                    $ref[ $k ] = is_string( $value ) ? $value : $ref[ $k ];
+                } else {
+                    if ( ! isset( $ref[ $k ] ) || ! is_array( $ref[ $k ] ) ) {
+                        $ref[ $k ] = array();
+                    }
+                    $ref = &$ref[ $k ];
+                }
+            }
+            unset( $ref );
+        }
+    }
+
+    return $merged;
+}
+
+/**
  * REST API: GET/PUT /wp/v2/agentshell/config
  */
 add_action( 'rest_api_init', function() {
     register_rest_route( 'wp/v2', '/agentshell/config', array(
         'methods'  => 'GET',
         'callback' => function() {
-            return agentshell_get_config();
+            return agentshell_flatten_config( agentshell_get_config() );
         },
         'permission_callback' => '__return_true',
     ) );
@@ -184,12 +272,16 @@ add_action( 'rest_api_init', function() {
     register_rest_route( 'wp/v2', '/agentshell/config', array(
         'methods'  => 'PUT',
         'callback' => function( WP_REST_Request $request ) {
-            $config = $request->get_json_params();
-            if ( ! is_array( $config ) ) {
+            $flat = $request->get_json_params();
+            if ( ! is_array( $flat ) ) {
                 return new WP_Error( 'invalid_config', 'Config must be a valid JSON object', array( 'status' => 400 ) );
             }
-            $updated = agentshell_update_config( $config );
-            return $updated ? agentshell_get_config() : new WP_Error( 'update_failed', 'Failed to update config', array( 'status' => 500 ) );
+            $existing = agentshell_get_config();
+            $merged   = agentshell_unflatten_config( $flat, $existing );
+            $updated  = agentshell_update_config( $merged );
+            return $updated
+                ? agentshell_flatten_config( $merged )
+                : new WP_Error( 'update_failed', 'Failed to update config', array( 'status' => 500 ) );
         },
         'permission_callback' => '__return_true',
     ) );

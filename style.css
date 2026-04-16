@@ -16,7 +16,11 @@ Text Domain: agentshell
 
 /* ── SECTION 1: PERSONA + CONTAINER VARIABLES ── */
 :root {
-    /* Persona Fallbacks (Overwritten by agent payloads) */
+    /* Typography */
+    --font-base: system-ui, -apple-system, sans-serif;
+    --font-mono: monospace;
+
+    /* Persona (overwritten by configurator / agent payloads) */
     --theme-bg: #ffffff;
     --theme-surface: #f4f4f5;
     --theme-text: #18181b;
@@ -28,10 +32,11 @@ Text Domain: agentshell
     --theme-footer-bg: #16213e;
     --theme-footer-text: #ffffff;
 
+    /* Geometry */
     --spacing-base: 1rem;
     --radius-base: 8px;
 
-    /* Container Bounds (Read-only for agents) */
+    /* Container Bounds (read-only for agents) */
     --content-max-width: 1280px;
     --sidebar-width: 320px;
     --container-padding: 2rem;
@@ -45,7 +50,7 @@ Text Domain: agentshell
 body {
     margin: 0;
     padding: 0;
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: var(--font-base);
     font-size: 16px;
     line-height: 1.6;
     
