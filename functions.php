@@ -28,6 +28,10 @@ add_action( 'after_switch_theme', 'agentshell_theme_activation' );
  * Enqueue theme assets
  */
 function agentshell_enqueue_assets() {
+    // Only load configurator assets for logged-in users
+    if ( ! is_user_logged_in() ) {
+        return;
+    }
     // Main theme stylesheet — explicit enqueue with filemtime cache busting
     wp_enqueue_style(
         'agentshell-style',
