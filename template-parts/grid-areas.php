@@ -40,7 +40,7 @@ function agentshell_get_layout_css( array $zones, array $layout, array $breakpoi
     }
 
     // Conditional sidebar column — body.sidebar-enabled drives the 2-column layout
-    $css .= "  #agentshell-root.sidebar-enabled {\n";
+    $css .= "  .sidebar-enabled #agentshell-root {\n";
     $css .= "    grid-template-columns: 1fr 320px;\n";
     $css .= "  }\n";
 
