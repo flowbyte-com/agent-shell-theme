@@ -3,11 +3,56 @@
  * Footer template
  */
 
-// custom_js — trusted author context, injected before body close
 $config = agentshell_get_config();
+
+// custom_js — trusted author context, injected before body close
 if ( ! empty( $config['custom_js'] ) ) {
     echo "<script id='agentshell-custom-js'>\n" . wp_strip_all_tags( $config['custom_js'] ) . "\n</script>\n";
 }
+
+// Widget init — waits for DOM + MutationObserver for dynamically injected widgets
+if ( function_exists( 'agentshell_get_widget_assets' ) ) :
+    $assets = agentshell_get_widget_assets();
+    if ( ! empty( $assets['init_js'] ) ) : ?>
+<script id='agentshell-widget-init'>
+(function() {
+    var WIDGETS = {};
+    try { <?php echo $assets['init_js']; ?> } catch(e) { console.error('AgentShell widget init error:', e); }
+
+    function initWidget(el) {
+        var id = el.dataset.widgetId || el.dataset.widget;
+        if (id && WIDGETS[id] && typeof WIDGETS[id].init === 'function') {
+            WIDGETS[id].init(el);
+        }
+    }
+
+    function scanWidgets() {
+        document.querySelectorAll('[data-widget]').forEach(initWidget);
+    }
+
+    // Immediate scan for server-rendered widgets
+    scanWidgets();
+
+    // MutationObserver for dynamically injected widgets (e.g., via json_block)
+    var observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(m) {
+            m.addedNodes.forEach(function(node) {
+                if (node.nodeType === 1) {
+                    if (node.matches && node.matches('[data-widget]')) {
+                        initWidget(node);
+                    }
+                    if (node.querySelectorAll) {
+                        node.querySelectorAll('[data-widget]').forEach(initWidget);
+                    }
+                }
+            });
+        });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+})();
+</script>
+<?php endif;
+endif;
 ?>
 
     <?php wp_footer(); ?>

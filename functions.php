@@ -208,6 +208,93 @@ function agentshell_get_zones() {
 }
 
 /**
+ * Merge stable widgets (from /widgets/ files) with agent-defined widgets (from wp_options).
+ * JSON-defined widgets override file-defined widgets with the same ID.
+ *
+ * @return array Merged widget registry keyed by widget ID
+ */
+function agentshell_get_widget_registry() {
+    $registry = array();
+
+    // 1. Load stable widgets from /widgets/ directory
+    $stable_index = get_template_directory() . '/widgets/.index.json';
+    if ( file_exists( $stable_index ) ) {
+        $index = json_decode( file_get_contents( $stable_index ), true );
+        foreach ( $index['stable'] ?? array() as $entry ) {
+            if ( empty( $entry['id'] ) || empty( $entry['file'] ) ) {
+                continue;
+            }
+            $widget_file = get_template_directory() . '/widgets/' . $entry['file'];
+            if ( file_exists( $widget_file ) ) {
+                $widget = include $widget_file;
+                if ( is_array( $widget ) && ! empty( $widget['id'] ) ) {
+                    $registry[ $widget['id'] ] = $widget;
+                }
+            }
+        }
+    }
+
+    // 2. Merge agent-defined widgets from config (these override stable with same ID)
+    $config = agentshell_get_config();
+    foreach ( $config['widgets'] ?? array() as $widget ) {
+        if ( empty( $widget['id'] ) ) {
+            continue;
+        }
+        $registry[ $widget['id'] ] = $widget;
+    }
+
+    return $registry;
+}
+
+/**
+ * Render a single widget by ID.
+ * Returns empty string if widget not found.
+ *
+ * @param string $widget_id
+ * @return string HTML
+ */
+function agentshell_render_widget( $widget_id ) {
+    $registry = agentshell_get_widget_registry();
+    if ( ! isset( $registry[ $widget_id ] ) ) {
+        return '';
+    }
+    $widget = $registry[ $widget_id ];
+
+    // Render template (optional HTML skeleton)
+    $html = '';
+    if ( ! empty( $widget['template'] ) ) {
+        $html = wp_kses_post( $widget['template'] );
+    } else {
+        $html = "<div data-widget-id=\"{$widget_id}\"></div>";
+    }
+
+    return $html;
+}
+
+/**
+ * Get all widget init scripts and scoped CSS for footer injection.
+ * Returns array with 'init_js' and 'css' keys.
+ *
+ * @return array
+ */
+function agentshell_get_widget_assets() {
+    $registry = agentshell_get_widget_registry();
+    $init_js  = '';
+    $css      = '';
+
+    foreach ( $registry as $widget ) {
+        if ( ! empty( $widget['init_js'] ) ) {
+            $init_js .= "\n/* Widget: {$widget['id']} */\n" . $widget['init_js'];
+        }
+        if ( ! empty( $widget['css'] ) ) {
+            $css .= "\n/* Widget: {$widget['id']} */\n" . $widget['css'];
+        }
+    }
+
+    return array( 'init_js' => $init_js, 'css' => $css );
+}
+
+/**
  * Authenticate REST requests via X-AgentShell-Token header.
  *
  * Supports two methods:

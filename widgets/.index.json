@@ -1,0 +1,12 @@
+{
+  "stable": [
+    {
+      "id": "hello-world",
+      "name": "Hello World",
+      "description": "Simple greeting widget for testing widget registry",
+      "source": "file",
+      "file": "hello-world.php",
+      "version": "1.0.0"
+    }
+  ]
+}
