@@ -188,6 +188,26 @@ function agentshell_update_config( array $config ) {
 }
 
 /**
+ * Get the declared zones from config.
+ * Falls back to default zones for existing installs that predate the zone registry.
+ *
+ * @return array
+ */
+function agentshell_get_zones() {
+    $config = agentshell_get_config();
+    $zones  = $config['zones'] ?? array();
+    if ( empty( $zones ) ) {
+        return array(
+            array( 'id' => 'header',  'label' => 'Header',  'source' => 'wp_loop' ),
+            array( 'id' => 'main',    'label' => 'Main',    'source' => 'wp_loop' ),
+            array( 'id' => 'sidebar', 'label' => 'Sidebar', 'source' => 'wp_widget_area', 'widget_area_id' => 'primary-sidebar' ),
+            array( 'id' => 'footer',  'label' => 'Footer',  'source' => 'wp_loop' ),
+        );
+    }
+    return $zones;
+}
+
+/**
  * Authenticate REST requests via X-AgentShell-Token header.
  *
  * Supports two methods:

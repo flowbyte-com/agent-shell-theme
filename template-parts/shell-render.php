@@ -138,6 +138,17 @@ function agentshell_render_zone( array $mapping ) {
              */
             return wp_kses_post( $mapping['html'] ?? '' );
 
+        case 'widget':
+            /**
+             * Widget Registry takeover — if a widget is registered for this zone,
+             * it takes priority over standard WP content rendering.
+             */
+            $widget_id = $mapping['widget_id'] ?? '';
+            if ( $widget_id && function_exists( 'agentshell_render_widget' ) ) {
+                return agentshell_render_widget( $widget_id );
+            }
+            return '';
+
         default:
             return '';
     }

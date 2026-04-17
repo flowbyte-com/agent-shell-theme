@@ -1,5 +1,11 @@
 {
   "sidebar_enabled": false,
+  "zones": [
+    { "id": "header",  "label": "Header",  "source": "wp_loop" },
+    { "id": "main",    "label": "Main",    "source": "wp_loop" },
+    { "id": "sidebar","label": "Sidebar", "source": "wp_widget_area", "widget_area_id": "primary-sidebar" },
+    { "id": "footer",  "label": "Footer",  "source": "wp_loop" }
+  ],
   "design": {
     "colors": {
       "background": "#ffffff",
