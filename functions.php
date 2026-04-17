@@ -96,6 +96,23 @@ function agentshell_inject_saved_styles() {
     z-index: auto !important;
 }
 </style>\n";
+
+    // Layout grid CSS from config (breakpoints + grid areas)
+    if ( function_exists( 'agentshell_get_layout_config' ) ) {
+        $layout_cfg = agentshell_get_layout_config();
+        // grid-areas.php defines agentshell_get_layout_css()
+        locate_template( 'template-parts/grid-areas.php', true, false );
+        if ( function_exists( 'agentshell_get_layout_css' ) ) {
+            $zones = array( 'header', 'main', 'sidebar', 'footer' );
+            echo agentshell_get_layout_css(
+                $zones,
+                $layout_cfg['grid_areas'],
+                $layout_cfg['breakpoints'],
+                $layout_cfg['grid_gap'],
+                $layout_cfg['grid_padding']
+            );
+        }
+    }
 }
 // Priority 100 ensures this prints AFTER style.css
 add_action( 'wp_head', 'agentshell_inject_saved_styles', 100 );
@@ -292,6 +309,47 @@ function agentshell_get_widget_assets() {
     }
 
     return array( 'init_js' => $init_js, 'css' => $css );
+}
+
+/**
+ * Get layout configuration (breakpoints, grid areas, gap, padding).
+ * Deep-merges user config over hard defaults so partial configs work.
+ *
+ * @return array
+ */
+function agentshell_get_layout_config() {
+    $config = agentshell_get_config();
+    $layout = $config['layout'] ?? array();
+
+    $defaults = array(
+        'breakpoints' => array(
+            'mobile'  => '0px',
+            'tablet'  => '768px',
+            'desktop' => '1024px',
+        ),
+        'grid_areas' => array(
+            'mobile'  => array( 'header', 'main', 'footer' ),
+            'tablet'  => array( 'header header', 'main sidebar', 'footer footer' ),
+            'desktop' => array( 'header header', 'main sidebar', 'footer footer' ),
+        ),
+        'grid_gap'     => '1rem',
+        'grid_padding' => '2rem',
+    );
+
+    // Deep-merge user config over defaults
+    foreach ( $defaults as $key => $default ) {
+        if ( ! isset( $layout[ $key ] ) ) {
+            $layout[ $key ] = $default;
+        } elseif ( is_array( $default ) ) {
+            foreach ( $default as $sub_key => $sub_value ) {
+                if ( ! isset( $layout[ $key ][ $sub_key ] ) ) {
+                    $layout[ $key ][ $sub_key ] = $sub_value;
+                }
+            }
+        }
+    }
+
+    return $layout;
 }
 
 /**

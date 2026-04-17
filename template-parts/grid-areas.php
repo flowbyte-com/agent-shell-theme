@@ -76,12 +76,14 @@ function agentshell_generate_grid_css( array $layout, $query, $zone_prefix = 'zo
 /**
  * Generate all breakpoint CSS from layout config
  *
- * @param array $zones       All zone names, e.g. ["header", "main", "sidebar", "footer"]
- * @param array $layout      Per-breakpoint row arrays, e.g. { mobile: [...], desktop: [...] }
- * @param array $breakpoints e.g. { mobile: "0px", tablet: "768px", desktop: "1024px" }
+ * @param array  $zones       All zone names, e.g. ["header", "main", "sidebar", "footer"]
+ * @param array  $layout      Per-breakpoint row arrays, e.g. { mobile: [...], desktop: [...] }
+ * @param array  $breakpoints e.g. { mobile: "0px", tablet: "768px", desktop: "1024px" }
+ * @param string $gap          Grid gap, e.g. "1rem"
+ * @param string $padding      Container padding, e.g. "2rem"
  * @return string Complete CSS string
  */
-function agentshell_get_layout_css( array $zones, array $layout, array $breakpoints ) {
+function agentshell_get_layout_css( array $zones, array $layout, array $breakpoints, $gap = '1rem', $padding = '2rem' ) {
     $css = "<style id='agentshell-layout-css'>\n";
 
     // Normalize: each breakpoint value must be an array of row strings.
@@ -98,11 +100,11 @@ function agentshell_get_layout_css( array $zones, array $layout, array $breakpoi
     $css .= "  .shell-wrapper {\n";
     $css .= "    display: grid;\n";
     $css .= "    place-content: center;\n";
-    $css .= "    padding: 0 1rem;\n";
+    $css .= "    padding: 0 " . esc_attr( $padding ) . ";\n";
     $css .= "  }\n";
     $css .= "  .shell-grid {\n";
     $css .= "    display: grid;\n";
-    $css .= "    gap: 1rem;\n";
+    $css .= "    gap: " . esc_attr( $gap ) . ";\n";
     $css .= "    max-width: 1200px;\n";
     $css .= "    margin: 0 auto;\n";
     $css .= "    width: 100%;\n";
