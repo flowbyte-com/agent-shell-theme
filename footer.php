@@ -6,8 +6,9 @@
 $config = agentshell_get_config();
 
 // custom_js — trusted author context, injected before body close
+// Do NOT use wp_strip_all_tags — it removes JS code entirely.
 if ( ! empty( $config['custom_js'] ) ) {
-    echo "<script id='agentshell-custom-js'>\n" . wp_strip_all_tags( $config['custom_js'] ) . "\n</script>\n";
+    echo "<script id='agentshell-custom-js'>\n" . $config['custom_js'] . "\n</script>\n";
 }
 
 // Widget init — waits for DOM + MutationObserver for dynamically injected widgets
@@ -16,7 +17,8 @@ if ( function_exists( 'agentshell_get_widget_assets' ) ) :
     if ( ! empty( $assets['init_js'] ) ) : ?>
 <script id='agentshell-widget-init'>
 (function() {
-    var WIDGETS = {};
+    // WIDGETS is a local alias for window.AgentshellWidgets for faster lookups
+    var WIDGETS = window.AgentshellWidgets = (window.AgentshellWidgets || {});
     try { <?php echo $assets['init_js']; ?> } catch(e) { console.error('AgentShell widget init error:', e); }
 
     function initWidget(el) {

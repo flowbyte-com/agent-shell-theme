@@ -28,9 +28,11 @@ function agentshell_parse_grid_areas( array $areas ) {
 function agentshell_generate_grid_css( array $layout, $query, $zone_prefix = 'zone--' ) {
     // Determine column count from the first non-empty row.
     // All rows are expected to have the same number of cells.
+    // Use '/ +/' (single spaces) so "header header" correctly yields 2 cells,
+    // not '/\s+/' which collapses consecutive whitespace into one cell.
     $cols = 1;
     foreach ( $layout as $row ) {
-        $cells = array_filter( preg_split( '/\s+/', trim( $row ) ) );
+        $cells = array_filter( preg_split( '/ +/', trim( $row ) ) );
         if ( count( $cells ) > 1 ) {
             $cols = count( $cells );
             break;
@@ -43,11 +45,12 @@ function agentshell_generate_grid_css( array $layout, $query, $zone_prefix = 'zo
     $css .= "  .shell-grid {\n";
     $css .= "    grid-template-areas:\n";
     foreach ( $layout as $row ) {
-        $cells = preg_split( '/\s+/', trim( $row ) );
+        // Split on single spaces to preserve repeated names (e.g. "header header" = 2 cells)
+        $cells = preg_split( '/ +/', trim( $row ) );
         foreach ( $cells as $cell ) {
             $css .= '      "' . esc_attr( $cell ) . '" ';
         }
-        $css .= "\n";
+        $css .= ";\n";
     }
     $css .= "    grid-template-rows: auto;\n";
     if ( $cols > 1 ) {
@@ -58,7 +61,7 @@ function agentshell_generate_grid_css( array $layout, $query, $zone_prefix = 'zo
     // Zone class rules — only for zones that appear in this breakpoint
     $seen_zones = array();
     foreach ( $layout as $row ) {
-        $cells = preg_split( '/\s+/', trim( $row ) );
+        $cells = preg_split( '/ +/', trim( $row ) );
         foreach ( $cells as $cell ) {
             if ( ! isset( $seen_zones[ $cell ] ) ) {
                 $seen_zones[ $cell ] = true;

@@ -130,13 +130,19 @@ function agentshell_render_zone( array $mapping ) {
              * json_block HTML sanitized with wp_kses_post().
              *
              * IMPORTANT: wp_kses_post() strips inline event handlers
-             * (onclick, onerror, onload), <script> tags, and
-             * inline style attributes. Agents must use class-based
-             * CSS and event delegation instead of inline JS.
+             * (onclick, onerror, onload) and <script> tags.
+             * <style> tags are also stripped here to prevent agents
+             * from injecting CSS that could override structural rules.
+             * Agents must use class-based CSS and event delegation.
              *
              * @see https://developer.wordpress.org/reference/functions/wp_kses_post/
              */
-            return wp_kses_post( $mapping['html'] ?? '' );
+            $html = $mapping['html'] ?? '';
+            // Strip <style> tags — agents must add CSS via custom_css in config
+            $html = preg_replace( '/<style\b[^>]*>.*?<\/style>/is', '', $html );
+            // Also strip style= attributes to prevent inline style injection
+            $html = preg_replace( '/\s+style="[^"]*"/', '', $html );
+            return wp_kses_post( $html );
 
         case 'widget':
             /**

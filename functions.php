@@ -80,8 +80,10 @@ function agentshell_inject_saved_styles() {
     echo "}\n</style>\n";
 
     // custom_css — trusted author context
+    // Strip <style> tags but keep the CSS rules inside
     if ( ! empty( $config['custom_css'] ) ) {
-        echo "<style id='agentshell-custom-css'>\n" . wp_strip_all_tags( $config['custom_css'] ) . "\n</style>\n";
+        $css = preg_replace( '/<\/?style\b[^>]*>/i', '', $config['custom_css'] );
+        echo "<style id='agentshell-custom-css'>\n" . trim( $css ) . "\n</style>\n";
     }
 
     // Structural prohibition: prevent agents from breaking the grid
