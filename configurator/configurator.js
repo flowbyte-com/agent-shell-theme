@@ -37,7 +37,7 @@
     let panel     = null;
     let trigger   = null;
     let initDone  = false;
-    // Holds live values: { sidebar_enabled: bool, '--css-var': value, ... }
+    // Holds live values: { sidebar_enabled: bool, '--css-var': value, custom_css, custom_js, zones, ... }
     let liveState = {};
 
     // ── DOM init ───────────────────────────────────────────────
@@ -89,6 +89,10 @@
                 state[key] = config[key] || readCssVar(key) || DEFAULTS[key];
             }
         });
+        // Include custom_css and custom_js from config
+        state.custom_css = config.custom_css || '';
+        state.custom_js  = config.custom_js  || '';
+        state.zones      = config.zones      || [];
         return state;
     }
 
@@ -152,6 +156,33 @@
             html += `</div>`;
         });
 
+        // ── Custom Assets section ──
+        html += `<div class="panel-section"><h3>Custom Assets</h3>`;
+        html += `
+            <div class="field-row" style="flex-direction: column; align-items: stretch;">
+                <label for="f-custom_css">Custom CSS</label>
+                <textarea id="f-custom_css" rows="5" placeholder="/* agents can add any CSS here */">${liveState.custom_css || ''}</textarea>
+            </div>
+            <div class="field-row" style="flex-direction: column; align-items: stretch;">
+                <label for="f-custom_js">Custom JavaScript</label>
+                <textarea id="f-custom_js" rows="5" placeholder="/* window.MyWidget = { init(el) { ... } }; */">${liveState.custom_js || ''}</textarea>
+            </div>
+        `;
+        html += `</div>`;
+
+        // ── Zones section (read-only) ──
+        if (liveState.zones && liveState.zones.length) {
+            html += `<div class="panel-section"><h3>Zones</h3>`;
+            html += `<ul style="list-style:none;padding:0;margin:0;">`;
+            liveState.zones.forEach(function(z) {
+                html += `<li style="padding:0.25rem 0;font-size:0.85em;color:var(--theme-text);opacity:0.7;">`;
+                html += `<strong>${z.id}</strong> — ${z.source}`;
+                if (z.widget_area_id) html += ` (${z.widget_area_id})`;
+                html += `</li>`;
+            });
+            html += `</ul></div>`;
+        }
+
         // ── Save section ──
         html += `<div class="panel-section">`;
         html += `<button class="panel-save" id="agentshell-save">Save &amp; Reload</button>`;
@@ -166,6 +197,14 @@
         panel.querySelector('#f-sidebar')?.addEventListener('change', e => {
             liveState.sidebar_enabled = e.target.checked;
             syncSidebarBody(e.target.checked);
+        });
+
+        // Custom CSS and JS textareas — live preview
+        panel.querySelector('#f-custom_css')?.addEventListener('input', e => {
+            liveState.custom_css = e.target.value;
+        });
+        panel.querySelector('#f-custom_js')?.addEventListener('input', e => {
+            liveState.custom_js = e.target.value;
         });
 
         // All CSS variable inputs — live preview
@@ -222,13 +261,16 @@
 
     // ── Save config to REST API ────────────────────────────────
     async function saveConfig() {
-        // Gather current live state (sidebar_enabled + all CSS vars)
+        // Gather current live state (sidebar_enabled + all CSS vars + custom assets)
         const payload = { sidebar_enabled: !!liveState.sidebar_enabled };
         Object.keys(DEFAULTS).forEach(key => {
             if (key !== 'sidebar_enabled') {
                 payload[key] = liveState[key] || DEFAULTS[key];
             }
         });
+        // Custom CSS and JS
+        payload.custom_css = liveState.custom_css || '';
+        payload.custom_js  = liveState.custom_js  || '';
 
         try {
             const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/config', {
