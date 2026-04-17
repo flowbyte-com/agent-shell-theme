@@ -599,10 +599,9 @@ add_action( 'rest_api_init', function() {
             }
             $existing = agentshell_get_config();
             $merged   = agentshell_unflatten_config( $flat, $existing );
-            $updated  = agentshell_update_config( $merged );
-            return $updated
-                ? agentshell_flatten_config( $merged )
-                : new WP_Error( 'update_failed', 'Failed to update config', array( 'status' => 500 ) );
+            // update_option returns false when the value hasn't changed — not an error
+            update_option( 'agentshell_config', $merged );
+            return agentshell_flatten_config( $merged );
         },
         'permission_callback' => '__return_true',
     ) );
