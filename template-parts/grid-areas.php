@@ -28,6 +28,7 @@ function agentshell_get_layout_css( array $zones, array $layout, array $breakpoi
     // Base rules — outside any media query
     $css .= "  #agentshell-root {\n";
     $css .= "    display: grid;\n";
+    $css .= "    grid-template-columns: 1fr;\n";
     $css .= "    gap: " . esc_attr( $gap ) . ";\n";
     $css .= "    max-width: 1200px;\n";
     $css .= "    margin: 0 auto;\n";
