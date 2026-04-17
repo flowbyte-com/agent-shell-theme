@@ -47,8 +47,9 @@ function agentshell_generate_grid_css( array $layout, $query, $zone_prefix = 'zo
     foreach ( $layout as $row ) {
         // Split on single spaces to preserve repeated names (e.g. "header header" = 2 cells)
         $cells = preg_split( '/ +/', trim( $row ) );
+        $css .= '      ';
         foreach ( $cells as $cell ) {
-            $css .= '      "' . esc_attr( $cell ) . '" ';
+            $css .= '"' . esc_attr( $cell ) . '" ';
         }
         $css .= ";\n";
     }
