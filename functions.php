@@ -183,6 +183,9 @@ add_action( 'widgets_init', 'agentshell_widgets_init' );
  * Register nav menus.
  */
 function agentshell_setup() {
+    // Load shell-render.php to make agentshell_render_zone() available to header.php
+    locate_template( 'template-parts/shell-render.php', true, false );
+
     register_nav_menus( array(
         'primary' => esc_html__( 'Primary Navigation', 'agentshell' ),
     ) );
