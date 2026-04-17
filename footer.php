@@ -2,7 +2,14 @@
 /**
  * Footer template
  */
+
+// custom_js — trusted author context, injected before body close
+$config = agentshell_get_config();
+if ( ! empty( $config['custom_js'] ) ) {
+    echo "<script id='agentshell-custom-js'>\n" . wp_strip_all_tags( $config['custom_js'] ) . "\n</script>\n";
+}
 ?>
+
     <?php wp_footer(); ?>
 
     <?php if ( is_user_logged_in() ) : ?>

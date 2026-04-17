@@ -55,30 +55,47 @@ function agentshell_enqueue_assets() {
 add_action( 'wp_enqueue_scripts', 'agentshell_enqueue_assets' );
 
 /**
- * 1. Inject Saved CSS Variables into the <head>
- * This runs after style.css loads, overwriting the defaults with the user's saved choices.
+ * 1. Inject Saved CSS Variables, custom_css, and structural prohibition.
+ * Injects all -- vars from flattened config, custom_css if present,
+ * and a grid-fix rule that prevents agents from breaking layout with
+ * position: fixed/absolute on zone containers.
  */
 function agentshell_inject_saved_styles() {
-    // Get the saved nested config from the DB
     $config = get_option( 'agentshell_config', array() );
 
-    // If the agent built the flatten function, use it to get our flat keys (like --theme-bg)
     if ( function_exists( 'agentshell_flatten_config' ) ) {
-        $flat_keys = agentshell_flatten_config( $config );
+        $flat = agentshell_flatten_config( $config );
     } else {
-        $flat_keys = $config; // Fallback
+        $flat = $config;
     }
 
-    if ( empty( $flat_keys ) ) return;
+    if ( empty( $flat ) ) return;
 
     echo "<style id='agentshell-saved-config'>\n:root {\n";
-    foreach ( $flat_keys as $key => $value ) {
-        // Only print keys that start with '--' to avoid printing 'sidebar_enabled' as CSS
+    foreach ( $flat as $key => $value ) {
         if ( strpos( $key, '--' ) === 0 && ! empty( $value ) ) {
             echo '    ' . esc_attr( $key ) . ': ' . esc_attr( $value ) . ";\n";
         }
     }
     echo "}\n</style>\n";
+
+    // custom_css — trusted author context
+    if ( ! empty( $config['custom_css'] ) ) {
+        echo "<style id='agentshell-custom-css'>\n" . wp_strip_all_tags( $config['custom_css'] ) . "\n</style>\n";
+    }
+
+    // Structural prohibition: prevent agents from breaking the grid
+    // with position: fixed or absolute on zone containers.
+    echo "<style id='agentshell-grid-fix'>
+#zone-header, #zone-main, #zone-sidebar, #zone-footer {
+    position: relative !important;
+    top: auto !important;
+    left: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    z-index: auto !important;
+}
+</style>\n";
 }
 // Priority 100 ensures this prints AFTER style.css
 add_action( 'wp_head', 'agentshell_inject_saved_styles', 100 );
@@ -242,12 +259,23 @@ add_filter( 'rest_authentication_errors', function( $errors ) {
  * Flatten nested config to CSS-variable key space for configurator form.
  * e.g. { design: { colors: { bg: "#fff" } } } → { "--theme-bg": "#fff" }
  *
+ * Wildcard: any key starting with -- is a CSS variable, written directly —
+ * agents can add custom CSS vars without touching path mapping.
+ *
  * @param array $config
  * @return array
  */
 function agentshell_flatten_config( array $config ) {
     $flat = array( 'sidebar_enabled' => ! empty( $config['sidebar_enabled'] ) );
 
+    // Wildcard: any key starting with -- is a CSS variable, write directly
+    array_walk_recursive( $config, function( $value, $key ) use ( &$flat ) {
+        if ( strpos( $key, '--' ) === 0 && is_string( $value ) ) {
+            $flat[ $key ] = $value;
+        }
+    } );
+
+    // Legacy map: still include these so older configs flatten correctly
     $map = array(
         '--theme-bg'        => array( 'design', 'colors', 'background' ),
         '--theme-surface'   => array( 'design', 'colors', 'surface' ),
@@ -280,6 +308,9 @@ function agentshell_flatten_config( array $config ) {
  * Expand flat CSS-variable keys back into nested config structure,
  * then merge into the existing stored config so no keys are lost.
  *
+ * Wildcard: any key starting with -- that's not in the legacy map is
+ * written directly to design.custom_css_vars so agents can add custom vars.
+ *
  * @param array $flat   Flat key-value pairs from configurator
  * @param array $existing Existing stored config to merge into
  * @return array Merged nested config
@@ -306,6 +337,26 @@ function agentshell_unflatten_config( array $flat, array $existing ) {
             $merged['sidebar_enabled'] = (bool) $value;
             continue;
         }
+        if ( $key === 'custom_css' ) {
+            $merged['custom_css'] = is_string( $value ) ? $value : '';
+            continue;
+        }
+        if ( $key === 'custom_js' ) {
+            $merged['custom_js'] = is_string( $value ) ? $value : '';
+            continue;
+        }
+        if ( $key === 'zones' ) {
+            $merged['zones'] = is_array( $value ) ? $value : array();
+            continue;
+        }
+        if ( $key === 'widgets' ) {
+            $merged['widgets'] = is_array( $value ) ? $value : array();
+            continue;
+        }
+        if ( $key === 'layout' ) {
+            $merged['layout'] = is_array( $value ) ? $value : array();
+            continue;
+        }
         if ( isset( $css_to_path[ $key ] ) ) {
             $path = $css_to_path[ $key ];
             $ref  = &$merged;
@@ -320,6 +371,15 @@ function agentshell_unflatten_config( array $flat, array $existing ) {
                 }
             }
             unset( $ref );
+        } elseif ( strpos( $key, '--' ) === 0 ) {
+            // Wildcard: any --key not in legacy map goes to custom_css_vars
+            if ( ! isset( $merged['design'] ) ) {
+                $merged['design'] = array();
+            }
+            if ( ! isset( $merged['design']['custom_css_vars'] ) ) {
+                $merged['design']['custom_css_vars'] = array();
+            }
+            $merged['design']['custom_css_vars'][ $key ] = $value;
         }
     }
 
@@ -328,12 +388,36 @@ function agentshell_unflatten_config( array $flat, array $existing ) {
 
 /**
  * REST API: GET/PUT /wp/v2/agentshell/config
+ * GET returns schema metadata + defaults + config for agent introspection.
+ * PUT accepts flat key-value pairs, merges into nested config, persists.
  */
 add_action( 'rest_api_init', function() {
     register_rest_route( 'wp/v2', '/agentshell/config', array(
         'methods'  => 'GET',
         'callback' => function() {
-            return agentshell_flatten_config( agentshell_get_config() );
+            $config = agentshell_get_config();
+            $flat   = agentshell_flatten_config( $config );
+            $schema = array(
+                'sidebar_enabled' => array( 'type' => 'boolean' ),
+                'zones'           => array(
+                    'type'  => 'array',
+                    'items' => array(
+                        'id'     => 'string',
+                        'label'  => 'string',
+                        'source' => 'string',
+                    ),
+                ),
+                'widgets'    => array( 'type' => 'array' ),
+                'custom_css' => array( 'type' => 'string', 'maxLength' => 10000 ),
+                'custom_js'  => array( 'type' => 'string', 'maxLength' => 10000 ),
+                'design'     => array( 'type' => 'object' ),
+                'layout'     => array( 'type' => 'object' ),
+            );
+            return array(
+                'schema'   => $schema,
+                'defaults' => $flat,
+                'config'   => $flat,
+            );
         },
         'permission_callback' => '__return_true',
     ) );
