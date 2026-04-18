@@ -19,10 +19,12 @@
         '--theme-header-bg':   '#1a1a2e',
         '--theme-header-text': '#ffffff',
         '--theme-footer-bg':   '#16213e',
-        '--theme-footer-text':   '#ffffff',
+        '--theme-header-text':   '#ffffff',
         '--theme-header-accent': '#3b82f6',
         '--zone-header-height':  '72px',
-        '--theme-footer-border': '#e4e4e7',
+        '--theme-footer-bg':     '#001e4c',
+        '--theme-footer-text':   '#ffffff',
+        '--theme-footer-accent': '#3b82f6',
         '--zone-footer-height':  '60px',
     };
 
@@ -42,9 +44,9 @@
         '--theme-header-accent': { section: 'Shell Zones', label: 'Header Accent' },
         '--zone-header-height': { section: 'Shell Zones', label: 'Header Height (px)' },
         '--theme-footer-bg':   { section: 'Shell Zones', label: 'Footer Background' },
-        '--theme-footer-text': { section: 'Shell Zones', label: 'Footer Text' },
-        '--theme-footer-border': { section: 'Shell Zones', label: 'Footer Border' },
-        '--zone-footer-height': { section: 'Shell Zones', label: 'Footer Height (px)' },
+        '--theme-footer-text':   { section: 'Shell Zones', label: 'Footer Text' },
+        '--theme-footer-accent': { section: 'Shell Zones', label: 'Footer Accent' },
+        '--zone-footer-height':  { section: 'Shell Zones', label: 'Footer Height (px)' },
     };
 
     let panel     = null;

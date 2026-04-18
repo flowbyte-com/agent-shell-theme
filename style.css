@@ -155,7 +155,7 @@ img {
     min-height: var(--zone-footer-height, 60px);
     background-color: var(--theme-footer-bg);
     color: var(--theme-footer-text);
-    border-top: 1px solid var(--theme-footer-border, var(--theme-border));
+    border-top: 1px solid var(--theme-footer-accent, var(--theme-border));
 }
 
 /* Link Resets for Header/Footer */
