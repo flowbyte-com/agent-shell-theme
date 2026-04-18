@@ -3,12 +3,20 @@ namespace AgentShellMCPDaemon;
 
 class JsonRpc {
     public static function build_request( string $method, array $params = array(), $id = null ) {
-        if ( $id === null ) { $id = mt_rand( 1, PHP_INT_MAX ); }
+        if ( $id !== null ) {
+            return json_encode( array(
+                'jsonrpc' => '2.0',
+                'method'  => $method,
+                'params'  => $params,
+                'id'      => $id,
+            ) );
+        }
+        // Auto-generate id only when not provided (notifications)
         return json_encode( array(
             'jsonrpc' => '2.0',
             'method'  => $method,
             'params'  => $params,
-            'id'      => $id,
+            'id'      => mt_rand( 1, PHP_INT_MAX ),
         ) );
     }
 

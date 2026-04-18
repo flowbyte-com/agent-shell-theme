@@ -31,26 +31,49 @@ class Set_Zone_Source extends Base_Tool {
         }
 
         $config = $this->get_agentshell_config();
-        $zones  = $config['zones'] ?? array();
+
+        // Use agentshell_get_zones() for declared zones (has proper defaults)
+        $declared_zones = function_exists( 'agentshell_get_zones' )
+            ? agentshell_get_zones()
+            : ( $config['zones'] ?? array() );
 
         $found = false;
-        foreach ( $zones as &$zone ) {
+        foreach ( $declared_zones as $zone ) {
             if ( $zone['id'] === $arguments['zone_id'] ) {
-                $zone['source'] = $arguments['source'];
-                if ( isset( $arguments['widget_area_id'] ) ) {
-                    $zone['widget_area_id'] = $arguments['widget_area_id'];
-                }
                 $found = true;
                 break;
             }
         }
-        unset( $zone );
 
         if ( ! $found ) {
             throw new \InvalidArgumentException( "Zone not found: {$arguments['zone_id']}" );
         }
 
-        $config['zones'] = $zones;
+        // Initialize zones array in config if needed, then update the zone
+        if ( ! isset( $config['zones'] ) || ! is_array( $config['zones'] ) ) {
+            $config['zones'] = array();
+        }
+
+        $zone_found = false;
+        foreach ( $config['zones'] as &$z ) {
+            if ( $z['id'] === $arguments['zone_id'] ) {
+                $z['source'] = $arguments['source'];
+                if ( isset( $arguments['widget_area_id'] ) ) {
+                    $z['widget_area_id'] = $arguments['widget_area_id'];
+                }
+                $zone_found = true;
+                break;
+            }
+        }
+        unset( $z );
+
+        if ( ! $zone_found ) {
+            $config['zones'][] = array(
+                'id'   => $arguments['zone_id'],
+                'source' => $arguments['source'],
+            );
+        }
+
         $this->update_agentshell_config( $config );
 
         return array( 'zone_id' => $arguments['zone_id'], 'source' => $arguments['source'] );

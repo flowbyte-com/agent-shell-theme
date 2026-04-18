@@ -37,24 +37,49 @@ class Inject_Json_Block extends Base_Tool {
         }
 
         $config = $this->get_agentshell_config();
-        $zones  = $config['zones'] ?? array();
+
+        // Use agentshell_get_zones() for declared zones (has proper defaults)
+        // even if they're not yet stored in wp_options config
+        $declared_zones = function_exists( 'agentshell_get_zones' )
+            ? agentshell_get_zones()
+            : ( $config['zones'] ?? array() );
 
         $found = false;
-        foreach ( $zones as &$zone ) {
+        foreach ( $declared_zones as $zone ) {
             if ( $zone['id'] === $arguments['zone_id'] ) {
-                $zone['source']       = 'json_block';
-                $zone['json_content'] = $html;
                 $found = true;
                 break;
             }
         }
-        unset( $zone );
 
         if ( ! $found ) {
             throw new \InvalidArgumentException( "Zone not found: {$arguments['zone_id']}" );
         }
 
-        $config['zones'] = $zones;
+        // Initialize zones array in config if needed, then update the zone
+        if ( ! isset( $config['zones'] ) || ! is_array( $config['zones'] ) ) {
+            $config['zones'] = array();
+        }
+
+        $zone_found = false;
+        foreach ( $config['zones'] as &$z ) {
+            if ( $z['id'] === $arguments['zone_id'] ) {
+                $z['source']       = 'json_block';
+                $z['json_content'] = $html;
+                $zone_found = true;
+                break;
+            }
+        }
+        unset( $z );
+
+        if ( ! $zone_found ) {
+            $config['zones'][] = array(
+                'id'            => $arguments['zone_id'],
+                'source'        => 'json_block',
+                'json_content'  => $html,
+            );
+        }
+
         $this->update_agentshell_config( $config );
 
         return array(
