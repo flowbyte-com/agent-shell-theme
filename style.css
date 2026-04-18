@@ -142,7 +142,7 @@ img {
     min-height: var(--zone-header-height, 72px);
     background-color: var(--theme-header-bg);
     color: var(--theme-header-text);
-    border-bottom: 1px solid var(--theme-header-accent, var(--theme-accent));
+    border-bottom: 1px solid var(--theme-header-border, var(--theme-border));
     display: flex;
     justify-content: space-between;
     align-items: center;

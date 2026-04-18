@@ -21,10 +21,12 @@
         '--theme-footer-bg':   '#16213e',
         '--theme-header-text':   '#ffffff',
         '--theme-header-accent': '#3b82f6',
+        '--theme-header-border': '#e4e4e7',
         '--zone-header-height':  '72px',
         '--theme-footer-bg':     '#001e4c',
         '--theme-footer-text':   '#ffffff',
         '--theme-footer-accent': '#3b82f6',
+        '--theme-footer-border': '#e4e4e7',
         '--zone-footer-height':  '60px',
     };
 
@@ -38,14 +40,15 @@
         '--theme-text':    { section: 'Global Theme', label: 'Text' },
         '--theme-accent':  { section: 'Global Theme', label: 'Accent' },
         '--theme-border':  { section: 'Global Theme', label: 'Border' },
-        '--theme-header-bg':   { section: 'Shell Zones', label: 'Header Background' },
-        '--theme-header-text': { section: 'Shell Zones', label: 'Header Text' },
-        '--theme-header-text': { section: 'Shell Zones', label: 'Header Text' },
+        '--theme-header-bg':     { section: 'Shell Zones', label: 'Header Background' },
+        '--theme-header-text':   { section: 'Shell Zones', label: 'Header Text' },
         '--theme-header-accent': { section: 'Shell Zones', label: 'Header Accent' },
-        '--zone-header-height': { section: 'Shell Zones', label: 'Header Height (px)' },
-        '--theme-footer-bg':   { section: 'Shell Zones', label: 'Footer Background' },
+        '--theme-header-border': { section: 'Shell Zones', label: 'Header Border' },
+        '--zone-header-height':  { section: 'Shell Zones', label: 'Header Height (px)' },
+        '--theme-footer-bg':     { section: 'Shell Zones', label: 'Footer Background' },
         '--theme-footer-text':   { section: 'Shell Zones', label: 'Footer Text' },
         '--theme-footer-accent': { section: 'Shell Zones', label: 'Footer Accent' },
+        '--theme-footer-border': { section: 'Shell Zones', label: 'Footer Border' },
         '--zone-footer-height':  { section: 'Shell Zones', label: 'Footer Height (px)' },
     };
 
