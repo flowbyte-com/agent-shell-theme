@@ -139,6 +139,7 @@ img {
 
 /* Header */
 #zone-header {
+    min-height: var(--zone-header-height, 72px);
     background-color: var(--theme-header-bg);
     color: var(--theme-header-text);
     border-color: transparent;
@@ -151,6 +152,7 @@ img {
 
 /* Footer */
 #zone-footer {
+    min-height: var(--zone-footer-height, 60px);
     background-color: var(--theme-footer-bg);
     color: var(--theme-footer-text);
     border-color: transparent;
