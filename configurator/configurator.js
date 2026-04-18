@@ -22,6 +22,8 @@
         '--theme-footer-text': '#ffffff',
         '--zone-header-height': '72px',
         '--zone-footer-height': '60px',
+        '--theme-header-accent':   '#3b82f6',
+        '--theme-footer-border':   '#e4e4e7',
     };
 
     const META = {
@@ -40,6 +42,8 @@
         '--theme-footer-text': { section: 'Shell Zones', label: 'Footer Text' },
         '--zone-header-height': { section: 'Shell Zones', label: 'Header Height (px)' },
         '--zone-footer-height': { section: 'Shell Zones', label: 'Footer Height (px)' },
+        '--theme-header-accent': { section: 'Shell Zones', label: 'Header Accent' },
+        '--theme-footer-border': { section: 'Shell Zones', label: 'Footer Border' },
     };
 
     let panel     = null;
