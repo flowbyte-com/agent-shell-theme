@@ -5,7 +5,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class Inject_Json_Block extends Base_Tool {
     public function get_name() { return 'agentshell_inject_json_block'; }
-    public function get_description() { return 'Inject raw HTML into a zone via json_block source. Script tags and style attributes are stripped server-side.'; }
+    public function get_description() { return 'Inject raw HTML into a zone via json_block source. Script tags and inline styles are always stripped. Admin users preserve custom Web Components (e.g. mpm-*) intact.'; }
     public function get_input_schema() {
         return array(
             'type'       => 'object',
@@ -25,10 +25,16 @@ class Inject_Json_Block extends Base_Tool {
             throw new \InvalidArgumentException( 'html must be 10000 characters or less' );
         }
 
-        // Strip script tags and style attributes (security)
+        // Always strip scripts and inline styles (AgentShell Shadow DOM rules)
         $html = preg_replace( '/<\/?script\b[^>]*>/i', '', $html );
         $html = preg_replace( '/\s+style\s*=\s*["\'][^"\']*["\']/i', '', $html );
-        $html = wp_kses_post( $html );
+
+        // Only run KSES if the user lacks unfiltered_html capability.
+        // Admin users with manage_options have unfiltered_html by default,
+        // which preserves custom Web Components like <mpm-*> intact.
+        if ( ! current_user_can( 'unfiltered_html' ) ) {
+            $html = wp_kses_post( $html );
+        }
 
         $config = $this->get_agentshell_config();
         $zones  = $config['zones'] ?? array();
