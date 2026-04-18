@@ -19,6 +19,7 @@
         '--theme-header-bg':   '#1a1a2e',
         '--theme-header-text': '#ffffff',
         '--theme-footer-bg':   '#16213e',
+        '--theme-footer-text': '#ffffff',
         '--zone-header-height': '72px',
         '--zone-footer-height': '60px',
     };
