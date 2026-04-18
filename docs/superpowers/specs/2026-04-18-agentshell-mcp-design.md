@@ -329,17 +329,27 @@ stdout → Claude Code MCP protocol
 ### CLI Arguments
 
 ```
-php daemon.php --url <wp_rest_url> --user <wp_user> --pass <app_password> [--timeout 30]
+php daemon.php [--config /path/to/config.json] [--verbose]
 ```
 
-**Required:**
-- `--url` — WordPress REST URL, e.g. `https://example.com/wp-json/agentshell-mcp/v1/mcp`
-- `--user` — WordPress username
-- `--pass` — Application password
-
-**Optional:**
-- `--timeout` — HTTP request timeout in seconds (default: 30)
+**Options:**
+- `--config` — Path to config JSON file (default: `~/.agentshell-mcp.json`)
 - `--verbose` — Print JSON-RPC messages to stderr for debugging
+
+**Config file** (`~/.agentshell-mcp.json`):
+```json
+{
+  "url": "https://example.com/wp-json/agentshell-mcp/v1/mcp",
+  "user": "agent_user",
+  "pass": "XXXX XXXX XXXX XXXX XXXX XXXX",
+  "timeout": 30
+}
+```
+
+**Required in config:**
+- `url` — WordPress REST endpoint
+- `user` — WordPress username (must have Application Password)
+- `pass` — WordPress Application Password
 
 ### Protocol Details
 
@@ -363,12 +373,12 @@ agentshell-mcp-daemon/
 ├── daemon.php               # Main entry point
 ├── src/
 │   ├── Transport.php        # stdio read/write
-│   ├── Client.php          # HTTP client wrapping WP REST endpoint
-│   ├── JsonRpc.php          # JSON-RPC message builder/parser
-│   └── ServerInfo.php      # Server capabilities announcement
-├── composer.json           # Guzzle HTTP dependency
+│   ├── Client.php          # HTTP client (PHP stream_context, no ext deps)
+│   └── JsonRpc.php          # JSON-RPC message builder/parser
 └── README.md
 ```
+
+No external dependencies — uses PHP's native `stream_context` for HTTP.
 
 ---
 
@@ -383,30 +393,21 @@ Agents connect by adding to their MCP server config:
   "mcpServers": {
     "agentshell": {
       "command": "php",
-      "args": ["/path/to/daemon.php", "--url", "https://example.com/wp-json/agentshell-mcp/v1/mcp", "--user", "agent", "--pass", "XXXX XXXX XXXX XXXX XXXX XXXX"],
+      "args": ["/path/to/daemon.php", "--config", "/home/user/.agentshell-mcp.json"],
       "env": {}
     }
   }
 }
 ```
 
-Alternatively, a small wrapper script:
-
-```bash
-#!/bin/bash
-# agentshell-mcp — launch the daemon with credentials from env
-exec php /path/to/daemon.php \
-  --url "${AGENTSHELL_WP_URL}" \
-  --user "${AGENTSHELL_WP_USER}" \
-  --pass "${AGENTSHELL_WP_PASS}"
-```
+Credentials are read from the config file, not passed as CLI args.
 
 ---
 
 ## Security Considerations
 
 1. **Auth:** Only WP users with `manage_options` can access the MCP endpoint
-2. **Token storage:** Application passwords stored by the agent (env var or config file), never in WordPress DB
+2. **Credential storage:** Application passwords stored in `~/.agentshell-mcp.json` (file mode 0600), never in WordPress DB
 3. **Content sanitization:** All json_block HTML sanitized via `wp_kses_post()` server-side before storage
 4. **Structural prohibition:** AgentShell's existing CSS grid-fix rules prevent agents from breaking layout via injected CSS
 5. **Rate limiting:** Plugin should implement per-user rate limiting (future enhancement)
