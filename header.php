@@ -45,7 +45,18 @@ function agentshell_render_zone_by_id( $zone_id, &$zone_by_id ) {
         // Render via zone registry — falls back to default brand/nav if zone has no custom content
         $header_zone = $zone_by_id['header'] ?? array();
         if ( ! empty( $header_zone['source'] ) && $header_zone['source'] !== 'wp_loop' ) {
-            echo agentshell_render_zone( $header_zone );
+            // Always show default brand/nav, then inject agent content
+            if ( function_exists( 'the_custom_logo' ) ) the_custom_logo(); ?>
+            <h1 class="site-title"><?php bloginfo( 'name' ); ?></h1>
+            <nav id="zone-nav" class="shell-nav">
+                <?php wp_nav_menu( array(
+                    'theme_location' => 'primary',
+                    'container'       => false,
+                    'fallback_cb'     => 'wp_page_menu',
+                    'items_wrap'      => '<ul id="%1$s" class="%2$s">%3$s</ul>',
+                ) ); ?>
+            </nav>
+            <div class="zone-injected"><?php echo agentshell_render_zone( $header_zone ); ?></div><?php
         } else {
             // Default header content
             if ( function_exists( 'the_custom_logo' ) ) the_custom_logo(); ?>
