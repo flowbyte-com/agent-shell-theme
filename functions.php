@@ -2,9 +2,36 @@
 /**
  * AgentShell theme functions
  */
-// Disable automatic paragraph tags for agent payloads
+// Disable automatic formatting for agent payloads
+// This prevents WordPress from wrapping content in <p>, <br>, etc.
 remove_filter( 'the_content', 'wpautop' );
 remove_filter( 'the_excerpt', 'wpautop' );
+remove_filter( 'the_content', 'wptexturize' );
+remove_filter( 'the_content', 'convert_smilies' );
+remove_filter( 'the_content', 'convert_chars' );
+remove_filter( 'the_content', 'wp_make_content_images_responsive' );
+remove_filter( 'the_excerpt', 'wptexturize' );
+remove_filter( 'the_excerpt', 'convert_smilies' );
+remove_filter( 'the_excerpt', 'convert_chars' );
+
+// Remove Emoji Scripts
+remove_action('wp_head', 'print_emoji_detection_script', 7);
+remove_action('wp_print_styles', 'print_emoji_styles');
+remove_action('admin_print_scripts', 'print_emoji_detection_script');
+remove_action('admin_print_styles', 'print_emoji_styles');
+
+// Remove Head Bloat
+remove_action('wp_head', 'rsd_link');
+remove_action('wp_head', 'wlwmanifest_link');
+remove_action('wp_head', 'wp_generator');
+remove_action('wp_head', 'wp_shortlink_wp_head');
+remove_action('wp_head', 'rest_output_link_wp_head', 10);
+remove_action('wp_head', 'wp_oembed_add_discovery_links', 10);
+remove_action('wp_head', 'wp_oembed_add_host_js');
+
+// Prevent WordPress from adding rel="noopener" or other auto-attributes to links
+// that could interfere with agent-built interactive widgets
+remove_filter( 'the_content', 'wp_targeted_link_rel' );
 /**
  * Register agentshell_config option on theme activation.
  */
@@ -28,6 +55,33 @@ add_action( 'after_switch_theme', 'agentshell_theme_activation' );
  * Enqueue theme assets
  */
 function agentshell_enqueue_assets() {
+    // Deregister WordPress core styles that conflict with agent shell
+    wp_deregister_style( 'wp-block-library' );
+    wp_deregister_style( 'wp-block-library-theme' );
+    wp_deregister_style( 'wp-block-style' );
+    wp_deregister_style( 'wp-components' );
+    wp_deregister_style( 'wp-editor' );
+    wp_deregister_style( 'wp-format-library' );
+    wp_deregister_style( 'wp-nux' );
+    wp_deregister_style( 'wp-list-reusable-blocks' );
+    wp_deregister_style( 'wp-emoji-styles' );
+    wp_deregister_style( 'wp-img-autosizes' );
+    wp_deregister_style( 'classic-theme-styles' );
+    wp_deregister_style( 'global-styles' );
+
+    // Remove the wp-img-autosizes inline style that gets printed separately
+    remove_action( 'wp_enqueue_scripts', 'wp_enqueue_global_styles' );
+    remove_action( 'wp_enqueue_scripts', 'wp_enqueue_block_template_styles' );
+    remove_action( 'wp_enqueue_scripts', 'wp_print_styles' );
+    add_filter( 'wp_resource_hints', function( $urls, $relation_type ) {
+        if ( 'dns-prefetch' === $relation_type ) {
+            $urls = array_filter( $urls, function( $url ) {
+                return ! strpos( $url['href'] ?? '', 'wp-includes' );
+            } );
+        }
+        return $urls;
+    }, 10, 2 );
+
     // Main theme stylesheet — always enqueued with filemtime cache busting
     wp_enqueue_style(
         'agentshell-style',
@@ -118,6 +172,32 @@ function agentshell_inject_saved_styles() {
 }
 // Priority 100 ensures this prints AFTER style.css
 add_action( 'wp_head', 'agentshell_inject_saved_styles', 100 );
+
+// Strip unwanted WordPress inline styles from head - runs last at wp_head
+function agentshell_cleanup_wp_head() {
+    remove_action( 'wp_head', 'wp_enqueue_global_styles' );
+    remove_action( 'wp_head', 'wp_enqueue_block_template_styles' );
+    remove_action( 'wp_head', 'wp_print_styles' );
+    remove_action( 'wp_head', 'wp_print_font_measure_styles' );
+}
+add_action( 'init', 'agentshell_cleanup_wp_head', 100 );
+
+// Output buffer to strip persistent inline styles that bypass deregister
+function agentshell_ob_strip_inline_styles() {
+    if ( ! is_admin() && ! did_action( 'wp_head' ) ) {
+        ob_start();
+    }
+}
+add_action( 'wp', 'agentshell_ob_strip_inline_styles', 1 );
+
+function agentshell_ob_flush() {
+    if ( ob_get_level() ) {
+        $html = ob_get_clean();
+        $html = preg_replace( '/<style id=["\']wp-img-auto-sizes[^>]*>.*?<\/style>\s*/is', '', $html );
+        echo $html;
+    }
+}
+add_action( 'wp_head', 'agentshell_ob_flush', 99999 );
 
 
 /**
@@ -216,17 +296,30 @@ function agentshell_update_config( array $config ) {
  * @return array
  */
 function agentshell_get_zones() {
+    $defaults = array(
+        array( 'id' => 'header',  'label' => 'Header',  'source' => 'wp_loop' ),
+        array( 'id' => 'main',    'label' => 'Main',    'source' => 'wp_loop' ),
+        array( 'id' => 'sidebar', 'label' => 'Sidebar', 'source' => 'wp_widget_area', 'widget_area_id' => 'primary-sidebar' ),
+        array( 'id' => 'footer',  'label' => 'Footer',  'source' => 'wp_loop' ),
+    );
     $config = agentshell_get_config();
-    $zones  = $config['zones'] ?? array();
-    if ( empty( $zones ) ) {
-        return array(
-            array( 'id' => 'header',  'label' => 'Header',  'source' => 'wp_loop' ),
-            array( 'id' => 'main',    'label' => 'Main',    'source' => 'wp_loop' ),
-            array( 'id' => 'sidebar', 'label' => 'Sidebar', 'source' => 'wp_widget_area', 'widget_area_id' => 'primary-sidebar' ),
-            array( 'id' => 'footer',  'label' => 'Footer',  'source' => 'wp_loop' ),
-        );
+    $saved  = $config['zones'] ?? array();
+
+    // Merge saved zone configs over defaults (saved overrides take precedence)
+    $by_id = array();
+    foreach ( $defaults as $d ) {
+        $by_id[ $d['id'] ] = $d;
     }
-    return $zones;
+    foreach ( $saved as $s ) {
+        $id = $s['id'] ?? null;
+        if ( $id && isset( $by_id[ $id ] ) ) {
+            $by_id[ $id ] = array_merge( $by_id[ $id ], $s );
+        } elseif ( $id ) {
+            $by_id[ $id ] = $s;
+        }
+    }
+
+    return array_values( $by_id );
 }
 
 /**
@@ -607,4 +700,45 @@ add_action( 'rest_api_init', function() {
         },
         'permission_callback' => '__return_true',
     ) );
+
+    // Preserve raw content format for agents — prevents WordPress from
+    // auto-formatting when content is saved via REST API.
+    // Agents should send { "content": { "raw": "..." } }
+    add_filter( 'rest_pre_insert_post', function( $post, $request ) {
+        $content = $request->get_param( 'content' );
+        if ( is_array( $content ) && isset( $content['raw'] ) && is_string( $content['raw'] ) ) {
+            // Remove all content filtering hooks for raw agent content
+            remove_filter( 'content_save_pre', 'wp_filter_post_kses', 10 );
+            remove_filter( 'content_save_pre', 'wp_filter_kses', 10 );
+            remove_filter( 'content_save_pre', 'balanceTags', 10 );
+            remove_filter( 'content_save_pre', 'wpautop', 10 );
+            remove_filter( 'content_save_pre', 'wptexturize', 10 );
+            remove_filter( 'content_save_pre', 'convert_smilies', 10 );
+            remove_filter( 'content_save_pre', 'convert_chars', 10 );
+            remove_filter( 'content_save_pre', 'wp_slash', 10 );
+            remove_filter( 'content_save_pre', 'force_balance_tags', 10 );
+
+            // Directly set post_content to raw value, bypassing sanitization
+            $post['post_content'] = $content['raw'];
+        }
+        return $post;
+    }, 10, 2 );
+
+    add_filter( 'rest_pre_update_post', function( $post, $request ) {
+        $content = $request->get_param( 'content' );
+        if ( is_array( $content ) && isset( $content['raw'] ) && is_string( $content['raw'] ) ) {
+            remove_filter( 'content_save_pre', 'wp_filter_post_kses', 10 );
+            remove_filter( 'content_save_pre', 'wp_filter_kses', 10 );
+            remove_filter( 'content_save_pre', 'balanceTags', 10 );
+            remove_filter( 'content_save_pre', 'wpautop', 10 );
+            remove_filter( 'content_save_pre', 'wptexturize', 10 );
+            remove_filter( 'content_save_pre', 'convert_smilies', 10 );
+            remove_filter( 'content_save_pre', 'convert_chars', 10 );
+            remove_filter( 'content_save_pre', 'wp_slash', 10 );
+            remove_filter( 'content_save_pre', 'force_balance_tags', 10 );
+
+            $post['post_content'] = $content['raw'];
+        }
+        return $post;
+    }, 10, 2 );
 } );

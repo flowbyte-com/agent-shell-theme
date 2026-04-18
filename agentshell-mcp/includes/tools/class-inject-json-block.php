@@ -64,8 +64,8 @@ class Inject_Json_Block extends Base_Tool {
         $zone_found = false;
         foreach ( $config['zones'] as &$z ) {
             if ( $z['id'] === $arguments['zone_id'] ) {
-                $z['source']       = 'json_block';
-                $z['json_content'] = $html;
+                $z['source'] = 'json_block';
+                $z['html']   = $html;
                 $zone_found = true;
                 break;
             }
@@ -74,9 +74,9 @@ class Inject_Json_Block extends Base_Tool {
 
         if ( ! $zone_found ) {
             $config['zones'][] = array(
-                'id'            => $arguments['zone_id'],
-                'source'        => 'json_block',
-                'json_content'  => $html,
+                'id'     => $arguments['zone_id'],
+                'source' => 'json_block',
+                'html'   => $html,
             );
         }
 

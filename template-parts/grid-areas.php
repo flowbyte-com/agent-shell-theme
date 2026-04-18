@@ -87,13 +87,21 @@ function agentshell_get_layout_css( array $zones, array $layout, array $breakpoi
         $query = $threshold === '0px' ? '' : "(min-width: {$threshold})";
 
         $css .= $query ? "@media {$query} {\n" : '';
-        $css .= "  #agentshell-root {\n";
-        $css .= "    grid-template-areas: {$areas_css};\n";
-        $css .= "    grid-template-rows: auto;\n";
+
         if ( $cols > 1 ) {
-            $css .= "    grid-template-columns: repeat( {$cols}, 1fr );\n";
+            // 2-column layout — only apply when sidebar is enabled
+            $css .= "  .sidebar-enabled #agentshell-root {\n";
+            $css .= "    grid-template-areas: {$areas_css};\n";
+            $css .= "    grid-template-rows: auto;\n";
+            $css .= "    grid-template-columns: 1fr var(--sidebar-width, 320px);\n";
+            $css .= "  }\n";
+        } else {
+            // Single-column — always apply so grid-area names are registered
+            $css .= "  #agentshell-root {\n";
+            $css .= "    grid-template-areas: {$areas_css};\n";
+            $css .= "    grid-template-rows: auto;\n";
+            $css .= "  }\n";
         }
-        $css .= "  }\n";
         if ( $query ) {
             $css .= "}\n";
         }

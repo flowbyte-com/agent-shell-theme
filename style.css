@@ -121,6 +121,13 @@ img {
     display: block;
 }
 
+/* Sidebar active: main fills its column */
+.sidebar-enabled #zone-main {
+    grid-column: 1;
+    width: 100%;
+    box-sizing: border-box;
+}
+
 /* ── SECTION 5: ZONE STYLING & WIRING ── */
 .shell-zone {
     background-color: var(--theme-surface);

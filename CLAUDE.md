@@ -27,7 +27,7 @@ curl -X PUT http://localhost:10003/wp-json/wp/v2/agentshell/config \
 
 ```bash
 curl -X PUT http://localhost:10003/wp-json/wp/v2/agentshell/config \
-  -d '{ "custom_css": "#zone-main { border: 2px solid red; }", "custom_js": "console.log('init');" }'
+  -d '{ "custom_css": "#zone-main { border: 2px solid red; }", "custom_js": "console.log(\"init\");" }'
 ```
 
 ### Register widgets via bilateral registry
@@ -38,6 +38,23 @@ Agents can inject HTML into zones via the `json_block` source type. `<style>` ta
 
 ### Use the live configurator
 Logged-in users see a configurator trigger (⚙) in the bottom-right corner. It loads current config from the REST API and provides live-preview forms for all settings.
+
+---
+
+## Local Development
+
+AgentShell requires a WordPress instance. Use [VVV](https://varyingvagrantvagrants.org/), [Local](https://localwp.com/), or Docker:
+
+```bash
+# Example Docker setup
+docker run -d --name wp -p 10003:80 -e WORDPRESS_DB_NAME=agentshell wordpress:latest
+```
+
+Activate the theme in WP admin, then verify config was seeded:
+```bash
+curl -s http://localhost:10003/wp-json/wp/v2/agentshell/config | jq '.config.sidebar_enabled'
+# Should return: false
+```
 
 ---
 

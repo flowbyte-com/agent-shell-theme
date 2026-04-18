@@ -82,17 +82,20 @@
 
     // ── Build the field value map from REST API config + CSS fallback ──
     // Priority: config value (just loaded from DB) > computed CSS > DEFAULTS
-    function buildState(config) {
-        const state = { sidebar_enabled: !!config.sidebar_enabled };
+    function buildState(response) {
+        // GET /wp/v2/agentshell/config returns { schema, defaults, config }
+        // The actual values live inside response.config
+        const cfg = response.config || response;
+        const state = { sidebar_enabled: !!cfg.sidebar_enabled };
         Object.keys(DEFAULTS).forEach(key => {
             if (key !== 'sidebar_enabled') {
-                state[key] = config[key] || readCssVar(key) || DEFAULTS[key];
+                state[key] = cfg[key] || readCssVar(key) || DEFAULTS[key];
             }
         });
         // Include custom_css and custom_js from config
-        state.custom_css = config.custom_css || '';
-        state.custom_js  = config.custom_js  || '';
-        state.zones      = config.zones      || [];
+        state.custom_css = cfg.custom_css || '';
+        state.custom_js  = cfg.custom_js  || '';
+        state.zones      = cfg.zones      || [];
         return state;
     }
 
