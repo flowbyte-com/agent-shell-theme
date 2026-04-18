@@ -28,7 +28,7 @@ The authenticated user must have `manage_options` capability.
 | `agentshell_set_design` | Update design colors/typography |
 | `agentshell_list_zones` | List all zones and their sources |
 | `agentshell_set_zone_source` | Change a zone's source type |
-| `agentshell_inject_json_block` | Inject HTML into a zone |
+| `agentshell_inject_json_block` | Inject HTML into a zone (preserves Web Components for admins) |
 | `agentshell_list_widgets` | List all registered widgets |
 | `agentshell_register_widget` | Register an agent widget |
 | `agentshell_set_layout` | Update grid areas/breakpoints |
