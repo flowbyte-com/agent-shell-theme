@@ -16,8 +16,10 @@
         '--theme-accent':   '#3b82f6',
         '--theme-border':   '#e4e4e7',
         // Shell Zones
-        '--theme-header-bg':  '#1a1a2e',
-        '--theme-footer-bg':  '#16213e',
+        '--theme-header-bg':   '#1a1a2e',
+        '--theme-header-text': '#ffffff',
+        '--theme-footer-bg':   '#16213e',
+        '--theme-footer-text': '#ffffff',
     };
 
     const META = {
@@ -30,8 +32,10 @@
         '--theme-text':    { section: 'Global Theme', label: 'Text' },
         '--theme-accent':  { section: 'Global Theme', label: 'Accent' },
         '--theme-border':  { section: 'Global Theme', label: 'Border' },
-        '--theme-header-bg': { section: 'Shell Zones', label: 'Header Background' },
-        '--theme-footer-bg': { section: 'Shell Zones', label: 'Footer Background' },
+        '--theme-header-bg':   { section: 'Shell Zones', label: 'Header Background' },
+        '--theme-header-text': { section: 'Shell Zones', label: 'Header Text' },
+        '--theme-footer-bg':   { section: 'Shell Zones', label: 'Footer Background' },
+        '--theme-footer-text': { section: 'Shell Zones', label: 'Footer Text' },
     };
 
     let panel     = null;
