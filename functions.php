@@ -100,10 +100,6 @@ function agentshell_enqueue_assets() {
         'adminUrl'   => admin_url( 'admin-ajax.php' ),
         'restUrl'    => rest_url(),
         'nonce'      => wp_create_nonce( 'wp_rest' ),
-        // Basic Auth credentials for the configurator
-        // In production, use Application Passwords from WP User profile
-        'authUser'   => defined( 'AGENTSHELL_AUTH_USER' ) ? AGENTSHELL_AUTH_USER : 'v',
-        'authPass'   => defined( 'AGENTSHELL_AUTH_PASS' ) ? AGENTSHELL_AUTH_PASS : '',
     ) );
 }
 add_action( 'wp_enqueue_scripts', 'agentshell_enqueue_assets' );
@@ -134,9 +130,11 @@ function agentshell_inject_saved_styles() {
     echo "}\n</style>\n";
 
     // custom_css — trusted author context
-    // Strip <style> tags but keep the CSS rules inside
+    // Strip <style> tags but keep the CSS rules inside. Use a negative lookahead
+    // to avoid bypassing the strip via </style> appearing inside CSS string literals.
     if ( ! empty( $config['custom_css'] ) ) {
         $css = preg_replace( '/<\/?style\b[^>]*>/i', '', $config['custom_css'] );
+        $css = preg_replace( '/<\/?style\b[^>]*>/i', '', $css ); // second pass for nested
         echo "<style id='agentshell-custom-css'>\n" . trim( $css ) . "\n</style>\n";
     }
 
@@ -438,12 +436,8 @@ function agentshell_get_layout_config() {
     foreach ( $defaults as $key => $default ) {
         if ( ! isset( $layout[ $key ] ) ) {
             $layout[ $key ] = $default;
-        } elseif ( is_array( $default ) ) {
-            foreach ( $default as $sub_key => $sub_value ) {
-                if ( ! isset( $layout[ $key ][ $sub_key ] ) ) {
-                    $layout[ $key ][ $sub_key ] = $sub_value;
-                }
-            }
+        } elseif ( is_array( $default ) && is_array( $layout[ $key ] ) ) {
+            $layout[ $key ] = array_merge( $default, $layout[ $key ] );
         }
     }
 
@@ -551,6 +545,8 @@ function agentshell_flatten_config( array $config ) {
         '--font-mono'       => array( 'design', 'typography', 'mono' ),
         '--spacing-base'    => array( 'design', 'typography', 'baseSize' ),
         '--radius-base'     => array( 'design', 'layout', 'radius' ),
+        '--zone-header-height' => array( 'design', 'layout', 'headerHeight' ),
+        '--zone-footer-height' => array( 'design', 'layout', 'footerHeight' ),
     );
 
     foreach ( $map as $var => $path ) {
@@ -591,6 +587,8 @@ function agentshell_unflatten_config( array $flat, array $existing ) {
         '--font-mono'       => array( 'design', 'typography', 'mono' ),
         '--spacing-base'    => array( 'design', 'typography', 'baseSize' ),
         '--radius-base'     => array( 'design', 'layout', 'radius' ),
+        '--zone-header-height' => array( 'design', 'layout', 'headerHeight' ),
+        '--zone-footer-height' => array( 'design', 'layout', 'footerHeight' ),
     );
 
     // Deep-merge $flat into a copy of $existing

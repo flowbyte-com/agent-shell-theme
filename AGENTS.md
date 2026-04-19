@@ -1,122 +1,126 @@
-# AgentShell — Agent Editing Guide
+# AgentShell — Agent Guide
 
-> **Quick start for agents:** `GET /wp-json/wp/v2/agentshell/config` — the `_guide` field contains this full document. No need to open files directly.
-
----
-
-## Architecture: Static Shell
-
-The shell is **static, immutable, and CSS-grid-driven**. The layout geometry and all zone IDs are hardcoded in `header.php`, `footer.php`, and `style.css`. Agents must not attempt to render header or footer zones dynamically.
-
-**Shell components (do not edit):**
-- `header.php` — hardcoded shell HTML, zone IDs, and structure
-- `footer.php` — hardcoded shell HTML
-- `style.css` Sections 3 & 4 — fixed CSS Grid layout
+> **Quick start:** `GET /wp-json/wp/v2/agentshell/config` returns the full config. The `_guide` field in the response contains this document (no need to open files directly).
 
 ---
 
-## What Agents May Edit
+## What This Theme Is
 
-### 1. Toggle Sidebar — ONLY UI control
+AgentShell is a WordPress theme with a strict split between:
+
+- **Shell** — static, immutable, CSS-grid-driven. Layout and zone IDs are hardcoded. You cannot modify it.
+- **Content** — editable via WordPress REST API. You control everything inside `#zone-main`.
+
+The shell provides header, footer, nav, and layout infrastructure. Your job is to add content and configure design tokens.
+
+---
+
+## What You May Edit
+
+### 1. Design Tokens (CSS Variables)
+
+Edit `:root` variables in `style.css` directly. No build step — WordPress serves it as-is.
+
+```css
+:root {
+    /* Page */
+    --theme-bg:       #ffffff;
+    --theme-surface:  #f4f4f5;
+    --theme-text:     #18181b;
+    --theme-border:   #e4e4e7;
+    --theme-accent:   #3b82f6;
+
+    /* Header */
+    --theme-header-bg:    #1a1a2e;
+    --theme-header-text:  #ffffff;
+
+    /* Footer */
+    --theme-footer-bg:    #16213e;
+    --theme-footer-text:  #ffffff;
+
+    /* Typography */
+    --font-base: system-ui, sans-serif;
+    --font-mono: monospace;
+
+    /* Spacing */
+    --spacing-base: 1rem;
+    --radius-base:  8px;
+
+    /* Container (read-only) */
+    --content-max-width: 1280px;
+    --sidebar-width:      320px;
+    --container-padding: 2rem;
+}
+```
+
+### 2. Content in `#zone-main`
+
+Standard WordPress REST — no special auth beyond WP login:
+
+| Method | Endpoint | Use |
+|--------|----------|-----|
+| GET | `/wp/v2/pages` | List pages |
+| PUT | `/wp/v2/pages/<id>` | Edit page content |
+| POST | `/wp/v2/posts` | Create a post |
+| PUT | `/wp/v2/posts/<id>` | Edit post content |
+
+**Format:** `{ "content": { "raw": "<p>Your HTML here</p>" } }`
+
+WordPress auto-formatting (`wpautop`, `wptexturize`) is disabled for agent payloads — your raw HTML is preserved exactly.
+
+### 3. Sidebar Toggle
 
 ```
 PUT /wp-json/wp/v2/agentshell/config
 { "sidebar_enabled": true }
 ```
 
-Sidebar is off by default. When enabled, `<aside id="zone-sidebar">` appears (≥1024px), grid switches to `1fr 320px`. No other layout changes are available.
+When enabled, `<aside id="zone-sidebar">` appears at ≥1024px as a 320px column.
 
-### 2. Design Tokens in style.css
+### 4. Header/Sidebar/Footer Zones (Advanced)
 
-Edit `:root` variables in `style.css` directly (no build step required — WordPress serves it as-is):
+The zone registry in `agentshell_config` supports sources beyond `wp_loop` and `wp_widget_area`:
 
-```css
-:root {
-    /* Page */
-    --theme-bg:           #ffffff;
-    --theme-surface:      #f4f4f5;
-    --theme-text:         #18181b;
-    --theme-border:       #e4e4e7;
-    --theme-accent:       #3b82f6;   /* buttons, links, hover */
+- **`json_block`** — inject raw HTML (style/script tags are stripped for security)
+- **`widget`** — render a registered widget by ID
 
-    /* Header zone */
-    --theme-header-bg:    #1a1a2e;
-    --theme-header-text:  #ffffff;
-
-    /* Footer zone */
-    --theme-footer-bg:    #16213e;
-    --theme-footer-text:  #ffffff;
-
-    /* Spacing and shape */
-    --spacing-base:  1rem;
-    --radius-base:   8px;
-}
-```
-
-### 3. Content in `#zone-main` — via WP Posts
-
-The **only content injection point** for agents is `#zone-main`. Edit via standard WordPress:
-
-- **Pages** — `PUT /wp-json/wp/v2/pages/<id>` with `{ "content": { "raw": "..." } }`
-- **Posts** — `PUT /wp-json/wp/v2/posts/<id>` with `{ "content": { "raw": "..." } }`
-- **New post** — `POST /wp-json/wp/v2/posts` with `status: publish|draft`
-
-Content is rendered by WordPress's standard loop in `header.php` — no custom rendering.
+Default zones are pre-loaded from `default-config.json`. Custom zones can be added via the config endpoint. See `template-parts/shell-render.php` for the full rendering logic.
 
 ---
 
-## What Agents Must NOT Do
+## What You Must NOT Do
 
-- Do not modify `header.php` or `footer.php`
-- Do not implement `agentshell_render_zone()` or `agentshell_render_nav()`
-- Do not attempt to render header/footer zones dynamically
-- Do not inject HTML into `#zone-header`, `#zone-sidebar`, or `#zone-footer`
-- Do not edit Sections 3 or 4 of `style.css` (the grid layout)
-- Do not use `onclick=""`, `onerror=""`, `<script>` tags, or inline `style=""` attributes in post content — WordPress strips these
-- Do not set colors via REST API config — edit `style.css :root` instead
+- Modify `header.php`, `footer.php`, or style.css Sections 3–4 (the grid layout)
+- Use `onclick=""`, `onerror=""`, `<script>` tags, or `style=""` attributes in post content — WordPress strips these
+- Set colors via REST API config — edit `style.css :root` directly
+- Inject content outside `#zone-main` without using the zone registry (source: json_block or widget)
 
 ---
 
 ## REST API
 
 ```
-GET  /wp-json/wp/v2/agentshell/config   → full config + _guide field
-GET  /wp-json/wp/v2/agentshell/guide     → this guide as plain text
-PUT  /wp-json/wp/v2/agentshell/config   → update config (requires edit_theme_options)
-     Supported keys: sidebar_enabled, design (informational only)
+GET  /wp-json/wp/v2/agentshell/config   → { schema, defaults, config }
+PUT  /wp-json/wp/v2/agentshell/config   → update config (returns flattened)
 ```
 
-**Note:** The `design` object in the REST config exists for informational display by the live configurator (in WP Admin). It does NOT drive CSS variable output. CSS variables must be edited directly in `style.css`.
+**Auth (pick one):**
 
----
+1. **Static token** (simplest for headless clients):
+   `X-AgentShell-Token: agentshell_dev_token`
+   (Set `AGENTSHELL_REST_TOKEN` in `wp-config.php` to change)
 
-## Container Bounds (Read-Only)
+2. **Basic Auth** (WordPress Application Password):
+   `Authorization: Basic <base64(username:app_password)>`
 
-| Variable | Value | Meaning |
-|----------|-------|---------|
-| `--content-max-width` | `1280px` | Page grid max width, always centered |
-| `--sidebar-width` | `320px` | Sidebar zone width when enabled |
-| `--container-padding` | `2rem` | Left/right page edge padding |
-
----
-
-## Zone Map
-
-| Zone ID | Semantic | Editable by agent? |
-|---------|----------|-------------------|
-| `#agentshell-root` | grid container | No — structural |
-| `#zone-header` | `<header>` | No — static HTML |
-| `#zone-nav` | `<nav>` | No — WP menu system |
-| `#zone-main` | `<main>` | **YES — via WP Post payloads** |
-| `#zone-sidebar` | `<aside>` | No — widget area, sidebar_enabled only |
-| `#zone-footer` | `<footer>` | No — static HTML |
+**PUT accepted keys:** `sidebar_enabled` (bool), `zones` (array), `widgets` (array), `custom_css` (string), `layout` (object)
 
 ---
 
 ## Layout
 
 ```
-Default (sidebar off) — all sizes:
+Sidebar OFF (default) — all sizes:
 ┌──────────────────────────────────┐
 │            header                │
 ├──────────────────────────────────┤
@@ -127,7 +131,7 @@ Default (sidebar off) — all sizes:
 │            footer                │
 └──────────────────────────────────┘
 
-With sidebar enabled (≥1024px):
+Sidebar ON (≥1024px):
 ┌──────────────────────┬──────────┐
 │        header        │          │
 ├───────────┬──────────┤ sidebar  │
@@ -139,79 +143,97 @@ With sidebar enabled (≥1024px):
 └─────────────────────────────────┘
 ```
 
-**Wide content escape hatch** — to break `#zone-main` out to full container width (for code blocks, tables, terminals), apply class `u-full-width` to any element inside the main zone. Do not target `#zone-main` itself.
+**Wide content escape hatch:** apply `class="u-full-width"` to an element inside `#zone-main` to break it out to full container width. Use for code blocks, tables, terminals.
 
 ---
 
 ## Interactive Widgets: Web Component Protocol
 
-For complex interactive content (charts, calculators, visualizers, terminals), agents **must** use native Web Components with Shadow DOM. This is the only safe way to inject JS and HTML into `#zone-main`.
+For charts, calculators, terminals, or any complex JS-driven content, use native Web Components with Shadow DOM. This is the only safe way to inject JS into `#zone-main`.
 
-**Why Web Components:**
-- Shadow DOM CSS is fully encapsulated — widget styles cannot break the shell
-- `customElements.define` is idempotent — defining the same component twice is safe (throws on the second call, which you catch)
-- No build tools, no React/Vue — vanilla JS, works in any browser
-- Theme variables (`--theme-accent`, `--theme-surface`, etc.) inherit through the Shadow DOM boundary
-
-**Pre-loaded libraries** (already available — do NOT inject `<script src="">` tags):
-- `window.d3` — D3.js v7 (charts, graphs, data visualizations)
-- `window.math` — Math.js (calculators, expressions)
+**Pre-loaded libraries (do NOT inject script tags):**
+- `window.d3` — D3.js v7
+- `window.math` — Math.js 11.8
 
 **Protocol:**
 
-```
-PUT /wp-json/wp/v2/pages/<id>
-Body: { "content": { "raw": "<mpm-memory-chart data-used=\"75\"></mpm-memory-chart><script>...custom element definition...</script>" } }
-```
-
-The payload must follow this exact pattern:
-
 ```html
-<mpm-[widget-name] data-key="value"></mpm-[widget-name]>
+<mpm-memory-chart data-used="75"></mpm-memory-chart>
 
 <script>
-if (!customElements.get('mpm-[widget-name]')) {
-    class MyWidget extends HTMLElement {
+if (!customElements.get('mpm-memory-chart')) {
+    class MemoryChart extends HTMLElement {
         constructor() {
             super();
             this.attachShadow({ mode: 'open' });
         }
         connectedCallback() {
-            // Use window.d3 and window.math here if needed
-            // All CSS inside shadowRoot is isolated — safe to use any selectors
             this.shadowRoot.innerHTML = `
                 <style>
-                    /* Inherits shell theme: color: var(--theme-text); etc. */
-                    .container { background: var(--theme-surface); }
+                    :host { display: block; }
+                    .chart { color: var(--theme-text); }
                 </style>
-                <div class="container">
-                    <!-- widget HTML -->
-                </div>
+                <div class="chart">...</div>
             `;
+            // Use window.d3 and window.math here
         }
     }
-    customElements.define('mpm-[widget-name]', MyWidget);
+    customElements.define('mpm-memory-chart', MemoryChart);
 }
 </script>
 ```
 
 **Rules:**
-1. Always guard `customElements.define` with `if (!customElements.get('name'))`
+1. Always guard `customElements.define` with `if (!customElements.get(...))`
 2. Place ALL widget CSS inside `shadowRoot.innerHTML` `<style>` — never in the main document
-3. Use `var(--theme-*)` in Shadow DOM styles to inherit the shell theme
-4. `customElements.get()` check makes re-renders safe — never double-define
-5. Do NOT use `document.getElementById` or `document.querySelector` inside the widget — use `this.shadowRoot.querySelector` instead
-
-**Widget naming:** Prefix all custom elements with `mpm-` (e.g., `<mpm-memory-chart>`, `<mpm-calculator>`, `<mpm-logger>`).
+3. Use `var(--theme-*)` in Shadow DOM styles to inherit shell theme tokens
+4. Use `this.shadowRoot.querySelector(...)` instead of `document.getElementById(...)`
+5. Prefix all custom elements with `mpm-`
 
 ---
 
-## Common Mistakes
+## File Map
 
-- **Editing header.php or footer.php for content** — shell structure is immutable
-- **Setting colors via REST API config** — edit `style.css :root` directly
-- **Injecting HTML outside `#zone-main`** — only `#zone-main` accepts content
-- **Inline `<script>` in post content without Web Component wrapper** — stripped by WordPress; use the Web Component protocol above
-- **Exceeding 75ch in `#zone-main`** — normal paragraphs should stay within the 75ch cap; use `.u-full-width` for wide content
-- **Using `id="..."` attributes in widget HTML** — use classes inside Shadow DOM; IDs are isolated but should be avoided to prevent confusion
-- **Injecting `<script src="...">` tags for libraries** — use pre-loaded `window.d3` and `window.math` instead
+```
+agentshell/
+├── style.css              # Theme declaration + :root tokens + grid layout
+├── functions.php           # REST endpoints, config helpers, asset enqueue
+├── header.php             # Static shell HTML — zone IDs, WP loop, sidebar conditional
+├── footer.php             # Static shell HTML + custom_js injection + widget init
+├── default-config.json     # Seed file for wp_options on first activation
+├── AGENTS.md              # This document
+├── template-parts/
+│   ├── shell-render.php   # Zone renderer (wp_loop, wp_widget_area, json_block, widget)
+│   ├── grid-areas.php     # Dynamic layout CSS generator from config
+│   └── widgets.php        # Widget registry CSS renderer
+├── configurator/          # (not implemented — do not reference)
+└── widgets/
+    ├── .index.json        # Stable widget registry index
+    └── hello-world.php   # Example widget
+```
+
+---
+
+## Requirements
+
+- WordPress 5.8+
+- No paid plugins or dependencies
+- Pure PHP + vanilla JS (no frameworks, no build step)
+
+---
+
+## Quick Commands
+
+```bash
+# Toggle sidebar
+curl -X PUT https://example.com/wp-json/wp/v2/agentshell/config \
+  -H "Content-Type: application/json" \
+  -H "X-AgentShell-Token: agentshell_dev_token" \
+  -d '{ "sidebar_enabled": true }'
+
+# Edit a page
+curl -X PUT https://example.com/wp-json/wp/v2/pages/7 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Basic $(echo -n 'user:app_password' | base64)" \
+  -d '{ "content": { "raw": "<p>Hello world</p>" } }'
+```

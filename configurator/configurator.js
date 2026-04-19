@@ -16,14 +16,12 @@
         '--theme-accent':   '#3b82f6',
         '--theme-border':   '#e4e4e7',
         // Shell Zones
-        '--theme-header-bg':   '#1a1a2e',
-        '--theme-header-text': '#ffffff',
-        '--theme-footer-bg':   '#16213e',
+        '--theme-header-bg':     '#1a1a2e',
         '--theme-header-text':   '#ffffff',
         '--theme-header-accent': '#3b82f6',
         '--theme-header-border': '#e4e4e7',
         '--zone-header-height':  '72px',
-        '--theme-footer-bg':     '#001e4c',
+        '--theme-footer-bg':     '#16213e',
         '--theme-footer-text':   '#ffffff',
         '--theme-footer-accent': '#3b82f6',
         '--theme-footer-border': '#e4e4e7',
@@ -156,7 +154,7 @@
             html += `<div class="panel-section"><h3>${secTitle}</h3>`;
             sections[secTitle].forEach(({ key, label }) => {
                 const val = liveState[key] || DEFAULTS[key];
-                const isColor = val.match?.(/^#[0-9a-f]{6}$/i) || false;
+                const isColor = val.match?.(/^#([0-9a-fA-F]{3}){1,2}$/) || false;
                 if (isColor) {
                     html += `
                         <div class="field-row">

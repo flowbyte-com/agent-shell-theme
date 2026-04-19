@@ -75,15 +75,9 @@ class Server {
                 'content' => array( array( 'type' => 'text', 'text' => $text ) ),
             ) );
         } catch ( \InvalidArgumentException $e ) {
-            return JSON_RPC::success_response( $id, array(
-                'content' => array( array( 'type' => 'text', 'text' => 'Error: ' . $e->getMessage() ) ),
-                'isError' => true,
-            ) );
+            return JSON_RPC::error_response( $id, Error_Codes::INVALID_PARAMS, $e->getMessage() );
         } catch ( \Exception $e ) {
-            return JSON_RPC::success_response( $id, array(
-                'content' => array( array( 'type' => 'text', 'text' => 'Error: ' . $e->getMessage() ) ),
-                'isError' => true,
-            ) );
+            return JSON_RPC::error_response( $id, Error_Codes::INTERNAL_ERROR, $e->getMessage() );
         }
     }
 }

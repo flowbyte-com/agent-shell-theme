@@ -11,12 +11,11 @@ class JsonRpc {
                 'id'      => $id,
             ) );
         }
-        // Auto-generate id only when not provided (notifications)
+        // Notification — omit id per JSON-RPC 2.0 spec
         return json_encode( array(
             'jsonrpc' => '2.0',
             'method'  => $method,
             'params'  => $params,
-            'id'      => mt_rand( 1, PHP_INT_MAX ),
         ) );
     }
 

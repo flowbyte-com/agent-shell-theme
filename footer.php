@@ -6,9 +6,8 @@
 $config = agentshell_get_config();
 
 // custom_js — trusted author context, injected before body close
-// Do NOT use wp_strip_all_tags — it removes JS code entirely.
 if ( ! empty( $config['custom_js'] ) ) {
-    echo "<script id='agentshell-custom-js'>\n" . $config['custom_js'] . "\n</script>\n";
+    echo "<script id='agentshell-custom-js'>\n" . wp_check_invalid_utf8( $config['custom_js'] ) . "\n</script>\n";
 }
 
 // Widget init — waits for DOM + MutationObserver for dynamically injected widgets
