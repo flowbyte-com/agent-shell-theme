@@ -139,23 +139,36 @@ img {
 
 /* Header */
 #zone-header {
-    min-height: var(--zone-header-height, 72px);
+    height: var(--zone-header-height, 72px);
+    overflow: hidden;
+    box-sizing: border-box;
     background-color: var(--theme-header-bg);
     color: var(--theme-header-text);
     border-bottom: 1px solid var(--theme-header-border, var(--theme-border));
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: var(--spacing-base);
+    flex-direction: column;
+    justify-content: center;
 }
 
 /* Footer */
 #zone-footer {
-    min-height: var(--zone-footer-height, 60px);
+    height: var(--zone-footer-height, 60px);
+    overflow: hidden;
+    box-sizing: border-box;
     background-color: var(--theme-footer-bg);
     color: var(--theme-footer-text);
     border-top: 1px solid var(--theme-footer-accent, var(--theme-border));
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+/* Strip default vertical margins from inner elements so they obey configured heights */
+#zone-header h1,
+#zone-header p,
+#zone-footer h1,
+#zone-footer p {
+    margin: 0;
 }
 
 /* Link Resets for Header/Footer */
