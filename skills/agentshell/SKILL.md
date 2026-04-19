@@ -129,10 +129,35 @@ Use `agentshell_set_zone_source` to route a zone to `json_block` (raw HTML) or `
 - Set colors outside the CSS variable system
 - Inject content outside declared zones without going through the zone registry
 - Use `<style>` tags or `style=""` attributes in `json_block` content — these are always stripped
+- **Do not write client-side `fetch()` calls to load config or data.** You are an agent: use `agentshell_get_config` to read state first, then hardcode/pre-compile those specific values into your HTML/CSS payload before pushing it. SPA-style data fetching leaks credentials and bypasses the audit log.
+
+---
+
+## Registered Widgets
+
+When using `agentshell_register_widget`, the HTML is injected directly into the normal DOM — **not** into a Shadow DOM. This is Light DOM.
+
+Do NOT use `:host` or assume Shadow DOM isolation in the `css` field. You MUST scope all CSS rules to a specific wrapper class to prevent styles from bleeding into the shell.
+
+**Correct:**
+```css
+.mpm-my-widget .card { background: var(--theme-surface); padding: 1rem; }
+.mpm-my-widget .title { color: var(--theme-accent); }
+```
+
+**Wrong (will bleed):**
+```css
+.card { background: var(--theme-surface); }          /* no wrapper — hits everything */
+:host { display: block; }                           /* :host is Shadow DOM only */
+```
+
+The `template` field renders inside `<div data-widget="id">`. Wrap every CSS selector with the widget ID class (e.g., `.mpm-my-widget`) as shown above.
 
 ---
 
 ## Web Component Widgets
+
+**CRITICAL: Your payload MUST include BOTH the `<script>` block defining the component AND the actual physical HTML tag (e.g., `<mpm-my-widget></mpm-my-widget>`) to mount it on the page. Defining the class without the tag results in a blank page.**
 
 For charts, calculators, terminals — anything requiring JS — use Web Components with Shadow DOM.
 
