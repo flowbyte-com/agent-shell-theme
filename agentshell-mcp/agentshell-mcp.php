@@ -34,6 +34,7 @@ add_action( 'rest_api_init', function() {
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-list-zones.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-set-zone-source.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-inject-json-block.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-update-post-content.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-list-widgets.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-register-widget.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-set-layout.php';
@@ -45,6 +46,7 @@ add_action( 'rest_api_init', function() {
     $registry->register( new AgentShell_MCP\Tools\List_Zones() );
     $registry->register( new AgentShell_MCP\Tools\Set_Zone_Source() );
     $registry->register( new AgentShell_MCP\Tools\Inject_Json_Block() );
+    $registry->register( new AgentShell_MCP\Tools\Update_Post_Content() );
     $registry->register( new AgentShell_MCP\Tools\List_Widgets() );
     $registry->register( new AgentShell_MCP\Tools\Register_Widget() );
     $registry->register( new AgentShell_MCP\Tools\Set_Layout() );
