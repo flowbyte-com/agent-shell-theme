@@ -1,64 +1,65 @@
 # AgentShell
 
-A JSON-driven WordPress theme for human–agent collaboration. The shell is static and immutable; agents interact via REST API and CSS variables.
+A WordPress theme built for human–agent collaboration. The shell is static and immutable; agents work through the MCP daemon (JSON-RPC over stdio) and optionally the WP REST API for content.
 
 ---
 
-## For Humans: Setup
+## Setup for Humans
 
 1. Upload `agentshell/` to `wp-content/themes/`
 2. Activate in **Appearance → Themes**
-3. First activation seeds `wp_options` from `default-config.json`
-4. All further changes go through the REST API
+3. Upload `agentshell-mcp/` to `wp-content/plugins/`
+4. Activate the plugin at **Plugins**
+5. Create an Application Password for the agent user at **Users → Profile → Application Passwords**
+6. Copy `agentshell-mcp-daemon/` somewhere, create `~/.agentshell-mcp.json`:
 
-### Sidebar Toggle (Admin)
-
-**Appearance → Themes → Customize** or use REST:
-
-```bash
-curl -X PUT https://yoursite.com/wp-json/wp/v2/agentshell/config \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Basic $(echo -n 'user:app_password' | base64)" \
-  -d '{ "sidebar_enabled": true }'
+```json
+{
+  "url": "https://yourdomain.com/wp-json/agentshell-mcp/v1/mcp",
+  "user": "agent_user",
+  "pass": "XXXX XXXX XXXX XXXX XXXX XXXX",
+  "timeout": 30
+}
 ```
 
-### Content Editing
+7. For Claude Code: add to `~/.claude/settings.json`:
 
-AgentShell uses standard WordPress REST. Any content editor plugin that talks to `/wp/v2/pages/<id>` works.
-
----
-
-## For Agents: Edit Guide
-
-**See `AGENTS.md`** for the full protocol. Quick summary:
-
-- **Design tokens** → edit `style.css :root` directly (no build step)
-- **Content** → `PUT /wp/v2/pages/<id>` with `{ "content": { "raw": "..." } }`
-- **Sidebar** → `PUT /wp-json/wp/v2/agentshell/config` with `{ "sidebar_enabled": true }`
-- **Layout** → fixed CSS Grid, immutable — do not edit Sections 3–4 of style.css
-- **Widgets** → use Web Components with Shadow DOM (see AGENTS.md)
-
-**Auth:**
-- Static token: `X-AgentShell-Token: agentshell_dev_token`
-- Or Basic Auth with a WP Application Password
+```json
+{
+  "mcpServers": {
+    "agentshell": {
+      "command": "php",
+      "args": ["/path/to/daemon.php", "--config", "/home/user/.agentshell-mcp.json"]
+    }
+  }
+}
+```
 
 ---
 
 ## Architecture
 
 ```
-Shell (immutable)          →  header.php, footer.php, style.css Sections 3–4
-Design tokens (editable)   →  style.css :root
-Content (editable)         →  #zone-main via WP REST
-Config (editable)          →  /wp/v2/agentshell/config
+Agent (Claude Code, etc.)
+    ↕ stdio
+Daemon (agentshell-mcp-daemon)
+    ↕ HTTP
+WordPress plugin (agentshell-mcp)
+    ↕ reads/writes
+AgentShell config (wp_options)
+    ↕ rendered into
+Shell (header.php, footer.php, style.css :root)
 ```
 
-Zones: `#zone-header`, `#zone-main`, `#zone-sidebar`, `#zone-footer`
+The theme is split:
+- **Shell** — static, immutable (header.php, footer.php, grid layout)
+- **Design tokens** — CSS variables in style.css :root, editable via MCP tools
+- **Content** — WordPress posts/pages via standard WP REST API
+- **Config** — zones, layout, widgets via MCP tools
 
 ---
 
 ## Requirements
 
-- WordPress 5.8+
+- WordPress 6.0+, PHP 7.4+
 - No paid plugins or dependencies
-- Pure PHP + vanilla JS
