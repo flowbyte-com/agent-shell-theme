@@ -176,6 +176,8 @@ img { max-width: 100%; height: auto; }
 .wp-core-site_title {
     font-weight: 700;
     font-size: 1.25rem;
+    letter-spacing: -0.02em;
+    font-family: var(--font-base);
     text-decoration: none;
     color: var(--theme-header-text);
 }
@@ -210,8 +212,8 @@ img { max-width: 100%; height: auto; }
 }
 
 .wp-core-nav_menu .wp-core-nav a {
-    display: block;
-    padding: 0.5rem 0.75rem;
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
     text-decoration: none;
     color: var(--theme-header-text);
     opacity: 0.8;
@@ -221,6 +223,14 @@ img { max-width: 100%; height: auto; }
 .wp-core-nav_menu .wp-core-nav a:hover {
     opacity: 1;
     color: var(--theme-header-accent);
+}
+
+/* Bold current menu item */
+.wp-core-nav .current-menu-item > a,
+.wp-core-nav .current_page_item > a {
+    font-weight: 700;
+    opacity: 1;
+    border-bottom: 2px solid var(--theme-header-accent);
 }
 
 /* Sub-menus */
@@ -285,4 +295,29 @@ img { max-width: 100%; height: auto; }
     color: var(--theme-text, #18181b);
     opacity: 0.6;
     font-style: italic;
+}
+
+/* ── SECTION 8: UTILITY ── */
+html {
+    scroll-behavior: smooth;
+}
+
+#zone-header,
+#zone-main,
+#zone-footer {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+#zone-header:hover,
+#zone-main:hover,
+#zone-footer:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 20px -5px rgba(0, 0, 0, 0.15);
+}
+
+/* wp_loop content — readable width */
+.wp-core-wp_loop {
+    max-width: 800px;
+    margin: 0 auto;
+    width: 100%;
 }
