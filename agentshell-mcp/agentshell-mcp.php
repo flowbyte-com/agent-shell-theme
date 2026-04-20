@@ -37,6 +37,7 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-set-design.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-list-zones.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-update-zone-composition.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-update-zone-slots.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-set-layout.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-get-site-info.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-inject-json-block.php';
@@ -47,6 +48,7 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     $tools[] = new AgentShell_MCP\Tools\Set_Design();
     $tools[] = new AgentShell_MCP\Tools\List_Zones();
     $tools[] = new AgentShell_MCP\Tools\Update_Zone_Composition();
+    $tools[] = new AgentShell_MCP\Tools\Update_Zone_Slots();
     $tools[] = new AgentShell_MCP\Tools\Set_Layout();
     $tools[] = new AgentShell_MCP\Tools\Get_Site_Info();
     $tools[] = new AgentShell_MCP\Tools\Inject_Json_Block();

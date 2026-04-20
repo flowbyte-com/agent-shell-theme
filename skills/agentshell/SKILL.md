@@ -49,8 +49,9 @@ All tools prefixed `agentshell_`. Empty arguments unless noted.
 | `agentshell_get_config` | Return full flat config (CSS vars) | (none) |
 | `agentshell_set_css_var` | Set one CSS variable | `name` (must start with `--`), `value` |
 | `agentshell_set_design` | Update colors/typography | `colors{}`, `typography{}` |
-| `agentshell_list_zones` | List all zones with IDs, labels, and composition | (none) |
-| `agentshell_update_zone_composition` | Set/replace a zone's ordered block composition | `zone_id`, `composition[]` |
+| `agentshell_list_zones` | List all zones with IDs, labels, and composition/slots | (none) |
+| `agentshell_update_zone_composition` | Set/replace a zone's ordered block composition (main zone) | `zone_id`, `composition[]` |
+| `agentshell_update_zone_slots` | Set tri-slot blocks for header or footer zone | `zone_id`, `slots{left,center,right}` |
 | `agentshell_set_layout` | Update breakpoints (sidebar removed in v2) | `breakpoints?` |
 | `agentshell_inject_json_block` | Inject raw HTML into a zone | `zone_id`, `html` |
 | `agentshell_update_post_content` | Update post/page HTML content | `post_id` (integer), `html_content` |
@@ -69,7 +70,23 @@ All tools prefixed `agentshell_`. Empty arguments unless noted.
 
 ## FSE Zone Composition (v2)
 
-Each zone has a `composition[]` array — an **ordered list of blocks**. The zone renders each block top-to-bottom.
+Each zone has either a `slots` object or a `composition[]` array depending on the zone type.
+
+**Tri-Slot Zones (header / footer):** Use a `slots` object for three-column horizontal placement:
+
+```json
+{
+  "id": "header",
+  "label": "Header",
+  "slots": {
+    "left":   [ { "type": "wp_core", "id": "site_logo" } ],
+    "center": [ { "type": "wp_core", "id": "nav_menu" } ],
+    "right":  [ { "type": "wp_core", "id": "search_form" } ]
+  }
+}
+```
+
+**Vertical Composition Zones (main):** Use an ordered `composition[]` array:
 
 ```json
 {
@@ -87,13 +104,39 @@ Each zone has a `composition[]` array — an **ordered list of blocks**. The zon
 
 | Type | When to use |
 |------|-------------|
-| `wp_loop` | Standard WordPress content (posts, pages) — default for all zones |
-| `wp_core` | WordPress native elements (site title, logo, nav menu, search, tagline) |
+| `wp_loop` | Standard WordPress content (posts, pages) |
+| `wp_core` | WordPress native elements — site_title, site_tagline, site_logo, nav_menu, search_form |
 | `widget` | Agent-built interactive components (chat, charts, calculators) |
 | `json_block` | Raw HTML injected directly (stripped of `<style>` and `style=""`) |
 | `wp_widget_area` | WordPress dynamic sidebar by ID |
 
-**Setting composition via tool:**
+**Setting slots via tool (header/footer):**
+
+```json
+{
+  "zone_id": "header",
+  "slots": {
+    "left":   [ { "type": "wp_core", "id": "site_logo" } ],
+    "center": [ { "type": "wp_core", "id": "nav_menu" } ],
+    "right":  [ { "type": "wp_core", "id": "search_form" } ]
+  }
+}
+```
+
+**To place a widget in the header's right slot:**
+
+```json
+{
+  "zone_id": "header",
+  "slots": {
+    "left":   [],
+    "center": [ { "type": "wp_core", "id": "nav_menu" } ],
+    "right":  [ { "type": "widget", "id": "sale-banner" } ]
+  }
+}
+```
+
+**Setting composition via tool (main zone only):**
 
 ```json
 {
@@ -105,19 +148,7 @@ Each zone has a `composition[]` array — an **ordered list of blocks**. The zon
 }
 ```
 
-The human WP content (`wp_loop`) is preserved at position 2 — authors editing in Gutenberg are never displaced.
-
-**To completely take over a zone (e.g., footer):**
-
-```json
-{
-  "zone_id": "footer",
-  "composition": [
-    { "type": "widget", "id": "footer-links" },
-    { "type": "json_block", "content": "<p>&copy; 2026 MySite</p>" }
-  ]
-}
-```
+The human WP content (`wp_loop`) is preserved — authors editing in Gutenberg are never displaced.
 
 ---
 
@@ -248,7 +279,7 @@ agent-shell-theme/
 ├── functions.php              # Config helpers, asset enqueue
 ├── header.php                # Hardcoded FSE shell (header/main/footer zones)
 ├── footer.php                # Custom JS injection, configurator trigger
-├── default-config.json       # Seed file (v2: zones with composition[])
+├── default-config.json       # Seed file (v2: header/footer use slots{}, main uses composition[])
 ├── template-parts/
 │   └── shell-render.php     # agentshell_render_zone(), agentshell_render_block()
 ├── configurator/

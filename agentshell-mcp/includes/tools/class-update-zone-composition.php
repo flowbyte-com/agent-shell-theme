@@ -20,7 +20,7 @@ class Update_Zone_Composition extends Base_Tool {
                     'items' => array(
                         'type'       => 'object',
                         'properties' => array(
-                            'type'    => array( 'type' => 'string', 'enum' => array( 'wp_loop', 'widget', 'json_block', 'wp_widget_area' ) ),
+                            'type'    => array( 'type' => 'string', 'enum' => array( 'wp_loop', 'wp_core', 'widget', 'json_block', 'wp_widget_area' ) ),
                             'id'      => array( 'type' => 'string' ),
                             'content' => array( 'type' => 'string' ),
                         ),
@@ -48,7 +48,7 @@ class Update_Zone_Composition extends Base_Tool {
         }
 
         // Validate each block
-        $valid_types = array( 'wp_loop', 'widget', 'json_block', 'wp_widget_area' );
+        $valid_types = array( 'wp_loop', 'wp_core', 'widget', 'json_block', 'wp_widget_area' );
         foreach ( $composition as $i => $block ) {
             $type = $block['type'] ?? '';
             if ( ! in_array( $type, $valid_types, true ) ) {

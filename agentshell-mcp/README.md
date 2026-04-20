@@ -19,7 +19,7 @@ Authorization: Basic <base64(user:application_password)>
 
 The authenticated user must have `manage_options` capability.
 
-## Tools (10)
+## Tools (11)
 
 | Tool | Description |
 |------|-------------|
@@ -27,8 +27,9 @@ The authenticated user must have `manage_options` capability.
 | `agentshell_set_css_var` | Set a single CSS variable |
 | `agentshell_set_design` | Update design colors/typography |
 | `agentshell_list_zones` | List all zones and their sources |
-| `agentshell_set_zone_source` | Change a zone's source type |
-| `agentshell_inject_json_block` | Inject HTML into a zone (preserves Web Components for admins) |
+| `agentshell_update_zone_composition` | Update a zone's block composition (main zone) |
+| `agentshell_update_zone_slots` | Set tri-slot {left,center,right} blocks (header/footer only) |
+| `agentshell_inject_json_block` | Inject HTML into a zone |
 | `agentshell_list_widgets` | List all registered widgets |
 | `agentshell_register_widget` | Register an agent widget |
 | `agentshell_set_layout` | Update grid areas/breakpoints |
