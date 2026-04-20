@@ -15,6 +15,7 @@ define( 'AGENTSHELL_BLOCKS_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
 require_once AGENTSHELL_BLOCKS_PLUGIN_DIR . 'includes/class-widget-registry.php';
 require_once AGENTSHELL_BLOCKS_PLUGIN_DIR . 'includes/class-json-rpc.php';
+require_once AGENTSHELL_BLOCKS_PLUGIN_DIR . 'includes/tools/class-base-tool.php';
 
 /**
  * Option key for agent-defined widget registry.
