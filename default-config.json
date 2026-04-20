@@ -1,43 +1,46 @@
 {
-  "sidebar_enabled": false,
   "zones": [
-    { "id": "header",  "label": "Header",  "source": "wp_loop" },
-    { "id": "main",    "label": "Main",    "source": "wp_loop" },
-    { "id": "sidebar","label": "Sidebar", "source": "wp_widget_area", "widget_area_id": "primary-sidebar" },
-    { "id": "footer",  "label": "Footer",  "source": "wp_loop" }
+    {
+      "id": "header",
+      "label": "Header",
+      "composition": [
+        { "type": "wp_loop" }
+      ]
+    },
+    {
+      "id": "main",
+      "label": "Main",
+      "composition": [
+        { "type": "wp_loop" }
+      ]
+    },
+    {
+      "id": "footer",
+      "label": "Footer",
+      "composition": [
+        { "type": "wp_loop" }
+      ]
+    }
   ],
   "design": {
     "colors": {
       "background": "#ffffff",
-      "surface":    "#f4f4f5",
-      "text":       "#18181b",
-      "border":     "#e4e4e7",
-      "accent":     "#3b82f6",
-      "primary":    "#1a1a2e",
-      "secondary":  "#16213e"
+      "surface": "#f4f4f5",
+      "text": "#18181b",
+      "border": "#e4e4e7",
+      "accent": "#3b82f6",
+      "primary": "#1a1a2e",
+      "secondary": "#16213e"
     },
     "typography": {
       "fontFamily": "system-ui, sans-serif",
-      "mono":      "monospace",
-      "baseSize":  "1rem",
-      "scale":     "1.25"
+      "mono": "monospace",
+      "baseSize": "1rem",
+      "scale": "1.25"
     },
     "layout": {
       "radius": "8px"
     }
   },
-  "layout": {
-    "breakpoints": {
-      "mobile":  "0px",
-      "tablet":  "768px",
-      "desktop": "1024px"
-    },
-    "grid_areas": {
-      "mobile":  ["header", "main", "footer"],
-      "tablet":  ["header header", "main sidebar", "footer footer"],
-      "desktop": ["header header", "main sidebar", "footer footer"]
-    },
-    "grid_gap":     "1rem",
-    "grid_padding": "2rem"
-  }
+  "layout": {}
 }

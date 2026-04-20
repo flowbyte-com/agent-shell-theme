@@ -138,10 +138,10 @@ function agentshell_inject_saved_styles() {
         echo "<style id='agentshell-custom-css'>\n" . trim( $css ) . "\n</style>\n";
     }
 
-    // Structural prohibition: prevent agents from breaking the grid
+    // Structural prohibition: prevent agents from breaking the FSE layout
     // with position: fixed or absolute on zone containers.
     echo "<style id='agentshell-grid-fix'>
-#zone-header, #zone-main, #zone-sidebar, #zone-footer {
+#zone-header, #zone-main, #zone-footer {
     position: relative !important;
     top: auto !important;
     left: auto !important;
@@ -150,23 +150,6 @@ function agentshell_inject_saved_styles() {
     z-index: auto !important;
 }
 </style>\n";
-
-    // Layout grid CSS from config (breakpoints + grid areas)
-    if ( function_exists( 'agentshell_get_layout_config' ) ) {
-        $layout_cfg = agentshell_get_layout_config();
-        // grid-areas.php defines agentshell_get_layout_css()
-        locate_template( 'template-parts/grid-areas.php', true, false );
-        if ( function_exists( 'agentshell_get_layout_css' ) ) {
-            $zones = array( 'header', 'main', 'sidebar', 'footer' );
-            echo agentshell_get_layout_css(
-                $zones,
-                $layout_cfg['grid_areas'],
-                $layout_cfg['breakpoints'],
-                $layout_cfg['grid_gap'],
-                $layout_cfg['grid_padding']
-            );
-        }
-    }
 }
 // Priority 100 ensures this prints AFTER style.css
 add_action( 'wp_head', 'agentshell_inject_saved_styles', 100 );
@@ -199,20 +182,23 @@ add_action( 'wp_head', 'agentshell_ob_flush', 99999 );
 
 
 /**
- * 2. Persist the Sidebar State
- * Reads the DB and injects the 'sidebar-enabled' class into the <body> tag on load.
+ * @deprecated v2.0 — sidebar removed. Keeping stub to prevent fatals on upgrade.
  */
 function agentshell_persist_sidebar( $classes ) {
-    $config = get_option( 'agentshell_config', array() );
-
-    // Check if sidebar is enabled in the nested config OR flat config
-    if ( ! empty( $config['sidebar_enabled'] ) || ! empty( $config['layout']['sidebar_enabled'] ) ) {
-        $classes[] = 'sidebar-enabled';
-    }
-
     return $classes;
 }
-add_filter( 'body_class', 'agentshell_persist_sidebar' );
+
+/**
+ * Register nav menus.
+ */
+function agentshell_setup() {
+    locate_template( 'template-parts/shell-render.php', true, false );
+
+    register_nav_menus( array(
+        'primary' => esc_html__( 'Primary Navigation', 'agentshell' ),
+    ) );
+}
+add_action( 'after_setup_theme', 'agentshell_setup' );
 
 /**
  * Pre-load approved libraries for agent-built Web Component widgets.
@@ -243,34 +229,6 @@ function agentshell_enqueue_widget_libs() {
 add_action( 'wp_enqueue_scripts', 'agentshell_enqueue_widget_libs' );
 
 /**
- * Register the primary sidebar widget area.
- * Used by #zone-sidebar in header.php when sidebar_enabled is true.
- */
-function agentshell_widgets_init() {
-    register_sidebar( array(
-        'name'          => esc_html__( 'Primary Sidebar', 'agentshell' ),
-        'id'            => 'primary-sidebar',
-        'description'   => esc_html__( 'Widgets for the sidebar zone.', 'agentshell' ),
-        'before_widget' => '<div id="%1$s" class="widget %2$s">',
-        'after_widget'  => '</div>',
-        'before_title'  => '<h3 class="widget-title">',
-        'after_title'   => '</h3>',
-    ) );
-}
-add_action( 'widgets_init', 'agentshell_widgets_init' );
-
-/**
- * Register nav menus.
- */
-function agentshell_setup() {
-    // Load shell-render.php to make agentshell_render_zone() available to header.php
-    locate_template( 'template-parts/shell-render.php', true, false );
-
-    register_nav_menus( array(
-        'primary' => esc_html__( 'Primary Navigation', 'agentshell' ),
-    ) );
-}
-add_action( 'after_setup_theme', 'agentshell_setup' );
 
 /**
  * Get the full shell config.
@@ -295,10 +253,9 @@ function agentshell_update_config( array $config ) {
  */
 function agentshell_get_zones() {
     $defaults = array(
-        array( 'id' => 'header',  'label' => 'Header',  'source' => 'wp_loop' ),
-        array( 'id' => 'main',    'label' => 'Main',    'source' => 'wp_loop' ),
-        array( 'id' => 'sidebar', 'label' => 'Sidebar', 'source' => 'wp_widget_area', 'widget_area_id' => 'primary-sidebar' ),
-        array( 'id' => 'footer',  'label' => 'Footer',  'source' => 'wp_loop' ),
+        array( 'id' => 'header', 'label' => 'Header', 'composition' => array( array( 'type' => 'wp_loop' ) ) ),
+        array( 'id' => 'main',   'label' => 'Main',   'composition' => array( array( 'type' => 'wp_loop' ) ) ),
+        array( 'id' => 'footer', 'label' => 'Footer', 'composition' => array( array( 'type' => 'wp_loop' ) ) ),
     );
     $config = agentshell_get_config();
     $saved  = $config['zones'] ?? array();
@@ -357,6 +314,76 @@ function agentshell_get_widget_registry() {
     }
 
     return $registry;
+}
+
+/**
+ * Return supported WordPress core components as composable blocks.
+ *
+ * @return array
+ */
+function agentshell_get_core_components() {
+    return array(
+        array(
+            'id'   => 'site_title',
+            'name' => 'Site Title',
+            'render' => function() {
+                return get_bloginfo( 'name' ) ?: '';
+            },
+        ),
+        array(
+            'id'   => 'site_tagline',
+            'name' => 'Site Tagline',
+            'render' => function() {
+                return get_bloginfo( 'description' ) ?: '';
+            },
+        ),
+        array(
+            'id'   => 'site_logo',
+            'name' => 'Site Logo',
+            'render' => function() {
+                ob_start();
+                the_custom_logo();
+                return ob_get_clean();
+            },
+        ),
+        array(
+            'id'   => 'nav_menu',
+            'name' => 'Primary Navigation Menu',
+            'render' => function() {
+                return wp_nav_menu(array(
+                    'echo'           => false,
+                    'theme_location'=> 'primary',
+                    'container'     => 'nav',
+                    'container_class'=> 'wp-core-nav',
+                )) ?: '<p class="wp-core-empty">No menu assigned to Primary Location</p>';
+            },
+        ),
+        array(
+            'id'   => 'search_form',
+            'name' => 'Search Form',
+            'render' => function() {
+                return get_search_form( array( 'echo' => false ) );
+            },
+        ),
+    );
+}
+
+/**
+ * Render a single WordPress core component by ID.
+ *
+ * @param string $id Component ID (site_title, nav_menu, etc.)
+ * @return string HTML
+ */
+function agentshell_render_core_component( $id ) {
+    $components = agentshell_get_core_components();
+    foreach ( $components as $component ) {
+        if ( ( $component['id'] ?? '' ) === $id ) {
+            // The render value is a closure — call it directly
+            $fn = $component['render'] ?? null;
+            return $fn ? (string) $fn() : '';
+        }
+    }
+    return '<!-- wp_core not found: ' . esc_html( $id ) . ' -->';
 }
 
 /**
@@ -423,13 +450,6 @@ function agentshell_get_layout_config() {
             'tablet'  => '768px',
             'desktop' => '1024px',
         ),
-        'grid_areas' => array(
-            'mobile'  => array( 'header', 'main', 'footer' ),
-            'tablet'  => array( 'header header', 'main sidebar', 'footer footer' ),
-            'desktop' => array( 'header header', 'main sidebar', 'footer footer' ),
-        ),
-        'grid_gap'     => '1rem',
-        'grid_padding' => '2rem',
     );
 
     // Deep-merge user config over defaults
@@ -523,7 +543,7 @@ add_filter( 'rest_authentication_errors', function( $errors ) {
  * @return array
  */
 function agentshell_flatten_config( array $config ) {
-    $flat = array( 'sidebar_enabled' => ! empty( $config['sidebar_enabled'] ) );
+    $flat = array();
 
     // Wildcard: any key starting with -- is a CSS variable, write directly
     array_walk_recursive( $config, function( $value, $key ) use ( &$flat ) {
@@ -594,10 +614,6 @@ function agentshell_unflatten_config( array $flat, array $existing ) {
     // Deep-merge $flat into a copy of $existing
     $merged = $existing;
     foreach ( $flat as $key => $value ) {
-        if ( $key === 'sidebar_enabled' ) {
-            $merged['sidebar_enabled'] = (bool) $value;
-            continue;
-        }
         if ( $key === 'custom_css' ) {
             $merged['custom_css'] = is_string( $value ) ? $value : '';
             continue;
@@ -658,26 +674,62 @@ add_action( 'rest_api_init', function() {
         'callback' => function() {
             $config = agentshell_get_config();
             $flat   = agentshell_flatten_config( $config );
+
+            // Pull lightweight widget registry from blocks plugin (if active)
+            $widgets_option = get_option( 'agentshell_widgets', array() );
+            $available_widgets = array();
+            foreach ( $widgets_option as $w ) {
+                $available_widgets[] = array(
+                    'id'   => $w['id']   ?? '',
+                    'name' => $w['name'] ?? '',
+                );
+            }
+
+            // Core WP components (static list, no closures for JSON serialization)
+            $core_components = array(
+                array( 'id' => 'site_title',   'name' => 'Site Title' ),
+                array( 'id' => 'site_tagline', 'name' => 'Site Tagline' ),
+                array( 'id' => 'site_logo',    'name' => 'Site Logo' ),
+                array( 'id' => 'nav_menu',     'name' => 'Primary Navigation Menu' ),
+                array( 'id' => 'search_form',  'name' => 'Search Form' ),
+            );
+
             $schema = array(
-                'sidebar_enabled' => array( 'type' => 'boolean' ),
                 'zones'           => array(
                     'type'  => 'array',
                     'items' => array(
-                        'id'     => 'string',
-                        'label'  => 'string',
-                        'source' => 'string',
+                        'id'          => 'string',
+                        'label'       => 'string',
+                        'composition' => 'array',
                     ),
                 ),
-                'widgets'    => array( 'type' => 'array' ),
                 'custom_css' => array( 'type' => 'string', 'maxLength' => 10000 ),
                 'custom_js'  => array( 'type' => 'string', 'maxLength' => 10000 ),
                 'design'     => array( 'type' => 'object' ),
                 'layout'     => array( 'type' => 'object' ),
             );
+
+            // Ensure zones and compositions are always proper sequential arrays
+            $zones = $config['zones'] ?? array();
+            if ( is_array( $zones ) ) {
+                $zones = array_values( $zones );
+                foreach ( $zones as &$zone ) {
+                    if ( isset( $zone['composition'] ) && is_array( $zone['composition'] ) ) {
+                        $zone['composition'] = array_values( $zone['composition'] );
+                    }
+                }
+                unset( $zone );
+            } else {
+                $zones = array();
+            }
+
             return array(
-                'schema'   => $schema,
-                'defaults' => $flat,
-                'config'   => $flat,
+                'schema'             => $schema,
+                'defaults'           => $flat,
+                'config'             => $flat,
+                'zones'              => $zones,
+                'available_widgets'  => $available_widgets,
+                'core_components'    => $core_components,
             );
         },
         'permission_callback' => '__return_true',

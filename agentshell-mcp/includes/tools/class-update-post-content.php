@@ -5,7 +5,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class Update_Post_Content extends Base_Tool {
     public function get_name() { return 'agentshell_update_post_content'; }
-    public function get_description() { return 'Update a specific post/page HTML content via wp_update_post(). Inline style attributes and standalone <style> tags are always stripped (Unbreakable Grid). Admin users with unfiltered_html/manage_options preserve <script> tags.'; }
+    public function get_description() { return 'Update a specific post/page HTML content via wp_update_post(). Style tags and inline style attributes are stripped for untrusted users (Unbreakable Grid). Admin users with unfiltered_html/manage_options preserve all tags including <style> and <script>.'; }
     public function get_input_schema() {
         return array(
             'type'       => 'object',
@@ -30,18 +30,18 @@ class Update_Post_Content extends Base_Tool {
             throw new \InvalidArgumentException( 'html_content must be 100000 characters or less' );
         }
 
-        // Security: Unbreakable Grid — always strip standalone <style> tags and inline style="" attributes.
-        // These can break the fixed CSS Grid structure regardless of user capability.
-        $html = preg_replace( '/<style\b[^>]*>.*?<\/style>/is', '', $html );
-        $html = preg_replace( '/\s+style\s*=\s*["\'][^"\']*["\']/i', '', $html );
-
-        // Check capability before any script stripping. Trusted users (unfiltered_html or manage_options)
-        // get a full passthrough — no script stripping, no KSES. This preserves custom Web Components
-        // that use customElements.define.
+        // Check capability before any stripping. Trusted users (unfiltered_html or manage_options)
+        // get full passthrough — no style stripping, no script stripping, no KSES.
+        // This preserves custom Web Components that use customElements.define.
         $trusted = current_user_can( 'unfiltered_html' ) || current_user_can( 'manage_options' );
 
         if ( ! $trusted ) {
-            // Untrusted: strip scripts and run KSES sanitization.
+            // Security: Unbreakable Grid — strip <style> tags and inline style="" attributes.
+            // These can break the fixed CSS Grid structure regardless of user capability.
+            $html = preg_replace( '/<style\b[^>]*>.*?<\/style>/is', '', $html );
+            $html = preg_replace( '/\s+style\s*=\s*["\'][^"\']*["\']/i', '', $html );
+
+            // Strip scripts and run KSES sanitization for untrusted users.
             $html = preg_replace( '/<\/?script\b[^>]*>/i', '', $html );
             $html = wp_kses_post( $html );
         }
