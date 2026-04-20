@@ -235,6 +235,34 @@ add_action( 'wp_enqueue_scripts', 'agentshell_enqueue_widget_libs' );
  */
 function agentshell_get_config() {
     $config = get_option( 'agentshell_config' );
+
+    // Re-seed from default-config.json if the DB option is missing or empty.
+    // Handles the case where get_option returns false (option not set yet).
+    if ( $config === false || ! is_array( $config ) || empty( $config ) ) {
+        $seed_file = get_template_directory() . '/default-config.json';
+        if ( file_exists( $seed_file ) ) {
+            $seed = json_decode( file_get_contents( $seed_file ), true );
+            if ( is_array( $seed ) ) {
+                update_option( 'agentshell_config', $seed );
+                $config = $seed;
+            }
+        }
+    }
+
+    // Schema self-healing: migrate flat 'composition' zones to 'slots' for header/footer
+    if ( isset( $config['zones'] ) && is_array( $config['zones'] ) ) {
+        foreach ( $config['zones'] as &$zone ) {
+            if ( in_array( $zone['id'] ?? '', array( 'header', 'footer' ), true ) && ! isset( $zone['slots'] ) ) {
+                $zone['slots'] = array(
+                    'left'   => array(),
+                    'center' => $zone['composition'] ?? array(),
+                    'right'  => array(),
+                );
+                unset( $zone['composition'] );
+            }
+        }
+    }
+
     return is_array( $config ) ? $config : array();
 }
 
@@ -698,9 +726,20 @@ add_action( 'rest_api_init', function() {
                 'zones'           => array(
                     'type'  => 'array',
                     'items' => array(
-                        'id'          => 'string',
-                        'label'       => 'string',
-                        'composition' => 'array',
+                        'type'       => 'object',
+                        'properties' => array(
+                            'id'          => array( 'type' => 'string' ),
+                            'label'       => array( 'type' => 'string' ),
+                            'composition' => array( 'type' => 'array' ),
+                            'slots'      => array(
+                                'type'       => 'object',
+                                'properties' => array(
+                                    'left'   => array( 'type' => 'array' ),
+                                    'center' => array( 'type' => 'array' ),
+                                    'right'  => array( 'type' => 'array' ),
+                                ),
+                            ),
+                        ),
                     ),
                 ),
                 'custom_css' => array( 'type' => 'string', 'maxLength' => 10000 ),
@@ -716,6 +755,16 @@ add_action( 'rest_api_init', function() {
                 foreach ( $zones as &$zone ) {
                     if ( isset( $zone['composition'] ) && is_array( $zone['composition'] ) ) {
                         $zone['composition'] = array_values( $zone['composition'] );
+                    }
+                    // Normalize slot arrays to sequential arrays
+                    if ( isset( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
+                        foreach ( array( 'left', 'center', 'right' ) as $slot_key ) {
+                            if ( isset( $zone['slots'][ $slot_key ] ) && is_array( $zone['slots'][ $slot_key ] ) ) {
+                                $zone['slots'][ $slot_key ] = array_values( $zone['slots'][ $slot_key ] );
+                            } else {
+                                $zone['slots'][ $slot_key ] = array();
+                            }
+                        }
                     }
                 }
                 unset( $zone );

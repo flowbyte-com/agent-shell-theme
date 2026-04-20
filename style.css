@@ -71,22 +71,50 @@ img { max-width: 100%; height: auto; }
 }
 
 /* ── SECTION 4: ZONE STYLING ── */
+
+/* Base zone containers */
+#zone-header,
+#zone-main,
+#zone-footer {
+    box-sizing: border-box;
+    width: 100%;
+}
+
+/* HEADER & FOOTER — Tri-Slot Grid Layout */
+#zone-header,
+#zone-footer {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: var(--spacing-base);
+}
+
 #zone-header {
     background: var(--theme-header-bg) !important;
     border: var(--zone-header-border-width, 1px) var(--border-style, solid) var(--theme-border) !important;
     border-radius: var(--zone-header-radius, 12px) !important;
     padding: var(--spacing-base) !important;
     box-shadow: var(--theme-shadow);
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-base);
-    flex-wrap: wrap;
-    justify-content: var(--zone-header-layout, space-between);
     min-height: 72px;
-    box-sizing: border-box;
     color: var(--theme-header-text);
 }
 
+#zone-footer {
+    background: var(--theme-footer-bg) !important;
+    border: var(--zone-footer-border-width, 1px) var(--border-style, solid) var(--theme-border) !important;
+    border-radius: var(--zone-footer-radius, 12px) !important;
+    padding: var(--spacing-base) !important;
+    box-shadow: var(--theme-shadow);
+    min-height: 60px;
+    color: var(--theme-footer-text);
+}
+
+/* Tri-Slot Slot Alignment */
+.slot-left   { justify-self: start; }
+.slot-center { justify-self: center; }
+.slot-right  { justify-self: end; }
+
+/* MAIN Zone */
 #zone-main {
     background: var(--theme-surface) !important;
     border: var(--zone-main-border-width, 1px) var(--border-style, solid) var(--theme-border) !important;
@@ -96,25 +124,7 @@ img { max-width: 100%; height: auto; }
     display: flex;
     flex-direction: column;
     justify-content: var(--zone-main-align, flex-start);
-    width: 100%;
     min-width: 0;
-    box-sizing: border-box;
-}
-
-#zone-footer {
-    background: var(--theme-footer-bg) !important;
-    border: var(--zone-footer-border-width, 1px) var(--border-style, solid) var(--theme-border) !important;
-    border-radius: var(--zone-footer-radius, 12px) !important;
-    padding: var(--spacing-base) !important;
-    box-shadow: var(--theme-shadow);
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-base);
-    flex-wrap: wrap;
-    justify-content: var(--zone-footer-layout, space-between);
-    min-height: 60px;
-    box-sizing: border-box;
-    color: var(--theme-footer-text);
 }
 
 /* Strip default vertical margins */
@@ -320,4 +330,24 @@ html {
     max-width: 800px;
     margin: 0 auto;
     width: 100%;
+}
+
+/* ── SECTION 9: MOBILE / RESPONSIVE ── */
+@media (max-width: 768px) {
+    #zone-header,
+    #zone-footer {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .slot-center {
+        display: none;
+    }
+
+    .slot-left {
+        justify-self: start;
+    }
+
+    .slot-right {
+        justify-self: end;
+    }
 }

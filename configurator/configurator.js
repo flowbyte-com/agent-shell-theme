@@ -219,23 +219,44 @@
         }
 
         liveState.zones.forEach(function(zone, zoneIdx) {
-            const composition = zone.composition || [];
             html += `<div class="zone-builder" data-zone-idx="${zoneIdx}">`;
             html += `<div class="zone-builder-header">${escHtml(zone.label || zone.id)} <span class="zone-id-tag">${escHtml(zone.id)}</span></div>`;
 
-            // Block list
-            html += `<div class="zone-blocks">`;
-            if (composition.length === 0) {
-                html += `<div class="zone-block-empty">Empty — this zone will not render.</div>`;
-            } else {
-                composition.forEach(function(block, blockIdx) {
-                    html += renderBlockItem(zoneIdx, blockIdx, block);
-                });
-            }
-            html += `</div>`;
+            const hasSlots = zone.slots && typeof zone.slots === 'object';
 
-            // Add block row
-            html += renderAddBlockRow(zoneIdx);
+            if (hasSlots) {
+                // Tri-slot layout: left / center / right
+                ['left', 'center', 'right'].forEach(function(slotKey) {
+                    const slotBlocks = zone.slots[slotKey] || [];
+                    html += `<div class="zone-slot-builder" data-zone-idx="${zoneIdx}" data-slot="${slotKey}">`;
+                    html += `<div class="slot-header">${slotKey.charAt(0).toUpperCase() + slotKey.slice(1)}</div>`;
+                    html += `<div class="zone-blocks">`;
+                    if (slotBlocks.length === 0) {
+                        html += `<div class="zone-block-empty">Empty</div>`;
+                    } else {
+                        slotBlocks.forEach(function(block, blockIdx) {
+                            html += renderBlockItem(zoneIdx, slotKey, blockIdx, block);
+                        });
+                    }
+                    html += `</div>`;
+                    html += renderAddBlockRow(zoneIdx, slotKey);
+                    html += `</div>`;
+                });
+            } else {
+                // Legacy composition: vertical list
+                const composition = zone.composition || [];
+                html += `<div class="zone-blocks">`;
+                if (composition.length === 0) {
+                    html += `<div class="zone-block-empty">Empty — this zone will not render.</div>`;
+                } else {
+                    composition.forEach(function(block, blockIdx) {
+                        html += renderBlockItem(zoneIdx, null, blockIdx, block);
+                    });
+                }
+                html += `</div>`;
+                html += renderAddBlockRow(zoneIdx, null);
+            }
+
             html += `</div>`;
         });
 
@@ -244,7 +265,7 @@
     }
 
     // ── Render a single block item (type label + id + actions) ──
-    function renderBlockItem(zoneIdx, blockIdx, block) {
+    function renderBlockItem(zoneIdx, slotKey, blockIdx, block) {
         const typeLabel = BLOCK_TYPES.find(t => t.value === block.type) || { label: block.type };
         let detail = '';
         if (block.type === 'widget' || block.type === 'wp_widget_area') {
@@ -252,10 +273,13 @@
         } else if (block.type === 'json_block') {
             detail = block.content ? escHtml(block.content.substring(0, 30)) + (block.content.length > 30 ? '…' : '') : '';
         }
-        const canMoveUp   = blockIdx > 0;
-        const canMoveDown = blockIdx < (liveState.zones[zoneIdx].composition.length - 1);
 
-        let html = `<div class="zone-block-item" data-zone-idx="${zoneIdx}" data-block-idx="${blockIdx}">`;
+        const zone = liveState.zones[zoneIdx];
+        const slotArr = slotKey ? (zone.slots?.[slotKey] || []) : (zone.composition || []);
+        const canMoveUp   = blockIdx > 0;
+        const canMoveDown = blockIdx < (slotArr.length - 1);
+
+        let html = `<div class="zone-block-item" data-zone-idx="${zoneIdx}" data-slot="${slotKey || ''}" data-block-idx="${blockIdx}">`;
         html += `<div class="zone-block-info">`;
         html += `<span class="zone-block-type">${escHtml(typeLabel.label)}</span>`;
         if (detail) {
@@ -272,9 +296,9 @@
     }
 
     // ── Render the + Add Block row ────────────────────────────────
-    function renderAddBlockRow(zoneIdx) {
-        let html = `<div class="zone-add-block" data-zone-idx="${zoneIdx}">`;
-        html += `<select class="zb-type-select" data-zone-idx="${zoneIdx}">`;
+    function renderAddBlockRow(zoneIdx, slotKey) {
+        let html = `<div class="zone-add-block" data-zone-idx="${zoneIdx}" data-slot="${slotKey || ''}">`;
+        html += `<select class="zb-type-select" data-zone-idx="${zoneIdx}" data-slot="${slotKey || ''}">`;
         html += `<option value="">+ Add block…</option>`;
         BLOCK_TYPES.forEach(function(t) {
             html += `<option value="${t.value}">${t.label}</option>`;
@@ -286,7 +310,7 @@
             `<option value="${escAttr(w.id)}">${escHtml(w.name || w.id)}</option>`
         ).join('');
         html += `
-            <select class="zb-widget-select" data-zone-idx="${zoneIdx}" style="display:none">
+            <select class="zb-widget-select" data-zone-idx="${zoneIdx}" data-slot="${slotKey || ''}" style="display:none">
                 <option value="">Select widget…</option>
                 ${widgetOpts}
             </select>`;
@@ -296,7 +320,7 @@
             `<option value="${escAttr(c.id)}">${escHtml(c.name || c.id)}</option>`
         ).join('');
         html += `
-            <select class="zb-core-select" data-zone-idx="${zoneIdx}" style="display:none">
+            <select class="zb-core-select" data-zone-idx="${zoneIdx}" data-slot="${slotKey || ''}" style="display:none">
                 <option value="">Select component…</option>
                 ${coreOpts}
             </select>`;
@@ -352,22 +376,26 @@
                 const btn = e.target.closest('.zb-btn');
                 if (!btn || btn.disabled) return;
 
-                const item = btn.closest('.zone-block-item');
-                const zoneIdx = parseInt(item.dataset.zoneIdx, 10);
+                const item     = btn.closest('.zone-block-item');
+                const zoneIdx  = parseInt(item.dataset.zoneIdx, 10);
+                const slotKey  = item.dataset.slot || null; // null = composition
                 const blockIdx = parseInt(item.dataset.blockIdx, 10);
-                const action = btn.dataset.action;
+                const action   = btn.dataset.action;
+
+                const zone = liveState.zones[zoneIdx];
+                const targetArr = slotKey
+                    ? (zone.slots?.[slotKey] || [])
+                    : (zone.composition || []);
 
                 if (action === 'delete') {
-                    liveState.zones[zoneIdx].composition.splice(blockIdx, 1);
+                    targetArr.splice(blockIdx, 1);
                     renderPanel();
                 } else if (action === 'moveUp' && blockIdx > 0) {
-                    const comp = liveState.zones[zoneIdx].composition;
-                    [comp[blockIdx - 1], comp[blockIdx]] = [comp[blockIdx], comp[blockIdx - 1]];
+                    [targetArr[blockIdx - 1], targetArr[blockIdx]] = [targetArr[blockIdx], targetArr[blockIdx - 1]];
                     renderPanel();
                 } else if (action === 'moveDown') {
-                    const comp = liveState.zones[zoneIdx].composition;
-                    if (blockIdx < comp.length - 1) {
-                        [comp[blockIdx], comp[blockIdx + 1]] = [comp[blockIdx + 1], comp[blockIdx]];
+                    if (blockIdx < targetArr.length - 1) {
+                        [targetArr[blockIdx], targetArr[blockIdx + 1]] = [targetArr[blockIdx + 1], targetArr[blockIdx]];
                         renderPanel();
                     }
                 }
@@ -377,10 +405,11 @@
         // ── Add block type selector ──
         panel.querySelectorAll('.zb-type-select').forEach(sel => {
             sel.addEventListener('change', e => {
-                const zoneIdx = parseInt(sel.dataset.zoneIdx, 10);
-                const type    = sel.value;
-                const widgetSel = panel.querySelector(`.zb-widget-select[data-zone-idx="${zoneIdx}"]`);
-                const coreSel   = panel.querySelector(`.zb-core-select[data-zone-idx="${zoneIdx}"]`);
+                const zoneIdx  = parseInt(sel.dataset.zoneIdx, 10);
+                const slotKey  = sel.dataset.slot || null;
+                const type     = sel.value;
+                const widgetSel = panel.querySelector(`.zb-widget-select[data-zone-idx="${zoneIdx}"][data-slot="${slotKey || ''}"]`);
+                const coreSel   = panel.querySelector(`.zb-core-select[data-zone-idx="${zoneIdx}"][data-slot="${slotKey || ''}"]`);
 
                 // Hide both secondary selectors by default
                 if (widgetSel) widgetSel.style.display = 'none';
@@ -400,7 +429,7 @@
                     }
                 } else {
                     // Immediately add blocks that don't need a secondary selector
-                    addBlockToZone(zoneIdx, { type });
+                    addBlockToZone(zoneIdx, slotKey, { type });
                     sel.value = '';
                 }
             });
@@ -410,14 +439,15 @@
         panel.querySelectorAll('.zb-core-select').forEach(sel => {
             sel.addEventListener('change', e => {
                 const zoneIdx  = parseInt(sel.dataset.zoneIdx, 10);
+                const slotKey  = sel.dataset.slot || null;
                 const coreId   = sel.value;
                 if (!coreId) return;
 
-                addBlockToZone(zoneIdx, { type: 'wp_core', id: coreId });
+                addBlockToZone(zoneIdx, slotKey, { type: 'wp_core', id: coreId });
                 sel.value = '';
                 sel.style.display = 'none';
 
-                const typeSel = panel.querySelector(`.zb-type-select[data-zone-idx="${zoneIdx}"]`);
+                const typeSel = panel.querySelector(`.zb-type-select[data-zone-idx="${zoneIdx}"][data-slot="${slotKey || ''}"]`);
                 if (typeSel) typeSel.value = '';
             });
         });
@@ -425,16 +455,17 @@
         // ── Add widget block when secondary selector changes ──
         panel.querySelectorAll('.zb-widget-select').forEach(sel => {
             sel.addEventListener('change', e => {
-                const zoneIdx = parseInt(sel.dataset.zoneIdx, 10);
+                const zoneIdx  = parseInt(sel.dataset.zoneIdx, 10);
+                const slotKey  = sel.dataset.slot || null;
                 const widgetId = sel.value;
                 if (!widgetId) return;
 
-                addBlockToZone(zoneIdx, { type: 'widget', id: widgetId });
+                addBlockToZone(zoneIdx, slotKey, { type: 'widget', id: widgetId });
                 sel.value = '';
                 sel.style.display = 'none';
 
                 // Reset the type selector too
-                const typeSel = panel.querySelector(`.zb-type-select[data-zone-idx="${zoneIdx}"]`);
+                const typeSel = panel.querySelector(`.zb-type-select[data-zone-idx="${zoneIdx}"][data-slot="${slotKey || ''}"]`);
                 if (typeSel) typeSel.value = '';
             });
         });
@@ -443,12 +474,17 @@
         panel.querySelector('#agentshell-save')?.addEventListener('click', saveConfig);
     }
 
-    // ── Add a block to a zone's composition ─────────────────────
-    function addBlockToZone(zoneIdx, block) {
-        if (!liveState.zones[zoneIdx].composition) {
-            liveState.zones[zoneIdx].composition = [];
+    // ── Add a block to a zone's composition or slot ─────────────
+    function addBlockToZone(zoneIdx, slotKey, block) {
+        const zone = liveState.zones[zoneIdx];
+        if (slotKey) {
+            if (!zone.slots) zone.slots = {};
+            if (!zone.slots[slotKey]) zone.slots[slotKey] = [];
+            zone.slots[slotKey].push(Object.assign({}, block));
+        } else {
+            if (!zone.composition) zone.composition = [];
+            zone.composition.push(Object.assign({}, block));
         }
-        liveState.zones[zoneIdx].composition.push(Object.assign({}, block));
         renderPanel();
     }
 

@@ -3,9 +3,11 @@
     {
       "id": "header",
       "label": "Header",
-      "composition": [
-        { "type": "wp_loop" }
-      ]
+      "slots": {
+        "left": [ { "type": "wp_core", "id": "site_logo" } ],
+        "center": [ { "type": "wp_core", "id": "nav_menu" } ],
+        "right": [ { "type": "wp_core", "id": "search_form" } ]
+      }
     },
     {
       "id": "main",
@@ -17,9 +19,11 @@
     {
       "id": "footer",
       "label": "Footer",
-      "composition": [
-        { "type": "wp_loop" }
-      ]
+      "slots": {
+        "left": [ { "type": "wp_core", "id": "site_title" } ],
+        "center": [ { "type": "wp_core", "id": "nav_menu" } ],
+        "right": []
+      }
     }
   ],
   "design": {

@@ -77,12 +77,35 @@ function agentshell_render_block( array $block ) {
 
 /**
  * Render a full zone by its config array.
- * Iterates the zone's composition[] and renders each block in order.
+ * Checks for 'slots' (tri-slot zones like header/footer) first,
+ * then falls back to legacy 'composition' array.
  *
  * @param array $zone e.g. [ "id" => "main", "composition" => [...] ]
  * @return string HTML
  */
 function agentshell_render_zone( array $zone ) {
+    $slots = $zone['slots'] ?? null;
+
+    // Tri-slot zones: header, footer with left/center/right slots
+    if ( is_array( $slots ) ) {
+        $slot_keys = array( 'left', 'center', 'right' );
+        $html = '';
+        foreach ( $slot_keys as $slot_key ) {
+            $slot_items = $slots[ $slot_key ] ?? array();
+            $slot_html  = '';
+            foreach ( $slot_items as $block ) {
+                $slot_html .= agentshell_render_block( $block );
+            }
+            $html .= sprintf(
+                '<div class="zone-slot slot-%s">%s</div>',
+                esc_attr( $slot_key ),
+                $slot_html
+            );
+        }
+        return $html;
+    }
+
+    // Legacy composition array (main zone, vertical stacking)
     $composition = $zone['composition'] ?? array();
 
     // Safety net: if composition was accidentally stored as a single flattened block
@@ -113,9 +136,13 @@ function agentshell_render_zone( array $zone ) {
 function agentshell_get_zone_config( $zone_id ) {
     $defaults = array(
         'header' => array(
-            'id'          => 'header',
-            'label'       => 'Header',
-            'composition' => array( array( 'type' => 'wp_loop' ) ),
+            'id'    => 'header',
+            'label' => 'Header',
+            'slots' => array(
+                'left'   => array( array( 'type' => 'wp_core', 'id' => 'site_logo' ) ),
+                'center' => array( array( 'type' => 'wp_core', 'id' => 'nav_menu' ) ),
+                'right'  => array( array( 'type' => 'wp_core', 'id' => 'search_form' ) ),
+            ),
         ),
         'main'   => array(
             'id'          => 'main',
@@ -123,9 +150,13 @@ function agentshell_get_zone_config( $zone_id ) {
             'composition' => array( array( 'type' => 'wp_loop' ) ),
         ),
         'footer' => array(
-            'id'          => 'footer',
-            'label'       => 'Footer',
-            'composition' => array( array( 'type' => 'wp_loop' ) ),
+            'id'    => 'footer',
+            'label' => 'Footer',
+            'slots' => array(
+                'left'   => array( array( 'type' => 'wp_core', 'id' => 'site_title' ) ),
+                'center' => array( array( 'type' => 'wp_core', 'id' => 'nav_menu' ) ),
+                'right'  => array(),
+            ),
         ),
     );
 
