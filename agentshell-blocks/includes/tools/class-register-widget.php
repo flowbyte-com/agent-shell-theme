@@ -39,6 +39,8 @@ class Register_Widget extends Base_Tool {
         if ( ! empty( $arguments['template'] ) ) { $widget['template'] = $arguments['template']; }
 
         $registry = \AgentShell_Blocks\Widget_Registry::get_instance();
-        return $registry->save_widget( $widget );
+        $saved   = $registry->save_widget( $widget );
+        $saved['version'] = $registry->get_version();
+        return $saved;
     }
 }

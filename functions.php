@@ -452,7 +452,8 @@ function agentshell_get_widget_assets() {
 
     foreach ( $registry as $widget ) {
         if ( ! empty( $widget['init_js'] ) ) {
-            $init_js .= "\n/* Widget: {$widget['id']} */\n" . $widget['init_js'];
+            $init_js .= "\n/* Widget: {$widget['id']} */\n";
+            $init_js .= "(function() {\ntry {\n" . $widget['init_js'] . "\n} catch(e) {\nconsole.error('Agentshell widget init error (" . esc_js( $widget['id'] ) . "):', e);\n}\n})();\n";
         }
         if ( ! empty( $widget['css'] ) ) {
             $css .= "\n/* Widget: {$widget['id']} */\n" . $widget['css'];
@@ -692,6 +693,106 @@ function agentshell_unflatten_config( array $flat, array $existing ) {
 }
 
 /**
+ * Validate config structure against allowed schema.
+ * Returns WP_Error on failure, validated config array on success.
+ *
+ * @param array $config
+ * @return array|WP_Error
+ */
+function agentshell_validate_config( $config ) {
+    $allowed_colors = array(
+        'background', 'surface', 'text', 'border', 'accent', 'primary', 'secondary',
+    );
+    $allowed_typography = array(
+        'fontFamily', 'mono', 'baseSize', 'scale',
+    );
+    $allowed_layout = array(
+        'radius', 'headerHeight', 'footerHeight',
+    );
+    $allowed_zone_ids = array( 'header', 'main', 'footer' );
+    $allowed_block_types = array(
+        'wp_loop', 'wp_core', 'widget', 'json_block', 'wp_widget_area',
+    );
+    $allowed_wp_core_ids = array(
+        'site_title', 'nav_menu', 'search_form', 'site_logo', 'site_tagline',
+    );
+
+    if ( ! is_array( $config ) ) {
+        return new WP_Error( 'invalid_config', 'Config must be an array.' );
+    }
+
+    if ( isset( $config['design']['colors'] ) ) {
+        foreach ( $config['design']['colors'] as $key => $val ) {
+            if ( ! in_array( $key, $allowed_colors, true ) ) {
+                return new WP_Error( 'invalid_color_key', "Unknown color key: {$key}" );
+            }
+            if ( ! is_string( $val ) || ! preg_match( '/^#[0-9a-fA-F]{3,8}$/', $val ) ) {
+                return new WP_Error( 'invalid_color_value', "Invalid color value for {$key}: {$val}" );
+            }
+        }
+    }
+
+    if ( isset( $config['design']['typography'] ) ) {
+        foreach ( $config['design']['typography'] as $key => $val ) {
+            if ( ! in_array( $key, $allowed_typography, true ) ) {
+                return new WP_Error( 'invalid_typography_key', "Unknown typography key: {$key}" );
+            }
+        }
+    }
+
+    if ( isset( $config['design']['layout'] ) ) {
+        foreach ( $config['design']['layout'] as $key => $val ) {
+            if ( ! in_array( $key, $allowed_layout, true ) ) {
+                return new WP_Error( 'invalid_layout_key', "Unknown layout key: {$key}" );
+            }
+        }
+    }
+
+    if ( isset( $config['zones'] ) && is_array( $config['zones'] ) ) {
+        foreach ( $config['zones'] as $zone ) {
+            if ( ! isset( $zone['id'] ) || ! in_array( $zone['id'], $allowed_zone_ids, true ) ) {
+                return new WP_Error( 'invalid_zone_id', "Unknown or missing zone id: " . ( $zone['id'] ?? 'null' ) );
+            }
+            if ( isset( $zone['composition'] ) && is_array( $zone['composition'] ) ) {
+                foreach ( $zone['composition'] as $block ) {
+                    if ( ! isset( $block['type'] ) || ! in_array( $block['type'], $allowed_block_types, true ) ) {
+                        return new WP_Error( 'invalid_block_type', "Unknown block type: " . ( $block['type'] ?? 'null' ) );
+                    }
+                }
+            }
+            if ( isset( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
+                foreach ( array( 'left', 'center', 'right' ) as $slot ) {
+                    if ( isset( $zone['slots'][ $slot ] ) && is_array( $zone['slots'][ $slot ] ) ) {
+                        foreach ( $zone['slots'][ $slot ] as $block ) {
+                            if ( ! isset( $block['type'] ) || ! in_array( $block['type'], $allowed_block_types, true ) ) {
+                                return new WP_Error( 'invalid_slot_block_type', "Unknown slot block type: " . ( $block['type'] ?? 'null' ) );
+                            }
+                            if ( $block['type'] === 'wp_core' && isset( $block['id'] ) && ! in_array( $block['id'], $allowed_wp_core_ids, true ) ) {
+                                return new WP_Error( 'invalid_wp_core_id', "Unknown wp_core id: {$block['id']}" );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if ( isset( $config['layout'] ) && ! is_array( $config['layout'] ) ) {
+        return new WP_Error( 'invalid_layout', 'Layout must be an array.' );
+    }
+
+    if ( isset( $config['custom_css'] ) && ! is_string( $config['custom_css'] ) ) {
+        return new WP_Error( 'invalid_custom_css', 'custom_css must be a string.' );
+    }
+
+    if ( isset( $config['custom_js'] ) && ! is_string( $config['custom_js'] ) ) {
+        return new WP_Error( 'invalid_custom_js', 'custom_js must be a string.' );
+    }
+
+    return $config;
+}
+
+/**
  * REST API: GET/PUT /wp/v2/agentshell/config
  * GET returns schema metadata + defaults + config for agent introspection.
  * PUT accepts flat key-value pairs, merges into nested config, persists.
@@ -793,9 +894,12 @@ add_action( 'rest_api_init', function() {
             }
             $existing = agentshell_get_config();
             $merged   = agentshell_unflatten_config( $flat, $existing );
-            // update_option returns false when the value hasn't changed — not an error
-            update_option( 'agentshell_config', $merged );
-            return agentshell_flatten_config( $merged );
+            $validated = agentshell_validate_config( $merged );
+            if ( is_wp_error( $validated ) ) {
+                return $validated;
+            }
+            update_option( 'agentshell_config', $validated );
+            return agentshell_flatten_config( $validated );
         },
         'permission_callback' => '__return_true',
     ) );

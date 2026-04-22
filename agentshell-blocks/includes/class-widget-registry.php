@@ -15,6 +15,11 @@ class Widget_Registry {
     /** @var array Cached registry */
     private $cache = null;
 
+    /** @var int Cache-busting version, incremented on every write */
+    private $version = null;
+
+    const VERSION_OPTION = 'agentshell_widgets_version';
+
     public static function get_instance() {
         if ( null === self::$instance ) {
             self::$instance = new self();
@@ -32,6 +37,26 @@ class Widget_Registry {
             $this->cache = get_option( AGENTSHELL_WIDGETS_OPTION, array() );
         }
         return is_array( $this->cache ) ? $this->cache : array();
+    }
+
+    /**
+     * Get current registry version for cache busting.
+     *
+     * @return int
+     */
+    public function get_version() {
+        if ( null === $this->version ) {
+            $this->version = (int) get_option( self::VERSION_OPTION, 1 );
+        }
+        return $this->version;
+    }
+
+    /**
+     * Increment version to bust cached renders.
+     */
+    private function bump_version() {
+        $this->version = $this->get_version() + 1;
+        update_option( self::VERSION_OPTION, $this->version, false );
     }
 
     /**
@@ -79,6 +104,7 @@ class Widget_Registry {
 
         update_option( AGENTSHELL_WIDGETS_OPTION, $widgets, false );
         $this->cache = null; // Bust cache
+        $this->bump_version();
 
         return $this->get_widget( $widget['id'] );
     }
@@ -99,6 +125,7 @@ class Widget_Registry {
         if ( count( $widgets ) < $original ) {
             update_option( AGENTSHELL_WIDGETS_OPTION, $widgets, false );
             $this->cache = null;
+            $this->bump_version();
             return true;
         }
         return false;
@@ -156,9 +183,16 @@ class Widget_Registry {
             return '';
         }
 
-        $registry_js = "window.AgentshellWidgets = window.AgentshellWidgets || {};\n";
-        foreach ( $inits as $init ) {
-            $registry_js .= $init . "\n";
+        $registry_js = "/* agentshell-widgets v" . $this->get_version() . " */\n";
+        $registry_js .= "window.AgentshellWidgets = window.AgentshellWidgets || {};\n";
+        $registry_js .= "window.AgentshellWidgets.version = " . $this->get_version() . ";\n";
+        foreach ( $inits as $idx => $init ) {
+            $registry_js .= "(function() {\n";
+            $registry_js .= "try {\n" . $init . "\n";
+            $registry_js .= "} catch(e) {\n";
+            $registry_js .= "console.error('AgentshellWidgets init_js error in widget " . ( $idx + 1 ) . ":', e);\n";
+            $registry_js .= "}\n";
+            $registry_js .= "})();\n";
         }
 
         // MutationObserver to init [data-widget] elements

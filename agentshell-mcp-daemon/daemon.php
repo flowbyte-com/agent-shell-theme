@@ -11,6 +11,12 @@ class Daemon {
     private $transport;
     private $verbose = false;
 
+    private $server_version = null;
+
+    const DAEMON_VERSION = '1.0.0';
+    const MIN_COMPATIBLE_PROTOCOL_VERSION = '2025-03-26';
+    const EXPECTED_SERVER_VERSION = '1.1.0';
+
     public function __construct( array $config, bool $verbose = false ) {
         $this->config    = $config;
         $this->verbose   = $verbose;
@@ -20,6 +26,7 @@ class Daemon {
 
     public function run() {
         $this->send_initialize();
+        $this->check_version_compatibility();
 
         while ( true ) {
             $line = $this->transport->read_line();
@@ -39,8 +46,8 @@ class Daemon {
 
     private function send_initialize() {
         $request = JsonRpc::build_request( 'initialize', array(
-            'protocolVersion' => '2025-03-26',
-            'clientInfo'     => array( 'name' => 'agentshell-mcp-daemon', 'version' => '1.0.0' ),
+            'protocolVersion' => self::MIN_COMPATIBLE_PROTOCOL_VERSION,
+            'clientInfo'     => array( 'name' => 'agentshell-mcp-daemon', 'version' => self::DAEMON_VERSION ),
             'capabilities'   => array(),
         ) );
 
@@ -48,6 +55,21 @@ class Daemon {
 
         $response = $this->client->send( $request );
         $this->transport->write_line( $response );
+
+        $decoded = json_decode( $response, true );
+        if ( isset( $decoded['result']['serverInfo']['version'] ) ) {
+            $this->server_version = $decoded['result']['serverInfo']['version'];
+            if ( $this->verbose ) { fwrite( STDERR, "Server version: " . $this->server_version . "\n" ); }
+        }
+    }
+
+    private function check_version_compatibility() {
+        if ( $this->server_version === null ) {
+            return;
+        }
+        if ( $this->server_version !== self::EXPECTED_SERVER_VERSION ) {
+            fwrite( STDERR, "VERSION MISMATCH: Daemon v" . self::DAEMON_VERSION . " / Server v$this->server_version (expected " . self::EXPECTED_SERVER_VERSION . "). Protocol issues possible.\n" );
+        }
     }
 
     private function handle_client_message( array $message ) {

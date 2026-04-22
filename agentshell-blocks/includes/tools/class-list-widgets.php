@@ -25,6 +25,7 @@ class List_Widgets extends Base_Tool {
                     'name' => $w['name'] ?? '',
                 );
             }, $widgets ),
+            'version' => $registry->get_version(),
         );
     }
 }

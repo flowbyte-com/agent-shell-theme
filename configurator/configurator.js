@@ -267,11 +267,16 @@
     // ── Render a single block item (type label + id + actions) ──
     function renderBlockItem(zoneIdx, slotKey, blockIdx, block) {
         const typeLabel = BLOCK_TYPES.find(t => t.value === block.type) || { label: block.type };
+        let blockLabel = typeLabel.label;
         let detail = '';
         if (block.type === 'widget' || block.type === 'wp_widget_area') {
             detail = escHtml(block.id || '');
         } else if (block.type === 'json_block') {
             detail = block.content ? escHtml(block.content.substring(0, 30)) + (block.content.length > 30 ? '…' : '') : '';
+        } else if (block.type === 'wp_core') {
+            const comp = coreComponents.find(c => c.id === block.id);
+            blockLabel = escHtml(comp ? comp.name : (block.id || 'WP Core Component'));
+            detail = block.id || '';
         }
 
         const zone = liveState.zones[zoneIdx];
@@ -281,7 +286,7 @@
 
         let html = `<div class="zone-block-item" data-zone-idx="${zoneIdx}" data-slot="${slotKey || ''}" data-block-idx="${blockIdx}">`;
         html += `<div class="zone-block-info">`;
-        html += `<span class="zone-block-type">${escHtml(typeLabel.label)}</span>`;
+        html += `<span class="zone-block-type">${escHtml(blockLabel)}</span>`;
         if (detail) {
             html += `<span class="zone-block-detail">${detail}</span>`;
         }

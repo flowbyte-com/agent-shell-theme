@@ -21,6 +21,7 @@ Text Domain: agentshell
 
     --theme-header-bg: #1a1a2e;
     --theme-header-text: #ffffff;
+    --theme-header-accent: var(--theme-accent);
     --theme-footer-bg: #16213e;
     --theme-footer-text: #ffffff;
 

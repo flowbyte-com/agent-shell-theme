@@ -16,15 +16,14 @@ class Get_Widget extends Base_Tool {
         );
     }
 
-    public function execute( array $arguments ) {
-        $this->validate_required( $arguments, array( 'id' ) );
-
+public function execute( array $arguments ) {
         $registry = \AgentShell_Blocks\Widget_Registry::get_instance();
         $widget   = $registry->get_widget( $arguments['id'] );
 
         if ( ! $widget ) {
             throw new \InvalidArgumentException( 'Widget not found: ' . $arguments['id'] );
         }
+        $widget['version'] = $registry->get_version();
         return $widget;
     }
 }
