@@ -163,11 +163,15 @@ function agentshell_cleanup_wp_head() {
 }
 add_action( 'init', 'agentshell_cleanup_wp_head', 100 );
 
-// Output buffer to strip persistent inline styles that bypass deregister
+// Output buffer to strip persistent inline styles that bypass deregister.
+// By wp_head (priority 99999), template rendering is complete so there should
+// be exactly one buffer (ours). We use ob_end_flush to close it properly
+// instead of ob_get_clean which only retrieves content without closing.
 function agentshell_ob_strip_inline_styles() {
-    if ( ! is_admin() && ! did_action( 'wp_head' ) ) {
-        ob_start();
+    if ( is_admin() || did_action( 'wp_head' ) ) {
+        return;
     }
+    ob_start();
 }
 add_action( 'wp', 'agentshell_ob_strip_inline_styles', 1 );
 
@@ -351,48 +355,11 @@ function agentshell_get_widget_registry() {
  */
 function agentshell_get_core_components() {
     return array(
-        array(
-            'id'   => 'site_title',
-            'name' => 'Site Title',
-            'render' => function() {
-                return get_bloginfo( 'name' ) ?: '';
-            },
-        ),
-        array(
-            'id'   => 'site_tagline',
-            'name' => 'Site Tagline',
-            'render' => function() {
-                return get_bloginfo( 'description' ) ?: '';
-            },
-        ),
-        array(
-            'id'   => 'site_logo',
-            'name' => 'Site Logo',
-            'render' => function() {
-                ob_start();
-                the_custom_logo();
-                return ob_get_clean();
-            },
-        ),
-        array(
-            'id'   => 'nav_menu',
-            'name' => 'Primary Navigation Menu',
-            'render' => function() {
-                return wp_nav_menu(array(
-                    'echo'           => false,
-                    'theme_location'=> 'primary',
-                    'container'     => 'nav',
-                    'container_class'=> 'wp-core-nav',
-                )) ?: '<p class="wp-core-empty">No menu assigned to Primary Location</p>';
-            },
-        ),
-        array(
-            'id'   => 'search_form',
-            'name' => 'Search Form',
-            'render' => function() {
-                return get_search_form( array( 'echo' => false ) );
-            },
-        ),
+        array( 'id' => 'site_title',    'name' => 'Site Title' ),
+        array( 'id' => 'site_tagline', 'name' => 'Site Tagline' ),
+        array( 'id' => 'site_logo',    'name' => 'Site Logo' ),
+        array( 'id' => 'nav_menu',     'name' => 'Primary Navigation Menu' ),
+        array( 'id' => 'search_form',  'name' => 'Search Form' ),
     );
 }
 
@@ -403,15 +370,27 @@ function agentshell_get_core_components() {
  * @return string HTML
  */
 function agentshell_render_core_component( $id ) {
-    $components = agentshell_get_core_components();
-    foreach ( $components as $component ) {
-        if ( ( $component['id'] ?? '' ) === $id ) {
-            // The render value is a closure — call it directly
-            $fn = $component['render'] ?? null;
-            return $fn ? (string) $fn() : '';
-        }
+    switch ( $id ) {
+        case 'site_title':
+            return get_bloginfo( 'name' ) ?: '';
+        case 'site_tagline':
+            return get_bloginfo( 'description' ) ?: '';
+        case 'site_logo':
+            ob_start();
+            the_custom_logo();
+            return ob_get_clean();
+        case 'nav_menu':
+            return wp_nav_menu(array(
+                'echo'           => false,
+                'theme_location'=> 'primary',
+                'container'     => 'nav',
+                'container_class'=> 'wp-core-nav',
+            )) ?: '<p class="wp-core-empty">No menu assigned to Primary Location</p>';
+        case 'search_form':
+            return get_search_form( array( 'echo' => false ) );
+        default:
+            return '<!-- wp_core not found: ' . esc_html( $id ) . ' -->';
     }
-    return '<!-- wp_core not found: ' . esc_html( $id ) . ' -->';
 }
 
 /**
@@ -560,6 +539,28 @@ add_filter( 'rest_authentication_errors', function( $errors ) {
 
     return $errors; // No recognized auth — let WP's defaults handle it
 }, 1 );
+
+/**
+ * REST auth callback — validates X-AgentShell-Token or Basic Auth (App Password).
+ * Returns true if authorized, WP_Error if not.
+ *
+ * @param WP_REST_Request $request
+ * @return true|WP_Error
+ */
+function agentshell_rest_auth_callback( WP_REST_Request $request ) {
+    // If a WP user is already set via cookie auth (X-WP-Nonce validated upstream),
+    // or via our custom token/app-password auth (which also calls wp_set_current_user),
+    // just confirm get_current_user_id() is truthy.
+    if ( get_current_user_id() ) {
+        return true;
+    }
+
+    return new WP_Error(
+        'rest_not_logged_in',
+        'Authentication required. Provide X-AgentShell-Token header or Basic Auth.',
+        array( 'status' => 401 )
+    );
+}
 
 /**
  * Flatten nested config to CSS-variable key space for configurator form.
@@ -814,14 +815,8 @@ add_action( 'rest_api_init', function() {
                 );
             }
 
-            // Core WP components (static list, no closures for JSON serialization)
-            $core_components = array(
-                array( 'id' => 'site_title',   'name' => 'Site Title' ),
-                array( 'id' => 'site_tagline', 'name' => 'Site Tagline' ),
-                array( 'id' => 'site_logo',    'name' => 'Site Logo' ),
-                array( 'id' => 'nav_menu',     'name' => 'Primary Navigation Menu' ),
-                array( 'id' => 'search_form',  'name' => 'Search Form' ),
-            );
+            // Core WP components — now served by the same function used at render time
+            $core_components = agentshell_get_core_components();
 
             $schema = array(
                 'zones'           => array(
@@ -882,7 +877,7 @@ add_action( 'rest_api_init', function() {
                 'core_components'    => $core_components,
             );
         },
-        'permission_callback' => '__return_true',
+        'permission_callback' => 'agentshell_rest_auth_callback',
     ) );
 
     register_rest_route( 'wp/v2', '/agentshell/config', array(
@@ -901,7 +896,7 @@ add_action( 'rest_api_init', function() {
             update_option( 'agentshell_config', $validated );
             return agentshell_flatten_config( $validated );
         },
-        'permission_callback' => '__return_true',
+        'permission_callback' => 'agentshell_rest_auth_callback',
     ) );
 
     // Preserve raw content format for agents — prevents WordPress from
