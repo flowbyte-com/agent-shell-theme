@@ -361,3 +361,90 @@ In all abort cases, report the cause and what was preserved (no live site mutati
 Each iteration writes to the audit log via `agentshell_set_*` calls — these are automatically recorded. The agent does NOT need a separate logging tool. Just ensure each `set_palette` / `set_typography` / `set_shape` / `set_spacing` call happens inside the open transaction so the audit trail is atomic.
 
 If the user asks "what changed across iterations", call `agentshell_list_revisions` scoped to the current transaction or call `agentshell_diff_snapshot` between two saved profiles.
+
+## Failure modes and fallbacks
+
+The pipeline assumes a best-case world: image is readable, screenshot backend is up, no concurrent transactions. Real runs hit edge cases. This section tells you exactly what to do when reality diverges.
+
+### 6.1 — Image issues
+
+**Unreadable / corrupt file.** Detect by attempting Read — if the result is a binary blob or an error, the image is unusable. PAUSE and ask the user (Section 5.6). Do not invent a theme from a non-image.
+
+**Too small (< 100px on either axis).** Same as unreadable — too low resolution to reason about aesthetic. PAUSE.
+
+**Very dark / very bright dominant.** Not a failure — the contrast-pair rule (4.2) handles it. Just confirm the resulting text/background pair passes WCAG AA (4.3) before commit.
+
+**Monochrome (no chromatic accent).** The accent extraction in 4.2 falls back to neutralizing the dominant hue at 40% saturation. Document this fallback in the audit summary so the user knows the theme is intentionally low-color.
+
+**Photograph, not UI mockup.** If the reference is a photo (cityscape, portrait, landscape), do NOT attempt to treat the photo's natural colors as the UI palette. Ask the user: "This looks like a photograph rather than a UI mockup. Would you like me to extract a palette inspired by it (using the dominant hues), or do you have a UI reference you'd prefer?"
+
+### 6.2 — Screenshot backend unavailable
+
+If `agentshell_get_capabilities` reports `screenshot: false`:
+
+- Continue the pipeline, but skip visual comparison (Step 6).
+- Judge quality by reading the diff between candidate profiles via `agentshell_diff_snapshot` — tokens only, no visual.
+- Apply the contrast-safety net (4.3) more aggressively — without visual confirmation, every WCAG pair must pass at AA, not just body text.
+- Tell the user in the summary: "Screenshot backend unavailable on this server — theme applied without visual verification. Review the live site manually."
+
+If `screenshot` returns an error (transient: Chrome crashed, OOM, etc.), retry once. If it fails again, fall back to diff-based judging.
+
+### 6.3 — Off-schema tokens
+
+The schema is strict. If your vision analysis produces a token not in the allowed list:
+
+- For colors: map to the nearest allowed key. E.g. if you want to set "warning: yellow", that's not a valid key — drop it or absorb into accent.
+- For typography: if you want `lineHeight`, that's not allowed — use `scale` to approximate.
+- For shape: if you want `shadow`, that's not allowed — inject via `custom_css` if the user opted into it, otherwise drop.
+- DO NOT silently coerce. If the rejection loses meaningful intent, retry the extraction with a stricter prompt: "Produce only these exact keys: <list>. Do not invent."
+
+### 6.4 — Color rejection by validator
+
+`agentshell_set_palette` rejects malformed hex values. If you produce `"#ff00"` (3-digit shorthand expanded incorrectly) or `"rgb(255,0,0)"` (not hex), the tool throws. You must:
+
+1. Catch the error.
+2. Normalize the value to `#rrggbb` form.
+3. Retry the call.
+4. If the same shape fails twice, the extraction heuristic has a bug — pause and report.
+
+### 6.5 — Conflicting user hints
+
+Example: image is bright/airy, user says "make the header dark like this".
+
+Resolution priority:
+
+1. User explicit instruction overrides image gestalt.
+2. Apply the hint narrowly — only to the zone they named.
+3. For zone hints, use `agentshell_set_css_var({ name: "--theme-header-bg", value: <hex> })` rather than mutating the global palette.
+4. Note in the audit summary that the hint overrode the image-derived value for that zone.
+
+### 6.6 — Transaction lock conflict
+
+If `agentshell_begin_transaction` returns an error naming another actor:
+
+- Do NOT force. Do NOT retry.
+- Tell the user: "Another agent owns an open transaction on this site. Coordinate with them or wait. The skill cannot run while a transaction is held by another actor."
+- Surface the actor name from the error so the user can reach out.
+
+### 6.7 — Daemon / WP unreachable
+
+If MCP calls return network errors:
+
+- Retry once with exponential backoff (the daemon's `timeout` config controls this, but you should call again after a brief pause).
+- If still failing, abort with: "Cannot reach WordPress via the daemon. Check `~/.agentshell-mcp.json` and that the WP site is responding."
+
+### 6.8 — Over-budget mid-iteration
+
+If per-call token spend is approaching the user's budget before reaching attempt 4:
+
+- Stop immediately at the current attempt, regardless of quality.
+- Pick the best so far, commit.
+- Tell the user: "Stopped at attempt N due to budget. To continue, raise the token budget or re-run with a faster model on the iteration tier."
+
+### 6.9 — Visual comparison hallucination
+
+LLMs sometimes claim visual match when no real comparison happened (the screenshot failed silently, or the model "imagined" the comparison). Defenses:
+
+- Always log the actual `agentshell_screenshot` URL returned in Step 5 in the audit summary.
+- If the screenshot backend was unavailable for the iteration, you must say "no visual comparison performed" — not "looks good".
+- The user can cross-check by visiting the `preview_theme` URL themselves.
