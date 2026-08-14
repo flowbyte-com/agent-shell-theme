@@ -317,7 +317,7 @@ The agent must parse these from the user's invocation message. If ambiguous, def
 
 ### 5.4 — The profile undo tree
 
-Each attempt produces a distinct named profile. The plugin stores profiles as a list keyed by name (not as a single mutating slot), so `candidate_v1` and `candidate_v2` coexist as separate entries you can switch between.
+Each attempt produces a distinct named profile. The plugin stores profiles as a list keyed by name (not as a single mutating slot), so distinct names create distinct entries that coexist with prior profiles — `candidate_v1` and `candidate_v2` stay as separate entries you can switch between.
 
 Saving convention:
 
