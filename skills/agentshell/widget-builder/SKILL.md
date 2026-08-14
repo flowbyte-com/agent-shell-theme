@@ -530,9 +530,9 @@ agentshell_update_zone_composition({
 agentshell_register_widget({
     id: "latest-posts-carousel",
     name: "Latest Posts Carousel",
-    template: '<div class="latest-posts-carousel" data-agentshell-source="latest-posts"><div class="lp-track"></div></div>',
+    template: '<div class="latest-posts-carousel"><div class="lp-track"></div></div>',
     css: '.latest-posts-carousel { overflow: hidden; } .latest-posts-carousel .lp-track { display: flex; gap: 1rem; transition: transform 0.3s; } .latest-posts-carousel .lp-card { flex: 0 0 300px; padding: 1rem; border: 1px solid var(--theme-border); border-radius: var(--radius-base); }',
-    init_js: "window.AgentshellWidgets['latest-posts-carousel'] = { init: function(el) { const zone = el.closest('[data-zone]') || el.parentElement; const posts = zone && zone.querySelectorAll('article.post'); if (!posts || !posts.length) return; const track = el.querySelector('.lp-track'); posts.forEach(p => { const title = p.querySelector('.entry-title a'); const date = p.querySelector('.entry-date'); const excerpt = p.querySelector('.entry-summary'); if (!title) return; const card = document.createElement('div'); card.className = 'lp-card'; card.innerHTML = '<h3>' + title.textContent + '</h3>' + (date ? '<time>' + date.textContent + '</time>' : '') + (excerpt ? '<p>' + excerpt.textContent + '</p>' : ''); track.appendChild(card); }); } };"
+    init_js: "window.AgentshellWidgets['latest-posts-carousel'] = { init: function(el) { const zone = el.closest('[data-zone]') || el.parentElement; const article = zone && zone.querySelector('article.post'); if (!article) return; const title = article.querySelector('.entry-title a'); const date = article.querySelector('.entry-date'); const excerpt = article.querySelector('.entry-summary'); if (!title) return; const track = el.querySelector('.lp-track'); const card = document.createElement('div'); card.className = 'lp-card'; card.innerHTML = '<h3>' + title.textContent + '</h3>' + (date ? '<time>' + date.textContent + '</time>' : '') + (excerpt ? '<p>' + excerpt.textContent + '</p>' : ''); track.appendChild(card); } };"
 })
 ```
 
@@ -572,14 +572,15 @@ User: "Build me a Q2 sales dashboard with our current figures."
 **Agent action:** Read the figures during construction.
 
 ```bash
-# (agent uses appropriate data source — wp_query, search_content, or manual entry)
-# In this example, assume figures are in a structured form:
-figures = {
-    "Q2_revenue": 1240000,
-    "Q2_orders": 3487,
-    "top_product": "Widget Pro",
-    "regions": { "NA": 580000, "EU": 420000, "APAC": 240000 }
-}
+agentshell_search_content({
+    search: "Q2 revenue orders top product regional",
+    type: "page",
+    per_page: 10
+})
+# Inspect returned content for Q2 figures; embed the structured data in the
+# widget's data-agentshell-data attribute so init_js reads it at runtime.
+#
+# Snapshot anchor: agentshell_get_design_system + Q2 figures read 2026-08-14
 ```
 
 **Widget registration:**
@@ -587,9 +588,9 @@ figures = {
 agentshell_register_widget({
     id: "q2-sales-dashboard",
     name: "Q2 Sales Dashboard",
-    template: '<div class="q2-dashboard" data-agentshell-data=\'{"placeholder":"filled by init_js"}\'></div>',
+    template: '<div class="q2-dashboard" data-agentshell-data=\'{"revenue":1240000,"orders":3487,"top_product":"Widget Pro","regions":{"NA":580000,"EU":420000,"APAC":240000}}\'></div>',
     css: '.q2-dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; padding: 1rem; } .q2-card { padding: 1rem; background: var(--theme-surface); border-radius: var(--radius-base); } .q2-metric { font-size: 2rem; font-weight: 700; color: var(--theme-accent); }',
-    init_js: "/* agentshell-snapshot-source: agentshell_get_design_system + manual Q2 figures, 2026-08-14 */ window.AgentshellWidgets['q2-sales-dashboard'] = { init: function(el) { const data = { revenue: 1240000, orders: 3487, top_product: 'Widget Pro', regions: { NA: 580000, EU: 420000, APAC: 240000 } }; const html = '<div class=\"q2-card\"><div class=\"q2-label\">Revenue</div><div class=\"q2-metric\">$' + (data.revenue/1000).toFixed(0) + 'k</div></div>' + '<div class=\"q2-card\"><div class=\"q2-label\">Orders</div><div class=\"q2-metric\">' + data.orders.toLocaleString() + '</div></div>' + '<div class=\"q2-card\"><div class=\"q2-label\">Top Product</div><div class=\"q2-metric\">' + data.top_product + '</div></div>'; el.innerHTML = html; } };"
+    init_js: "/* agentshell-snapshot-source: agentshell_get_design_system + Q2 figures read 2026-08-14 */ window.AgentshellWidgets['q2-sales-dashboard'] = { init: function(el) { try { var data = JSON.parse(el.dataset.agentshellData || '{}'); } catch(e) { return; } var html = '<div class=\"q2-card\"><div class=\"q2-label\">Revenue</div><div class=\"q2-metric\">$' + (data.revenue/1000).toFixed(0) + 'k</div></div>' + '<div class=\"q2-card\"><div class=\"q2-label\">Orders</div><div class=\"q2-metric\">' + data.orders.toLocaleString() + '</div></div>' + '<div class=\"q2-card\"><div class=\"q2-label\">Top Product</div><div class=\"q2-metric\">' + data.top_product + '</div></div>'; el.innerHTML = html; } };"
 })
 ```
 
