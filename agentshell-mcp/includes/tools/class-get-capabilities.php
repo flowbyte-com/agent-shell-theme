@@ -21,27 +21,32 @@ class Get_Capabilities extends Base_Tool {
 
     public function execute( array $arguments ) {
         $tx = \AgentShell_MCP\Transaction_Manager::instance();
+        $backend = \AgentShell_MCP\Screenshot::backend();
+
+        $capabilities = array(
+            'design'       => true,
+            'zones'        => true,
+            'widgets'      => true,
+            'content'      => true,
+            'transactions' => true,
+            'revisions'    => true,
+            'snapshots'    => true,
+            'profiles'     => true,
+            'preview'      => true,
+            'screenshot'   => null !== $backend,
+            'audit'        => true,
+        );
 
         return array(
             'server_version'  => defined( 'AGENTSHELL_MCP_VERSION' ) ? AGENTSHELL_MCP_VERSION : 'unknown',
             'protocol_version' => class_exists( '\AgentShell_MCP\Server' ) ? \AgentShell_MCP\Server::PROTOCOL_VERSION : '2025-03-26',
             'theme_active'    => function_exists( 'agentshell_get_config' ),
-            'capabilities'    => array(
-                'design'       => true,
-                'zones'        => true,
-                'widgets'      => true,
-                'content'      => true,
-                'transactions' => true,
-                'revisions'    => true,
-                'snapshots'    => true,
-                'profiles'     => true,
-                'preview'      => true,
-                'screenshot'   => false,
-                'audit'        => true,
-            ),
+            'capabilities'    => $capabilities,
+            'screenshot_backend' => null !== $backend ? array( 'label' => $backend['label'] ) : null,
             'state' => array(
                 'transaction_open' => $tx->is_active(),
                 'transaction_id'   => $tx->is_active() ? $tx->payload()['id'] : null,
+                'transaction_actor' => $tx->is_active() ? $tx->payload()['actor'] : null,
             ),
         );
     }

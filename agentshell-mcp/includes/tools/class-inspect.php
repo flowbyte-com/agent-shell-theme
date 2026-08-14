@@ -112,7 +112,7 @@ class Inspect extends Base_Tool {
             'snapshots'    => true,
             'profiles'     => true,
             'preview'      => true,
-            'screenshot'   => false,
+            'screenshot'   => null !== \AgentShell_MCP\Screenshot::backend(),
             'audit'        => true,
         );
     }

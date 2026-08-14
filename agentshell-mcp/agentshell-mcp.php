@@ -2,14 +2,14 @@
 /**
  * Plugin Name: AgentShell MCP
  * Description: MCP server for AgentShell — bridges JSON-RPC to WordPress filter-based tool registry.
- * Version: 1.2.0
+ * Version: 1.3.0
  * Requires at least: 6.0
  * Requires PHP: 7.4
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'AGENTSHELL_MCP_VERSION', '1.2.0' );
+define( 'AGENTSHELL_MCP_VERSION', '1.3.0' );
 define( 'AGENTSHELL_MCP_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'AGENTSHELL_MCP_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
@@ -21,10 +21,12 @@ require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-base-tool.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-registry.php';
 
 // Core services: history store, transaction manager (hooks option writes),
-// and the deterministic site validator.
+// the deterministic site validator, content primitives, and screenshot backend.
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-store.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-transactions.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-doctor.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot.php';
 \AgentShell_MCP\Transaction_Manager::instance();
 
 register_activation_hook( __FILE__, array( 'AgentShell_MCP\Activator', 'activate' ) );
@@ -85,6 +87,18 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-disable-widget.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-remove-widget.php';
 
+    // Content primitives (v1.3)
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-create-page.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-create-post.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-update-content.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-publish-content.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-unpublish-content.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-search-content.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-get-content.php';
+
+    // Screenshot loop (v1.3)
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-screenshot.php';
+
     $tools[] = new AgentShell_MCP\Tools\Get_Config();
     $tools[] = new AgentShell_MCP\Tools\Set_Css_Var();
     $tools[] = new AgentShell_MCP\Tools\Set_Design();
@@ -141,6 +155,18 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     $tools[] = new AgentShell_MCP\Tools\Enable_Widget();
     $tools[] = new AgentShell_MCP\Tools\Disable_Widget();
     $tools[] = new AgentShell_MCP\Tools\Remove_Widget();
+
+    // Content primitives (v1.3)
+    $tools[] = new AgentShell_MCP\Tools\Create_Page();
+    $tools[] = new AgentShell_MCP\Tools\Create_Post();
+    $tools[] = new AgentShell_MCP\Tools\Update_Content();
+    $tools[] = new AgentShell_MCP\Tools\Publish_Content();
+    $tools[] = new AgentShell_MCP\Tools\Unpublish_Content();
+    $tools[] = new AgentShell_MCP\Tools\Search_Content();
+    $tools[] = new AgentShell_MCP\Tools\Get_Content();
+
+    // Screenshot loop (v1.3)
+    $tools[] = new AgentShell_MCP\Tools\Screenshot();
 
     return $tools;
 }, 5 );

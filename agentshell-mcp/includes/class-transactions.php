@@ -48,9 +48,18 @@ class Transaction_Manager {
 
     public function begin( $label = '' ) {
         if ( $this->is_active() ) {
-            throw new \InvalidArgumentException(
-                'A transaction is already open (' . $this->payload()['id'] . '). Commit or roll back first.'
-            );
+            $existing = $this->payload();
+            $actor    = Store::actor();
+            if ( $existing['actor'] !== $actor ) {
+                throw new \InvalidArgumentException(
+                    'Another actor (' . $existing['actor'] . ') has an open transaction (' . $existing['id']
+                    . ', started ' . gmdate( 'Y-m-d H:i:s', (int) $existing['timestamp'] ) . '). '
+                    . 'Transactions are locked to the actor that opened them — wait for them to commit or roll back, '
+                    . 'or coordinate directly.'
+                );
+            }
+            // Same actor re-begins: return the open transaction untouched (idempotent).
+            return $existing;
         }
         $tx = array(
             'id'        => 'tx_' . time(),
@@ -66,6 +75,22 @@ class Transaction_Manager {
     }
 
     /**
+     * Assert the calling actor owns the open transaction (multi-agent guard).
+     * Read-only operations (preview/validate) may inspect any actor's staged
+     * changes; mutations (stage/commit/rollback) are owner-only.
+     */
+    private function assert_owner() {
+        $tx = $this->payload();
+        $actor = Store::actor();
+        if ( $tx['actor'] !== $actor ) {
+            throw new \InvalidArgumentException(
+                'Transaction ' . $tx['id'] . ' was opened by ' . $tx['actor'] . '; you are ' . $actor
+                . '. Commit/rollback is locked to the opening actor — wait for them to finish, or coordinate directly.'
+            );
+        }
+    }
+
+    /**
      * Stage a full config array. Returns true if staged, false if no
      * transaction is open (caller falls back to a direct write).
      */
@@ -73,6 +98,7 @@ class Transaction_Manager {
         if ( ! $this->is_active() ) {
             return false;
         }
+        $this->assert_owner();
         $tx            = $this->payload();
         $tx['staged']  = $config;
         update_option( self::KEY, $tx, false );
@@ -150,6 +176,7 @@ class Transaction_Manager {
         if ( ! $this->is_active() ) {
             throw new \InvalidArgumentException( 'No transaction is open. Call agentshell_begin_transaction first.' );
         }
+        $this->assert_owner();
         $tx = $this->payload();
         if ( ! is_array( $tx['staged'] ) ) {
             throw new \InvalidArgumentException( 'Transaction has no staged changes. Call a mutation tool first.' );
@@ -190,6 +217,7 @@ class Transaction_Manager {
         if ( ! $this->is_active() ) {
             throw new \InvalidArgumentException( 'No transaction is open. Call agentshell_begin_transaction first.' );
         }
+        $this->assert_owner();
         $tx = $this->payload();
         delete_option( self::KEY );
         $this->active = null;

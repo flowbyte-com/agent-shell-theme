@@ -64,8 +64,23 @@ All tools are prefixed `agentshell_`. Call with empty arguments unless noted.
 | `agentshell_list_theme_profiles` / `agentshell_apply_theme` / `agentshell_preview_theme` | Profile management; preview = read-only URL, apply = live |
 | `agentshell_export_theme` / `agentshell_import_theme` | Portable theme packages (JSON manifest) |
 | `agentshell_enable_widget` / `agentshell_disable_widget` / `agentshell_remove_widget` | Widget lifecycle (remove works only for agent-defined widgets) |
+| `agentshell_screenshot` | Headless-browser screenshot of the site or a profile preview: `{ viewport: "desktop"|"mobile"|"tablet", url?, profile? }` |
 
-**Transactions — the safe change loop.** Instead of mutating directly, run: `agentshell_begin_transaction` → mutation tools (staged, nothing persisted) → `agentshell_preview_transaction` (diff) → `agentshell_validate_transaction` (doctor on staged) → `agentshell_commit_transaction` (atomic, recorded) or `agentshell_rollback_transaction` (discard). While a transaction is open the live site is never touched, so experiments are safe.
+### Content primitives (v1.3)
+
+Raw HTML is preserved exactly (no `wpautop`/kses for admin agents).
+
+| Tool | What it does |
+|------|-------------|
+| `agentshell_create_page` / `agentshell_create_post` | Create with raw HTML content: `{ title, content, status?, slug? }` |
+| `agentshell_update_content` | Update `{ id, type?, title?, content?, status?, slug?, parent? }` |
+| `agentshell_publish` / `agentshell_unpublish` | Flip a post/page to `publish` / back to `draft` |
+| `agentshell_search_content` | Search posts/pages (`{ query?, type?, status?, limit? }`) |
+| `agentshell_get_content` | Fetch one record: raw + rendered HTML, status, slug, link |
+
+**Transactions — the safe change loop.** Instead of mutating directly, run: `agentshell_begin_transaction` → mutation tools (staged, nothing persisted) → `agentshell_preview_transaction` (diff) → `agentshell_validate_transaction` (doctor on staged) → `agentshell_commit_transaction` (atomic, recorded) or `agentshell_rollback_transaction` (discard). While a transaction is open the live site is never touched, so experiments are safe. **Transactions are locked to the actor that opened them** — if another agent owns the open transaction, begin/commit/rollback return an error naming the owner; you can still read with `agentshell_get_transaction` / `agentshell_preview_transaction` and coordinate.
+
+**Screenshot backend.** `agentshell_screenshot` needs a headless browser on the server: auto-detected `google-chrome` / `chromium` / `headless_shell`, or set `AGENTSHELL_CHROME_BIN` in `wp-config.php`. `profile` previews require `AGENTSHELL_REST_TOKEN` (the preview URL is HMAC-signed). `agentshell_get_capabilities` reports `screenshot` availability before you rely on it.
 
 ---
 

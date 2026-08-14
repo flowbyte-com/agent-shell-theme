@@ -161,29 +161,39 @@ function agentshell_inject_saved_styles() {
     }
 
     // Theme profile preview: ?agentshell_preview=<profile> renders a saved
-    // profile's design tokens as :root overrides — read-only, logged-in only,
-    // and never persisted. This powers the agentshell_preview_theme MCP tool.
-    if ( is_user_logged_in() && isset( $_GET['agentshell_preview'] ) ) {
+    // profile's design tokens as :root overrides — read-only and never
+    // persisted. Authorized either by a logged-in browser session, or by an
+    // HMAC key derived from AGENTSHELL_REST_TOKEN (used by the headless
+    // screenshot tool, which has no session).
+    if ( isset( $_GET['agentshell_preview'] ) ) {
         $profiles = get_option( 'agentshell_theme_profiles', array() );
         $name     = sanitize_key( wp_unslash( $_GET['agentshell_preview'] ) );
         if ( $name && isset( $profiles[ $name ]['design'] ) && is_array( $profiles[ $name ]['design'] ) ) {
-            $preview = array( 'design' => $profiles[ $name ]['design'] );
-            if ( function_exists( 'agentshell_flatten_config' ) ) {
-                $overrides = agentshell_flatten_config( $preview );
-            } else {
-                $overrides = array();
-                array_walk_recursive( $preview, function( $value, $key ) use ( &$overrides ) {
-                    if ( strpos( (string) $key, '--' ) === 0 && is_string( $value ) ) {
-                        $overrides[ $key ] = $value;
-                    }
-                } );
+            $authorized = is_user_logged_in();
+            if ( ! $authorized && defined( 'AGENTSHELL_REST_TOKEN' ) && isset( $_GET['agentshell_preview_key'] ) ) {
+                $expected  = hash_hmac( 'sha256', $name, AGENTSHELL_REST_TOKEN );
+                $provided  = sanitize_text_field( wp_unslash( $_GET['agentshell_preview_key'] ) );
+                $authorized = hash_equals( $expected, $provided );
             }
-            if ( ! empty( $overrides ) ) {
-                echo "<style id='agentshell-preview-overrides'>\n:root {\n";
-                foreach ( $overrides as $key => $value ) {
-                    echo '    ' . esc_attr( $key ) . ': ' . esc_attr( $value ) . ";\n";
+            if ( $authorized ) {
+                $preview = array( 'design' => $profiles[ $name ]['design'] );
+                if ( function_exists( 'agentshell_flatten_config' ) ) {
+                    $overrides = agentshell_flatten_config( $preview );
+                } else {
+                    $overrides = array();
+                    array_walk_recursive( $preview, function( $value, $key ) use ( &$overrides ) {
+                        if ( strpos( (string) $key, '--' ) === 0 && is_string( $value ) ) {
+                            $overrides[ $key ] = $value;
+                        }
+                    } );
                 }
-                echo "}\n</style>\n";
+                if ( ! empty( $overrides ) ) {
+                    echo "<style id='agentshell-preview-overrides'>\n:root {\n";
+                    foreach ( $overrides as $key => $value ) {
+                        echo '    ' . esc_attr( $key ) . ': ' . esc_attr( $value ) . ";\n";
+                    }
+                    echo "}\n</style>\n";
+                }
             }
         }
     }

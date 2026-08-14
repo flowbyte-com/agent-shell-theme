@@ -139,8 +139,21 @@ The plugin implements the **observe → reason → change → verify** loop on t
 | `agentshell_save_theme_profile` / `list_theme_profiles` / `apply_theme` / `preview_theme` | Named design profiles; preview renders as read-only URL overrides |
 | `agentshell_export_theme` / `import_theme` | Portable theme packages (JSON manifest) between installations |
 | `agentshell_enable_widget` / `disable_widget` / `remove_widget` | Widget lifecycle (remove = agent-defined widgets only) |
+| `agentshell_screenshot` | Headless-browser screenshot of the site or a profile preview (desktop/mobile/tablet viewports) — closes the visual iteration loop |
+
+**Content primitives — intent-level content operations.** Raw HTML is preserved exactly (no `wpautop`/kses for admin agents), matching the REST API behaviour.
+
+| Tool | What it does |
+|------|-------------|
+| `agentshell_create_page` / `create_post` | Create with raw HTML content: `{ "title", "content", "status", "slug", "parent" }` |
+| `agentshell_update_content` | Update title / content / status / slug / parent of an existing post or page |
+| `agentshell_publish` / `unpublish` | Flip a post/page to `publish` or back to `draft` |
+| `agentshell_search_content` | Search posts/pages; empty query lists most recently modified |
+| `agentshell_get_content` | Fetch one record: raw + rendered HTML, status, slug, link, edit URL |
 
 **Transactions — the safe change loop.** Run `agentshell_begin_transaction` → make mutations (staged, nothing persisted — the live site is untouched) → `agentshell_preview_transaction` (token-level diff) → `agentshell_validate_transaction` (doctor on the staged config) → `agentshell_commit_transaction` (one atomic, validated write, recorded as a revision) or `agentshell_rollback_transaction` (discard everything). Transactions persist across MCP requests and are visible via `agentshell_get_transaction`.
+
+**Multi-agent safety.** Transactions are locked to the actor that opened them: a different agent calling `begin_transaction` (or `stage`/`commit`/`rollback` on someone else's transaction) gets a clear error naming the owner, the transaction ID, and when it started. Same-actor re-`begin` is idempotent. Read-only calls (`preview_transaction`, `validate_transaction`, `get_transaction`) work on any open transaction so agents can coordinate.
 
 **Example session** — restyle the site to a terminal look without risking the live site:
 
@@ -156,6 +169,25 @@ agentshell_validate_transaction
 agentshell_commit_transaction
 agentshell_get_audit_log
 ```
+
+**Example session** — draft a page, publish it, and screenshot the result:
+
+```text
+agentshell_create_page({ title: "About", content: "<p>...</p>", status: "draft" })
+agentshell_publish({ id: 102 })
+agentshell_search_content({ type: "page", status: "publish" })
+agentshell_get_content({ id: 102 })
+agentshell_screenshot({ viewport: "desktop" })        # renders the live site
+agentshell_screenshot({ viewport: "mobile", profile: "terminal" })  # profile preview
+```
+
+## Screenshot Loop
+
+`agentshell_screenshot` captures the site with the server's headless Chrome/Chromium via CLI flags (`--headless --screenshot`). Images land in `wp-content/uploads/agentshell-screenshots/` and are returned as URLs for the agent to evaluate.
+
+- Backend auto-detected: `google-chrome`, `google-chrome-stable`, `chromium`, `chromium-browser`, `headless_shell` — or set `AGENTSHELL_CHROME_BIN` in `wp-config.php` for an explicit path. `agentshell_get_capabilities` reports `screenshot: true` and the backend only when one is available.
+- Viewports: `desktop` (1280×800), `mobile` (390×844), `tablet` (768×1024), or explicit `width`/`height` (320–4096).
+- `profile` screenshots render a saved theme profile's tokens as read-only `:root` overrides — the preview URL is signed with an HMAC derived from `AGENTSHELL_REST_TOKEN`, so `AGENTSHELL_REST_TOKEN` must be defined in `wp-config.php` for profile previews. No browser session required.
 
 ---
 
@@ -252,9 +284,11 @@ agentshell/
 │   └── includes/
 │       ├── class-server.php / class-transport.php
 │       ├── class-store.php    # Revisions, audit, snapshots, profiles
-│       ├── class-transactions.php  # Safe change loop (begin/stage/commit/rollback)
+│       ├── class-transactions.php  # Safe change loop (begin/stage/commit/rollback, per-actor locks)
 │       ├── class-doctor.php   # Deterministic site validator
-│       └── tools/             # 40+ MCP tools
+│       ├── class-content.php  # Content primitives (create/update/status/search)
+│       ├── class-screenshot.php    # Headless-browser backend (Chrome/Chromium)
+│       └── tools/             # 45+ MCP tools
 ├── agentshell-mcp-daemon/     # PHP CLI proxy (stdio ↔ HTTP)
 └── AGENTS.md                  # Agent-facing guide
 ```
@@ -280,12 +314,14 @@ agentshell/
 | `HTTP request failed` | Daemon can't reach the WP endpoint |
 | 401 on token requests | `AGENTSHELL_REST_TOKEN` not defined in `wp-config.php` (auth is fail-closed) |
 | `A transaction is already open` | Previous transaction was never committed/rolled back — check `agentshell_get_transaction` |
+| `Another actor (...) has an open transaction` | A different agent (app-password user) owns the open transaction — wait or coordinate; commit/rollback is locked to the opener |
+| `No headless browser found` | `agentshell_screenshot` needs Chrome/Chromium on the server — install it or set `AGENTSHELL_CHROME_BIN` |
 | `Commit blocked by validation errors` | Staged config fails the site doctor — fix and re-validate |
 | D3/Math.js not available | No registered widget declares the lib in its `libs` array |
 | Header logo missing | No custom logo set under **Appearance → Customize → Site Identity** |
 
 ## Roadmap
 
-- **Screenshot preview loop** — `agentshell_preview_theme` currently returns a logged-in preview URL (`?agentshell_preview=<profile>`); headless-browser screenshots (desktop/mobile viewports) for full agent-side visual iteration
-- **Content primitives** — intent-level `agentshell_create_page` / `agentshell_publish` wrappers over the WP REST API
-- **Multi-agent coordination** — lock transactions per actor; warn on concurrent sessions
+- **Remote screenshot fallback** — use an external browserless/screenshot service when no headless browser is installed on the server
+- **Multi-site operations** — run one agent across several AgentShell installations from a single session (import/export already provide the package format)
+- **Agent-to-agent messaging** — leave notes/messages for other agents on the site (audit log already records who did what)

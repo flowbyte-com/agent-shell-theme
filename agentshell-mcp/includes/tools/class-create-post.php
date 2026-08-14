@@ -1,0 +1,34 @@
+<?php
+namespace AgentShell_MCP\Tools;
+
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+/**
+ * agentshell_create_post — add a blog post with raw HTML content.
+ */
+class Create_Post extends Base_Tool {
+    public function get_name() { return 'agentshell_create_post'; }
+    public function get_description() { return 'Create a WordPress post with raw HTML content (no wpautop/kses — content is preserved exactly). Returns the created record incl. edit URL.'; }
+    public function get_input_schema() {
+        return array(
+            'type'       => 'object',
+            'properties' => array(
+                'title'    => array( 'type' => 'string', 'description' => 'Post title' ),
+                'content'  => array( 'type' => 'string', 'description' => 'Raw HTML content. No script tags or inline event handlers — they are stripped by WordPress core for non-super-admin users.' ),
+                'status'   => array( 'type' => 'string', 'enum' => array( 'draft', 'publish', 'pending', 'private', 'future' ), 'description' => 'Default draft' ),
+                'slug'     => array( 'type' => 'string', 'description' => 'Optional URL slug' ),
+            ),
+            'required'   => array( 'title', 'content' ),
+        );
+    }
+
+    public function execute( array $arguments ) {
+        return \AgentShell_MCP\Content_Primitives::create(
+            'post',
+            $arguments['title'],
+            $arguments['content'],
+            $arguments['status'] ?? 'draft',
+            array( 'post_name' => $arguments['slug'] ?? null )
+        );
+    }
+}
