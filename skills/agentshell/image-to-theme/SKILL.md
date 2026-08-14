@@ -286,3 +286,78 @@ Classify the whitespace pattern:
 - Never set radius above `1rem` unless the reference is explicitly pill-shaped throughout (or `expressive` is set, allowing up to `2rem`)
 - Never set borderWidth above `2px` — heavy borders read as broken, not designed
 - Never set spacing.base above `2rem` (or `3rem` under `expressive`) — produces layouts that feel broken
+
+## Iteration controls
+
+The pipeline has explicit iteration guards. This section explains the knobs and the rationale so you understand *why* the cap exists and how to tune it when the user asks.
+
+### 5.1 — Default behavior
+
+- Max attempts: **4**
+- Stop condition: subjective match (Step 7A) OR budget reached, whichever first
+- At attempt 4: mandatory pick-best-and-commit. Never loop a 5th time.
+
+### 5.2 — Why a hard cap
+
+Two reasons that compound:
+
+1. **Token cost.** Each iteration is one vision read of the reference + one vision read of the screenshot + 4 MCP calls + reasoning. Beyond 4 rounds, the marginal quality gain is tiny relative to spend.
+2. **Model overcorrection.** Vision LLMs tend to chase diminishing differences after the third pass — they tighten a hue, then re-tighten, then drift away from gestalt. The 4th attempt is usually worse than the 2nd on gestalt match, even if pixel-closer.
+
+### 5.3 — Tuning knobs
+
+The user can override at invocation via natural-language phrases parsed by the agent:
+
+- `max_attempts: 2` — phrases like "just give me a quick theme", "two attempts max", "don't iterate much"
+- `max_attempts: 4` — default; no special phrasing needed
+- `max_attempts: 6` — phrases like "take your time", "iterate until close", "I have budget"
+- `strict_budget: true` — phrases like "always run the full budget", "don't stop early" (rare; useful for A/B testing)
+
+The agent must parse these from the user's invocation message. If ambiguous, default to `max_attempts: 4` and `strict_budget: false`.
+
+### 5.4 — The profile undo tree
+
+Each attempt produces a distinct named profile. The plugin stores profiles as a list keyed by name (not as a single mutating slot), so `candidate_v1` and `candidate_v2` coexist as separate entries you can switch between.
+
+Saving convention:
+
+- `agentshell_save_theme_profile("candidate_v1")` after attempt 1
+- `agentshell_save_theme_profile("candidate_v2")` after attempt 2
+- `agentshell_save_theme_profile("candidate_v3")` after attempt 3
+- ...
+
+Backtrack mechanic:
+
+- `agentshell_apply_theme("candidate_v2")` restores v2's tokens into the live transaction — use this when attempt 3 regressed and you want to branch from v2 in a different direction.
+- `agentshell_diff_snapshot` between any two profiles to inspect what changed.
+- `agentshell_list_theme_profiles` to see the full list of saved attempts.
+
+Keep at most the last 3 candidate profiles named. Older candidates may be left in the list harmlessly; the agent simply ignores them. If the user has unrelated named profiles (e.g. "terminal", "brutalist"), those are independent — do not overwrite or reuse those names.
+
+### 5.5 — Mandatory commit at attempt 4
+
+When the budget is reached without a clear subjective match:
+
+1. Compare the last 3 screenshots to the reference.
+2. Pick the one that best matches gestalt (palette mood + type feel + rhythm — not pixel match).
+3. `agentshell_apply_theme("<best-profile>")` to restore that profile into the live transaction.
+4. Proceed to `agentshell_commit_transaction`.
+5. Report to the user: "Reached iteration budget. Committed best match: <profile>. If you want closer, re-run with `max_attempts: 6` or refine the reference image."
+
+Do NOT silently pick. Do NOT keep iterating. Do NOT rollback without telling the user.
+
+### 5.6 — Early abort conditions
+
+Stop and consider rollback (without committing) if any of these occur:
+
+- Screenshot backend is unavailable AND `preview_theme` URL is unreachable for 3 consecutive attempts
+- The reference image is unreadable (corrupt, empty, <100px on either axis) — **PAUSE here, do NOT rollback immediately.** Ask the user for a new file path or URL. If the user provides one, restart from Step 3 with the new image — the open transaction remains valid. Only rollback if the user cannot provide a replacement.
+- Every attempt since v1 has made the gestalt match worse — the agent is overcorrecting and there is no recoverable trajectory. After attempt 3, if match score is monotonically degrading, abort.
+
+In all abort cases, report the cause and what was preserved (no live site mutation occurred — the transaction was rolled back, not committed, and the saved candidate profiles remain queryable).
+
+### 5.7 — Per-iteration logging
+
+Each iteration writes to the audit log via `agentshell_set_*` calls — these are automatically recorded. The agent does NOT need a separate logging tool. Just ensure each `set_palette` / `set_typography` / `set_shape` / `set_spacing` call happens inside the open transaction so the audit trail is atomic.
+
+If the user asks "what changed across iterations", call `agentshell_list_revisions` scoped to the current transaction or call `agentshell_diff_snapshot` between two saved profiles.
