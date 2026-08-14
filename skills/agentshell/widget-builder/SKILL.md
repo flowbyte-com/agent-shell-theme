@@ -451,3 +451,19 @@ A mu-plugin that violates any of these (e.g., registers cron jobs, writes to the
 ### 7. No bypassing transactions
 
 All composition mutations must run inside an open transaction. Direct calls to `agentshell_update_zone_composition` or `agentshell_register_widget` without a transaction are forbidden — they would mutate the live site without the rollback safety net.
+
+## Security boundary (no strictness modes)
+
+The widget-builder skill has **no strictness knob**. Unlike the image-to-theme skill (which has strict / pragmatic / expressive modes for heuristic mapping flexibility), this skill has one mode: **safe**.
+
+Every output complies with the security boundary:
+
+- No client-side `fetch()` — ever, in any mode
+- No `<script>` injection — ever, in any mode
+- No blind DOM scanning — ever, in any mode
+
+There is no "expressive" escape hatch. The boundary is absolute and non-tunable. If the user asks for a widget that requires network access, the skill refuses and explains why — there is no setting that flips that off.
+
+This is a deliberate divergence from image-to-theme. Heuristic mapping (colors, fonts, spacing) has a wide valid solution space and benefits from expressiveness. Widget construction has a narrow valid space constrained by the security boundary, and expressiveness in that space means bugs, not flexibility.
+
+The security boundary is not a tunable preference. It is a load-bearing architectural constraint.
