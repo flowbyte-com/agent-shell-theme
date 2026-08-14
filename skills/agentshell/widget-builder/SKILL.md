@@ -113,3 +113,110 @@ This gives the user visibility without forcing them to remember a `track:` prefi
 If the user explicitly says "snapshot" / "frozen" / "static" / "embedded", the agent treats that as a request for the Interactive track with snapshot-seeded state — the architectural fit for frozen point-in-time data. If the user says "interactive" / "calculator" / "self-contained", route to plain Interactive. If the user says "live" / "decorator" / "current posts", route to Decorator.
 
 In all cases the agent still picks the implementation; the user can override the track choice. The skill never uses client-side `fetch()` to satisfy any of these requests — that path is closed regardless of what the user says.
+
+## Track 2 — the colocation contract
+
+### The colocation rule (primary)
+
+The primary Track 2 pattern is **colocation**: the decorator widget lives in the same zone as the `wp_loop` it enhances. The agent places both blocks in the same zone composition, in the order `[wp_loop, decorator-widget]`.
+
+```text
+zone composition (main):
+  [
+    { type: "wp_loop" },
+    { type: "widget", id: "latest-posts-carousel" }
+  ]
+```
+
+When the widget's `init(el)` runs, it locates its source by walking up to its zone scope and finding the nearest preceding `wp_loop` block:
+
+```js
+init: function(el) {
+    const zone = el.closest('.zone-main, [data-zone]') || el.parentElement;
+    const loop = zone.querySelector('.wp-block-post, article.post, .entry');
+    if (!loop) return; // source not found — degrade gracefully
+    // extract from standard WP markup...
+}
+```
+
+This is **declared by composition**, not by a custom data-* attribute on the loop. The widget knows its source because the agent placed them together. No PHP filter, no source attribute, no risk of mis-wiring to unrelated loops on the same page.
+
+### What the widget reads
+
+Standard WordPress `wp_loop` markup already exposes everything a decorator typically needs:
+
+| Need | Standard markup |
+|---|---|
+| Post title | `<h2 class="entry-title"><a>…</a></h2>` |
+| URL | `<a class="entry-title-link" href="…">` |
+| Date | `<time class="entry-date published" datetime="ISO8601">…</time>` |
+| Excerpt | `<div class="entry-summary">…</div>` |
+| Post ID | `<article id="post-123" class="post-123 …">` |
+| Featured image | `<img class="attachment-post-thumbnail">` |
+| Author | `<a class="entry-author">` or `<span class="byline">` |
+| Categories | `<a class="entry-category" rel="category">` |
+
+The decorator extracts these from the existing markup. No new attributes required.
+
+### Why decorators MUST NOT blind-scan the document
+
+A widget that runs `document.querySelectorAll('article')` will find articles in the main loop, the sidebar, related-posts, footer widgets, and admin-ajax embeds — and confidently wire up the wrong data.
+
+The colocation rule fixes this without any custom attributes: the widget's scope is the zone it lives in, and within that zone the nearest preceding `wp_loop` is unambiguously its source.
+
+### Optional data-* patterns
+
+#### Sub-pattern A: scalar data
+
+For single values, use one attribute per field:
+
+```html
+<article
+  data-post-id="123"
+  data-post-title="Hello World"
+  data-post-url="/hello-world/"
+  data-post-date="2026-08-14"
+>
+  ...native WP content...
+</article>
+```
+
+Excellent for simple widgets. Survives `wp_kses_post` unchanged.
+
+#### Sub-pattern B: structured data
+
+For collections, encode JSON into **one** `data-*` attribute:
+
+```html
+<div
+  class="latest-posts"
+  data-agentshell-data='{"posts":[{"id":1,"title":"..."}]}'
+>
+</div>
+```
+
+Consume via `el.dataset.agentshellData` in `init_js`. The skill explicitly requires the agent to handle malformed or missing payloads rather than assuming the data exists.
+
+The agent must NOT introduce `<script type="application/json">` for hydration. `wp_kses_post` strips script tags, so this convention doesn't survive sanitization without ripping a hole in the widget security boundary. Data attributes are the right primitive because they pass through the existing sanitization intact.
+
+### The escape hatch — mu-plugin for genuinely missing data
+
+When standard WordPress markup genuinely does not expose a field the widget needs (rare — most fields are in the standard markup), the skill permits a **mu-plugin filter** with a strict validation gate. This is an explicit, logged, rare action — not the default.
+
+**Mandatory workflow for the mu-plugin path:**
+
+1. Write the filter PHP to `/tmp/agentshell-widget-filter-<timestamp>.php`. Never write directly to `wp-content/mu-plugins/`.
+2. Run `php -l /tmp/agentshell-widget-filter-<timestamp>.php` via the Bash tool. Confirm clean lint output. If lint fails, fix and re-run until clean.
+3. **Inside the open transaction**, after lint passes, move the file to `wp-content/mu-plugins/`. Use `mv` (atomic on the same filesystem) rather than write-in-place.
+4. Verify the live site still responds: `curl -fsS -o /dev/null -w "%{http_code}" https://example.com/wp-json/agentshell-mcp/v1/...`. If the daemon returns non-2xx, the mu-plugin broke WordPress boot. Roll back by deleting the file (`rm wp-content/mu-plugins/agentshell-widget-filter-<timestamp>.php`) BEFORE attempting any other rollback. The standard `agentshell_rollback_transaction` only handles wp_options state — it cannot un-fatal a PHP parse error.
+5. Tell the user: "Wrote a mu-plugin filter to expose X. File: … If you want to revert, run: `rm wp-content/mu-plugins/agentshell-widget-filter-<timestamp>.php`."
+
+**The escape hatch is logged in the audit summary** so future agents know a mu-plugin exists and can update or remove it.
+
+**Hard rule for the escape hatch:** the mu-plugin MUST be removable by a single `rm`. No `register_activation_hook`, no database writes from inside the filter, no cron registration. Anything that creates persistent state outside the file itself violates the rollback principle.
+
+### Why no MCP tool for filter registration
+
+A tool that lets the agent write PHP into `wp_options` and `eval()` it during boot sounds tempting but is fundamentally unsafe: a fatal error in eval'd code is indistinguishable from a fatal error in core. PHP shutdown handlers run after the fatal and can log, but cannot restore state. The cost of a single bad eval is a bricked site with no automated recovery path — worse than the mu-plugin path, which is recoverable by `rm`.
+
+The mu-plugin escape hatch is the minimum-necessary PHP-modification surface that preserves the rollback principle.
