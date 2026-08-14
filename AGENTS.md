@@ -93,7 +93,7 @@ Use `agentshell_set_zone_source` to route a zone to `json_block` (raw HTML, styl
 
 For charts, calculators, terminals — anything requiring JS — use Web Components with Shadow DOM.
 
-**Pre-loaded:** `window.d3` (D3.js v7), `window.math` (Math.js 11.8). Do NOT inject `<script src="">` for these.
+**Available on demand:** `window.d3` (D3.js v7), `window.math` (Math.js 11.8). Libraries load ONLY when a registered widget declares them via `libs: ["d3"]` / `libs: ["mathjs"]` (loaded with SRI + defer). Do NOT inject `<script src="">` for these — if a widget needs one, add the lib to the widget registration's `libs` array.
 
 ```html
 <mpm-memory-chart data-used="75"></mpm-memory-chart>

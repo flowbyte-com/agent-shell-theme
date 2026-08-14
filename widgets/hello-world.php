@@ -8,6 +8,7 @@
 return array(
     'id'       => 'hello-world',
     'name'     => 'Hello World',
+    'libs'     => array(), // optional: 'd3', 'mathjs' — loaded only when declared
     'init_js'  => "window.AgentshellWidgets = window.AgentshellWidgets || {};
 window.AgentshellWidgets['hello-world'] = {
     init: function(el) {

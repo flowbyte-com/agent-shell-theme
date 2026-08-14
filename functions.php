@@ -2,6 +2,19 @@
 /**
  * AgentShell theme functions
  */
+
+// PHP 7.4 compat: polyfills for PHP 8.0 string helpers used below.
+if ( ! function_exists( 'str_starts_with' ) ) {
+    function str_starts_with( $haystack, $needle ) {
+        return (string) $needle !== '' && strncmp( $haystack, $needle, strlen( $needle ) ) === 0;
+    }
+}
+if ( ! function_exists( 'str_contains' ) ) {
+    function str_contains( $haystack, $needle ) {
+        return '' === $needle || false !== strpos( $haystack, $needle );
+    }
+}
+
 // Disable automatic formatting for agent payloads
 // This prevents WordPress from wrapping content in <p>, <br>, etc.
 remove_filter( 'the_content', 'wpautop' );
@@ -90,12 +103,21 @@ function agentshell_enqueue_assets() {
         filemtime( get_template_directory() . '/style.css' )
     );
 
+    // Theme JS — mobile nav toggle, always enqueued with filemtime cache busting
+    wp_enqueue_script(
+        'agentshell-theme',
+        get_template_directory_uri() . '/assets/theme.js',
+        array(),
+        filemtime( get_template_directory() . '/assets/theme.js' ),
+        true
+    );
+
     // Configurator assets: logged-in users only
     if ( ! is_user_logged_in() ) {
         return;
     }
-    wp_enqueue_style( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.css', array( 'agentshell-style' ), '1.0.0' );
-    wp_enqueue_script( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.js', array(), '1.0.0', true );
+    wp_enqueue_style( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.css', array( 'agentshell-style' ), filemtime( get_template_directory() . '/configurator/configurator.css' ) );
+    wp_enqueue_script( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.js', array(), filemtime( get_template_directory() . '/configurator/configurator.js' ), true );
     wp_localize_script( 'agentshell-configurator', 'AgentShellConfig', array(
         'adminUrl'   => admin_url( 'admin-ajax.php' ),
         'restUrl'    => rest_url(),
@@ -198,6 +220,18 @@ function agentshell_persist_sidebar( $classes ) {
 function agentshell_setup() {
     locate_template( 'template-parts/shell-render.php', true, false );
 
+    // Core theme supports — required for wp_core components to work:
+    // custom-logo powers the site_logo block, title-tag replaces deprecated wp_title().
+    add_theme_support( 'custom-logo', array(
+        'height'      => 60,
+        'width'       => 200,
+        'flex-height' => true,
+        'flex-width'  => true,
+    ) );
+    add_theme_support( 'title-tag' );
+    add_theme_support( 'post-thumbnails' );
+    add_theme_support( 'html5', array( 'search-form', 'gallery', 'caption', 'style', 'script' ) );
+
     register_nav_menus( array(
         'primary' => esc_html__( 'Primary Navigation', 'agentshell' ),
     ) );
@@ -205,34 +239,48 @@ function agentshell_setup() {
 add_action( 'after_setup_theme', 'agentshell_setup' );
 
 /**
- * Pre-load approved libraries for agent-built Web Component widgets.
- * Agents do NOT need to inject <script src="..."> for these.
- * Currently available: d3 (window.d3), mathjs (window.math)
+ * Load pre-approved libraries for agent-built Web Component widgets.
+ * Libraries are loaded ONLY when at least one registered widget declares them
+ * in its 'libs' array, e.g. 'libs' => array( 'd3' ) or array( 'd3', 'mathjs' ).
+ * This keeps D3 (~280KB) and Math.js (~700KB) off pages that don't use them.
  *
- * To add more libraries, add another wp_enqueue_script line here.
- * Keep pre-loaded libraries minimal — each adds load time.
+ * Available: d3 (window.d3), mathjs (window.math)
+ * To add a library: register the dependency map below and document it.
  */
 function agentshell_enqueue_widget_libs() {
-    // D3.js — data visualizations, charts, graphs
-    wp_enqueue_script(
-        'agentshell-d3',
-        'https://d3js.org/d3.v7.min.js',
-        array(),
-        null,
-        true
+    $wanted = array();
+    foreach ( agentshell_get_widget_registry() as $widget ) {
+        foreach ( (array) ( $widget['libs'] ?? array() ) as $lib ) {
+            $wanted[ $lib ] = true;
+        }
+    }
+    if ( empty( $wanted ) ) {
+        return;
+    }
+
+    $libs = array(
+        'd3'     => array(
+            'src'       => 'https://d3js.org/d3.v7.min.js',
+            'integrity' => 'sha384-CjloA8y00+1SDAUkjs099PVfnY2KmDC2BZnws9kh8D/lX1s46w6EPhpXdqMfjK6i',
+        ),
+        'mathjs' => array(
+            'src'       => 'https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.min.js',
+            'integrity' => 'sha384-gJKcVYwVxispLQAFHIwGBvbEmMm4WableABNGVE9B88zRUh5ce+GMZJQ6ZU2dfcN',
+        ),
     );
-    // Math.js — math expressions, calculators
-    wp_enqueue_script(
-        'agentshell-mathjs',
-        'https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.min.js',
-        array(),
-        null,
-        true
-    );
+
+    foreach ( $libs as $slug => $lib ) {
+        if ( empty( $wanted[ $slug ] ) ) {
+            continue;
+        }
+        $handle = 'agentshell-' . $slug;
+        wp_enqueue_script( $handle, $lib['src'], array(), null, true );
+        wp_script_add_data( $handle, 'defer', true );
+        wp_script_add_data( $handle, 'integrity', $lib['integrity'] );
+        wp_script_add_data( $handle, 'crossorigin', 'anonymous' );
+    }
 }
 add_action( 'wp_enqueue_scripts', 'agentshell_enqueue_widget_libs' );
-
-/**
 
 /**
  * Get the full shell config.
@@ -380,12 +428,18 @@ function agentshell_render_core_component( $id ) {
             the_custom_logo();
             return ob_get_clean();
         case 'nav_menu':
-            return wp_nav_menu(array(
+            $nav = wp_nav_menu(array(
                 'echo'           => false,
                 'theme_location'=> 'primary',
                 'container'     => 'nav',
                 'container_class'=> 'wp-core-nav',
-            )) ?: '<p class="wp-core-empty">No menu assigned to Primary Location</p>';
+            )) ?: '<p class="wp-core-empty">' . esc_html__( 'No menu assigned to Primary Location', 'agentshell' ) . '</p>';
+            // wp_nav_menu() has no container aria-label arg — add it directly.
+            return str_replace(
+                '<nav class="wp-core-nav">',
+                '<nav class="wp-core-nav" aria-label="' . esc_attr__( 'Primary', 'agentshell' ) . '">',
+                $nav
+            );
         case 'search_form':
             return get_search_form( array( 'echo' => false ) );
         default:
@@ -497,15 +551,24 @@ add_filter( 'rest_authentication_errors', function( $errors ) {
         return $errors;
     }
 
-    // Method 1: Static token auth
-    $static_token = defined( 'AGENTSHELL_REST_TOKEN' ) ? AGENTSHELL_REST_TOKEN : 'agentshell_dev_token';
+    // Method 1: Static token auth — fail closed.
+    // AGENTSHELL_REST_TOKEN must be defined in wp-config.php. If it is not
+    // defined, static-token auth is disabled entirely and only Application
+    // Passwords (Method 2) work. Never falls back to a hardcoded default.
+    $static_token = defined( 'AGENTSHELL_REST_TOKEN' ) ? AGENTSHELL_REST_TOKEN : '';
     $provided = isset( $_SERVER['HTTP_X_AGENTSHELL_TOKEN'] )
         ? $_SERVER['HTTP_X_AGENTSHELL_TOKEN']
         : ( isset( $_REQUEST['_agent_token'] ) ? $_REQUEST['_agent_token'] : '' );
 
-    if ( $provided && hash_equals( $static_token, $provided ) ) {
-        wp_set_current_user( 1 );
-        return null;
+    if ( $provided && $static_token && hash_equals( $static_token, $provided ) ) {
+        $agent_user = get_user_by( 'ID', 1 );
+        if ( $agent_user ) {
+            wp_set_current_user( $agent_user->ID );
+            return null;
+        }
+        error_log( 'AgentShell: AGENTSHELL_REST_TOKEN validated but admin user (ID 1) does not exist; refusing auth.' );
+    } elseif ( $provided && ! $static_token ) {
+        error_log( 'AgentShell: static token provided but AGENTSHELL_REST_TOKEN is not defined in wp-config.php; ignoring.' );
     }
 
     // Method 2: Basic Auth (Application Passwords)
