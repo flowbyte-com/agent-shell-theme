@@ -448,3 +448,126 @@ LLMs sometimes claim visual match when no real comparison happened (the screensh
 - Always log the actual `agentshell_screenshot` URL returned in Step 5 in the audit summary.
 - If the screenshot backend was unavailable for the iteration, you must say "no visual comparison performed" — not "looks good".
 - The user can cross-check by visiting the `preview_theme` URL themselves.
+
+## Worked example
+
+End-to-end walkthrough of a single image-to-theme run. Use this as a reference for your expected behavior on a happy path.
+
+### Input
+
+```
+User: "Theme the site like /tmp/refs/cyberpunk-cafe.png — keep it moody but readable."
+Image: /tmp/refs/cyberpunk-cafe.png (1440x900 desktop screenshot of a UI mockup — dark canvas, teal/cyan accents, sans-serif type, generous spacing)
+```
+
+### Step 1 — Observe
+
+```
+agentshell_inspect  →  {
+  "design": { "colors": { "background": "#ffffff", ... }, ... },
+  "zones": [ "header", "main", "footer" ],
+  "capabilities": { "screenshot": true, ... },
+  "warnings": []
+}
+```
+
+Screenshot available. Current theme is light. No concurrent transactions.
+
+### Step 2 — Begin transaction
+
+```
+agentshell_begin_transaction  →  { "transaction_id": "tx_abc123", "actor": "claude-code" }
+```
+
+### Step 3 — Vision extraction (attempt 1)
+
+Read the image. Reason:
+
+- Background: deep navy `#0a0e27`
+- Surface: slightly lighter navy `#151b3d` (offset of bg)
+- Text: near-white `#f0f4ff`
+- Border: subtle blue `#2a3160`
+- Accent: bright cyan `#00d9ff` (most saturated hue)
+- Primary: same as accent (no separate brand color)
+- Secondary: muted purple `#7c3aed` (secondary highlight in image)
+- fontFamily: humanist sans-serif
+- mono: not visible in reference, leave unchanged
+- baseSize: 16px (normal)
+- scale: 1.25 (default — readable, not editorial)
+- radius: 0.5rem (modern web — slight rounding on cards/buttons)
+- borderWidth: 1px
+- borderStyle: solid
+- spacing.base: 1rem (normal)
+
+User hint: "moody but readable" → aligns with extraction. No override needed.
+
+### Step 4 — First attempt commit + profile
+
+```
+agentshell_set_palette({ colors: { background: "#0a0e27", surface: "#151b3d", text: "#f0f4ff", border: "#2a3160", accent: "#00d9ff", primary: "#00d9ff", secondary: "#7c3aed" } })
+agentshell_set_typography({ fontFamily: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif", baseSize: "1rem", scale: "1.25" })
+agentshell_set_shape({ radius: "0.5rem", borderWidth: "1px", borderStyle: "solid" })
+agentshell_set_spacing({ base: "1rem" })
+agentshell_save_theme_profile("candidate_v1")
+
+agentshell_set_spacing({ base: "1.25rem" })
+agentshell_save_theme_profile("candidate_v2")
+agentshell_screenshot({ viewport: "desktop" })
+```
+
+### Step 5 — Render + screenshot
+
+```
+agentshell_get_capabilities  →  { "screenshot": true }
+agentshell_preview_theme("candidate_v1")  →  { "url": "https://example.com/?agentshell_preview=candidate_v1&key=..." }
+agentshell_screenshot({ viewport: "desktop" })  →  { "url": "https://example.com/wp-content/uploads/agentshell-shots/2026-08-14-candidate_v1.png", ... }
+agentshell_screenshot({ viewport: "mobile" })
+```
+
+### Step 6 — Compare to reference
+
+Read both screenshots. Compare to `/tmp/refs/cyberpunk-cafe.png`:
+
+- Palette: ✓ close match — dark moody, cyan accent reads
+- Typography: ✓ humanist sans, generous — feels like reference
+- Shape: ✓ medium rounding matches
+- Spacing: ⚠ reference feels slightly more generous than what we set
+
+Outcome B (improvement possible). Bump spacing.base from `1rem` to `1.25rem` for more generous feel. Re-apply, save as `candidate_v2`.
+
+- Spacing now matches reference better. Other tokens unchanged. Gestalt match is high.
+- Mobile screenshot: text still readable on dark bg (contrast check passed in 4.3). Layout reflows cleanly.
+
+### Step 7 — Decide
+
+Outcome A (subjective match achieved). Proceed to commit.
+
+### Step 8 — Iteration guard
+
+2 of 4 attempts used. No abort conditions triggered. Proceed to commit.
+
+### Step 9 — Commit
+
+```
+agentshell_commit_transaction  →  { "committed": true, "revision": "rev_xyz789" }
+```
+
+### Audit + summary
+
+Report to the user:
+
+```
+Theme applied: candidate_v2
+Mood: "Moody dark navy with bright cyan accent — modern web geometry, generous spacing"
+Iterations: 2 of 4 budget
+Audit: see get_audit_log for token-level diff
+
+If you want it warmer, more saturated, or with a different accent, say so and I'll iterate.
+```
+
+### Key takeaways from this run
+
+- The first attempt was 80% there — only spacing needed adjustment.
+- The contrast-safety net (4.3) caught no issues because the original extraction followed the contrast-pair rule.
+- 2 iterations used, well under the 4-attempt budget.
+- If the user had said "make it brighter" after commit, that would be a new run starting from the current committed state, not a continuation.
