@@ -72,3 +72,83 @@ How strictness maps to heuristic behavior:
 - **`expressive`** — Loosen the "what NOT to invent" rules: allow font names outside the standard CSS stack, allow radius up to `2rem`, allow spacing.base up to `3rem`. Document the loosened values in the audit summary so the user can spot them.
 
 If the user does not specify, use `pragmatic`.
+
+## Pipeline
+
+Always run the full pipeline inside an `agentshell_begin_transaction` so the live site is never mutated until commit. Use the profile system as a per-attempt undo tree.
+
+### Step 1 — Observe
+
+Call `agentshell_inspect` to confirm current state, capabilities, and that `screenshot` is available. If screenshot is unavailable, note it — Step 5 falls back to `agentshell_preview_theme`.
+
+### Step 2 — Begin transaction
+
+Call `agentshell_begin_transaction`. Note the actor lock — if another agent owns an open transaction, stop and tell the user.
+
+### Step 3 — Vision extraction
+
+Read the local image file. Reason over the visible aesthetic and produce a candidate design object containing:
+
+- `colors` — the 7 allowed keys: background, surface, text, border, accent, primary, secondary
+- `typography` — fontFamily (CSS stack), mono, baseSize, scale
+- `shape` — radius, borderWidth, borderStyle
+- `spacing` — base unit
+
+Apply the Section 4 heuristic rules. Honor any user hints from the Inputs.
+
+### Step 4 — First attempt commit + profile
+
+- Apply the extracted design via the semantic tools, all inside the open transaction:
+  - `agentshell_set_palette({ colors: {...} })`
+  - `agentshell_set_typography({ fontFamily, baseSize, scale, mono? })`
+  - `agentshell_set_shape({ radius, borderWidth, borderStyle })`
+  - `agentshell_set_spacing({ base })`
+- Call `agentshell_save_theme_profile("candidate_v1")` — this is the recovery anchor. Always save, even if the design is mediocre.
+
+### Step 5 — Render + screenshot
+
+- Call `agentshell_preview_theme("candidate_vN")` to get a read-only preview URL. This always works, even without a headless browser.
+- If `agentshell_get_capabilities` reports `screenshot: true`, additionally call:
+  - `agentshell_screenshot({ viewport: "desktop" })`
+  - `agentshell_screenshot({ viewport: "mobile" })`
+- Both viewport captures matter. The reference is likely desktop-biased, and the mobile check verifies the theme doesn't break on small screens.
+
+### Step 6 — Compare to reference
+
+Inspect the captured images side-by-side with the reference. Judge:
+
+- Palette closeness (does the dominant color match? does accent feel right?)
+- Typography mood (does the type feel like the reference — serif/sans, weight, density?)
+- Shape rhythm (does the radius feel right — sharp/minimal/rounded?)
+- Spacing density (compact vs airy?)
+
+Do NOT obsess over pixel-exact matches. Judge gestalt.
+
+### Step 7 — Decide
+
+Three outcomes per iteration:
+
+- **A. Subjective match achieved.** Skip to Step 9.
+- **B. Improvement possible.** Return to Step 3 with refined values. Save the new attempt as a new named profile `candidate_v(N+1)` — distinct names create distinct entries that coexist with prior profiles (the plugin stores profiles as a name-keyed list, not a mutating slot). Continue.
+- **C. Regression or stuck.** Apply the previous best profile via `agentshell_apply_theme("candidate_vN-1")`, then return to Step 3 with a different angle.
+
+### Step 8 — Iteration guard
+
+- Default max attempts: **4**.
+- If attempt 4 is reached without a clear subjective match: pick the best profile from your undo tree, apply it via `agentshell_apply_theme`, and proceed to Step 9. Do NOT loop a 5th time — the token cost outweighs the marginal improvement, and the model is likely overcorrecting.
+- Early-abort conditions (Section 6) override the cap. If any abort condition fires, jump straight to Step 9 with rollback.
+
+### Step 9 — Commit or rollback
+
+- **Commit:** Call `agentshell_commit_transaction`. The chosen profile becomes live.
+- **Rollback:** Call `agentshell_rollback_transaction` if total failure. Tell the user what went wrong and what was preserved.
+
+### Audit + summary
+
+After commit (or rollback), call `agentshell_get_audit_log` to surface the final change set. Report to the user:
+
+- The chosen profile name (e.g. `candidate_v2`)
+- One-line summary of the theme mood (e.g. "Moody dark navy with bright cyan accent — generous spacing")
+- Number of iterations used (e.g. "2 of 4 budget")
+- Anything the user should review manually
+- The preview URL so the user can verify the result themselves
