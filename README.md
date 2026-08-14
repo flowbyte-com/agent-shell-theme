@@ -256,6 +256,24 @@ return array(
 
 ---
 
+## Skills
+
+AgentShell ships with **agent-facing skills** in `skills/agentshell/`. Each skill is a Claude Code–style `SKILL.md` (YAML frontmatter + markdown instructions) that an agent can load to learn a specific workflow.
+
+### `agentshell-image-to-theme`
+
+Build a complete AgentShell site from an image (screenshot, photo, mockup, inspiration shot). The agent analyzes colors, typography, and overall vibe, then writes a config and registers the zone composition. Invoked by phrases like *"build a site from this image"*, *"make the site match this screenshot"*, *"give me a theme like this"*.
+
+Three strictness modes for the heuristic mapping step: **strict** (literal pixel match), **pragmatic** (recommended — closest preset/inspired interpretation), **expressive** (full creative freedom within the constraints).
+
+### `agentshell-widget-builder`
+
+Build a custom AgentShell widget correctly given a user's high-level description ("build me a calculator", "add a latest posts carousel", "create a sales dashboard"). The agent picks between two tracks — **Interactive** (self-contained: calculators, simulators, visualizers) or **WordPress Decorator** (progressively enhances server-rendered content) — and composes the result via existing zone primitives.
+
+Security boundary is absolute: **no client-side `fetch()`**, ever. Track 2's primary pattern is colocation (decorator widget in the same zone as the `wp_loop` it enhances); a strict mu-plugin escape hatch covers rare cases where standard markup doesn't expose a needed field. Three worked examples (Decorator, Interactive-with-snapshot, Escape hatch) demonstrate each pattern end-to-end.
+
+---
+
 ## Browser Configurator
 
 Logged-in users see a floating gear button that opens a live-editing panel: design tokens (color pickers, selects), zone composition builder, and custom CSS/JS textareas. Changes are written via REST and persisted to `wp_options`.
@@ -290,6 +308,10 @@ agentshell/
 │       ├── class-screenshot.php    # Headless-browser backend (Chrome/Chromium)
 │       └── tools/             # 45+ MCP tools
 ├── agentshell-mcp-daemon/     # PHP CLI proxy (stdio ↔ HTTP)
+├── skills/                    # Agent-facing skills (Claude Code format)
+│   └── agentshell/
+│       ├── image-to-theme/    # Build a site from an image
+│       └── widget-builder/    # Build custom widgets correctly
 └── AGENTS.md                  # Agent-facing guide
 ```
 
