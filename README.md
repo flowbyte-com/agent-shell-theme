@@ -119,6 +119,44 @@ All tools are prefixed `agentshell_` and available through the daemon.
 | `agentshell_set_layout` | Update grid areas / breakpoints |
 | `agentshell_get_site_info` | Get site name, URL, admin email |
 
+### Agent operations layer
+
+The plugin implements the **observe → reason → change → verify** loop on top of the base tools. Everything below is deterministic, recorded, and reversible.
+
+**Observe first.** `agentshell_inspect` returns the full machine-readable site model (shell, design, zones, widgets, content, capabilities, state, warnings); `agentshell_explain` renders it as human-readable text; `agentshell_get_capabilities` reports what the installation supports.
+
+| Tool | What it does |
+|------|-------------|
+| `agentshell_inspect` | Full machine-readable site model — call this first on an unfamiliar site |
+| `agentshell_explain` | Human-readable site description generated from live state |
+| `agentshell_validate` | Deterministic site doctor — errors + warnings with stable codes |
+| `agentshell_get_capabilities` | What this installation supports |
+| `agentshell_get_audit_log` | Config mutation history: actor, operation, changed tokens, revision |
+| `agentshell_get_design_system` | Structured design tokens (palette, typography, geometry) |
+| `agentshell_set_palette` / `set_typography` / `set_spacing` / `set_shape` | Semantic design API — no raw CSS variables needed |
+| `agentshell_list_revisions` / `diff_revisions` / `restore_revision` | Config history: every mutation is a revision, all reversible |
+| `agentshell_create_snapshot` / `list_snapshots` / `restore_snapshot` / `diff_snapshot` | Named, restorable config checkpoints |
+| `agentshell_save_theme_profile` / `list_theme_profiles` / `apply_theme` / `preview_theme` | Named design profiles; preview renders as read-only URL overrides |
+| `agentshell_export_theme` / `import_theme` | Portable theme packages (JSON manifest) between installations |
+| `agentshell_enable_widget` / `disable_widget` / `remove_widget` | Widget lifecycle (remove = agent-defined widgets only) |
+
+**Transactions — the safe change loop.** Run `agentshell_begin_transaction` → make mutations (staged, nothing persisted — the live site is untouched) → `agentshell_preview_transaction` (token-level diff) → `agentshell_validate_transaction` (doctor on the staged config) → `agentshell_commit_transaction` (one atomic, validated write, recorded as a revision) or `agentshell_rollback_transaction` (discard everything). Transactions persist across MCP requests and are visible via `agentshell_get_transaction`.
+
+**Example session** — restyle the site to a terminal look without risking the live site:
+
+```text
+agentshell_inspect
+agentshell_save_theme_profile(name="current", description="backup")
+agentshell_begin_transaction(label="terminal restyle")
+agentshell_set_palette({ colors: { background: "#0a0a0a", text: "#00ff88", accent: "#00ff88", surface: "#101010" } })
+agentshell_set_typography({ fontFamily: "monospace" })
+agentshell_set_shape({ radius: "0px" })
+agentshell_preview_transaction
+agentshell_validate_transaction
+agentshell_commit_transaction
+agentshell_get_audit_log
+```
+
 ---
 
 ## Design Tokens (CSS Variables)
@@ -180,6 +218,7 @@ return array(
 
 - `init_js` is wrapped in a try/catch — a failing widget never breaks the page
 - `css` is injected scoped to the page; use `var(--theme-*)` to inherit the shell's look
+- Widgets have a lifecycle: `active` by default, `disabled` renders nothing (via `agentshell_enable_widget` / `agentshell_disable_widget`), and agent-defined widgets can be removed (`agentshell_remove_widget`)
 - `libs: ['d3']` / `libs: ['mathjs']` is the **only** way pre-approved libraries load. D3 (~280KB) and Math.js (~700KB) are fetched from CDNs with SRI integrity, `defer`, and only when at least one widget declares them — never for idle pages
 - Widgets requiring JS should use **Web Components with Shadow DOM**, guarded with `if (!customElements.get('mpm-*'))` and styled from `var(--theme-*)`
 
@@ -209,6 +248,13 @@ agentshell/
 │   ├── .index.json
 │   └── hello-world.php        # Example widget
 ├── agentshell-mcp/            # WordPress plugin (JSON-RPC server)
+│   ├── agentshell-mcp.php     # Tool registry + version
+│   └── includes/
+│       ├── class-server.php / class-transport.php
+│       ├── class-store.php    # Revisions, audit, snapshots, profiles
+│       ├── class-transactions.php  # Safe change loop (begin/stage/commit/rollback)
+│       ├── class-doctor.php   # Deterministic site validator
+│       └── tools/             # 40+ MCP tools
 ├── agentshell-mcp-daemon/     # PHP CLI proxy (stdio ↔ HTTP)
 └── AGENTS.md                  # Agent-facing guide
 ```
@@ -233,5 +279,13 @@ agentshell/
 | `Authentication failed` | Wrong username or app password |
 | `HTTP request failed` | Daemon can't reach the WP endpoint |
 | 401 on token requests | `AGENTSHELL_REST_TOKEN` not defined in `wp-config.php` (auth is fail-closed) |
+| `A transaction is already open` | Previous transaction was never committed/rolled back — check `agentshell_get_transaction` |
+| `Commit blocked by validation errors` | Staged config fails the site doctor — fix and re-validate |
 | D3/Math.js not available | No registered widget declares the lib in its `libs` array |
 | Header logo missing | No custom logo set under **Appearance → Customize → Site Identity** |
+
+## Roadmap
+
+- **Screenshot preview loop** — `agentshell_preview_theme` currently returns a logged-in preview URL (`?agentshell_preview=<profile>`); headless-browser screenshots (desktop/mobile viewports) for full agent-side visual iteration
+- **Content primitives** — intent-level `agentshell_create_page` / `agentshell_publish` wrappers over the WP REST API
+- **Multi-agent coordination** — lock transactions per actor; warn on concurrent sessions

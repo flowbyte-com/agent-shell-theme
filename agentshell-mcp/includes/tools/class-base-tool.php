@@ -33,11 +33,23 @@ abstract class Base_Tool {
         }
     }
 
+    /**
+     * Current config: staged value while a transaction is open, else stored.
+     * This lets a sequence of mutation tools compose within a transaction.
+     */
     protected function get_agentshell_config() {
-        return get_option( 'agentshell_config', array() );
+        return \AgentShell_MCP\Transaction_Manager::instance()->effective_config();
     }
 
+    /**
+     * Persist (or stage, inside a transaction) a config change.
+     * History recording happens automatically via the option update hook.
+     */
     protected function update_agentshell_config( array $config ) {
+        $tx = \AgentShell_MCP\Transaction_Manager::instance();
+        if ( $tx->stage( $config ) ) {
+            return true; // transaction open — deferred to staging buffer
+        }
         return update_option( 'agentshell_config', $config );
     }
 }

@@ -160,6 +160,34 @@ function agentshell_inject_saved_styles() {
         echo "<style id='agentshell-custom-css'>\n" . trim( $css ) . "\n</style>\n";
     }
 
+    // Theme profile preview: ?agentshell_preview=<profile> renders a saved
+    // profile's design tokens as :root overrides — read-only, logged-in only,
+    // and never persisted. This powers the agentshell_preview_theme MCP tool.
+    if ( is_user_logged_in() && isset( $_GET['agentshell_preview'] ) ) {
+        $profiles = get_option( 'agentshell_theme_profiles', array() );
+        $name     = sanitize_key( wp_unslash( $_GET['agentshell_preview'] ) );
+        if ( $name && isset( $profiles[ $name ]['design'] ) && is_array( $profiles[ $name ]['design'] ) ) {
+            $preview = array( 'design' => $profiles[ $name ]['design'] );
+            if ( function_exists( 'agentshell_flatten_config' ) ) {
+                $overrides = agentshell_flatten_config( $preview );
+            } else {
+                $overrides = array();
+                array_walk_recursive( $preview, function( $value, $key ) use ( &$overrides ) {
+                    if ( strpos( (string) $key, '--' ) === 0 && is_string( $value ) ) {
+                        $overrides[ $key ] = $value;
+                    }
+                } );
+            }
+            if ( ! empty( $overrides ) ) {
+                echo "<style id='agentshell-preview-overrides'>\n:root {\n";
+                foreach ( $overrides as $key => $value ) {
+                    echo '    ' . esc_attr( $key ) . ': ' . esc_attr( $value ) . ";\n";
+                }
+                echo "}\n</style>\n";
+            }
+        }
+    }
+
     // Structural prohibition: prevent agents from breaking the FSE layout
     // with position: fixed or absolute on zone containers.
     echo "<style id='agentshell-grid-fix'>
@@ -393,6 +421,20 @@ function agentshell_get_widget_registry() {
         $registry[ $widget['id'] ] = $widget;
     }
 
+    // 3. Apply lifecycle status overrides (enable/disable via MCP tools)
+    foreach ( $config['widget_overrides'] ?? array() as $widget_id => $override ) {
+        if ( isset( $registry[ $widget_id ] ) && isset( $override['status'] ) ) {
+            $registry[ $widget_id ]['status'] = $override['status'];
+        }
+    }
+
+    // Default status for widgets that don't declare one
+    foreach ( $registry as $widget_id => $widget ) {
+        if ( ! isset( $widget['status'] ) ) {
+            $registry[ $widget_id ]['status'] = 'active';
+        }
+    }
+
     return $registry;
 }
 
@@ -460,6 +502,11 @@ function agentshell_render_widget( $widget_id ) {
         return '';
     }
     $widget = $registry[ $widget_id ];
+
+    // Disabled widgets render nothing (lifecycle management via MCP tools)
+    if ( ( $widget['status'] ?? 'active' ) === 'disabled' ) {
+        return '';
+    }
 
     // Render template (optional HTML skeleton)
     $html = '';

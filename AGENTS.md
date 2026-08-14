@@ -34,10 +34,48 @@ All tools are prefixed `agentshell_`. Call with empty arguments unless noted.
 | `agentshell_list_zones` | List all zones with IDs, labels, and current sources |
 | `agentshell_set_zone_source` | Change zone source: `{ zone_id: "main", source: "json_block", config: { html: "..." } }` |
 | `agentshell_inject_json_block` | Inject HTML into a zone (admin-only; strips style/script for safety) |
-| `agentshell_list_widgets` | List registered widgets |
+| `agentshell_list_widgets` | List registered widgets (with lifecycle status) |
 | `agentshell_register_widget` | Register a widget: `{ id, label, css, init_js }` |
 | `agentshell_set_layout` | Update grid areas / breakpoints |
 | `agentshell_get_site_info` | Get site name, URL, admin email |
+
+### Agent operations layer (v1.2)
+
+**Observe first.** Start with `agentshell_inspect` — it returns the full site model (shell, design, zones, widgets, content, capabilities, state, warnings) — or `agentshell_explain` for a human-readable summary. `agentshell_get_capabilities` tells you what this installation supports.
+
+| Tool | What it does |
+|------|-------------|
+| `agentshell_inspect` | Full machine-readable site model — call this first on an unfamiliar site |
+| `agentshell_explain` | Human-readable site description generated from live state |
+| `agentshell_validate` | Deterministic site doctor: errors + warnings with stable codes |
+| `agentshell_get_capabilities` | What this installation supports (design, zones, transactions, snapshots, …) |
+| `agentshell_get_audit_log` | History of config mutations: actor, operation, changed tokens, revision |
+| `agentshell_get_design_system` | Structured design tokens: palette, typography, geometry, custom vars |
+| `agentshell_set_palette` | Set colors semantically: `{ colors: { accent: "#ff6600" } }` |
+| `agentshell_set_typography` | Set `fontFamily` / `mono` / `baseSize` / `scale` |
+| `agentshell_set_spacing` | Set base spacing unit: `{ base: "1rem" }` |
+| `agentshell_set_shape` | Set `radius` / `borderWidth` / `borderStyle` |
+| `agentshell_list_revisions` | List config history (every mutation = one revision) |
+| `agentshell_diff_revisions` | Token-level diff between two revisions |
+| `agentshell_restore_revision` | Roll the live config back to a revision (reversible) |
+| `agentshell_create_snapshot` | Capture named, restorable config snapshot |
+| `agentshell_list_snapshots` / `agentshell_restore_snapshot` / `agentshell_diff_snapshot` | Snapshot management |
+| `agentshell_save_theme_profile` | Save current design as a named profile (e.g. "terminal") |
+| `agentshell_list_theme_profiles` / `agentshell_apply_theme` / `agentshell_preview_theme` | Profile management; preview = read-only URL, apply = live |
+| `agentshell_export_theme` / `agentshell_import_theme` | Portable theme packages (JSON manifest) |
+| `agentshell_enable_widget` / `agentshell_disable_widget` / `agentshell_remove_widget` | Widget lifecycle (remove works only for agent-defined widgets) |
+
+**Transactions — the safe change loop.** Instead of mutating directly, run: `agentshell_begin_transaction` → mutation tools (staged, nothing persisted) → `agentshell_preview_transaction` (diff) → `agentshell_validate_transaction` (doctor on staged) → `agentshell_commit_transaction` (atomic, recorded) or `agentshell_rollback_transaction` (discard). While a transaction is open the live site is never touched, so experiments are safe.
+
+---
+
+## Working Pattern
+
+1. `agentshell_inspect` (or `agentshell_explain`) to build a mental model
+2. `agentshell_validate` to check current health
+3. For anything multi-step: `agentshell_begin_transaction` → make changes → preview/validate → `agentshell_commit_transaction`
+4. `agentshell_get_audit_log` / `agentshell_list_revisions` to confirm
+5. `agentshell_create_snapshot` before risky work; `agentshell_restore_revision` to undo
 
 ---
 
