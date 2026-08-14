@@ -152,3 +152,137 @@ After commit (or rollback), call `agentshell_get_audit_log` to surface the final
 - Number of iterations used (e.g. "2 of 4 budget")
 - Anything the user should review manually
 - The preview URL so the user can verify the result themselves
+
+## Heuristic mapping: image → design tokens
+
+Translate what you see into the exact shape of `config['design']` consumed by the existing MCP tools. Apply these rules in order. Do not invent values outside the allowed tokens.
+
+### 4.1 — Allowed token space
+
+These are the only keys the schema accepts. Any other key in your output is an error:
+
+**Colors** (`agentshell_set_palette`): `background`, `surface`, `text`, `border`, `accent`, `primary`, `secondary`
+
+**Typography** (`agentshell_set_typography`): `fontFamily` (CSS font stack), `mono`, `baseSize`, `scale`
+
+**Shape** (`agentshell_set_shape`): `radius`, `borderWidth`, `borderStyle`
+
+**Spacing** (`agentshell_set_spacing`): `base`
+
+If you need a value the schema does not accept, use `--theme-*` CSS variables via `agentshell_set_css_var` instead (e.g. `--theme-header-bg`, `--theme-footer-bg`, `--theme-header-text`).
+
+### 4.2 — Color extraction (the contrast-pair rule)
+
+Extract colors in this order. Each step depends on the previous.
+
+**Step A — background.**
+The dominant non-text, non-figure color covering the largest contiguous area. For a full-bleed hero this is the page background. For a UI mockup it's the canvas color.
+
+**Step B — surface.**
+The second-most-prominent flat color, OR a deterministic offset of background:
+
+```
+luminance = 0.2126·R_lin + 0.7152·G_lin + 0.0722·B_lin
+where component_lin = ((c/255 + 0.055)/1.055)^2.4  if c/255 > 0.03928
+                     else (c/255)/12.92
+
+if luminance < 0.4:        surface = background.lightness(+6%)
+else if luminance > 0.6:   surface = background.lightness(-4%)
+else:                      surface = background (no offset, mid-tone)
+```
+
+Use whichever is more visible in the reference image. If both are present, the explicit one wins.
+
+**Step C — text.**
+The most readable color against background. If the reference shows legible text, use its color. Otherwise:
+
+```
+if background luminance < 0.4:  text = #f8fafc  (slate-50)
+else:                            text = #0f172a  (slate-900)
+```
+
+**Step D — border.**
+A subtle separator tone. Default to a deterministic offset of background:
+
+```
+if background luminance < 0.4:  border = background.lightness(+12%)
+else:                            border = background.lightness(-16%)
+```
+
+Cap border saturation at 10% to avoid clashing separators.
+
+**Step E — accent.**
+The most saturated hue in the image that isn't already assigned to background, surface, text, or border. Compute saturation as `max(R,G,B) - min(R,G,B)` per pixel, find the peak-saturated pixel cluster, take its median hue. If no clearly saturated color exists, neutralize the dominant hue by reducing saturation to 40% and use that. Never invent a hue not present in the image.
+
+**Step F — primary.**
+The dominant brand-like color if visible (logo, hero accent). If absent, reuse accent.
+
+**Step G — secondary.**
+A complementary or muted partner to primary. If absent, reuse primary at 60% lightness.
+
+### 4.3 — Contrast safety net
+
+Before committing, run this check on every color pair that will be adjacent on screen:
+
+```
+contrast_ratio = (L_lighter + 0.05) / (L_darker + 0.05)
+```
+
+Pairs that must pass WCAG AA (4.5:1 for body text, 3:1 for large text/UI):
+
+- text on background
+- text on surface
+- accent on background (for links/buttons — 3:1 acceptable)
+
+If a pair fails, adjust the failing token using the same offset logic (lighter text on dark bg, darker text on light bg) and re-validate. Do NOT commit a theme where body text fails 4.5:1.
+
+### 4.4 — Typography inference
+
+**fontFamily.** Categorize the visible type as one of:
+
+- Sans-serif humanist (e.g. Inter, SF Pro) → `system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`
+- Sans-serif geometric (e.g. Futura, Avenir) → `"Futura", "Avenir Next", system-ui, sans-serif`
+- Serif transitional (e.g. Times-like) → `Georgia, "Times New Roman", serif`
+- Serif modern (e.g. Didone-like) → `"Bodoni Moda", "Didot", serif`
+- Mono (e.g. code/terminal aesthetic) → `"JetBrains Mono", "Fira Code", ui-monospace, monospace`
+
+Pick the closest match. When uncertain between humanist and geometric, default to humanist — it pairs better with body text.
+
+**mono.** If the reference shows any mono-styled text (code blocks, captions, terminal), set mono to a clear monospace stack. Otherwise leave unchanged.
+
+**baseSize.** 16px default. Bias up to 18px if the reference is generous/airy. Bias down to 14px if it's compact/dense.
+
+**scale.** 1.25 default. Higher (1.333, 1.414) for editorial/serif. Lower (1.125) for compact/dense.
+
+### 4.5 — Shape inference
+
+**radius.** Classify the corners in the reference:
+
+- All sharp (no visible rounding) → `0`
+- Slight rounding (chips, cards) → `0.25rem`
+- Medium rounding (modern web) → `0.5rem`
+- Heavy rounding (friendly/playful) → `1rem`
+- Pill/circular (callouts, badges) → `9999px`
+
+Pick the mode that dominates. One outlier does not change the rule.
+
+**borderWidth.** `1px` default. Visible hairlines → `0.5px`. Heavy borders → `2px`.
+
+**borderStyle.** `solid` default. Dashed/dotted only if explicitly visible.
+
+### 4.6 — Spacing density
+
+Classify the whitespace pattern:
+
+- Compact (tight grids, dashboards) → base = `0.5rem`
+- Normal → base = `1rem` (default)
+- Generous (editorial, landing pages) → base = `1.5rem`
+- Airy (luxury, sparse) → base = `2rem`
+
+### 4.7 — What NOT to invent
+
+- Never pick a hex value not derived from the image or the offset rules above
+- Never invent font names that aren't in the standard CSS stack (unless `expressive` strictness is set)
+- Never set radius above `1rem` unless the reference is explicitly pill-shaped throughout (or `expressive` is set, allowing up to `2rem`)
+- Never set borderWidth above `2px` — heavy borders read as broken, not designed
+- Never set spacing.base above `2rem` (or `3rem` under `expressive`) — produces layouts that feel broken
