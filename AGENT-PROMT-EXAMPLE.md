@@ -3,6 +3,8 @@
 
 Use these when you want a targeted, small change. These rules prevent accidental shell deconstruction while allowing for full design flexibility.
 
+> **Interface:** Agents should prefer the MCP toolset (`agentshell_*`, via the agentshell-mcp plugin + daemon — see `AGENTS.md` for the full tool reference). The REST API calls below remain valid as a fallback and for the browser configurator. Every config mutation is recorded as a revision and audit entry; use `agentshell_begin_transaction` → mutations → `agentshell_preview_transaction` → `agentshell_commit_transaction` for anything multi-step.
+
 ---
 
 ## Rule Zero: The Shell Hierarchy
@@ -70,11 +72,24 @@ You CAN target shell zones in `style.css` as long as you do not touch the Grid S
 
 ## Safe Edit Reference
 
+### MCP session (preferred)
+```text
+agentshell_inspect                                  # observe first
+agentshell_validate                                 # check current health
+agentshell_begin_transaction(label="terminal restyle")
+agentshell_set_palette({ colors: { background: "#0a0a0a", accent: "#00ff88" } })
+agentshell_preview_transaction                      # token-level diff
+agentshell_validate_transaction                     # doctor on staged config
+agentshell_commit_transaction                       # atomic, recorded
+agentshell_screenshot({ viewport: "mobile" })       # verify visually
+```
+
 ### Toggle Sidebar
 ```bash
 curl -X PUT https://example.com/wp-json/wp/v2/agentshell/config \
   -d '{ "sidebar_enabled": true }'
 ```
+(Or `agentshell_set_layout({ sidebar_enabled: true })`.)
 
 ## Widgets
 
@@ -130,6 +145,8 @@ curl -X PUT https://example.com/wp-json/wp/v2/agentshell/config \
 
 Widget `init_js` populates `window.AgentshellWidgets[id]` and a `MutationObserver` in `footer.php` auto-initializes all `[data-widget-id]` elements on the page — including dynamically injected ones.
 
+Widgets have a **lifecycle**: `active` by default, `disabled` renders nothing (`agentshell_disable_widget` / `agentshell_enable_widget`), and agent-defined widgets can be removed (`agentshell_remove_widget` — file-based stable widgets cannot). Entries may declare `"libs": ["d3"]` / `["mathjs"]` — the **only** way those libraries load (SRI + defer). For anything interactive, prefer **Web Components with Shadow DOM** (`mpm-*` prefix, styles from `var(--theme-*)`, guarded with `if (!customElements.get(...))`).
+
 ---
 
 ### Fix Layout Alignment (The "Pushed Left" Fix)
@@ -144,3 +161,5 @@ If the content is not filling the width when the sidebar is off, the agent must 
 * **Missing 1fr:** Leaving columns as `auto`, which causes the main zone to shrink to its smallest element.
 * **PHP in Post Content:** Attempting to use PHP tags in a `wp_loop` payload (stripped by WP). Use the Web Component Protocol for logic.
 * **Direct Shell HTML Edits:** Modifying `header.php` to add a div. Add the element via the REST API to `#zone-main` or use the `json_block` source instead.
+* **Untracked Changes:** Mutating config directly without a transaction — every write is still recorded in revisions/audit, but multi-step work should be staged and committed atomically.
+* **Inline JS in Content:** `<script>` tags and `onclick=""` in post/json_block content are stripped. Register a widget (`agentshell_register_widget`) or use a Web Component.

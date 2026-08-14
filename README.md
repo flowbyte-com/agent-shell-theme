@@ -258,19 +258,50 @@ return array(
 
 ## Skills
 
-AgentShell ships with **agent-facing skills** in `skills/agentshell/`. Each skill is a Claude Code–style `SKILL.md` (YAML frontmatter + markdown instructions) that an agent can load to learn a specific workflow.
+Agent-facing instruction sets that drive the theme through MCP tools for a specific task. Skills are pure agent-side markdown — no PHP, no new tools, no schema changes. Each skill adds structured guidance for a use case that would otherwise require the agent to improvise from `AGENTS.md` and the full MCP tool list.
+
+Skills live under `skills/<skill-name>/` and follow the [Claude Code skill format](https://docs.claude.com/en/docs/agents-and-tools/agent-skills/overview) — YAML frontmatter (name + description) followed by markdown instructions.
 
 ### `agentshell-image-to-theme`
 
-Build a complete AgentShell site from an image (screenshot, photo, mockup, inspiration shot). The agent analyzes colors, typography, and overall vibe, then writes a config and registers the zone composition. Invoked by phrases like *"build a site from this image"*, *"make the site match this screenshot"*, *"give me a theme like this"*.
+Theme an AgentShell site to match a reference image. The agent reads a local image file with its vision capability, maps the visible aesthetic to the existing design schema via deterministic heuristic rules, and applies the result through `agentshell_set_palette` / `set_typography` / `set_shape` / `set_spacing` inside a transaction. Pure inference — no image bytes ever cross the daemon.
 
-Three strictness modes for the heuristic mapping step: **strict** (literal pixel match), **pragmatic** (recommended — closest preset/inspired interpretation), **expressive** (full creative freedom within the constraints).
+```text
+User: "Theme the site like /tmp/refs/cyberpunk-cafe.png — keep it moody but readable."
+Agent: (reads the skill, runs the 9-step pipeline, applies the theme)
+       "Moody dark navy with bright cyan accent — 2 of 4 iterations used."
+```
+
+What you get:
+
+- **9-step pipeline** — Observe → Begin transaction → Vision extraction → First attempt + profile → Render + screenshot → Compare → Decide → Iteration guard → Commit or rollback. Everything runs inside an open transaction; the live site is never mutated until commit.
+- **Deterministic heuristics** — WCAG luminance + contrast-ratio formulas for color extraction, 5-category font inference, 4-tier spacing density, 5-tier radius. "Distinct names create distinct entries" for the profile undo tree — `candidate_v1`, `candidate_v2`, etc. coexist as separate profiles.
+- **Iteration controls** — Default cap of 4 attempts. `max_attempts: 2 | 4 | 6` and strictness modes (`strict` / `pragmatic` / `expressive`) parsed from natural language.
+- **9 failure modes** — image unreadable, screenshot backend unavailable, off-schema tokens, color rejection, conflicting user hints, transaction lock, daemon unreachable, over-budget, visual hallucination — each with a deterministic resolution.
+- **Worked example** — End-to-end cyberpunk-cafe walkthrough showing attempt 1 → spacing bump → attempt 2 → commit.
+
+See `skills/agentshell/image-to-theme/SKILL.md` for the full instruction set and `skills/agentshell/image-to-theme/README.md` for the human-facing overview.
 
 ### `agentshell-widget-builder`
 
-Build a custom AgentShell widget correctly given a user's high-level description ("build me a calculator", "add a latest posts carousel", "create a sales dashboard"). The agent picks between two tracks — **Interactive** (self-contained: calculators, simulators, visualizers) or **WordPress Decorator** (progressively enhances server-rendered content) — and composes the result via existing zone primitives.
+Build a custom AgentShell widget correctly given a user's high-level description. The agent picks one of two tracks (**Interactive** for self-contained apps — calculators, simulators, visualizers — that run on local state + math/d3, or **WordPress Decorator** for widgets that progressively enhance server-rendered `wp_loop` content) and composes the result through existing zone primitives. Verified end-to-end inside a transaction: register → `agentshell_validate` → `agentshell_screenshot` → commit or rollback.
 
-Security boundary is absolute: **no client-side `fetch()`**, ever. Track 2's primary pattern is colocation (decorator widget in the same zone as the `wp_loop` it enhances); a strict mu-plugin escape hatch covers rare cases where standard markup doesn't expose a needed field. Three worked examples (Decorator, Interactive-with-snapshot, Escape hatch) demonstrate each pattern end-to-end.
+```text
+User: "Add a calculator that converts Celsius to Fahrenheit."
+Agent: (reads the skill, picks Track 1 Interactive, registers the widget, validates, screenshots)
+       "Track: Interactive. Reason: no WordPress data needed."
+```
+
+What you get:
+
+- **Two-track decision tree** — Interactive (local state + math/d3) vs. WordPress Decorator (progressively enhance server-rendered `wp_loop`). Snapshot-style widgets are a pattern inside Interactive, not a third track. The least-powerful track that satisfies the requirement wins.
+- **Colocation contract** — Track 2 widgets live next to the `wp_loop` they enhance. The widget finds its source by walking up to its zone scope and finding the nearest preceding `wp_loop` — no custom data attributes, no global queries that could mis-wire to unrelated loops on the same page.
+- **Refresh anchor pattern** — Snapshot widgets leave a `/* agentshell-snapshot-source: <description> */` comment at the top of `init_js` so future agents know where the embedded data came from and can reseed it when it goes stale.
+- **3 worked examples** — Track 2 latest-posts carousel (Decorator), Track 1 quarterly metrics tile (Interactive-with-snapshot), and Track 2 escape hatch (mu-plugin for genuinely missing data, with strict `php -l` + atomic-`mv` + `curl` health-check workflow).
+- **Strict verification gate** — `agentshell_begin_transaction` → register → `agentshell_validate` → `agentshell_screenshot` → `agentshell_commit_transaction` or `agentshell_rollback_transaction`. Live site is never mutated until commit.
+- **Security boundary** — Client-side `fetch()` is prohibited under any circumstances. Even if the user asks for "live" data, the agent routes through Track 2 colocation, not `fetch()`. The prohibition is absolute, not a tunable preference.
+
+See `skills/agentshell/widget-builder/SKILL.md` for the full instruction set and `skills/agentshell/widget-builder/README.md` for the human-facing overview.
 
 ---
 
@@ -308,10 +339,10 @@ agentshell/
 │       ├── class-screenshot.php    # Headless-browser backend (Chrome/Chromium)
 │       └── tools/             # 45+ MCP tools
 ├── agentshell-mcp-daemon/     # PHP CLI proxy (stdio ↔ HTTP)
-├── skills/                    # Agent-facing skills (Claude Code format)
-│   └── agentshell/
-│       ├── image-to-theme/    # Build a site from an image
-│       └── widget-builder/    # Build custom widgets correctly
+├── skills/                    # Agent-facing skill files (markdown only)
+│   ├── SKILL.md               # Index for the agentshell skill namespace
+│   ├── image-to-theme/        # Reference-image theming skill
+│   └── widget-builder/        # Custom widget builder skill
 └── AGENTS.md                  # Agent-facing guide
 ```
 
