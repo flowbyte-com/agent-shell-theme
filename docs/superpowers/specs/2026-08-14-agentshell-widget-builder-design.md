@@ -106,7 +106,9 @@ This gives the user visibility without forcing them to remember a `track:` prefi
 
 ### User override
 
-If the user explicitly says "snapshot" / "frozen" / "static" / "embedded", honour that choice unless it conflicts with an architectural constraint (which it cannot — all three tracks are architecturally valid). The agent still picks the implementation; the user can override the track choice.
+If the user explicitly says "snapshot" / "frozen" / "static" / "embedded", the agent treats that as a request for the Interactive track with snapshot-seeded state — which is the architectural fit for frozen point-in-time data. If the user explicitly says "interactive" / "calculator" / "self-contained", the agent routes to plain Interactive. If the user explicitly says "live" / "decorator" / "current posts", the agent routes to Decorator.
+
+In all cases the agent still picks the implementation; the user can override the track choice. The skill never uses client-side `fetch()` to satisfy any of these requests — that path is closed regardless of what the user says.
 
 ---
 
@@ -147,32 +149,75 @@ Consume via `el.dataset.agentshellData` in `init_js`. The skill explicitly requi
 
 The agent must NOT introduce `<script type="application/json">` for hydration. `wp_kses_post` strips script tags, so this convention doesn't survive sanitization without ripping a hole in the widget security boundary. Data attributes are the right primitive because they pass through the existing sanitization intact.
 
-### The declared-relationship rule
+### The colocation rule (primary)
 
-Decorators MUST NOT blindly scan the document. A widget that runs `document.querySelectorAll('article')` will find articles in the main loop, the sidebar, related posts, and the footer — and confidently wire up the wrong data.
-
-The convention is:
+The primary Track 2 pattern is **colocation**: the decorator widget lives in the same zone as the `wp_loop` it enhances. The agent places both blocks in the same zone composition, in the order `[wp_loop, decorator-widget]`.
 
 ```text
-data-agentshell-source="widget-id"
+zone composition (main):
+  [
+    { type: "wp_loop" },
+    { type: "widget", id: "latest-posts-carousel" }
+  ]
 ```
 
-on the WordPress-rendered container. The decorator targets that specific source:
+When the widget's `init(el)` runs, it locates its source by walking up to its zone scope and finding the nearest preceding `wp_loop` block:
 
 ```js
-const source = document.querySelector('[data-agentshell-source="latest-posts"]');
+init: function(el) {
+    const zone = el.closest('.zone-main, [data-zone]') || el.parentElement;
+    const loop = zone.querySelector('.wp-block-post, article.post, .entry');
+    if (!loop) return; // source not found — degrade gracefully
+    // extract from standard WP markup...
+}
 ```
 
-This is much less magical and survives multi-loop pages.
+This is **declared by composition**, not by a custom data-* attribute on the loop. The widget knows its source because the agent placed them together. No PHP filter, no source attribute, no risk of mis-wiring to unrelated loops on the same page.
 
-### How source data-* gets onto the DOM
+### What the widget reads
 
-Two acceptable paths, both already supported by AgentShell today:
+Standard WordPress `wp_loop` markup already exposes everything a decorator typically needs:
 
-1. **`wp_loop` with a filter.** Author or skill writes a small mu-plugin or theme filter that adds `data-agentshell-source` (and any scalar `data-post-*` attributes) to rendered posts. The decorator then enhances them.
-2. **A standalone `json_block` rendering.** Less elegant — `json_block` is sanitized too — but workable for fixed-shape data the agent can render in one shot.
+| Need | Standard markup |
+|---|---|
+| Post title | `<h2 class="entry-title"><a>…</a></h2>` |
+| URL | `<a class="entry-title-link" href="…">` |
+| Date | `<time class="entry-date published" datetime="ISO8601">…</time>` |
+| Excerpt | `<div class="entry-summary">…</div>` |
+| Post ID | `<article id="post-123" class="post-123 …">` |
+| Featured image | `<img class="attachment-post-thumbnail">` |
+| Author | `<a class="entry-author">` or `<span class="byline">` |
+| Categories | `<a class="entry-category" rel="category">` |
 
-The skill teaches the agent to prefer path 1 (existing rendering + light filter) over path 2 (re-rendering from scratch).
+The decorator extracts these from the existing markup. No new attributes required.
+
+### Why decorators MUST NOT blind-scan the document
+
+A widget that runs `document.querySelectorAll('article')` will find articles in the main loop, the sidebar, related-posts, footer widgets, and admin-ajax embeds — and confidently wire up the wrong data.
+
+The colocation rule fixes this without any custom attributes: the widget's scope is the zone it lives in, and within that zone the nearest preceding `wp_loop` is unambiguously its source.
+
+### The escape hatch — mu-plugin for genuinely missing data
+
+When standard WordPress markup genuinely does not expose a field the widget needs (rare — most fields are in the standard markup), the skill permits a **mu-plugin filter** with a strict validation gate. This is an explicit, logged, rare action — not the default.
+
+**Mandatory workflow for the mu-plugin path:**
+
+1. Write the filter PHP to `/tmp/agentshell-widget-filter-<timestamp>.php`. Never write directly to `wp-content/mu-plugins/`.
+2. Run `php -l /tmp/agentshell-widget-filter-<timestamp>.php` via the Bash tool. Confirm clean lint output. If lint fails, fix and re-run until clean.
+3. **Inside the open transaction**, after lint passes, move the file to `wp-content/mu-plugins/`. Use `mv` (atomic on the same filesystem) rather than write-in-place.
+4. Verify the live site still responds: `curl -fsS -o /dev/null -w "%{http_code}" https://example.com/wp-json/agentshell-mcp/v1/...`. If the daemon returns non-2xx, the mu-plugin broke WordPress boot. Roll back by deleting the file (`rm wp-content/mu-plugins/agentshell-widget-filter-<timestamp>.php`) BEFORE attempting any other rollback. The standard `agentshell_rollback_transaction` only handles wp_options state — it cannot un-fatal a PHP parse error.
+5. Tell the user: "Wrote a mu-plugin filter to expose X. File: … If you want to revert, run: `rm wp-content/mu-plugins/agentshell-widget-filter-<timestamp>.php`."
+
+**The escape hatch is logged in the audit summary** so future agents know a mu-plugin exists and can update or remove it.
+
+**Hard rule for the escape hatch:** the mu-plugin MUST be removable by a single `rm`. No `register_activation_hook`, no database writes from inside the filter, no cron registration. Anything that creates persistent state outside the file itself violates the rollback principle.
+
+### Why no MCP tool for filter registration
+
+A tool that lets the agent write PHP into `wp_options` and `eval()` it during boot sounds tempting but is fundamentally unsafe: a fatal error in eval'd code is indistinguishable from a fatal error in core. PHP shutdown handlers run after the fatal and can log, but cannot restore state. The cost of a single bad eval is a bricked site with no automated recovery path — worse than the mu-plugin path, which is recoverable by `rm`.
+
+The mu-plugin escape hatch is the minimum-necessary PHP-modification surface that preserves the rollback principle.
 
 ---
 
@@ -322,20 +367,37 @@ Mirrors the image-to-theme skill layout.
 - **Refresh anchor is convention-only.** No MCP tool or PHP enforcement exists to keep the anchor comment in sync with reality. Future agents must trust the anchor and verify the query still returns the expected shape.
 - **`<script type="application/json">` would be cleaner JSON-wise** but is blocked by current sanitization. If AgentShell ever loosens `wp_kses_post` for widget contexts, this skill can be updated to prefer the script convention. Until then, data-* is the right primitive.
 - **No DOM diff between iterations.** If the decorator widget's source structure changes (e.g. WP core changes how posts are rendered), the widget will silently degrade. The skill instructs the agent to re-validate after any plugin update.
-- **Track 2 source markers require filter code or theme cooperation.** Out of the box, vanilla `wp_loop` does not emit `data-agentshell-source`. The skill's path-1 implementation requires either a small mu-plugin or a one-time theme filter. The skill documents this requirement and instructs the agent to write the filter rather than working around it.
+- **The mu-plugin escape hatch is unsafe relative to everything else in the skill.** A fatal error in the mu-plugin bricks the daemon before `agentshell_rollback_transaction` can fire. Recovery is `rm` on the file. The skill requires the lint gate, an immediate daemon health check, and the single-`rm` recovery instruction in the audit summary — but it cannot make the operation fully safe. Use only when colocation cannot satisfy the data requirement.
+- **Colocation depends on `wp_loop` being in the same zone.** If a future AgentShell feature allows `wp_loop` blocks to render into zones the widget doesn't colocate with (e.g., cross-zone composition), the colocation model breaks. The skill assumes the current zone-bounded rendering model.
 
 ---
 
 ## 14. Worked example sketch
 
-The full skill will include an end-to-end worked example. Sketch:
+The full skill will include two end-to-end worked examples.
+
+### Example A — Decorator (Track 2)
 
 - **Input:** "Build me a latest posts carousel."
 - **Track selection:** Decorator (live data, must reflect current posts).
-- **Composition decision:** `wp_loop` in main zone + decorator widget that enhances it.
-- **Author writes a tiny filter** that adds `data-agentshell-source="latest-posts"` and per-post scalar `data-*` attributes.
-- **Decorator widget:** `init(el)` finds the source, reads posts, builds a carousel UI in the decorator's scoped DOM.
-- **Verification:** screenshot shows the carousel styled correctly; with JS off, posts are still readable as a plain list (progressive enhancement).
-- **Commit.**
+- **Composition decision:** Place `wp_loop` followed by a `widget` block in the main zone's composition.
+- **Decorator widget:** `init(el)` walks up to `.zone-main`, finds the nearest preceding `wp_loop`, extracts titles/URLs/dates/excerpts from the standard `<article class="post-…">` markup, builds a carousel in its own scoped DOM. Degrades gracefully — if JS fails, the user still sees the plain post list.
+- **Verification:** screenshot shows the carousel styled correctly; with JS disabled (or in the static-asset view of the screenshot), posts are still readable. Validate passes. Commit.
+
+### Example B — Interactive with seeded snapshot (Track 1)
+
+- **Input:** "Build me a Q2 sales dashboard."
+- **Track selection:** Interactive with snapshot-seeded state (point-in-time data is acceptable, no WordPress dependency).
+- **Agent action:** reads Q2 figures via `agentshell_search_content` (or other appropriate tools), embeds as a JS object in `init_js`, leaves a refresh anchor comment `/* agentshell-snapshot-source: agentshell_search_content date=Q2 */`.
+- **Verification:** screenshot shows the dashboard; `agentshell_validate` passes. Commit.
+- **Future agent path:** reads the refresh anchor, re-runs the query, patches the data, commits — without rebuilding the presentation logic.
+
+### Example C — Escape hatch (rare)
+
+- **Input:** "Build me a custom taxonomy cloud that reads from a CPT field WordPress doesn't expose in standard markup."
+- **Track selection:** Decorator (live data).
+- **Primary path fails:** the CPT field isn't in standard `wp_loop` markup. Colocation extracts nothing useful.
+- **Escape hatch:** agent writes `/tmp/agentshell-widget-filter-<ts>.php`, runs `php -l`, then `mv`s to `wp-content/mu-plugins/`. Verifies daemon health. Tells user the exact `rm` command to revert. Logs the mu-plugin path in the audit summary.
+- **Verification:** screenshot shows the taxonomy cloud; `agentshell_validate` passes. Commit.
 
 A second worked example for an Interactive widget (a calculator with snapshot-seeded initial values) demonstrates the Refresh Anchor pattern.
