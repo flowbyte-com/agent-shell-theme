@@ -53,12 +53,28 @@ class Transport {
             return $this->handle_batch( $parsed, $auth_result['user_id'] );
         }
 
+        // Notification: spec says no response at all. WP_REST_Response with status 204
+        // strips the body, giving us the correct HTTP 204 No Content.
+        if ( JSON_RPC::is_notification( $parsed ) ) {
+            $this->server->handle_message( $parsed, $auth_result['user_id'] );
+            return new \WP_REST_Response( null, 204 );
+        }
+
         // Handle single message
         $result = $this->server->handle_message( $parsed, $auth_result['user_id'] );
 
-        // Log tool call if applicable
+        // Log tool call if applicable. Status reflects the actual outcome: an error
+        // response from Server::handle_tools_call means the tool threw or was rejected,
+        // and the audit log must record that — a silent "always-success" log makes
+        // incident triage impossible.
         if ( isset( $parsed['method'] ) && $parsed['method'] === 'tools/call' ) {
-            $this->log_tool_call( $auth_result['user_id'], $parsed['params']['name'] ?? '', $parsed['params']['arguments'] ?? array(), 'success' );
+            $status = ( is_array( $result ) && isset( $result['error'] ) ) ? 'error' : 'success';
+            $this->log_tool_call(
+                $auth_result['user_id'],
+                $parsed['params']['name'] ?? '',
+                $parsed['params']['arguments'] ?? array(),
+                $status
+            );
         }
 
         return new \WP_REST_Response( $result, 200 );
