@@ -1,13 +1,13 @@
-# AgentShell MCP
+# agentshell-mcp (WordPress plugin)
 
-MCP server plugin for WordPress that exposes AgentShell as JSON-RPC tools.
+> **Pointer document.** The plugin ships **45+ `agentshell_*` MCP tools** (50 in this plugin + 4 in `agentshell-blocks` at the time of writing). The full authoritative list is in [`AGENTS.md` §2](../../AGENTS.md). Older counts ("10 tools", "11 tools", "12 tools") in any document are deprecated. This README is install + auth only; it does not redefine the tool surface.
 
 ## Installation
 
-1. Copy `agentshell-mcp/` to `wp-content/plugins/agentshell-mcp/`
-2. Activate in WordPress admin at `/wp-admin/plugins.php`
-3. Create an Application Password for the agent user at `/wp-admin/user/ap-passwords.php`
-4. Note the endpoint URL: `https://yourdomain.com/wp-json/agentshell-mcp/v1/mcp`
+1. Copy `agentshell-mcp/` to `wp-content/plugins/agentshell-mcp/`.
+2. Activate in WordPress admin at `/wp-admin/plugins.php`.
+3. Create an Application Password for the agent user.
+4. Note the endpoint URL: `https://yourdomain.com/wp-json/agentshell-mcp/v1/mcp`.
 
 ## Authentication
 
@@ -19,21 +19,11 @@ Authorization: Basic <base64(user:application_password)>
 
 The authenticated user must have `manage_options` capability.
 
-## Tools (11)
+## Tool surface
 
-| Tool | Description |
-|------|-------------|
-| `agentshell_get_config` | Get full AgentShell config |
-| `agentshell_set_css_var` | Set a single CSS variable |
-| `agentshell_set_design` | Update design colors/typography |
-| `agentshell_list_zones` | List all zones and their sources |
-| `agentshell_update_zone_composition` | Update a zone's block composition (main zone) |
-| `agentshell_update_zone_slots` | Set tri-slot {left,center,right} blocks (header/footer only) |
-| `agentshell_inject_json_block` | Inject HTML into a zone |
-| `agentshell_list_widgets` | List all registered widgets |
-| `agentshell_register_widget` | Register an agent widget |
-| `agentshell_set_layout` | Update grid areas/breakpoints |
-| `agentshell_get_site_info` | Get site info |
+The plugin exposes the configuration, observation, transaction, revision, snapshot, profile, design, content, and screenshot tool families listed in `AGENTS.md` §2. Discover at runtime with `agentshell_get_capabilities`. Tool names are stable across releases; new tools only get added (never removed or renamed).
+
+The bilateral widget registry is implemented jointly with `agentshell-blocks` (see `AGENTS.md` §4.1). Removing or "rewriting" the registry is not supported; the merge is the contract.
 
 ## Example
 
@@ -44,12 +34,12 @@ curl -s -X POST https://yourdomain.com/wp-json/agentshell-mcp/v1/mcp \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"agentshell_get_site_info","arguments":{}},"id":1}'
 ```
 
-## Audit Log
+## Audit log
 
-Tool calls are logged to `{wp_prefix}agentshell_mcp_audit_log` table.
+Tool calls are logged to `{wp_prefix}agentshell_mcp_audit_log` table. Fetch with `agentshell_get_audit_log`.
 
 ## Requirements
 
 - WordPress 6.0+
 - PHP 7.4+
-- AgentShell theme (optional — tools work independently)
+- AgentShell theme (recommended — tools work independently but the canonical contract is in the theme)

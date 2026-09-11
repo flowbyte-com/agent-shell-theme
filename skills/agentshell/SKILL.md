@@ -1,307 +1,40 @@
 ---
 name: agentshell
-description: Use when working with the AgentShell WordPress theme. Covers MCP tools, config via REST API, safe HTML injection, Web Components, FSE zone composition, and the agentshell-blocks plugin.
+description: Namespace index for AgentShell skills. Routes work to the canonical guide (AGENTS.md) and to the operative skills (image-to-theme, widget-builder). Use when an agent task touches the AgentShell WordPress theme.
 ---
 
-# AgentShell Skill
+# agentshell (skill index)
 
-Agents MUST use this skill when working with the AgentShell WordPress theme ecosystem.
+> **Pointer file.** This skill is a routing index, not a contract. The canonical agent guide is [`AGENTS.md`](../../../AGENTS.md) at the theme root. Every tool name, every architecture diagram, and every working-pattern line lives there. This skill never duplicates them.
 
----
+## When to use this index
 
-## Architecture: Two-Plugin Split
+Use this skill only as a routing dispatch when the agent runtime supports skill files. The runtime will then pick up the operative skill for the specific task. If the runtime loads multiple skills at once, the canonical guide (`AGENTS.md`) wins on any conflict.
 
-```
-Agent (Claude Code, etc.)
-    ↕ stdio (MCP JSON-RPC)
-Daemon (agentshell-mcp-daemon)
-    ↕ HTTP (MCP over REST)
-┌─────────────────────────────────────────┐
-│ agentshell-mcp (WordPress plugin)        │
-│   ↕ filter-based tool registry          │
-│   Theme tools (layout, zones, design)   │
-├─────────────────────────────────────────┤
-│ agentshell-blocks (WordPress plugin)    │
-│   ↕ filter hooks                         │
-│   Widget tools + asset injection         │
-└─────────────────────────────────────────┘
-    ↕ reads/writes
-AgentShell config (wp_options)
-    ↕ sole source of truth after activation
-Shell (header.php, style.css, footer.php)
-    ↕ renders into FSE layout
-```
+## Operative skills
 
-**Sole source of truth:** `wp_options['agentshell_config']` — never the physical `default-config.json`.
+| Skill | Triggers | Purpose | File |
+|---|---|---|---|
+| `agentshell-image-to-theme` | "theme this site to match an image", "match these colors" | Apply a reference image's design tokens to the live site | `skills/agentshell/image-to-theme/SKILL.md` |
+| `agentshell-widget-builder` | "build me a widget that …", "add a custom carousel / calculator / dashboard" | Build a custom widget using the bilateral registry and the data-* / no-fetch laws | `skills/agentshell/widget-builder/SKILL.md` |
 
-**Clean blast radius:** If `agentshell-blocks` is deactivated, its widget tools silently disappear from the MCP tool list. The theme keeps rendering — orphaned widget blocks show `<!-- Widget not found -->` comments, never a fatal error.
+## What this index intentionally does not contain
 
----
+- The MCP tool list (`AGENTS.md` §2 is the only source).
+- The architecture diagram (`AGENTS.md` §1 is the only source).
+- The working pattern / transaction loop (`AGENTS.md` §6 is the only source).
+- A tool count. The count is "45+" — see `AGENTS.md` §2.
+- A "wp_options is the sole source of truth" claim. The bilateral widget registry is the union source — see `AGENTS.md` §4.1.
 
-## Tools (12 total)
+## Hard rules (inherited by reference)
 
-All tools prefixed `agentshell_`. Empty arguments unless noted.
+Any operative skill that runs under this namespace must inherit, without restating:
 
-### Theme Tools (agentshell-mcp plugin)
+1. **Bilateral widget registry** — file-based + config-registered, merged, with config overriding file by id (`AGENTS.md` §4.1).
+2. **Data-* hydration only** — `<script type="application/json">` is forbidden (`AGENTS.md` §4.2).
+3. **No client-side `fetch()`** — absolute, no exceptions (`AGENTS.md` §4.3).
+4. **Two widget tracks** — Interactive + WordPress Decorator; snapshot is a pattern inside Interactive, not a third track (`AGENTS.md` §4.4).
+5. **Unbreakable Grid protocol** — 1fr rule, descendant scope on `<body>`, quoted rows in `grid-template-areas` (`AGENTS.md` §5).
+6. **45+ MCP tools** — the canonical count (`AGENTS.md` §2).
 
-| Tool | What it does | Key args |
-|------|-------------|----------|
-| `agentshell_get_config` | Return full flat config (CSS vars) | (none) |
-| `agentshell_set_css_var` | Set one CSS variable | `name` (must start with `--`), `value` |
-| `agentshell_set_design` | Update colors/typography | `colors{}`, `typography{}` |
-| `agentshell_list_zones` | List all zones with IDs, labels, and composition/slots | (none) |
-| `agentshell_update_zone_composition` | Set/replace a zone's ordered block composition (main zone) | `zone_id`, `composition[]` |
-| `agentshell_update_zone_slots` | Set tri-slot blocks for header or footer zone | `zone_id`, `slots{left,center,right}` |
-| `agentshell_set_layout` | Update breakpoints (sidebar removed in v2) | `breakpoints?` |
-| `agentshell_inject_json_block` | Inject raw HTML into a zone | `zone_id`, `html` |
-| `agentshell_update_post_content` | Update post/page HTML content | `post_id` (integer), `html_content` |
-| `agentshell_get_site_info` | Get site name, URL, version | (none) |
-
-### Widget Tools (agentshell-blocks plugin)
-
-| Tool | What it does | Key args |
-|------|-------------|----------|
-| `agentshell_list_widgets` | List all agent-defined widgets | (none) |
-| `agentshell_register_widget` | Register or update a widget | `id`, `name`, `init_js?`, `css?`, `template?` |
-| `agentshell_unregister_widget` | Remove a widget — also cleans zone compositions | `id` |
-| `agentshell_get_widget` | Get a single widget definition | `id` |
-
----
-
-## FSE Zone Composition (v2)
-
-Each zone has either a `slots` object or a `composition[]` array depending on the zone type.
-
-**Tri-Slot Zones (header / footer):** Use a `slots` object for three-column horizontal placement:
-
-```json
-{
-  "id": "header",
-  "label": "Header",
-  "slots": {
-    "left":   [ { "type": "wp_core", "id": "site_logo" } ],
-    "center": [ { "type": "wp_core", "id": "nav_menu" } ],
-    "right":  [ { "type": "wp_core", "id": "search_form" } ]
-  }
-}
-```
-
-**Vertical Composition Zones (main):** Use an ordered `composition[]` array:
-
-```json
-{
-  "id": "main",
-  "label": "Main",
-  "composition": [
-    { "type": "widget",  "id": "ai-alert-banner" },
-    { "type": "wp_loop" },
-    { "type": "widget",  "id": "ai-newsletter-signup" }
-  ]
-}
-```
-
-**Block types:**
-
-| Type | When to use |
-|------|-------------|
-| `wp_loop` | Standard WordPress content (posts, pages) |
-| `wp_core` | WordPress native elements — site_title, site_tagline, site_logo, nav_menu, search_form |
-| `widget` | Agent-built interactive components (chat, charts, calculators) |
-| `json_block` | Raw HTML injected directly (stripped of `<style>` and `style=""`) |
-| `wp_widget_area` | WordPress dynamic sidebar by ID |
-
-**Setting slots via tool (header/footer):**
-
-```json
-{
-  "zone_id": "header",
-  "slots": {
-    "left":   [ { "type": "wp_core", "id": "site_logo" } ],
-    "center": [ { "type": "wp_core", "id": "nav_menu" } ],
-    "right":  [ { "type": "wp_core", "id": "search_form" } ]
-  }
-}
-```
-
-**To place a widget in the header's right slot:**
-
-```json
-{
-  "zone_id": "header",
-  "slots": {
-    "left":   [],
-    "center": [ { "type": "wp_core", "id": "nav_menu" } ],
-    "right":  [ { "type": "widget", "id": "sale-banner" } ]
-  }
-}
-```
-
-**Setting composition via tool (main zone only):**
-
-```json
-{
-  "zone_id": "main",
-  "composition": [
-    { "type": "widget", "id": "pricing-table" },
-    { "type": "wp_loop" }
-  ]
-}
-```
-
-The human WP content (`wp_loop`) is preserved — authors editing in Gutenberg are never displaced.
-
----
-
-## agentshell-blocks Plugin
-
-The blocks plugin owns the widget registry and shortcode bridge.
-
-**Widget registry store:** `wp_options['agentshell_widgets']` — agent-defined widgets only. Stable widgets live in `themes/agentshell/widgets/*.php`.
-
-**Widget shortcode:** Human editors can embed widgets in WordPress content:
-
-```
-[agent_block id="hello-world"]
-```
-
-**Asset injection:** All widget CSS (`<style id="agentshell-widgets-css">`) and JS (`<script id="agentshell-widgets-js">`) are injected automatically. No build step, no physical files.
-
-**Ghost widget cleanup:** `agentshell_unregister_widget` automatically strips any zone composition blocks referencing the deleted widget ID. No orphaned references.
-
----
-
-## Trust Model
-
-Every tool requires `manage_options` capability. Exception:
-
-**Trusted users** (`unfiltered_html` or `manage_options` capability):
-- `<script>` tags pass through intact in `agentshell_inject_json_block` and `agentshell_update_post_content`
-- Enables custom Web Components with `customElements.define`
-
-**All users — always stripped:**
-- `<style>` tags and `style=""` attributes — prevents layout breaking
-
----
-
-## What You May Do
-
-### CSS Variables (Design Tokens)
-
-```bash
-agentshell_set_css_var({ name: "--theme-accent", value: "#ff6600" })
-```
-
-Available: `--theme-bg`, `--theme-surface`, `--theme-text`, `--theme-border`, `--theme-accent`, `--theme-header-bg`, `--theme-header-text`, `--theme-footer-bg`, `--theme-footer-text`, `--font-base`, `--font-mono`, `--spacing-base`, `--content-max-width`, `--container-padding`
-
-### Register a Widget
-
-```json
-{
-  "id": "memory-summary",
-  "name": "Memory Summary",
-  "init_js": "window.AgentshellWidgets = window.AgentshellWidgets || {};\nwindow.AgentshellWidgets['memory-summary'] = {\n  init: function(el) {\n    el.innerHTML = '<div class=\"mem-summary\">3 memories active</div>';\n  }\n};",
-  "css": ".mem-summary { color: var(--theme-accent); font-weight: bold; }"
-}
-```
-
-Then place it in a zone:
-```json
-{
-  "zone_id": "main",
-  "composition": [
-    { "type": "widget", "id": "memory-summary" },
-    { "type": "wp_loop" }
-  ]
-}
-```
-
-### Web Components (Light DOM)
-
-Widget JS runs in the page context — not Shadow DOM. All CSS must be scoped to a class:
-
-**Correct:**
-```css
-.memory-summary .card { background: var(--theme-surface); }
-```
-
-**Wrong (bleeds site-wide):**
-```css
-.card { background: var(--theme-surface); }   /* no wrapper */
-:host { display: block; }                    /* Shadow DOM only */
-```
-
-Pre-loaded libraries: `window.d3` (D3.js v7), `window.math` (Math.js 11.8). Do NOT inject `<script src="">` for these.
-
----
-
-## What You Must NOT Do
-
-- Edit `header.php`, `footer.php`, or `style.css` Sections 3–4 (the fixed FSE grid)
-- Use inline event handlers (`onclick=""`, `onerror=""`) or `<script>` in post content (unless trusted user)
-- Set colors outside the CSS variable system
-- Inject `<style>` tags or `style=""` attributes in `json_block` content — always stripped
-- **Do not write client-side `fetch()` calls.** Use `agentshell_get_config` to read state first.
-- Use `agentshell_set_zone_source` — that tool was removed in v2. Use `agentshell_update_zone_composition` instead.
-
----
-
-## Daemon Configuration
-
-`~/.agentshell-mcp.json` (mode `0600`):
-```json
-{
-  "url": "https://yourdomain.com/wp-json/agentshell-mcp/v1/mcp",
-  "user": "agent_user",
-  "pass": "XXXX XXXX XXXX XXXX XXXX XXXX",
-  "timeout": 30
-}
-```
-
-Claude Code `settings.json`:
-```json
-{
-  "mcpServers": {
-    "agentshell": {
-      "command": "php",
-      "args": ["/path/to/daemon.php", "--config", "/home/user/.agentshell-mcp.json"]
-    }
-  }
-}
-```
-
----
-
-## File Structure
-
-```
-agent-shell-theme/
-├── style.css                  # Theme + :root tokens + FSE grid
-├── functions.php              # Config helpers, asset enqueue
-├── header.php                # Hardcoded FSE shell (header/main/footer zones)
-├── footer.php                # Custom JS injection, configurator trigger
-├── default-config.json       # Seed file (v2: header/footer use slots{}, main uses composition[])
-├── template-parts/
-│   └── shell-render.php     # agentshell_render_zone(), agentshell_render_block()
-├── configurator/
-│   ├── configurator.js      # Zone Builder UI (⚙ panel)
-│   └── configurator.css
-├── widgets/                  # Stable widgets (file-based)
-│   └── hello-world.php
-├── agentshell-mcp/           # WordPress plugin — theme MCP tools
-│   └── includes/tools/       # 9 theme tools
-├── agentshell-blocks/        # WordPress plugin — widget MCP tools
-│   └── includes/tools/       # 4 widget tools
-└── agentshell-mcp-daemon/    # PHP CLI proxy (stdio ↔ HTTP)
-```
-
----
-
-## Troubleshooting
-
-| Error | Cause |
-|-------|-------|
-| `No route was found` | Plugin not activated |
-| `Authentication failed` | Wrong username or app password |
-| `Unknown tool: agentshell_...` | Plugin with that tool not activated |
-| `<script>` tags missing | User lacks `unfiltered_html` capability |
-| `<!-- Widget not found -->` | Widget deleted but zone composition still references it |
+For everything else, including install, auth, plugin internals, and the historical record, see `AGENTS.md` and the docs/_archive/ subdirectory.

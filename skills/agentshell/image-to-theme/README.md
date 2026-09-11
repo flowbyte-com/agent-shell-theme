@@ -1,6 +1,8 @@
 # Image-to-Theme Skill
 
-A Claude Code skill (and any other agent-runtime that supports skill files) that themes an AgentShell site to match a reference image. Pure agent-side instructions — no PHP changes, no new MCP tools. The agent uses its native vision to read a local image file, maps the visible aesthetic to the existing design schema via deterministic heuristic rules, and applies the result through the existing `agentshell_set_*` MCP tools inside a transaction.
+> **Pointer document.** The operative skill is [`SKILL.md`](./SKILL.md). The canonical agent contract — tool surface, architecture, bilateral widget registry, the data-* / no-fetch laws, the Unbreakable Grid protocol — is in [`AGENTS.md`](../../../AGENTS.md) at the theme root. This README is human orientation only.
+
+A Claude Code skill (and any other agent runtime that supports skill files) that themes an AgentShell site to match a reference image. Pure agent-side instructions — no PHP changes, no new MCP tools. The agent uses its native vision to read a local image file, maps the visible aesthetic to the existing design schema via deterministic heuristic rules, and applies the result through the existing `agentshell_set_*` MCP tools inside a transaction.
 
 ## When to invoke
 
@@ -12,43 +14,21 @@ Trigger phrases:
 - "use agentshell to build something a bit like that"
 - "make my site look like the reference"
 
-Out of scope: structural composition, content generation, image editing. See SKILL.md Section 1 for the full scope boundary.
+Out of scope: structural composition, content generation, image editing. See `SKILL.md` for the full scope boundary.
 
-## Quick start
+## Architecture (one line)
 
-```
-User: "Theme the site like /tmp/refs/cyberpunk-cafe.png — keep it moody but readable."
-
-Agent: (reads SKILL.md, follows the 9-step pipeline, applies the theme,
-        reports back: "Moody dark navy with bright cyan accent — 2 of 4
-        iterations used, full audit in agentshell_get_audit_log.")
-```
-
-## Architecture
-
-```
-Image (local file or URL)
-       ↓
-Claude Code session (Read + vision)
-       ↓
-Heuristic mapping (Section 4 in SKILL.md)
-       ↓
-MCP tools (agentshell_begin_transaction → set_palette / set_typography /
-          set_shape / set_spacing → save_theme_profile → screenshot →
-          commit_transaction)
-       ↓
-WordPress wp_options['agentshell_config']
-```
-
-The agent is the entire inference layer. AgentShell is the execution environment. No image bytes ever cross the daemon.
+The agent is the entire inference layer. AgentShell is the execution environment. No image bytes ever cross the daemon. The skill uses only existing `agentshell_*` tools; it does not propose new tools.
 
 ## For full reference
 
-- [SKILL.md](./SKILL.md) — the complete skill file (Sections 1–7 + worked example)
-- Spec: `docs/superpowers/specs/2026-08-14-agentshell-image-to-theme-design.md` — design rationale, open questions, related documents
+- [`SKILL.md`](./SKILL.md) — the operative skill file.
+- `AGENTS.md` §2 (tool surface), §4 (widget / data-* law), §5 (grid), §6 (working pattern) at the theme root.
 
-## Knobs
+## Knobs (inherited by reference, not redefined here)
 
-- `strict` / `pragmatic` / `expressive` — strictness modes (see SKILL.md Section 2)
-- `max_attempts: 2` / `4` / `6` — iteration budget (see SKILL.md Section 5)
-- Optional hints: "make the header dark", "match the accent only", "airy", etc. — see SKILL.md Section 2
+- `strict` / `pragmatic` / `expressive` — strictness modes (full text in `SKILL.md`).
+- `max_attempts: 2 | 4 | 6` — iteration budget.
+- Optional natural-language hints ("make the header dark", "airy", etc.).
+
+For the canonical list of MCP tools, the bilateral widget registry, the Unbreakable Grid protocol, and the data-* / no-fetch laws, see `AGENTS.md`.

@@ -1,15 +1,21 @@
-# AgentShell MCP Daemon
+# agentshell-mcp-daemon
+
+> **Pointer document.** The daemon is a transport; it does not define the agent contract. The canonical guide is [`AGENTS.md`](../../AGENTS.md).
 
 PHP CLI daemon that proxies MCP clients (Claude Code, etc.) to the AgentShell MCP WordPress plugin.
 
 ```
-Agent (stdio) → Daemon (CLI) → WordPress REST endpoint → agentshell-mcp plugin
+Agent (MCP client, stdio)
+  → Daemon (PHP CLI, stream_context)
+  → WordPress REST endpoint
+  → agentshell-mcp plugin
+  → agentshell-blocks plugin (widget tools + bilateral registry)
 ```
 
 ## Installation
 
-1. Copy `agentshell-mcp-daemon/` to desired location
-2. No external dependencies — uses PHP's native `stream_context` for HTTP
+1. Copy `agentshell-mcp-daemon/` to a permanent location.
+2. No external dependencies — uses PHP's native `stream_context` for HTTP.
 
 ## Configuration
 
@@ -33,12 +39,11 @@ php daemon.php --config ~/.agentshell-mcp.json
 ```
 
 Options:
-- `--config` Path to config JSON (default: `~/.agentshell-mcp.json`)
-- `--verbose` Print JSON-RPC messages to stderr for debugging
 
-## Claude Code Configuration
+- `--config` — path to config JSON (default `~/.agentshell-mcp.json`).
+- `--verbose` — print JSON-RPC messages to stderr for debugging.
 
-Add to `~/.claude/settings.json`:
+## Claude Code configuration
 
 ```json
 {
@@ -51,17 +56,19 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-## Daemon Behavior
+## Behaviour
 
-- Launches on demand when the connecting agent starts
-- Dies when the agent disconnects (no persistent process)
-- Proxies all MCP JSON-RPC messages stdio ↔ HTTP
-- Returns connection errors as JSON-RPC error responses
+- Launches on demand when the connecting agent starts.
+- Dies when the agent disconnects (no persistent process).
+- Proxies all MCP JSON-RPC messages stdio ↔ HTTP.
+- Returns connection errors as JSON-RPC error responses.
 
 ## Troubleshooting
 
-**"No route was found"** — The WordPress plugin is not activated. Activate at `/wp-admin/plugins.php`.
+| Error | Cause |
+|---|---|
+| `No route was found` | The `agentshell-mcp` WordPress plugin is not activated. |
+| `Authentication failed` | Wrong username or application password. |
+| `HTTP request failed` | The URL is not reachable from the host running the daemon. |
 
-**"Authentication failed"** — Check username and application password are correct.
-
-**"HTTP request failed"** — Check the URL is reachable from the host running the daemon.
+For the tool surface, the bilateral widget registry contract, the data-* / no-fetch laws, the Unbreakable Grid protocol, and the working pattern, see `AGENTS.md`.
