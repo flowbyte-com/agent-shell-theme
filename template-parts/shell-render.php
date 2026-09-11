@@ -45,6 +45,12 @@ function agentshell_render_block( array $block ) {
 
         case 'json_block':
             $html = $block['content'] ?? '';
+            // Defense in depth: strip <script> tags explicitly before KSES, matching
+            // the stripping pattern in agentshell_inject_json_block (the MCP tool
+            // that feeds this block type). If KSES ever misses a tag (provider
+            // update, edge-case bypass), the MCP-protected path stays safe AND
+            // the renderer-only path stays safe — same strip set, same order.
+            $html = preg_replace( '/<\/?script\b[^>]*>/i', '', $html );
             // Strip <style> tags and style="" attributes — agents must use class-based CSS
             $html = preg_replace( '/<style\b[^>]*>.*?<\/style>/is', '', $html );
             $html = preg_replace( '/\s+style="[^"]*"/', '', $html );
