@@ -9,10 +9,6 @@ abstract class Base_Tool {
     abstract public function get_input_schema();
     abstract public function execute( array $arguments );
 
-    public function get_required_capability() {
-        return 'manage_options';
-    }
-
     public function get_definition() {
         return array(
             'name'        => $this->get_name(),
