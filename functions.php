@@ -56,7 +56,11 @@ function agentshell_theme_activation() {
     if ( ! file_exists( $seed_file ) ) {
         return;
     }
-    $seed = json_decode( file_get_contents( $seed_file ), true );
+    $raw_seed = file_get_contents( $seed_file );
+    if ( ! is_string( $raw_seed ) ) {
+        return;
+    }
+    $seed = json_decode( $raw_seed, true );
     if ( ! is_array( $seed ) ) {
         return;
     }
@@ -331,10 +335,13 @@ function agentshell_get_config() {
     if ( $config === false || ! is_array( $config ) || empty( $config ) ) {
         $seed_file = get_template_directory() . '/default-config.json';
         if ( file_exists( $seed_file ) ) {
-            $seed = json_decode( file_get_contents( $seed_file ), true );
-            if ( is_array( $seed ) ) {
-                update_option( 'agentshell_config', $seed );
-                $config = $seed;
+            $raw_seed = file_get_contents( $seed_file );
+            if ( is_string( $raw_seed ) ) {
+                $seed = json_decode( $raw_seed, true );
+                if ( is_array( $seed ) ) {
+                    update_option( 'agentshell_config', $seed );
+                    $config = $seed;
+                }
             }
         }
     }
@@ -407,7 +414,11 @@ function agentshell_get_widget_registry() {
     // 1. Load stable widgets from /widgets/ directory
     $stable_index = get_template_directory() . '/widgets/.index.json';
     if ( file_exists( $stable_index ) ) {
-        $index = json_decode( file_get_contents( $stable_index ), true );
+        $raw_index = file_get_contents( $stable_index );
+        $index     = is_string( $raw_index ) ? json_decode( $raw_index, true ) : null;
+        if ( ! is_array( $index ) ) {
+            $index = array();
+        }
         foreach ( $index['stable'] ?? array() as $entry ) {
             if ( empty( $entry['id'] ) || empty( $entry['file'] ) ) {
                 continue;
