@@ -1,0 +1,1080 @@
+{
+  "tools": [
+    {
+      "name": "agentshell_get_config",
+      "description": "Get the full AgentShell configuration including zones, design, layout, widgets, and CSS variables.",
+      "inputSchema": {
+        "type": "object",
+        "properties": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "agentshell_set_css_var",
+      "description": "Set a single CSS custom property (variable) on the theme.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "CSS variable name (must start with --)",
+            "pattern": "^--"
+          },
+          "value": {
+            "type": "string",
+            "description": "CSS value",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_set_design",
+      "description": "Update design system values (colors, typography). All fields optional \u2014 only provided fields are updated.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "colors": {
+            "type": "object",
+            "properties": {
+              "background": {
+                "type": "string"
+              },
+              "surface": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "accent": {
+                "type": "string"
+              },
+              "border": {
+                "type": "string"
+              }
+            }
+          },
+          "typography": {
+            "type": "object",
+            "properties": {
+              "fontFamily": {
+                "type": "string"
+              },
+              "baseSize": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "agentshell_list_zones",
+      "description": "List all declared zones with their current source type and configuration.",
+      "inputSchema": {
+        "type": "object",
+        "properties": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "agentshell_update_zone_composition",
+      "description": "Set or replace the ordered composition array for a zone. Accepts an array of block objects: { \"type\": \"wp_loop\" }, { \"type\": \"widget\", \"id\": \"widget-id\" }, { \"type\": \"json_block\", \"content\": \"...\" }, { \"type\": \"wp_widget_area\", \"id\": \"widget-area-id\" }.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "zone_id": {
+            "type": "string",
+            "description": "Zone ID: header, main, or footer"
+          },
+          "composition": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "wp_loop",
+                    "wp_core",
+                    "widget",
+                    "json_block",
+                    "wp_widget_area"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            }
+          }
+        },
+        "required": [
+          "zone_id",
+          "composition"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_update_zone_slots",
+      "description": "Set or replace the slots object for a tri-slot zone (header or footer). Slots use a { left, center, right } structure. Each slot is an array of blocks.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "zone_id": {
+            "type": "string",
+            "enum": [
+              "header",
+              "footer"
+            ],
+            "description": "Zone ID: header or footer (only tri-slot zones support slots)"
+          },
+          "slots": {
+            "type": "object",
+            "properties": {
+              "left": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "center": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "right": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            },
+            "required": [
+              "left",
+              "center",
+              "right"
+            ]
+          }
+        },
+        "required": [
+          "zone_id",
+          "slots"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_set_layout",
+      "description": "Update layout grid areas per breakpoint, gap, and padding.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "breakpoints": {
+            "type": "object",
+            "properties": {
+              "mobile": {
+                "type": "string"
+              },
+              "tablet": {
+                "type": "string"
+              },
+              "desktop": {
+                "type": "string"
+              }
+            }
+          },
+          "grid_areas": {
+            "type": "object",
+            "properties": {
+              "mobile": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tablet": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "desktop": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "grid_gap": {
+            "type": "string"
+          },
+          "grid_padding": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "agentshell_get_site_info",
+      "description": "Get basic site information for agent context.",
+      "inputSchema": {
+        "type": "object",
+        "properties": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "agentshell_inject_json_block",
+      "description": "Inject raw HTML into a zone via json_block source. Style tags and inline style attributes are stripped for untrusted users (Unbreakable Grid). Admin users with unfiltered_html/manage_options preserve all tags including <style> and <script> for custom Web Components.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "zone_id": {
+            "type": "string",
+            "description": "Target zone ID"
+          },
+          "html": {
+            "type": "string",
+            "description": "HTML content (max 10000 chars)",
+            "maxLength": 10000
+          }
+        },
+        "required": [
+          "zone_id",
+          "html"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_update_post_content",
+      "description": "Update a specific post/page HTML content via wp_update_post(). Style tags and inline style attributes are stripped for untrusted users (Unbreakable Grid). Admin users with unfiltered_html/manage_options preserve all tags including <style> and <script>.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "post_id": {
+            "type": "integer",
+            "description": "Target post/page ID"
+          },
+          "html_content": {
+            "type": "string",
+            "description": "HTML content to set as post content (max 100000 chars)",
+            "maxLength": 100000
+          }
+        },
+        "required": [
+          "post_id",
+          "html_content"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_inspect",
+      "description": "Return a complete machine-readable model of the AgentShell site: shell, design, zones, widgets, content, capabilities, state, and warnings. Call this first when working on an unfamiliar site.",
+      "inputSchema": {
+        "type": "object",
+        "properties": []
+      }
+    },
+    {
+      "name": "agentshell_explain",
+      "description": "Return a human-readable plain-text description of the site: shell model, zone composition, widgets, and design \u2014 generated from live state.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "verbose": {
+            "type": "boolean",
+            "description": "Include token-level design details (default false)"
+          }
+        }
+      }
+    },
+    {
+      "name": "agentshell_validate",
+      "description": "Run deterministic validation over the site configuration: malformed config, unknown zones/widgets/core components, missing widget dependencies, unsafe json_block content, duplicate ids, auth configuration, and PHP/WordPress compatibility. Returns { errors, warnings } with stable codes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config": {
+            "type": "object",
+            "description": "Optional config to validate instead of the stored one (e.g. staged changes)."
+          }
+        }
+      }
+    },
+    {
+      "name": "agentshell_get_capabilities",
+      "description": "Return the capabilities of this AgentShell installation: design, zones, widgets, content, transactions, revisions, snapshots, profiles, preview, screenshot, audit. Call this before planning work on an unfamiliar installation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": []
+      }
+    },
+    {
+      "name": "agentshell_get_audit_log",
+      "description": "Return the audit history of configuration changes: timestamp, actor, operation, affected CSS tokens, revision id. Newest first, max 100 entries.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Maximum entries to return (default 20, max 100)"
+          }
+        }
+      }
+    },
+    {
+      "name": "agentshell_begin_transaction",
+      "description": "Open a transactional change session. Until committed or rolled back, every config mutation is staged in a buffer instead of the database \u2014 the live site stays untouched. Make multiple changes, validate, preview the diff, then commit or roll back.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Short human-readable description, e.g. \"switch to dark palette\""
+          }
+        }
+      }
+    },
+    {
+      "name": "agentshell_get_transaction",
+      "description": "Return the open transaction (id, label, actor, staged state) or null if none is open.",
+      "inputSchema": {
+        "type": "object",
+        "properties": []
+      }
+    },
+    {
+      "name": "agentshell_preview_transaction",
+      "description": "Return a token-level diff of everything staged in the open transaction against the live config: added, removed, changed tokens. Nothing is persisted.",
+      "inputSchema": {
+        "type": "object",
+        "properties": []
+      }
+    },
+    {
+      "name": "agentshell_validate_transaction",
+      "description": "Run the site doctor against the staged configuration of the open transaction. Returns errors and warnings. Errors must be resolved before commit will succeed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": []
+      }
+    },
+    {
+      "name": "agentshell_commit_transaction",
+      "description": "Validate and apply all staged changes of the open transaction in one atomic write. Records a revision and audit entry. Fails (with no changes applied) if validation errors exist.",
+      "inputSchema": {
+        "type": "object",
+        "properties": []
+      }
+    },
+    {
+      "name": "agentshell_rollback_transaction",
+      "description": "Discard all staged changes of the open transaction. The database was never touched while the transaction was open, so the live site is unaffected.",
+      "inputSchema": {
+        "type": "object",
+        "properties": []
+      }
+    },
+    {
+      "name": "agentshell_list_revisions",
+      "description": "List configuration revisions (newest first): id, parent, timestamp, actor, label. Each config mutation creates one revision.",
+      "inputSchema": {
+        "type": "object",
+        "properties": []
+      }
+    },
+    {
+      "name": "agentshell_diff_revisions",
+      "description": "Compare two configuration revisions at the CSS-token level. Returns added/removed/changed tokens between the two states.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Revision id, e.g. r12"
+          },
+          "to": {
+            "type": "string",
+            "description": "Revision id, e.g. r15. Omit to diff from-revision against the current live config."
+          }
+        },
+        "required": [
+          "from"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_restore_revision",
+      "description": "Restore the live configuration to a previous revision. The restore itself is recorded as a new revision and audit entry, so it is always reversible.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Revision id to restore, e.g. r12"
+          },
+          "label": {
+            "type": "string",
+            "description": "Optional note recorded with the restore"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_create_snapshot",
+      "description": "Capture the full current configuration as a named snapshot. Snapshots are restorable (agentshell_restore_snapshot), diffable, and exportable as theme packages. Max 20 snapshots (oldest dropped).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Snapshot name, e.g. \"launch-day\" or \"dark-2026\""
+          },
+          "label": {
+            "type": "string",
+            "description": "Optional description"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_list_snapshots",
+      "description": "List all saved configuration snapshots with name, label, actor, and timestamp.",
+      "inputSchema": {
+        "type": "object",
+        "properties": []
+      }
+    },
+    {
+      "name": "agentshell_restore_snapshot",
+      "description": "Restore the live configuration from a named snapshot. Recorded as a new revision and audit entry, so it is reversible with agentshell_restore_revision.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Snapshot name to restore"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_diff_snapshot",
+      "description": "Token-level diff between a saved snapshot and the current live configuration.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Snapshot name to diff against the live config"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_get_design_system",
+      "description": "Return the design system in structured groups (palette, typography, geometry, custom vars) plus the flat token map. Prefer this over raw CSS variables when reasoning about design.",
+      "inputSchema": {
+        "type": "object",
+        "properties": []
+      }
+    },
+    {
+      "name": "agentshell_set_palette",
+      "description": "Update palette colors semantically. Keys: background, surface, text, border, accent, primary, secondary. Values must be hex (#rgb/#rgba/#rrggbb/#rrggbbaa). Only provided keys change.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "colors": {
+            "type": "object",
+            "description": "Color key \u2192 hex value",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "colors"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_set_typography",
+      "description": "Update typography: fontFamily (CSS font stack), mono (monospace font), baseSize (base spacing/font unit, e.g. 1rem), scale (type scale multiplier). Only provided keys change.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fontFamily": {
+            "type": "string",
+            "description": "CSS font stack, e.g. \"Inter, system-ui, sans-serif\""
+          },
+          "mono": {
+            "type": "string"
+          },
+          "baseSize": {
+            "type": "string",
+            "description": "CSS length, e.g. 1rem, 16px"
+          },
+          "scale": {
+            "type": "string",
+            "description": "Type scale multiplier, e.g. 1.25"
+          }
+        }
+      }
+    },
+    {
+      "name": "agentshell_set_spacing",
+      "description": "Set the base spacing unit (drives --spacing-base and the theme's space scale), e.g. \"1rem\" or \"8px\".",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "base": {
+            "type": "string",
+            "description": "CSS length, e.g. 1rem, 8px"
+          }
+        },
+        "required": [
+          "base"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_set_shape",
+      "description": "Set shape tokens: radius (base corner radius, e.g. 8px or 0px for a sharp look), borderWidth (e.g. 1px, 2px), borderStyle (solid, dashed, none). Only provided keys change.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "radius": {
+            "type": "string",
+            "description": "CSS length, e.g. 8px, 12px, 0px"
+          },
+          "borderWidth": {
+            "type": "string",
+            "description": "CSS length, e.g. 1px, 2px"
+          },
+          "borderStyle": {
+            "type": "string",
+            "enum": [
+              "solid",
+              "dashed",
+              "dotted",
+              "none"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "agentshell_save_theme_profile",
+      "description": "Save the current design (or an explicit design object) as a named theme profile. Profiles can be applied (agentshell_apply_theme) and previewed (agentshell_preview_theme).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Profile name, e.g. \"terminal\" or \"brutalist\""
+          },
+          "description": {
+            "type": "string"
+          },
+          "design": {
+            "type": "object",
+            "description": "Optional design object { colors, typography, layout, custom_css_vars }. Omit to capture the current live design."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_list_theme_profiles",
+      "description": "List all saved theme profiles (name, description, actor, timestamp, design summary).",
+      "inputSchema": {
+        "type": "object",
+        "properties": []
+      }
+    },
+    {
+      "name": "agentshell_apply_theme",
+      "description": "Apply a saved theme profile: merge its design (colors, typography, geometry, custom vars) into the live configuration. Recorded as a revision and audit entry.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Profile name to apply"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_preview_theme",
+      "description": "Get a preview URL for a saved theme profile. The profile's design tokens are rendered as CSS overrides (no config change). Requires a logged-in browser session to view.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Profile name to preview"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_export_theme",
+      "description": "Export the full AgentShell configuration as a portable theme package (JSON manifest): design, zones, layout, widgets. Import on another installation with agentshell_import_theme.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "snapshot": {
+            "type": "string",
+            "description": "Optional snapshot name to export instead of the live config"
+          }
+        }
+      }
+    },
+    {
+      "name": "agentshell_import_theme",
+      "description": "Import a theme package (from agentshell_export_theme) and apply it. Accepts the manifest object or a raw JSON string. Validated before applying; recorded as a revision.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "manifest": {
+            "type": "object",
+            "description": "Exported manifest object { package, version, config }"
+          },
+          "json": {
+            "type": "string",
+            "description": "Raw JSON manifest string (alternative to manifest)"
+          }
+        }
+      }
+    },
+    {
+      "name": "agentshell_list_widgets",
+      "description": "List all registered widgets \u2014 stable (file-based) and agent-defined \u2014 with lifecycle status (active/disabled), required libraries, and source.",
+      "inputSchema": {
+        "type": "object",
+        "properties": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "agentshell_enable_widget",
+      "description": "Enable a widget: set its status to active so zones render it again. Works for both config-registered and stable file widgets.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Widget id"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_disable_widget",
+      "description": "Disable a widget: set its status to disabled so zones render nothing for it. Registration is preserved, so it can be re-enabled. Prefer this over removal for stable file widgets.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Widget id"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_remove_widget",
+      "description": "Permanently remove a config-registered (agent-defined) widget from the registry. Stable file widgets cannot be removed \u2014 disable them instead. Zones referencing the removed widget will render nothing.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Widget id"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_create_page",
+      "description": "Create a WordPress page with raw HTML content (no wpautop/kses \u2014 content is preserved exactly). Returns the created record incl. edit URL.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Page title"
+          },
+          "content": {
+            "type": "string",
+            "description": "Raw HTML content. No script tags or inline event handlers \u2014 they are stripped by WordPress core for non-super-admin users."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "publish",
+              "pending",
+              "private",
+              "future"
+            ],
+            "description": "Default draft"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Optional URL slug"
+          },
+          "parent": {
+            "type": "integer",
+            "description": "Optional parent page ID"
+          }
+        },
+        "required": [
+          "title",
+          "content"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_create_post",
+      "description": "Create a WordPress post with raw HTML content (no wpautop/kses \u2014 content is preserved exactly). Returns the created record incl. edit URL.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Post title"
+          },
+          "content": {
+            "type": "string",
+            "description": "Raw HTML content. No script tags or inline event handlers \u2014 they are stripped by WordPress core for non-super-admin users."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "publish",
+              "pending",
+              "private",
+              "future"
+            ],
+            "description": "Default draft"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Optional URL slug"
+          }
+        },
+        "required": [
+          "title",
+          "content"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_update_content",
+      "description": "Update an existing post or page (title, raw HTML content, status, slug, or page parent). Returns the updated record.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Post/page ID"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "post",
+              "page"
+            ],
+            "description": "Defaults to page"
+          },
+          "title": {
+            "type": "string",
+            "description": "New title"
+          },
+          "content": {
+            "type": "string",
+            "description": "New raw HTML content (replaces the whole body)"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "publish",
+              "pending",
+              "private",
+              "future"
+            ],
+            "description": "New status"
+          },
+          "slug": {
+            "type": "string",
+            "description": "New URL slug"
+          },
+          "parent": {
+            "type": "integer",
+            "description": "New parent page ID (pages only)"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_publish",
+      "description": "Publish a post or page (status draft/pending/private/future -> publish). Returns the updated record.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Post/page ID"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "post",
+              "page"
+            ],
+            "description": "Defaults to page"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_unpublish",
+      "description": "Unpublish a post or page (status publish -> draft). Returns the updated record.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Post/page ID"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "post",
+              "page"
+            ],
+            "description": "Defaults to page"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_search_content",
+      "description": "Search posts/pages by title or body text (empty query lists most recently modified). Returns compact records: id, title, type, status, date, modified, excerpt.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search term; empty lists recent content"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "both",
+              "post",
+              "page"
+            ],
+            "description": "Default both"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "any",
+              "draft",
+              "publish",
+              "pending",
+              "private",
+              "future"
+            ],
+            "description": "Default any"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "1-50, default 10"
+          }
+        }
+      }
+    },
+    {
+      "name": "agentshell_get_content",
+      "description": "Fetch a single post or page: title, status, slug, raw HTML content and the rendered HTML as the theme outputs it, plus edit URL and link.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Post/page ID"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "post",
+              "page"
+            ],
+            "description": "Defaults to page"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_screenshot",
+      "description": "Capture a screenshot of the site (or a saved theme profile preview) at a given viewport using the headless browser installed on the server. Returns the image URL. Backend: Chrome/Chromium headless; configure AGENTSHELL_CHROME_BIN if not on PATH.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "viewport": {
+            "type": "string",
+            "enum": [
+              "desktop",
+              "mobile",
+              "tablet"
+            ],
+            "description": "Preset viewport (default desktop = 1280x800, mobile = 390x844, tablet = 768x1024)"
+          },
+          "width": {
+            "type": "integer",
+            "description": "Explicit viewport width in px (overrides viewport preset)"
+          },
+          "height": {
+            "type": "integer",
+            "description": "Explicit viewport height in px (overrides viewport preset)"
+          },
+          "url": {
+            "type": "string",
+            "description": "URL to capture (defaults to the site home page)"
+          },
+          "profile": {
+            "type": "string",
+            "description": "Optional theme profile name \u2014 the screenshot renders its design tokens as preview overrides (requires AGENTSHELL_REST_TOKEN)"
+          }
+        }
+      }
+    },
+    {
+      "name": "agentshell_register_widget",
+      "description": "Register or update an agent-defined widget in the blocks registry.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Widget ID (alphanumeric + dash/underscore, max 50)",
+            "pattern": "^[a-zA-Z0-9_-]+$",
+            "maxLength": 50
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "init_js": {
+            "type": "string",
+            "maxLength": 5000
+          },
+          "css": {
+            "type": "string",
+            "maxLength": 5000
+          },
+          "template": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_unregister_widget",
+      "description": "Remove an agent-defined widget from the blocks registry.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Widget ID to remove"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "agentshell_get_widget",
+      "description": "Get a single widget definition by ID.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Widget ID to retrieve"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    }
+  ]
+}

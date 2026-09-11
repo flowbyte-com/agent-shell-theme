@@ -1,0 +1,144 @@
+{
+  "zones": [
+    {
+      "id": "header",
+      "label": "Header",
+      "slots": {
+        "left": [
+          {
+            "type": "json_block",
+            "content": "<strong>MPM</strong>"
+          }
+        ],
+        "center": [
+          {
+            "type": "json_block",
+            "content": "<a href=\"#model\">How it works</a> &nbsp; <a href=\"#start\">Get started</a>"
+          }
+        ],
+        "right": []
+      },
+      "composition": []
+    },
+    {
+      "id": "main",
+      "label": "Main",
+      "composition": [
+        {
+          "type": "wp_loop"
+        }
+      ]
+    },
+    {
+      "id": "footer",
+      "label": "Footer",
+      "slots": {
+        "left": [
+          {
+            "type": "json_block",
+            "content": "<strong>MPM</strong> \u2014 Persistent reasoning"
+          }
+        ],
+        "center": [],
+        "right": [
+          {
+            "type": "json_block",
+            "content": "<a href=\"https://github.com/flowbyte-com/mpm\">GitHub</a>"
+          }
+        ]
+      },
+      "composition": []
+    }
+  ],
+  "design": {
+    "colors": {
+      "background": "#eef2f6",
+      "surface": "#e0e8ee",
+      "text": "#152f40",
+      "border": "#b9cad5",
+      "accent": "#205b79",
+      "primary": "#eef2f6",
+      "secondary": "#eef2f6"
+    },
+    "typography": {
+      "fontFamily": "Trebuchet MS, sans-serif",
+      "mono": "monospace",
+      "baseSize": "1rem",
+      "scale": "1.25"
+    },
+    "layout": {
+      "radius": "8px"
+    },
+    "custom_css_vars": {
+      "--zone-header-layout": "space-between",
+      "--zone-main-align": "flex-start",
+      "--zone-footer-layout": "space-between",
+      "--border-width": "1px",
+      "--border-style": "solid",
+      "--theme-shadow": "none",
+      "--theme-header-text": "#152f40",
+      "--theme-header-accent": "#3b82f6",
+      "--theme-header-border": "#e4e4e7",
+      "--theme-footer-text": "#152f40",
+      "--theme-footer-accent": "#3b82f6",
+      "--theme-footer-border": "#e4e4e7",
+      "--zone-header-border-width": "0px",
+      "--zone-header-radius": "12px",
+      "--zone-main-border-width": "0px",
+      "--zone-main-radius": "12px",
+      "--zone-footer-border-width": "0px",
+      "--zone-footer-radius": "12px",
+      "--mpm-muted": "#425e6f",
+      "--theme-header-bg": "#eef2f6",
+      "--theme-footer-bg": "#eef2f6",
+      "--container-padding": "clamp(8px, 2vw, 24px)"
+    }
+  },
+  "layout": [],
+  "custom_css": "",
+  "custom_js": "",
+  "widgets": [
+    {
+      "id": "hello-world",
+      "name": "Hello World",
+      "libs": [],
+      "init_js": "window.AgentshellWidgets = window.AgentshellWidgets || {};\nwindow.AgentshellWidgets['hello-world'] = {\n    init: function(el) {\n        el.innerHTML = '<p class=\"hello-widget\">Hello from the widget registry!</p>';\n    }\n};",
+      "css": ".hello-widget { font-weight: bold; color: var(--theme-accent); }",
+      "template": "",
+      "status": "active"
+    }
+  ],
+  "tokens": {
+    "--zone-header-layout": "space-between",
+    "--zone-main-align": "flex-start",
+    "--zone-footer-layout": "space-between",
+    "--border-width": "1px",
+    "--border-style": "solid",
+    "--theme-shadow": "none",
+    "--theme-header-text": "#152f40",
+    "--theme-header-accent": "#3b82f6",
+    "--theme-header-border": "#e4e4e7",
+    "--theme-footer-text": "#152f40",
+    "--theme-footer-accent": "#3b82f6",
+    "--theme-footer-border": "#e4e4e7",
+    "--zone-header-border-width": "0px",
+    "--zone-header-radius": "12px",
+    "--zone-main-border-width": "0px",
+    "--zone-main-radius": "12px",
+    "--zone-footer-border-width": "0px",
+    "--zone-footer-radius": "12px",
+    "--mpm-muted": "#425e6f",
+    "--theme-header-bg": "#eef2f6",
+    "--theme-footer-bg": "#eef2f6",
+    "--container-padding": "clamp(8px, 2vw, 24px)",
+    "--theme-bg": "#eef2f6",
+    "--theme-surface": "#e0e8ee",
+    "--theme-text": "#152f40",
+    "--theme-accent": "#205b79",
+    "--theme-border": "#b9cad5",
+    "--font-base": "Trebuchet MS, sans-serif",
+    "--font-mono": "monospace",
+    "--spacing-base": "1rem",
+    "--radius-base": "8px"
+  }
+}

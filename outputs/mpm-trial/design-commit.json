@@ -1,0 +1,26 @@
+{
+  "transaction": {
+    "id": "tx_1789141929",
+    "label": "MPM README website trial",
+    "committed": true,
+    "changed_tokens": [
+      "--mpm-muted",
+      "--container-padding",
+      "--theme-shadow",
+      "--theme-header-text",
+      "--theme-footer-text",
+      "--zone-header-border-width",
+      "--zone-main-border-width",
+      "--zone-footer-border-width",
+      "--theme-header-bg",
+      "--theme-footer-bg",
+      "--theme-bg",
+      "--theme-surface",
+      "--theme-text",
+      "--theme-accent",
+      "--theme-border",
+      "--font-base"
+    ]
+  },
+  "tip": "Changes are live. Use agentshell_list_revisions / agentshell_get_audit_log to confirm, agentshell_restore_revision to undo."
+}

@@ -61,7 +61,15 @@ class Server {
          * @param array $tools Empty array — start of chain
          * @return array Accumulated tools
          */
-        return apply_filters( 'agentshell_mcp_register_tools', array() );
+        $unique = array();
+        foreach ( apply_filters( 'agentshell_mcp_register_tools', array() ) as $tool ) {
+            $name = $tool->get_name();
+            // Keep the first registration, matching tools/call dispatch.
+            if ( ! isset( $unique[ $name ] ) ) {
+                $unique[ $name ] = $tool;
+            }
+        }
+        return array_values( $unique );
     }
 
     private function handle_tools_list( $id ) {

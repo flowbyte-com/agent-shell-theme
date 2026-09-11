@@ -1,0 +1,17 @@
+{
+  "status": "ok",
+  "errors": [],
+  "warnings": [
+    {
+      "code": "WIDGET_UNUSED",
+      "message": "Widget 'hello-world' is registered but not referenced by any zone.",
+      "widget": "hello-world"
+    },
+    {
+      "code": "AUTH_TOKEN_NOT_CONFIGURED",
+      "message": "AGENTSHELL_REST_TOKEN is not defined in wp-config.php. Static-token auth is disabled; Application Passwords still work."
+    }
+  ],
+  "checks_run": 2,
+  "tip": "Errors must be fixed before a transaction can commit."
+}

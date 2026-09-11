@@ -32,6 +32,13 @@
         '--zone-footer-radius': '12px'
     };
 
+    const SHADOW_PRESETS = [
+        { value: 'none', label: 'None' },
+        { value: DEFAULTS['--theme-shadow'], label: 'Soft' },
+        { value: '0 8px 20px -6px rgba(0,0,0,0.2)', label: 'Medium' },
+        { value: '0 16px 40px -8px rgba(0,0,0,0.3)', label: 'Strong' }
+    ];
+
     const META = {
         '--zone-header-layout': { type: 'select', section: 'Layout & Alignment', label: 'Header Layout', options: [{value: 'flex-start', label: 'Left'}, {value: 'center', label: 'Center'}, {value: 'space-between', label: 'Space Between'}] },
         '--zone-main-align': { type: 'select', section: 'Layout & Alignment', label: 'Main Content Align', options: [{value: 'flex-start', label: 'Top'}, {value: 'center', label: 'Middle'}] },
@@ -43,7 +50,7 @@
 
         '--border-width': { type: 'text', section: 'Borders & Shadows', label: 'Global Border Width' },
         '--border-style': { type: 'select', section: 'Borders & Shadows', label: 'Border Style', options: [{value: 'solid', label: 'Solid'}, {value: 'dashed', label: 'Dashed'}, {value: 'none', label: 'None'}] },
-        '--theme-shadow': { type: 'text', section: 'Borders & Shadows', label: 'Box Shadow' },
+        '--theme-shadow': { type: 'shadow', section: 'Borders & Shadows', label: 'Island Shadow' },
 
         '--theme-bg': { type: 'color', section: 'Global Colors', label: 'Background' },
         '--theme-surface': { type: 'color', section: 'Global Colors', label: 'Surface (Cards)' },
@@ -167,6 +174,22 @@
                                 <input type="color" id="f-${cssVarToId(key)}" data-var="${key}" value="${safeColor}">
                                 <input type="text" data-var="${key}" value="${val}" class="color-hex" maxlength="7" placeholder="#000000">
                             </div>
+                        </div>`;
+                } else if (metaInfo.type === 'shadow') {
+                    const isPreset = SHADOW_PRESETS.some(opt => opt.value === val);
+                    const optionsHtml = SHADOW_PRESETS.map(opt => `<option value="${escHtml(opt.value)}" ${val === opt.value ? 'selected' : ''}>${opt.label}</option>`).join('');
+                    html += `
+                        <div class="field-row">
+                            <label for="f-shadow-preset">${metaInfo.label}</label>
+                            <select id="f-shadow-preset" aria-describedby="shadow-help">
+                                ${optionsHtml}
+                                <option value="" ${!isPreset ? 'selected' : ''}>Custom</option>
+                            </select>
+                        </div>
+                        <p id="shadow-help" class="field-help">Applies to the header, main, and footer. Preview changes before saving.</p>
+                        <div class="field-row">
+                            <label for="f-${cssVarToId(key)}">Shadow CSS</label>
+                            <input type="text" id="f-${cssVarToId(key)}" data-var="${key}" value="${escHtml(val)}" aria-describedby="shadow-help" spellcheck="false">
                         </div>`;
                 } else if (metaInfo.type === 'select') {
                     const optionsHtml = metaInfo.options.map(opt => `<option value="${opt.value}" ${val === opt.value ? 'selected' : ''}>${opt.label}</option>`).join('');
@@ -338,6 +361,17 @@
     function wireEvents() {
         panel.querySelector('.panel-close')?.addEventListener('click', closePanel);
 
+        panel.querySelector('#f-shadow-preset')?.addEventListener('change', e => {
+            const input = panel.querySelector('[data-var="--theme-shadow"]');
+            // Selecting Custom keeps the current value until it is edited.
+            if (e.target.value) {
+                input.value = e.target.value;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            } else {
+                input.focus();
+            }
+        });
+
         // All CSS variable inputs — live preview
         panel.querySelectorAll('[data-var]').forEach(el => {
             el.addEventListener('input', onVarChange);
@@ -349,6 +383,11 @@
         function onVarChange(e) {
             const key = e.target.dataset.var;
             let val = e.target.value;
+
+            if (key === '--theme-shadow') {
+                const preset = panel.querySelector('#f-shadow-preset');
+                preset.value = SHADOW_PRESETS.some(opt => opt.value === val) ? val : '';
+            }
 
             const colorPicker = panel.querySelector(`input[type="color"][data-var="${key}"]`);
             const hexInput    = panel.querySelector(`.color-hex[data-var="${key}"]`);
