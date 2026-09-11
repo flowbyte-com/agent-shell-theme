@@ -55,6 +55,20 @@ class Screenshot extends Base_Tool {
             throw new \InvalidArgumentException( 'url is not a valid URL.' );
         }
 
+        // SSRF guard: a trusted agent could otherwise point Chrome at
+        // http://169.254.169.254/ (cloud metadata), http://localhost:8080/admin, or any
+        // internal host; --no-sandbox means the rendered page leaks into
+        // wp-content/uploads/agentshell-screenshots/, which is publicly readable.
+        // Reject any URL whose host differs from home_url() — the legitimate use
+        // case (previewing theme profiles) is same-site by construction.
+        $site_host = wp_parse_url( home_url(), PHP_URL_HOST );
+        $target_host = wp_parse_url( $url, PHP_URL_HOST );
+        if ( ! $target_host || strcasecmp( $target_host, (string) $site_host ) !== 0 ) {
+            throw new \InvalidArgumentException(
+                "url host '{$target_host}' does not match this site's host ('{$site_host}'); screenshots are scoped to this site to prevent SSRF."
+            );
+        }
+
         // Optional profile preview — sign it so the theme can render overrides
         // without a browser session.
         if ( ! empty( $arguments['profile'] ) ) {
