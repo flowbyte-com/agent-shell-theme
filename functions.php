@@ -736,7 +736,13 @@ function agentshell_flatten_config( array $config ) {
             $val = is_array( $val ) ? ( $val[ $k ] ?? null ) : null;
             if ( $val === null ) break;
         }
-        if ( $val !== null ) {
+        // Wildcard pass above already wrote the value from design.custom_css_vars[$var]
+        // if the user set it via agentshell_set_css_var. Skip the legacy overwrite so
+        // an explicit set_css_var sticks; the user can clear it again by writing the
+        // legacy value through agentshell_set_palette (which writes design.colors.*).
+        // array_key_exists (not isset) preserves the "user wrote empty string" case —
+        // a zero-length string is still an explicit override.
+        if ( $val !== null && ! array_key_exists( $var, $flat ) ) {
             $flat[ $var ] = $val;
         }
     }
