@@ -1,0 +1,166 @@
+### Task 2: Sections 1-2 — Tracks + Track selection
+
+**Files:**
+- Modify: `skills/agentshell/widget-builder/SKILL.md` — append Sections 1 and 2 (frontmatter already present)
+
+**Interfaces:**
+- Consumes: spec Sections 1, 2, 3
+- Produces: two sections the agent reads to understand the two-track model and pick the right track
+
+- [ ] **Step 1: Verify spec requirements checklist**
+
+Re-read spec Sections 1, 2, 3. Section 1 must:
+- Describe when to invoke (trigger phrases)
+- Define the two-track model (Interactive + WordPress Decorator)
+- State the absolute prohibition on client-side fetch()
+- State the progressive-enhancement requirement for Track 2
+
+Section 2 (track selection) must:
+- Contain the decision tree
+- State the decisive question ("must it remain correct when data changes without rebuild?")
+- State the least-powerful-track principle
+- Mandate visible reasoning (one-line track report)
+- Define user override behavior
+
+- [ ] **Step 2: Append Sections 1 and 2**
+
+Append the following verbatim:
+
+```markdown
+## When to use this skill
+
+**Trigger phrases:**
+- "build me a widget that..."
+- "create a [calculator | carousel | dashboard | visualizer]"
+- "add a custom [header | sidebar | footer] widget"
+- "make me a [latest posts | taxonomy cloud | recent comments] widget"
+
+**Two tracks:**
+- **Interactive** — self-contained applications: calculators, simulators, visualizers, configurators. No WordPress data required.
+- **WordPress Decorator** — progressively enhances WordPress-rendered content (posts, pages, taxonomy) into a custom presentation.
+
+**Out of scope (do not invoke this skill for these):**
+- Building standard WP widgets via the Widgets admin UI — those don't need agent help
+- Editing an existing widget's behavior — that's a code review task, not a builder task
+- "Just look at this DOM and tell me what you see" — that's a general inspection task, not a builder task
+
+If the user's request mixes widget-building with another intent (e.g. "build me a widget AND pick a theme that matches"), do the widget part and stop — ask the user before attempting the rest.
+
+## Tracks
+
+There are exactly **two tracks**. Snapshot-style widgets are an authoring pattern inside the Interactive track, not a third track.
+
+### Track 1 — Interactive
+
+```text
+init(el)
+   ↓
+local state
+   ↓
+window.math / window.d3
+   ↓
+DOM
+```
+
+No WordPress data required. Self-contained applications. The agent reads no WP data and the widget performs zero network requests.
+
+A "snapshot widget" (frozen Q2 figures, a curated post list, a one-off dashboard) is just an Interactive widget whose initial state was seeded by the agent during construction. The execution model is identical.
+
+### Track 2 — WordPress Decorator
+
+```text
+wp_loop / wp_core / wp_widget_area
+       ↓
+server-rendered HTML
+       ↓
+widget init(el)
+       ↓
+progressive enhancement
+```
+
+The widget progressively enhances already-rendered WordPress content. WordPress owns data; the widget owns presentation.
+
+**Hard rule:** Client-side `fetch()` is prohibited under any circumstances. This is the security boundary, not a tunable preference. No exceptions for "WordPress REST API only" — the prohibition is absolute.
+
+**Hard rule:** A decorator widget MUST degrade to usable server-rendered content if JavaScript fails. If the carousel explodes, the user still has the posts.
+
+## Track selection
+
+### Decision tree
+
+```text
+Does the widget require WordPress/site data?
+
+├── No
+│   └── Interactive
+│       └── local state + math/d3 + DOM
+│
+└── Yes
+    │
+    ├── Must it reflect current site content (changes between page loads)?
+    │   └── Decorator
+    │       └── server-rendered DOM + colocated widget
+    │
+    └── Is point-in-time data acceptable?
+        └── Interactive (snapshot-seeded)
+            └── agent reads data → embeds in init_js
+            └── leaves a refresh-anchor comment for future agents
+```
+
+### The decisive question
+
+> **Does the widget need to remain correct when the underlying data changes without the agent rebuilding it?**
+
+- Yes → Decorator
+- No, point-in-time is fine → Interactive with seeded snapshot
+- No data needed → plain Interactive
+
+### Least-powerful-track principle
+
+When the requirements are ambiguous, choose the **least powerful track that satisfies the requirement**. Move right only when the requirements actually demand it.
+
+This prevents "live" from becoming the default merely because it sounds more impressive.
+
+### Visible reasoning
+
+The agent must report the chosen track to the user with a one-line justification:
+
+```
+Track: Decorator
+Reason: Widget displays WordPress posts that may change between page loads.
+```
+
+This gives the user visibility without forcing them to remember a `track:` prefix syntax.
+
+### User override
+
+If the user explicitly says "snapshot" / "frozen" / "static" / "embedded", the agent treats that as a request for the Interactive track with snapshot-seeded state — the architectural fit for frozen point-in-time data. If the user says "interactive" / "calculator" / "self-contained", route to plain Interactive. If the user says "live" / "decorator" / "current posts", route to Decorator.
+
+In all cases the agent still picks the implementation; the user can override the track choice. The skill never uses client-side `fetch()` to satisfy any of these requests — that path is closed regardless of what the user says.
+```
+
+- [ ] **Step 3: Verify section count**
+
+```bash
+grep -cE "^## (When to use|Tracks|Track selection)" skills/agentshell/widget-builder/SKILL.md
+```
+
+Expected: 3 (one H2 each for "When to use", "Tracks", "Track selection")
+
+- [ ] **Step 4: Verify prohibitions present**
+
+```bash
+grep -cE "fetch\(\).*prohibited|degrade to usable|absolute" skills/agentshell/widget-builder/SKILL.md
+```
+
+Expected: ≥ 3 (the two hard rules plus the security boundary phrasing)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add skills/agentshell/widget-builder/SKILL.md
+git commit -m "feat(skill): add widget-builder Sections 1-2 — tracks and track selection"
+```
+
+---
+

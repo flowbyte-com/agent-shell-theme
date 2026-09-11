@@ -1,0 +1,29 @@
+# Review package: bbd3bc11e1f2ca45a8d5d50c6b8c4e316cbfd240..146098d0061477e613cb91ea3027364af1a0e580
+
+## Commits
+146098d feat(skill): scaffold widget-builder skill directory
+
+## Files changed
+ skills/agentshell/widget-builder/README.md | 2 ++
+ skills/agentshell/widget-builder/SKILL.md  | 4 ++++
+ 2 files changed, 6 insertions(+)
+
+## Diff
+diff --git a/skills/agentshell/widget-builder/README.md b/skills/agentshell/widget-builder/README.md
+new file mode 100644
+index 0000000..f94781b
+--- /dev/null
++++ b/skills/agentshell/widget-builder/README.md
+@@ -0,0 +1,2 @@
++# Widget Builder Skill
++
+diff --git a/skills/agentshell/widget-builder/SKILL.md b/skills/agentshell/widget-builder/SKILL.md
+new file mode 100644
+index 0000000..d3294ca
+--- /dev/null
++++ b/skills/agentshell/widget-builder/SKILL.md
+@@ -0,0 +1,4 @@
++---
++name: agentshell-widget-builder
++description: Use when the user asks to build a custom AgentShell widget — phrases like "build me a calculator", "add a latest posts carousel", "create a sales dashboard". Teaches the agent to choose between two tracks (Interactive or WordPress Decorator), how to compose zone blocks, how to verify the result, and the security boundary that prohibits client-side fetch().
++---
