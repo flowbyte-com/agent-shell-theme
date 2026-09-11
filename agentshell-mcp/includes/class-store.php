@@ -179,7 +179,7 @@ class Store {
     /**
      * Diff two configs at the CSS-token level.
      *
-     * @return array { added: [], removed: [], changed: [ { key, before, after } ] }
+     * @return array { added: [], removed: [], changed: [ { key, before, after } ], structural: [ { path, before, after } | { path, kind: 'added'|'removed', value } ] }
      */
     public static function diff_config( $before, $after ) {
         $flat_before = self::flatten( is_array( $before ) ? $before : array() );
@@ -207,10 +207,70 @@ class Store {
         }
 
         return array(
-            'added'   => $added,
-            'removed' => $removed,
-            'changed' => $changed,
+            'added'      => $added,
+            'removed'    => $removed,
+            'changed'    => $changed,
+            'structural' => self::diff_structural( $before, $after ),
         );
+    }
+
+    /**
+     * Recursive structural diff of two configs. Captures every non-equal change
+     * as a path-prefixed entry, including zone composition, widget additions,
+     * custom_css / custom_js edits, and design subtrees — none of which appear
+     * in the CSS-token diff at the top of diff_config.
+     *
+     * The CSS-token diff is the canonical "what will the rendered page change"
+     * view; this is the "what changed in the config" view. They overlap by
+     * design (design.colors / design.typography / design.layout / design.custom_css_vars
+     * are both structurally visible AND token-visible) so the consumer can pick
+     * whichever view fits the question. No keys are dropped.
+     *
+     * Path format: dotted JSON-like keys, e.g. 'zones.main.composition.0.type'.
+     * For an array element, the index is a non-negative integer in the path.
+     * Bracketed dict keys (a.b with `.` in the literal key) are not used; the
+     * agent can `explode('.', $path)` safely for well-formed config keys.
+     *
+     * @return array<int, array> List of change entries.
+     */
+    public static function diff_structural( $before, $after ) {
+        $diffs = array();
+        self::_diff_structural_walk( '', is_array( $before ) ? $before : array(), is_array( $after ) ? $after : array(), $diffs );
+        return $diffs;
+    }
+
+    private static function _diff_structural_walk( $path, $a, $b, array &$diffs ) {
+        $a_is_array = is_array( $a );
+        $b_is_array = is_array( $b );
+        if ( $a_is_array !== $b_is_array ) {
+            // Type change (array ↔ scalar). Treat as one change at this path.
+            $diffs[] = $path === ''
+                ? array( 'path' => '(root)', 'before' => $a, 'after' => $b )
+                : array( 'path' => $path, 'before' => $a, 'after' => $b );
+            return;
+        }
+        if ( ! $a_is_array ) {
+            if ( $a !== $b ) {
+                $diffs[] = $path === ''
+                    ? array( 'path' => '(root)', 'before' => $a, 'after' => $b )
+                    : array( 'path' => $path, 'before' => $a, 'after' => $b );
+            }
+            return;
+        }
+        $all_keys = array_unique( array_merge( array_keys( $a ), array_keys( $b ) ) );
+        sort( $all_keys ); // stable order so the same diffs produce stable output
+        foreach ( $all_keys as $k ) {
+            $sub_path  = $path === '' ? (string) $k : $path . '.' . $k;
+            $a_has     = array_key_exists( $k, $a );
+            $b_has     = array_key_exists( $k, $b );
+            if ( $a_has && ! $b_has ) {
+                $diffs[] = array( 'path' => $sub_path, 'kind' => 'removed', 'value' => $a[ $k ] );
+            } elseif ( ! $a_has && $b_has ) {
+                $diffs[] = array( 'path' => $sub_path, 'kind' => 'added',   'value' => $b[ $k ] );
+            } else {
+                self::_diff_structural_walk( $sub_path, $a[ $k ], $b[ $k ], $diffs );
+            }
+        }
     }
 
     /**
