@@ -1,0 +1,126 @@
+{
+    "zones": [
+        {
+            "id": "header",
+            "label": "Header",
+            "slots": {
+                "left": [
+                    {
+                        "type": "wp_core",
+                        "id": "site_title"
+                    }
+                ],
+                "center": [
+                    {
+                        "type": "wp_core",
+                        "id": "nav_menu"
+                    }
+                ],
+                "right": []
+            }
+        },
+        {
+            "id": "main",
+            "label": "Main",
+            "composition": [
+                {
+                    "type": "wp_loop"
+                }
+            ]
+        },
+        {
+            "id": "footer",
+            "label": "Footer",
+            "slots": {
+                "left": [],
+                "center": [],
+                "right": []
+            }
+        }
+    ],
+    "design": {
+        "colors": {
+            "background": "#1c162e",
+            "surface": "#2a2a2d",
+            "text": "#18181b",
+            "border": "#e4e4e7",
+            "accent": "#3b82f6",
+            "primary": "#1a1a2e",
+            "secondary": "#16213e"
+        },
+        "typography": {
+            "fontFamily": "system-ui, sans-serif",
+            "mono": "monospace",
+            "baseSize": "1rem",
+            "scale": "1.25"
+        },
+        "layout": {
+            "radius": "8px"
+        },
+        "custom_css_vars": {
+            "--zone-header-layout": "space-between",
+            "--zone-main-align": "flex-start",
+            "--zone-footer-layout": "space-between",
+            "--border-width": "1px",
+            "--border-style": "solid",
+            "--theme-shadow": "0 4px 6px -1px rgba(0,0,0,0.1)",
+            "--theme-header-text": "#ffffff",
+            "--theme-header-accent": "#3b82f6",
+            "--theme-header-border": "#e4e4e7",
+            "--theme-footer-text": "#ffffff",
+            "--theme-footer-accent": "#3b82f6",
+            "--theme-footer-border": "#e4e4e7",
+            "--zone-header-border-width": "1px",
+            "--zone-header-radius": "12px",
+            "--zone-main-border-width": "1px",
+            "--zone-main-radius": "12px",
+            "--zone-footer-border-width": "1px",
+            "--zone-footer-radius": "12px"
+        }
+    },
+    "layout": [],
+    "custom_css": "",
+    "custom_js": "",
+    "widgets": [
+        {
+            "id": "hello-world",
+            "name": "Hello World",
+            "libs": [],
+            "init_js": "window.AgentshellWidgets = window.AgentshellWidgets || {};\nwindow.AgentshellWidgets['hello-world'] = {\n    init: function(el) {\n        el.innerHTML = '<p class=\"hello-widget\">Hello from the widget registry!</p>';\n    }\n};",
+            "css": ".hello-widget { font-weight: bold; color: var(--theme-accent); }",
+            "template": "",
+            "status": "active"
+        }
+    ],
+    "tokens": {
+        "--zone-header-layout": "space-between",
+        "--zone-main-align": "flex-start",
+        "--zone-footer-layout": "space-between",
+        "--border-width": "1px",
+        "--border-style": "solid",
+        "--theme-shadow": "0 4px 6px -1px rgba(0,0,0,0.1)",
+        "--theme-header-text": "#ffffff",
+        "--theme-header-accent": "#3b82f6",
+        "--theme-header-border": "#e4e4e7",
+        "--theme-footer-text": "#ffffff",
+        "--theme-footer-accent": "#3b82f6",
+        "--theme-footer-border": "#e4e4e7",
+        "--zone-header-border-width": "1px",
+        "--zone-header-radius": "12px",
+        "--zone-main-border-width": "1px",
+        "--zone-main-radius": "12px",
+        "--zone-footer-border-width": "1px",
+        "--zone-footer-radius": "12px",
+        "--theme-bg": "#1c162e",
+        "--theme-surface": "#2a2a2d",
+        "--theme-text": "#18181b",
+        "--theme-accent": "#3b82f6",
+        "--theme-border": "#e4e4e7",
+        "--theme-header-bg": "#1a1a2e",
+        "--theme-footer-bg": "#16213e",
+        "--font-base": "system-ui, sans-serif",
+        "--font-mono": "monospace",
+        "--spacing-base": "1rem",
+        "--radius-base": "8px"
+    }
+}

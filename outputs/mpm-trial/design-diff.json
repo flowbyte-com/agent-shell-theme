@@ -1,0 +1,88 @@
+{
+  "transaction_id": "tx_1789141929",
+  "diff": {
+    "added": {
+      "--mpm-muted": "#425e6f",
+      "--container-padding": "clamp(8px, 2vw, 24px)"
+    },
+    "removed": [],
+    "changed": [
+      {
+        "key": "--theme-shadow",
+        "before": "0 4px 6px -1px rgba(0,0,0,0.1)",
+        "after": "none"
+      },
+      {
+        "key": "--theme-header-text",
+        "before": "#ffffff",
+        "after": "#152f40"
+      },
+      {
+        "key": "--theme-footer-text",
+        "before": "#ffffff",
+        "after": "#152f40"
+      },
+      {
+        "key": "--zone-header-border-width",
+        "before": "1px",
+        "after": "0px"
+      },
+      {
+        "key": "--zone-main-border-width",
+        "before": "1px",
+        "after": "0px"
+      },
+      {
+        "key": "--zone-footer-border-width",
+        "before": "1px",
+        "after": "0px"
+      },
+      {
+        "key": "--theme-header-bg",
+        "before": "#1a1a2e",
+        "after": "#eef2f6"
+      },
+      {
+        "key": "--theme-footer-bg",
+        "before": "#16213e",
+        "after": "#eef2f6"
+      },
+      {
+        "key": "--theme-bg",
+        "before": "#1c162e",
+        "after": "#eef2f6"
+      },
+      {
+        "key": "--theme-surface",
+        "before": "#2a2a2d",
+        "after": "#e0e8ee"
+      },
+      {
+        "key": "--theme-text",
+        "before": "#18181b",
+        "after": "#152f40"
+      },
+      {
+        "key": "--theme-accent",
+        "before": "#3b82f6",
+        "after": "#205b79"
+      },
+      {
+        "key": "--theme-border",
+        "before": "#e4e4e7",
+        "after": "#b9cad5"
+      },
+      {
+        "key": "--font-base",
+        "before": "system-ui, sans-serif",
+        "after": "Trebuchet MS, sans-serif"
+      }
+    ]
+  },
+  "summary": {
+    "added": 2,
+    "removed": 0,
+    "changed": 14
+  },
+  "tip": "Review the diff, then agentshell_validate_transaction before agentshell_commit_transaction."
+}

@@ -10,8 +10,11 @@ class Get_Config extends Base_Tool {
 
     public function execute( array $arguments ) {
         $config = $this->get_agentshell_config();
+        if ( function_exists( 'agentshell_get_widget_registry' ) ) {
+            $config['widgets'] = array_values( agentshell_get_widget_registry() );
+        }
         if ( function_exists( 'agentshell_flatten_config' ) ) {
-            return agentshell_flatten_config( $config );
+            $config['tokens'] = agentshell_flatten_config( $config );
         }
         return $config;
     }
