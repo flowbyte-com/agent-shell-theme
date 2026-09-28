@@ -138,6 +138,29 @@ function admin_url( $path = '/' ) {
     return 'https://example.test/wp-admin/' . ltrim( $path, '/' );
 }
 
+function get_template_directory() {
+    return dirname( __DIR__ );
+}
+
+function get_template_directory_uri() {
+    return 'file://' . dirname( __DIR__ );
+}
+
+function file_exists_stub( $path ) {
+    return file_exists( $path );
+}
+
+function have_posts() { return false; }
+function the_post() {}
+function the_content() {}
+function esc_html__( $text, $domain = null ) { return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' ); }
+function esc_html( $text ) { return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' ); }
+function esc_attr( $text ) { return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' ); }
+function esc_url( $url ) { return $url; }
+function esc_js( $text ) { return $text; }
+function __( $text, $domain = null ) { return $text; }
+function dynamic_sidebar( $id ) {}
+
 function add_action() {}
 function add_filter() {}
 function apply_filters( $tag, $value ) { return $value; }
