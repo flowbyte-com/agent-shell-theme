@@ -1039,6 +1039,9 @@ function agentshell_validate_config( $config ) {
                     if ( ! isset( $block['type'] ) || ! in_array( $block['type'], $allowed_block_types, true ) ) {
                         return new WP_Error( 'invalid_block_type', "Unknown block type: " . ( $block['type'] ?? 'null' ) );
                     }
+                    if ( $block['type'] === 'wp_core' && isset( $block['id'] ) && ! in_array( $block['id'], $allowed_wp_core_ids, true ) ) {
+                        return new WP_Error( 'invalid_wp_core_id', "Unknown wp_core id: {$block['id']}" );
+                    }
                 }
             }
             if ( isset( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
