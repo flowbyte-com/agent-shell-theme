@@ -266,6 +266,42 @@ function agentshell_persist_sidebar( $classes ) {
 /**
  * Register nav menus.
  */
+/**
+ * Tiny dispatch wrapper around header() that tests can intercept
+ * without needing to override PHP's built-in (which cannot be
+ * redeclared). Production code calls header(); tests define
+ * agentshell_test_capture_header first to capture emitted headers.
+ */
+function agentshell_emit_response_header( $header ) {
+    if ( function_exists( 'agentshell_test_capture_header' ) ) {
+        agentshell_test_capture_header( $header );
+        return;
+    }
+    header( $header );
+}
+
+/**
+ * Tiny dispatch wrapper around headers_sent(). Production code calls
+ * headers_sent(); tests define agentshell_test_headers_sent() first to
+ * control the return value.
+ */
+function agentshell_response_headers_sent() {
+    if ( function_exists( 'agentshell_test_headers_sent' ) ) {
+        return (bool) agentshell_test_headers_sent();
+    }
+    return headers_sent();
+}
+
+function agentshell_send_security_headers() {
+    if ( agentshell_response_headers_sent() ) {
+        return;
+    }
+    agentshell_emit_response_header( 'X-Content-Type-Options: nosniff' );
+    agentshell_emit_response_header( 'Referrer-Policy: same-origin' );
+    agentshell_emit_response_header( 'X-Frame-Options: SAMEORIGIN' );
+}
+add_action( 'send_headers', 'agentshell_send_security_headers' );
+
 function agentshell_setup() {
     locate_template( 'template-parts/shell-render.php', true, false );
 

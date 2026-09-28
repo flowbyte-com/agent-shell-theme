@@ -174,6 +174,45 @@ function esc_js( $text ) { return $text; }
 function __( $text, $domain = null ) { return $text; }
 function dynamic_sidebar( $id ) {}
 
+$GLOBALS['_agentshell_test_captured_headers'] = array();
+$GLOBALS['_agentshell_test_headers_already_sent'] = false;
+
+if ( ! function_exists( 'header' ) ) {
+    function header( $string, $replace = true, $http_response_code = 0 ) {
+        $GLOBALS['_agentshell_test_captured_headers'][] = (string) $string;
+        return true;
+    }
+}
+
+if ( ! function_exists( 'headers_sent' ) ) {
+    function headers_sent( &$file = null, &$line = null ) {
+        return (bool) $GLOBALS['_agentshell_test_headers_already_sent'];
+    }
+}
+
+/**
+ * Test capture hook for agentshell_emit_response_header. When defined
+ * before functions.php is required, the production wrapper diverts
+ * every emitted header into the captured array. Production code never
+ * declares this function.
+ */
+function agentshell_test_capture_header( $header ) {
+    $GLOBALS['_agentshell_test_captured_headers'][] = (string) $header;
+}
+
+/**
+ * Test override for the headers_sent() check inside the production
+ * wrapper. Returns the test-controlled flag rather than PHP's built-in
+ * (which cannot be stubbed).
+ */
+function agentshell_test_headers_sent() {
+    return (bool) $GLOBALS['_agentshell_test_headers_already_sent'];
+}
+
+function agentshell_test_send_security_headers() {
+    agentshell_send_security_headers();
+}
+
 /**
  * Fake wpdb for the audit-log tests. Operates on a global array, so
  * tests can seed rows, run a prune, and inspect what survived.
@@ -301,6 +340,8 @@ function agentshell_test_reset() {
     $GLOBALS['_agentshell_test_audit_table']  = array();
     $GLOBALS['_agentshell_test_audit_fail']   = false;
     $GLOBALS['_agentshell_test_audit_nextid'] = 0;
+    $GLOBALS['_agentshell_test_captured_headers'] = array();
+    $GLOBALS['_agentshell_test_headers_already_sent'] = false;
 }
 
 /**

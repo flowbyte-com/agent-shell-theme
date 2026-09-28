@@ -27,6 +27,7 @@ $suites = array(
     'doctor'           => __DIR__ . '/doctor-test.php',
     'audit-log'        => __DIR__ . '/audit-log-test.php',
     'static-token-auth'=> __DIR__ . '/static-token-auth-test.php',
+    'security-headers' => __DIR__ . '/security-headers-test.php',
 );
 
 $total_passed = 0;
