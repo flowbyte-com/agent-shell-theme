@@ -116,8 +116,13 @@ function agentshell_enqueue_assets() {
         true
     );
 
-    // Configurator assets: logged-in users only
-    if ( ! is_user_logged_in() ) {
+    // Configurator assets: theme-managers only. The configurator exposes the
+    // full PUT surface for custom_js / custom_css / raw content; gating it
+    // on edit_theme_options matches the REST permission callback and ensures
+    // a subscriber never sees the trigger button. The REST endpoint itself
+    // is independently gated by agentshell_rest_auth_callback — this is
+    // defense in depth so the UI matches the API.
+    if ( ! is_user_logged_in() || ! current_user_can( 'edit_theme_options' ) ) {
         return;
     }
     wp_enqueue_style( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.css', array( 'agentshell-style' ), filemtime( get_template_directory() . '/configurator/configurator.css' ) );
@@ -672,25 +677,38 @@ add_filter( 'rest_authentication_errors', function( $errors ) {
 }, 1 );
 
 /**
- * REST auth callback — validates X-AgentShell-Token or Basic Auth (App Password).
- * Returns true if authorized, WP_Error if not.
+ * REST auth callback — validates X-AgentShell-Token or Basic Auth (App Password),
+ * then enforces a capability boundary.
+ *
+ * The capability check is the security boundary: it ensures that any caller
+ * (cookie auth, app password, static token, MCP transport) who reaches the
+ * PUT /wp/v2/agentshell/config or related endpoints actually holds the
+ * WordPress capability to manage theme settings. Without this, any logged-in
+ * user — including subscriber-level accounts — could persist arbitrary
+ * custom_js / custom_css / raw content via the configurator and the posts
+ * REST endpoint. See tests/security-test.php for the privilege matrix.
  *
  * @param WP_REST_Request $request
  * @return true|WP_Error
  */
 function agentshell_rest_auth_callback( WP_REST_Request $request ) {
-    // If a WP user is already set via cookie auth (X-WP-Nonce validated upstream),
-    // or via our custom token/app-password auth (which also calls wp_set_current_user),
-    // just confirm get_current_user_id() is truthy.
-    if ( get_current_user_id() ) {
-        return true;
+    if ( ! get_current_user_id() ) {
+        return new WP_Error(
+            'rest_not_logged_in',
+            'Authentication required. Provide X-AgentShell-Token header or Basic Auth.',
+            array( 'status' => 401 )
+        );
     }
 
-    return new WP_Error(
-        'rest_not_logged_in',
-        'Authentication required. Provide X-AgentShell-Token header or Basic Auth.',
-        array( 'status' => 401 )
-    );
+    if ( ! current_user_can( 'edit_theme_options' ) ) {
+        return new WP_Error(
+            'rest_forbidden',
+            'Editing AgentShell configuration requires the edit_theme_options capability.',
+            array( 'status' => 403 )
+        );
+    }
+
+    return true;
 }
 
 /**
@@ -1039,9 +1057,19 @@ add_action( 'rest_api_init', function() {
     // Preserve raw content format for agents — prevents WordPress from
     // auto-formatting when content is saved via REST API.
     // Agents should send { "content": { "raw": "..." } }
+    //
+    // Security boundary: the sanitization bypass is gated on unfiltered_html.
+    // Without this, any logged-in user who can reach /wp/v2/posts/{id} can
+    // persist arbitrary HTML/JS into wp_posts.post_content (XSS sink via
+    // the_content()). The standard WordPress capability for "may write raw
+    // HTML without KSES" is unfiltered_html, granted by default only to
+    // administrators and multisite super admins.
     add_filter( 'rest_pre_insert_post', function( $post, $request ) {
         $content = $request->get_param( 'content' );
         if ( is_array( $content ) && isset( $content['raw'] ) && is_string( $content['raw'] ) ) {
+            if ( ! current_user_can( 'unfiltered_html' ) ) {
+                return $post; // trusted-author only; standard KSES remains in effect
+            }
             // Remove all content filtering hooks for raw agent content
             remove_filter( 'content_save_pre', 'wp_filter_post_kses', 10 );
             remove_filter( 'content_save_pre', 'wp_filter_kses', 10 );
@@ -1062,6 +1090,9 @@ add_action( 'rest_api_init', function() {
     add_filter( 'rest_pre_update_post', function( $post, $request ) {
         $content = $request->get_param( 'content' );
         if ( is_array( $content ) && isset( $content['raw'] ) && is_string( $content['raw'] ) ) {
+            if ( ! current_user_can( 'unfiltered_html' ) ) {
+                return $post; // trusted-author only; standard KSES remains in effect
+            }
             remove_filter( 'content_save_pre', 'wp_filter_post_kses', 10 );
             remove_filter( 'content_save_pre', 'wp_filter_kses', 10 );
             remove_filter( 'content_save_pre', 'balanceTags', 10 );

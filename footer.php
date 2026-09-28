@@ -12,7 +12,7 @@ if ( ! empty( $config['custom_js'] ) ) {
 
 wp_footer();
 
-if ( is_user_logged_in() ) : ?>
+if ( is_user_logged_in() && current_user_can( 'edit_theme_options' ) ) : ?>
 <div id="agentshell-config-panel"></div>
 
 <button id="agentshell-config-trigger" aria-label="Open theme configurator">
