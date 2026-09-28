@@ -725,12 +725,37 @@ function agentshell_get_layout_config() {
 }
 
 /**
+ * Check a static-token authentication attempt.
+ *
+ * Pure function. Tests in tests/static-token-auth-test.php exercise
+ * every branch without needing a live WP runtime.
+ *
+ * @param string $provided              Token presented in the request.
+ * @param string $static_token          Expected static token (from wp-config).
+ * @param int    $configured_user_id   Explicitly configured actor id.
+ * @param bool   $user_exists           Whether the configured user exists in DB.
+ * @return int|false   User id on success; false on any failure.
+ */
+function agentshell_check_static_token( $provided, $static_token, $configured_user_id, $user_exists ) {
+    if ( ! is_string( $provided )     || $provided === '' )     { return false; }
+    if ( ! is_string( $static_token ) || $static_token === '' ) { return false; }
+    if ( $configured_user_id <= 0 )                              { return false; }
+    if ( ! $user_exists )                                        { return false; }
+    if ( ! hash_equals( $static_token, $provided ) )             { return false; }
+    return $configured_user_id;
+}
+
+/**
  * Authenticate REST requests via X-AgentShell-Token header.
  *
  * Supports two methods:
  * 1. Static token: X-AgentShell-Token: <token>
- *    - Set AGENTSHELL_REST_TOKEN in wp-config.php or use default dev token
- *    - Simplest for headless / programmatic clients
+ *    - Set AGENTSHELL_REST_TOKEN in wp-config.php (the secret).
+ *    - Set AGENTSHELL_REST_TOKEN_USER_ID to the explicit actor id (e.g. a
+ *      dedicated "agent" account) that the token resolves to. The token
+ *      no longer silently becomes database user ID 1 — the configured
+ *      actor must exist and authentication fails closed if it does not.
+ *    - Simplest for headless / programmatic clients.
  *
  * 2. Basic Auth (WP Application Passwords):
  *    - Authorization: Basic <base64(username:app_password)>
@@ -750,23 +775,48 @@ add_filter( 'rest_authentication_errors', function( $errors ) {
     }
 
     // Method 1: Static token auth — fail closed.
-    // AGENTSHELL_REST_TOKEN must be defined in wp-config.php. If it is not
-    // defined, static-token auth is disabled entirely and only Application
-    // Passwords (Method 2) work. Never falls back to a hardcoded default.
+    //
+    // Required configuration:
+    //   AGENTSHELL_REST_TOKEN          the shared secret
+    //   AGENTSHELL_REST_TOKEN_USER_ID  the explicit actor id
+    //
+    // If only the secret is defined (legacy setups) we refuse auth
+    // loudly; the configured actor must be explicit going forward. We
+    // do not silently fall back to user 1 — that path was a privilege
+    // escalation hazard (any operator who knew the token became the
+    // site's admin by definition).
     $static_token = defined( 'AGENTSHELL_REST_TOKEN' ) ? AGENTSHELL_REST_TOKEN : '';
-    $provided = isset( $_SERVER['HTTP_X_AGENTSHELL_TOKEN'] )
+    $provided     = isset( $_SERVER['HTTP_X_AGENTSHELL_TOKEN'] )
         ? $_SERVER['HTTP_X_AGENTSHELL_TOKEN']
         : ( isset( $_REQUEST['_agent_token'] ) ? $_REQUEST['_agent_token'] : '' );
 
-    if ( $provided && $static_token && hash_equals( $static_token, $provided ) ) {
-        $agent_user = get_user_by( 'ID', 1 );
-        if ( $agent_user ) {
-            wp_set_current_user( $agent_user->ID );
-            return null;
-        }
-        error_log( 'AgentShell: AGENTSHELL_REST_TOKEN validated but admin user (ID 1) does not exist; refusing auth.' );
-    } elseif ( $provided && ! $static_token ) {
+    if ( $provided && ! $static_token ) {
         error_log( 'AgentShell: static token provided but AGENTSHELL_REST_TOKEN is not defined in wp-config.php; ignoring.' );
+    }
+
+    if ( $provided && $static_token ) {
+        $configured_user_id = defined( 'AGENTSHELL_REST_TOKEN_USER_ID' )
+            ? (int) AGENTSHELL_REST_TOKEN_USER_ID
+            : 0;
+
+        if ( $configured_user_id <= 0 ) {
+            error_log( 'AgentShell: AGENTSHELL_REST_TOKEN is configured but AGENTSHELL_REST_TOKEN_USER_ID is not; refusing auth. Set the user id in wp-config.php to bind the token to an explicit WordPress actor.' );
+        } else {
+            $user_exists = (bool) get_user_by( 'ID', $configured_user_id );
+            $user_id     = agentshell_check_static_token(
+                $provided,
+                $static_token,
+                $configured_user_id,
+                $user_exists
+            );
+            if ( $user_id !== false ) {
+                wp_set_current_user( $user_id );
+                return null;
+            }
+            if ( ! $user_exists ) {
+                error_log( "AgentShell: AGENTSHELL_REST_TOKEN_USER_ID={$configured_user_id} does not exist; refusing auth." );
+            }
+        }
     }
 
     // Method 2: Basic Auth (Application Passwords)
