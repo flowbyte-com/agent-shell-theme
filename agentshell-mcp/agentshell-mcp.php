@@ -91,6 +91,9 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-disable-widget.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-remove-widget.php';
 
+    // Content menu management (v1.4)
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-register-navigation.php';
+
     // Content primitives (v1.3)
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-create-page.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-create-post.php';
@@ -159,6 +162,9 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     $tools[] = new AgentShell_MCP\Tools\Enable_Widget();
     $tools[] = new AgentShell_MCP\Tools\Disable_Widget();
     $tools[] = new AgentShell_MCP\Tools\Remove_Widget();
+
+    // Navigation management
+    $tools[] = new AgentShell_MCP\Tools\Register_Navigation();
 
     // Content primitives (v1.3)
     $tools[] = new AgentShell_MCP\Tools\Create_Page();

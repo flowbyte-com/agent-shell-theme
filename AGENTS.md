@@ -56,6 +56,7 @@ The plugin ships **45+ `agentshell_*` tools** (50 in `agentshell-mcp` + 4 in `ag
 - **Theme profiles** — `agentshell_save_theme_profile`, `agentshell_list_theme_profiles`, `agentshell_apply_theme`, `agentshell_preview_theme`, `agentshell_export_theme`, `agentshell_import_theme`.
 - **Widget lifecycle** (bilateral registry) — `agentshell_list_widgets`, `agentshell_get_widget`, `agentshell_register_widget`, `agentshell_unregister_widget`, `agentshell_enable_widget`, `agentshell_disable_widget`, `agentshell_remove_widget`.
 - **Content primitives** — `agentshell_create_page`, `agentshell_create_post`, `agentshell_update_content`, `agentshell_update_post_content`, `agentshell_publish`, `agentshell_unpublish`, `agentshell_search_content`, `agentshell_get_content`.
+- **Navigation management** — `agentshell_register_navigation` (create or replace a WordPress nav menu by name and optionally assign to a registered theme location).
 - **Transactions (the safe change loop)** — `agentshell_begin_transaction`, `agentshell_get_transaction`, `agentshell_preview_transaction`, `agentshell_validate_transaction`, `agentshell_commit_transaction`, `agentshell_rollback_transaction`.
 - **Site meta & visuals** — `agentshell_get_site_info`, `agentshell_screenshot`.
 

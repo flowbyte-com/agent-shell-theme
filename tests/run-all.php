@@ -29,6 +29,7 @@ $suites = array(
     'static-token-auth'=> __DIR__ . '/static-token-auth-test.php',
     'security-headers' => __DIR__ . '/security-headers-test.php',
     'daemon-version'   => __DIR__ . '/daemon-version-test.php',
+    'navigation'       => __DIR__ . '/navigation-test.php',
 );
 
 $total_passed = 0;
