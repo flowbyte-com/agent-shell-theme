@@ -11,13 +11,64 @@
 
 ## Authentication
 
-Uses WordPress Application Passwords (Basic Auth):
+The MCP transport supports two authentication methods. Both are
+gated by the same per-tool capability checks (manage_options for the
+MCP transport, edit_theme_options for the theme REST endpoint).
+
+### Method 1 — Application Password (Basic Auth)
+
+The default, recommended method. Issue a WordPress Application
+Password for the agent user from `/wp-admin/profile.php` and pass it
+via Basic Auth:
 
 ```
 Authorization: Basic <base64(user:application_password)>
 ```
 
 The authenticated user must have `manage_options` capability.
+Application Password authentication is unchanged from prior releases.
+
+### Method 2 — Static token (X-AgentShell-Token header)
+
+For headless daemons or environments where Basic Auth is awkward. Both
+constants below **must** be defined in `wp-config.php`; static-token
+authentication fails closed if either is missing.
+
+```php
+// Shared secret. Treat like a database root password.
+define( 'AGENTSHELL_REST_TOKEN', '<long-random-string>' );
+
+// Explicit WordPress actor id the token resolves to. The user must
+// exist. The token no longer silently becomes database user ID 1 —
+// configuring the actor is mandatory going forward.
+define( 'AGENTSHELL_REST_TOKEN_USER_ID', 7 );
+```
+
+Then send the header on each request:
+
+```
+X-AgentShell-Token: <long-random-string>
+```
+
+**Operator checklist**
+
+- The configured user id must reference an existing WordPress user.
+- The configured user must hold the capabilities required by the
+  operations you intend to run (manage_options for MCP tools,
+  edit_theme_options for theme REST endpoints, unfiltered_html for
+  raw content).
+- Token comparison is timing-safe (constant-time); do not substitute
+  your own comparison.
+- A pre-fix installation that defined only `AGENTSHELL_REST_TOKEN`
+  will see every static-token request denied after this release.
+  Adding `AGENTSHELL_REST_TOKEN_USER_ID` (with a real user id) is
+  the only remediation. The `error_log` line on a denied request
+  tells the operator exactly which constant is missing.
+
+Application Password authentication remains the recommended default
+where practical. Use the static token only when Basic Auth is genuinely
+unavailable (e.g. some reverse-proxy configurations strip the
+Authorization header on cached routes).
 
 ## Tool surface
 
@@ -34,9 +85,15 @@ curl -s -X POST https://yourdomain.com/wp-json/agentshell-mcp/v1/mcp \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"agentshell_get_site_info","arguments":{}},"id":1}'
 ```
 
+For the static-token path, replace the `-u` Basic Auth with
+`-H 'X-AgentShell-Token: <token>'`.
+
 ## Audit log
 
-Tool calls are logged to `{wp_prefix}agentshell_mcp_audit_log` table. Fetch with `agentshell_get_audit_log`.
+Tool calls are logged to `{wp_prefix}agentshell_mcp_audit_log` table with
+bounded retention (30 days / 10000 rows; see
+`Agentshell_Audit_Log::prune()`). Fetch the option-based history with
+`agentshell_get_audit_log`.
 
 ## Requirements
 

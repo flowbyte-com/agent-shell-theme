@@ -70,5 +70,6 @@ Options:
 | `No route was found` | The `agentshell-mcp` WordPress plugin is not activated. |
 | `Authentication failed` | Wrong username or application password. |
 | `HTTP request failed` | The URL is not reachable from the host running the daemon. |
+| Static token: 401 with `AGENTSHELL_REST_TOKEN_USER_ID is not defined` in `error_log` | The static token is configured but the explicit actor is not. Add `AGENTSHELL_REST_TOKEN_USER_ID` to `wp-config.php`; the user id must reference an existing WordPress user. |
 
 For the tool surface, the bilateral widget registry contract, the data-* / no-fetch laws, the Unbreakable Grid protocol, and the working pattern, see `AGENTS.md`.
