@@ -22,6 +22,19 @@
 
 if ( ! defined( 'ABSPATH' ) ) { define( 'ABSPATH', __DIR__ ); }
 if ( ! defined( 'AGENTSHELL_REST_TOKEN' ) ) { define( 'AGENTSHELL_REST_TOKEN', '' ); }
+if ( ! defined( 'DAY_IN_SECONDS' ) ) { define( 'DAY_IN_SECONDS', 86400 ); }
+if ( ! function_exists( 'wp_schedule_event' ) ) {
+    function wp_schedule_event( $timestamp, $recurrence, $hook ) { return true; }
+}
+if ( ! function_exists( 'wp_next_scheduled' ) ) {
+    function wp_next_scheduled( $hook ) { return false; }
+}
+if ( ! function_exists( 'wp_unschedule_event' ) ) {
+    function wp_unschedule_event( $timestamp, $hook ) { return true; }
+}
+if ( ! function_exists( 'gmdate' ) ) {
+    function gmdate( $format, $ts = null ) { return date( $format, $ts ?? time() ); }
+}
 
 $GLOBALS['_agentshell_test_options']  = array();
 $GLOBALS['_agentshell_test_user_id']  = 0;
@@ -161,6 +174,103 @@ function esc_js( $text ) { return $text; }
 function __( $text, $domain = null ) { return $text; }
 function dynamic_sidebar( $id ) {}
 
+/**
+ * Fake wpdb for the audit-log tests. Operates on a global array, so
+ * tests can seed rows, run a prune, and inspect what survived.
+ *
+ * The stub understands only the SQL the audit-log class emits:
+ *   - DELETE FROM {table} WHERE created_at < '<cutoff>'
+ *   - DELETE FROM {table} ORDER BY id ASC LIMIT {n}
+ *   - SELECT COUNT(*) FROM {table}
+ *   - INSERT INTO {table} (...) VALUES (...)
+ *
+ * Any other query returns 0 / null and is harmless for tests that only
+ * exercise the prune path. A global $_agentshell_test_audit_fail flag
+ * makes every query throw, used to verify error swallowing.
+ */
+
+$GLOBALS['_agentshell_test_audit_table']  = array();
+$GLOBALS['_agentshell_test_audit_fail']   = false;
+$GLOBALS['_agentshell_test_audit_nextid'] = 0;
+
+if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
+    class wpdb_stub_for_tests {
+        public $prefix = 'wp_';
+        public function prepare( $sql, ...$args ) {
+            // Very small vsprintf-style substitution; sufficient for the
+            // audit-log class which only uses %s and %d with positional args.
+            $out = $sql;
+            $i = 0;
+            foreach ( $args as $a ) {
+                $marker = $i === 0 ? '%s' : ( strpos( $out, "'%s'" ) !== false ? "'%s'" : '%d' );
+                if ( is_numeric( $a ) ) {
+                    $out = preg_replace( '/%s|%d/', (string) $a, $out, 1 );
+                } else {
+                    $out = preg_replace( "/%s/", "'" . addslashes( (string) $a ) . "'", $out, 1 );
+                }
+                $i++;
+            }
+            return $out;
+        }
+        public function query( $sql ) {
+            if ( $GLOBALS['_agentshell_test_audit_fail'] ) {
+                throw new \RuntimeException( 'wpdb query failure (test)' );
+            }
+            $table = $GLOBALS['_agentshell_test_audit_table'];
+            $before = count( $table );
+            // INSERT handled by the dedicated test helper, not by SQL
+            // parsing — the helper short-circuits below by returning a
+            // callable that ignores the SQL. Kept here for symmetry:
+            // if the stub ever needs to accept a raw INSERT, the
+            // production code path uses $wpdb->insert() which we don't
+            // exercise from these tests.
+            if ( preg_match( "/INSERT INTO/i", $sql ) ) {
+                return 0;
+            }
+            if ( preg_match( "/WHERE created_at < '([^']+)'/", $sql, $m ) ) {
+                $cutoff = strtotime( $m[1] );
+                $GLOBALS['_agentshell_test_audit_table'] = array_values( array_filter(
+                    $table,
+                    function ( $r ) use ( $cutoff ) { return $r['_ts'] >= $cutoff; }
+                ) );
+                return $before - count( $GLOBALS['_agentshell_test_audit_table'] );
+            }
+            if ( preg_match( "/ORDER BY id ASC LIMIT (\d+)/", $sql, $m ) ) {
+                $excess = (int) $m[1];
+                usort( $GLOBALS['_agentshell_test_audit_table'], function ( $a, $b ) { return $a['id'] <=> $b['id']; } );
+                $GLOBALS['_agentshell_test_audit_table'] = array_slice( $GLOBALS['_agentshell_test_audit_table'], $excess );
+                return $excess;
+            }
+            return 0;
+        }
+        public function get_var( $sql ) {
+            if ( $GLOBALS['_agentshell_test_audit_fail'] ) {
+                throw new \RuntimeException( 'wpdb get_var failure (test)' );
+            }
+            if ( preg_match( "/SELECT COUNT\(\*\) FROM/i", $sql ) ) {
+                return count( $GLOBALS['_agentshell_test_audit_table'] );
+            }
+            return null;
+        }
+    }
+}
+
+$wpdb = new wpdb_stub_for_tests();
+$GLOBALS['wpdb'] = $wpdb;
+
+function agentshell_test_audit_insert( $user_id, $tool_name, $created_at_ts ) {
+    $GLOBALS['_agentshell_test_audit_table'][] = array(
+        'id'         => ++$GLOBALS['_agentshell_test_audit_nextid'],
+        'wp_user_id' => (int) $user_id,
+        'tool_name'  => (string) $tool_name,
+        '_ts'        => (int) $created_at_ts,
+    );
+}
+
+function agentshell_test_audit_all() {
+    return $GLOBALS['_agentshell_test_audit_table'];
+}
+
 function add_action() {}
 function add_filter() {}
 function apply_filters( $tag, $value ) { return $value; }
@@ -188,6 +298,9 @@ function agentshell_test_reset() {
     $GLOBALS['_agentshell_test_user_id']   = 0;
     $GLOBALS['_agentshell_test_user_caps'] = array();
     $GLOBALS['_agentshell_test_error_log'] = array();
+    $GLOBALS['_agentshell_test_audit_table']  = array();
+    $GLOBALS['_agentshell_test_audit_fail']   = false;
+    $GLOBALS['_agentshell_test_audit_nextid'] = 0;
 }
 
 /**

@@ -25,6 +25,7 @@ $suites = array(
     'render-block'    => __DIR__ . '/render-block-test.php',
     'flatten'         => __DIR__ . '/flatten-test.php',
     'doctor'          => __DIR__ . '/doctor-test.php',
+    'audit-log'       => __DIR__ . '/audit-log-test.php',
 );
 
 $total_passed = 0;

@@ -27,5 +27,9 @@ class Activator {
         dbDelta( $sql );
 
         update_option( 'agentshell_mcp_version', AGENTSHELL_MCP_VERSION );
+
+        // Schedule the bounded-retention prune. Idempotent: re-running
+        // activation does not double-schedule.
+        Agentshell_Audit_Log::schedule();
     }
 }

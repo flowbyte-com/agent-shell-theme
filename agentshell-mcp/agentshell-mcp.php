@@ -17,8 +17,12 @@ require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-activator.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-error-codes.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-json-rpc.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-auth.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-audit-log.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-base-tool.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-registry.php';
+
+// Wire the audit-log cron handler. Schedule happens in Activator::activate().
+\AgentShell_MCP\Agentshell_Audit_Log::register_hooks();
 
 // Core services: history store, transaction manager (hooks option writes),
 // the deterministic site validator, content primitives, and screenshot backend.

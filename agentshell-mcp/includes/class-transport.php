@@ -105,6 +105,11 @@ class Transport {
             'ip_address'    => isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '',
             'created_at'    => current_time( 'mysql', true ),
         ), array( '%d', '%s', '%s', '%s', '%s', '%s' ) );
+
+        // Opportunistic bounded-retention prune. Counter-based throttle
+        // (see Agentshell_Audit_Log::maybe_prune) so the cost is amortised;
+        // on a small table the inner prune is a no-op.
+        Agentshell_Audit_Log::maybe_prune();
     }
 
     private static function redact_sensitive_args( $args ) {
