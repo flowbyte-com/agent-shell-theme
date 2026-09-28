@@ -1,6 +1,6 @@
 ---
 name: agentshell
-description: Namespace index for AgentShell skills. Routes work to the canonical guide (AGENTS.md) and to the operative skills (image-to-theme, widget-builder). Use when an agent task touches the AgentShell WordPress theme.
+description: Namespace index for AgentShell skills. Routes work to the canonical guide (AGENTS.md) and to the operative skills (image-to-theme, site-from-brief, widget-builder). Use when an agent task touches the AgentShell WordPress theme.
 ---
 
 # agentshell (skill index)
@@ -16,6 +16,7 @@ Use this skill only as a routing dispatch when the agent runtime supports skill 
 | Skill | Triggers | Purpose | File |
 |---|---|---|---|
 | `agentshell-image-to-theme` | "theme this site to match an image", "match these colors" | Apply a reference image's design tokens to the live site | `skills/agentshell/image-to-theme/SKILL.md` |
+| `agentshell-site-from-brief` | "build a site from this README", "create a site for this project", "turn these docs into a website" | Compose an entire site from a project brief / README inside a single transaction | `skills/agentshell/site-from-brief/SKILL.md` |
 | `agentshell-widget-builder` | "build me a widget that …", "add a custom carousel / calculator / dashboard" | Build a custom widget using the bilateral registry and the data-* / no-fetch laws | `skills/agentshell/widget-builder/SKILL.md` |
 
 ## What this index intentionally does not contain
