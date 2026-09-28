@@ -413,6 +413,10 @@ function agentshell_get_zones() {
  * Merge stable widgets (from /widgets/ files) with agent-defined widgets (from wp_options).
  * JSON-defined widgets override file-defined widgets with the same ID.
  *
+ * Every merged entry carries an explicit `source` field ('file' or 'config')
+ * so consumers (the configurator, list_widgets, get_widget) do not have to
+ * infer provenance by fragile heuristics.
+ *
  * @return array Merged widget registry keyed by widget ID
  */
 function agentshell_get_widget_registry() {
@@ -434,6 +438,8 @@ function agentshell_get_widget_registry() {
             if ( file_exists( $widget_file ) ) {
                 $widget = include $widget_file;
                 if ( is_array( $widget ) && ! empty( $widget['id'] ) ) {
+                    // Stamp source explicitly so consumers don't infer.
+                    $widget['source'] = 'file';
                     $registry[ $widget['id'] ] = $widget;
                 }
             }
@@ -446,6 +452,9 @@ function agentshell_get_widget_registry() {
         if ( empty( $widget['id'] ) ) {
             continue;
         }
+        // Stamp source so downstream consumers can distinguish without
+        // re-implementing the heuristic.
+        $widget['source'] = isset( $widget['source'] ) ? $widget['source'] : 'config';
         $registry[ $widget['id'] ] = $widget;
     }
 
@@ -464,6 +473,120 @@ function agentshell_get_widget_registry() {
     }
 
     return $registry;
+}
+
+/**
+ * Migrate the legacy agentshell_widgets option (BILock-Blocks standalone
+ * store) into the canonical agentshell_config.widgets. Idempotent: a
+ * second invocation finds an empty legacy option and is a no-op.
+ *
+ * Called from the blocks plugin's activation hook so existing installations
+ * do not silently lose widgets that were written via the legacy path.
+ */
+function agentshell_migrate_legacy_widgets_option() {
+    $legacy = get_option( 'agentshell_widgets', array() );
+    if ( ! is_array( $legacy ) || empty( $legacy ) ) {
+        return; // nothing to migrate
+    }
+
+    $config         = agentshell_get_config();
+    $existing_ids   = array();
+    foreach ( (array) ( $config['widgets'] ?? array() ) as $w ) {
+        if ( ! empty( $w['id'] ) ) {
+            $existing_ids[ $w['id'] ] = true;
+        }
+    }
+
+    $merged = $config['widgets'] ?? array();
+    foreach ( $legacy as $widget ) {
+        if ( empty( $widget['id'] ) || isset( $existing_ids[ $widget['id'] ] ) ) {
+            continue; // skip entries without id, or already represented in config
+        }
+        $widget['source']       = 'config';
+        $widget['_migrated_from'] = 'agentshell_widgets';
+        $merged[ $widget['id'] ] = $widget;
+    }
+
+    $config['widgets'] = $merged;
+
+    // Persist (or stage) through the same path mutations use, so history
+    // is recorded and transaction staging still works.
+    update_option( 'agentshell_config', $config );
+    delete_option( 'agentshell_widgets' );
+}
+
+/**
+ * Remove a config-registered widget from the registry and clean up any
+ * zone composition / slot entries that referenced it. File widgets cannot
+ * be removed; the caller must use disable_widget for those.
+ *
+ * Pure data transformation; usable from tests without a live WP runtime.
+ *
+ * @param array  $config Existing agentshell_config array.
+ * @param string $id     Widget id to remove.
+ * @return array  Updated config.
+ * @throws \InvalidArgumentException if the widget does not exist or is a
+ *         stable file widget (use disable_widget instead).
+ */
+function agentshell_remove_widget_from_config( array $config, $id ) {
+    $config_widgets = $config['widgets'] ?? array();
+    if ( ! is_array( $config_widgets ) ) {
+        $config_widgets = array();
+    }
+
+    $found_index = null;
+    foreach ( $config_widgets as $i => $w ) {
+        if ( ( $w['id'] ?? null ) === $id ) {
+            $found_index = $i;
+            break;
+        }
+    }
+
+    if ( null === $found_index ) {
+        // Not a config-registered widget. Could be a stable file widget —
+        // refuse to remove.
+        throw new \InvalidArgumentException(
+            "Widget '{$id}' is a stable file widget and cannot be removed. Use agentshell_disable_widget instead."
+        );
+    }
+
+    // Drop the entry, preserving the sequential shape that the rest of
+    // the codebase (the merge function, the configurator GET) expects.
+    unset( $config_widgets[ $found_index ] );
+    $config['widgets'] = array_values( $config_widgets );
+
+    if ( isset( $config['widget_overrides'][ $id ] ) ) {
+        unset( $config['widget_overrides'][ $id ] );
+    }
+
+    // Strip dangling zone references (composition + each tri-slot side).
+    if ( isset( $config['zones'] ) && is_array( $config['zones'] ) ) {
+        foreach ( $config['zones'] as &$zone ) {
+            if ( ! empty( $zone['composition'] ) && is_array( $zone['composition'] ) ) {
+                $zone['composition'] = array_values( array_filter(
+                    $zone['composition'],
+                    function ( $block ) use ( $id ) {
+                        return ! ( ( $block['type'] ?? '' ) === 'widget' && ( $block['id'] ?? '' ) === $id );
+                    }
+                ) );
+            }
+            if ( ! empty( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
+                foreach ( array( 'left', 'center', 'right' ) as $slot_key ) {
+                    if ( ! empty( $zone['slots'][ $slot_key ] ) && is_array( $zone['slots'][ $slot_key ] ) ) {
+                        $zone['slots'][ $slot_key ] = array_values( array_filter(
+                            $zone['slots'][ $slot_key ],
+                            function ( $block ) use ( $id ) {
+                                return ! ( ( $block['type'] ?? '' ) === 'widget' && ( $block['id'] ?? '' ) === $id );
+                            }
+                        ) );
+                    }
+                }
+            }
+        }
+        unset( $zone );
+    }
+
+    return $config;
 }
 
 /**
@@ -998,13 +1121,20 @@ add_action( 'rest_api_init', function() {
             $config = agentshell_get_config();
             $flat   = agentshell_flatten_config( $config );
 
-            // Pull lightweight widget registry from blocks plugin (if active)
-            $widgets_option = get_option( 'agentshell_widgets', array() );
+            // Pull widgets from the merged bilateral registry, not the
+            // legacy agentshell_widgets option. This means the configurator
+            // sees widgets written via agentshell_register_widget (main
+            // plugin) as well as widgets written via the blocks plugin's
+            // legacy tool. Migration is handled by
+            // agentshell_migrate_legacy_widgets_option() on plugin activation.
             $available_widgets = array();
-            foreach ( $widgets_option as $w ) {
+            $registry          = agentshell_get_widget_registry();
+            foreach ( $registry as $widget ) {
                 $available_widgets[] = array(
-                    'id'   => $w['id']   ?? '',
-                    'name' => $w['name'] ?? '',
+                    'id'     => $widget['id'],
+                    'name'   => $widget['name'] ?? $widget['id'],
+                    'source' => $widget['source'] ?? 'config',
+                    'status' => $widget['status'] ?? 'active',
                 );
             }
 

@@ -24,7 +24,31 @@ require_once AGENTSHELL_BLOCKS_PLUGIN_DIR . 'includes/tools/class-base-tool.php'
 define( 'AGENTSHELL_WIDGETS_OPTION', 'agentshell_widgets' );
 
 register_activation_hook( __FILE__, function() {
-    add_option( AGENTSHELL_WIDGETS_OPTION, array() );
+    // The legacy agentshell_widgets option has been consolidated into
+    // agentshell_config.widgets. On activation, drain whatever lives in the
+    // legacy option into the canonical store so existing installations
+    // do not silently lose widgets. The migration helper is provided by
+    // the theme (functions.php) and is idempotent.
+    if ( function_exists( 'agentshell_migrate_legacy_widgets_option' ) ) {
+        agentshell_migrate_legacy_widgets_option();
+    } else {
+        // Theme not active yet — keep the legacy option in place so the
+        // theme's own first-time migration path (in agentshell_get_config)
+        // can pick it up on first request.
+        add_option( AGENTSHELL_WIDGETS_OPTION, array() );
+    }
+} );
+
+/**
+ * Defensive: also drain the legacy option on every admin request. The
+ * migration is idempotent and runs once per install; doing it from a
+ * frequent hook guarantees the data is moved before any tool call that
+ * reads the canonical store can miss it.
+ */
+add_action( 'admin_init', function() {
+    if ( function_exists( 'agentshell_migrate_legacy_widgets_option' ) ) {
+        agentshell_migrate_legacy_widgets_option();
+    }
 } );
 
 /**
