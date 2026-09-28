@@ -4,6 +4,7 @@ namespace AgentShellMCPDaemon;
 require_once __DIR__ . '/src/JsonRpc.php';
 require_once __DIR__ . '/src/Client.php';
 require_once __DIR__ . '/src/Transport.php';
+require_once __DIR__ . '/daemon-version.php';
 
 class Daemon {
     private $config;
@@ -64,12 +65,27 @@ class Daemon {
     }
 
     private function check_version_compatibility() {
-        if ( $this->server_version === null ) {
+        $status = agentshell_daemon_version_status(
+            $this->server_version,
+            self::DAEMON_VERSION
+        );
+        // Only the loudest level writes to stderr. info is silent;
+        // notice prints once at startup; warning is the pre-fix behaviour
+        // and is reserved for cases that warrant operator attention.
+        if ( $status['level'] === 'info' ) {
             return;
         }
-        if ( $this->server_version !== self::EXPECTED_SERVER_VERSION ) {
-            fwrite( STDERR, "VERSION MISMATCH: Daemon v" . self::DAEMON_VERSION . " / Server v$this->server_version (expected " . self::EXPECTED_SERVER_VERSION . "). Protocol issues possible.\n" );
-        }
+        $prefix = ( $status['level'] === 'warning' ) ? 'WARNING' : strtoupper( $status['level'] );
+        fwrite(
+            STDERR,
+            sprintf(
+                "%s: %s (daemon v%s, server v%s).\n",
+                $prefix,
+                $status['message'],
+                self::DAEMON_VERSION,
+                (string) $this->server_version
+            )
+        );
     }
 
     private function handle_client_message( array $message ) {
