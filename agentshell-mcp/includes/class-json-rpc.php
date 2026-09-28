@@ -4,9 +4,23 @@ namespace AgentShell_MCP;
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class JSON_RPC {
+    /**
+     * Maximum accepted request body size. Anything larger is rejected with a
+     * structured error before json_decode runs so a hostile client cannot
+     * force the plugin to allocate gigabytes per request.
+     */
+    const MAX_BODY_BYTES = 1048576; // 1 MiB
+
     public static function parse_request( $body ) {
         if ( empty( $body ) ) {
             return new \WP_Error( 'empty_body', 'Request body is empty' );
+        }
+
+        if ( strlen( $body ) > self::MAX_BODY_BYTES ) {
+            return new \WP_Error(
+                'request_too_large',
+                sprintf( 'Request body exceeds %d bytes.', self::MAX_BODY_BYTES )
+            );
         }
 
         $decoded = json_decode( $body, true );

@@ -160,13 +160,15 @@ function agentshell_inject_saved_styles() {
     }
     echo "}\n</style>\n";
 
-    // custom_css — trusted author context
-    // Strip <style> tags but keep the CSS rules inside. Use a negative lookahead
-    // to avoid bypassing the strip via </style> appearing inside CSS string literals.
+    // custom_css — trusted author context. We strip pre-existing <style>
+    // tags from the user payload so the value can be safely wrapped in our
+    // own <style id='agentshell-custom-css'>; any literal </style> in the
+    // remaining content is neutralised by agentshell_harden_custom_css so
+    // it cannot close the wrapping element early.
     if ( ! empty( $config['custom_css'] ) ) {
         $css = preg_replace( '/<\/?style\b[^>]*>/i', '', $config['custom_css'] );
-        $css = preg_replace( '/<\/?style\b[^>]*>/i', '', $css ); // second pass for nested
-        echo "<style id='agentshell-custom-css'>\n" . trim( $css ) . "\n</style>\n";
+        $css = agentshell_harden_custom_css( trim( $css ) );
+        echo "<style id='agentshell-custom-css'>\n" . $css . "\n</style>\n";
     }
 
     // Theme profile preview: ?agentshell_preview=<profile> renders a saved
@@ -941,11 +943,47 @@ function agentshell_validate_config( $config ) {
         return new WP_Error( 'invalid_custom_css', 'custom_css must be a string.' );
     }
 
+    if ( isset( $config['custom_css'] ) && strlen( $config['custom_css'] ) > 10000 ) {
+        return new WP_Error( 'custom_css_too_large', 'custom_css exceeds 10KB.' );
+    }
+
     if ( isset( $config['custom_js'] ) && ! is_string( $config['custom_js'] ) ) {
         return new WP_Error( 'invalid_custom_js', 'custom_js must be a string.' );
     }
 
+    if ( isset( $config['custom_js'] ) && strlen( $config['custom_js'] ) > 10000 ) {
+        return new WP_Error( 'custom_js_too_large', 'custom_js exceeds 10KB.' );
+    }
+
     return $config;
+}
+
+/**
+ * Sanitise a custom_js value for safe embedding inside a <script> tag.
+ *
+ * Trusted administrators intentionally write arbitrary JavaScript into
+ * custom_js; we preserve the bytes verbatim. The only hardening applied
+ * is preventing a literal </script> (or </SCRIPT>, etc.) from prematurely
+ * closing the wrapping <script> element and breaking out into a sibling
+ * tag. The standard mitigation is to rewrite </ as <\/ — JavaScript treats
+ * the two sequences as identical but the browser does not, so the wrapping
+ * element stays intact.
+ */
+function agentshell_harden_custom_js( $value ) {
+    if ( ! is_string( $value ) ) { return ''; }
+    return preg_replace( '/<\//', '<\\/', $value );
+}
+
+/**
+ * Sanitise a custom_css value for safe embedding inside a <style> tag.
+ *
+ * Same rationale as agentshell_harden_custom_js: trusted authors write
+ * arbitrary CSS, we only prevent a literal </style> from closing the
+ * wrapping <style> element early.
+ */
+function agentshell_harden_custom_css( $value ) {
+    if ( ! is_string( $value ) ) { return ''; }
+    return preg_replace( '/<\//', '<\\/', $value );
 }
 
 /**

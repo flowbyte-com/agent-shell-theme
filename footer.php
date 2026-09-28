@@ -5,9 +5,13 @@
 
 $config = agentshell_get_config();
 
-// custom_js — trusted author context, injected before body close
+// custom_js — trusted author context, injected before body close.
+// Trusted admins write arbitrary JS; we keep the bytes verbatim but run
+// the value through agentshell_harden_custom_js so a literal </script>
+// inside the payload cannot close the wrapping element early.
 if ( ! empty( $config['custom_js'] ) ) {
-    echo "<script id='agentshell-custom-js'>\n" . wp_check_invalid_utf8( $config['custom_js'] ) . "\n</script>\n";
+    $js = agentshell_harden_custom_js( wp_check_invalid_utf8( $config['custom_js'] ) );
+    echo "<script id='agentshell-custom-js'>\n" . $js . "\n</script>\n";
 }
 
 wp_footer();
