@@ -17,19 +17,22 @@
 
 require_once __DIR__ . '/bootstrap.php';
 
+define( 'AGENTSHELL_TEST_AGGREGATE', true );
+
 $suites = array(
-    'security'         => __DIR__ . '/security-test.php',
-    'hardening'        => __DIR__ . '/hardening-test.php',
-    'inject-block'     => __DIR__ . '/inject-block-test.php',
-    'widget-registry'  => __DIR__ . '/widget-registry-test.php',
-    'render-block'     => __DIR__ . '/render-block-test.php',
-    'flatten'          => __DIR__ . '/flatten-test.php',
-    'doctor'           => __DIR__ . '/doctor-test.php',
-    'audit-log'        => __DIR__ . '/audit-log-test.php',
-    'static-token-auth'=> __DIR__ . '/static-token-auth-test.php',
-    'security-headers' => __DIR__ . '/security-headers-test.php',
-    'daemon-version'   => __DIR__ . '/daemon-version-test.php',
-    'navigation'       => __DIR__ . '/navigation-test.php',
+    'security'             => __DIR__ . '/security-test.php',
+    'hardening'            => __DIR__ . '/hardening-test.php',
+    'inject-block'         => __DIR__ . '/inject-block-test.php',
+    'widget-registry'      => __DIR__ . '/widget-registry-test.php',
+    'render-block'         => __DIR__ . '/render-block-test.php',
+    'flatten'              => __DIR__ . '/flatten-test.php',
+    'doctor'               => __DIR__ . '/doctor-test.php',
+    'audit-log'            => __DIR__ . '/audit-log-test.php',
+    'static-token-auth'    => __DIR__ . '/static-token-auth-test.php',
+    'security-headers'     => __DIR__ . '/security-headers-test.php',
+    'daemon-version'       => __DIR__ . '/daemon-version-test.php',
+    'navigation'           => __DIR__ . '/navigation-test.php',
+    'configurator-state'   => __DIR__ . '/run-configurator-state.php',
 );
 
 $total_passed = 0;
