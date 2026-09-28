@@ -452,3 +452,66 @@ body.config-panel-open {
 #agentshell-config-panel .zb-widget-select {
     flex: 1;
 }
+
+/* ── Transaction pill + snapshot / discard row ── */
+
+#agentshell-config-panel .panel-tx-pill {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    margin: 0 0.6rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    background: var(--configurator-input-bg);
+    color: var(--configurator-text);
+    border: 1px solid var(--configurator-input-border);
+}
+
+#agentshell-config-panel .panel-tx-pill[data-tx="editing_open"] {
+    background: #fef3c7;
+    border-color: #f59e0b;
+    color: #92400e;
+}
+
+#agentshell-config-panel .panel-tx-pill[data-tx="locked"] {
+    background: #fee2e2;
+    border-color: #dc2626;
+    color: #991b1b;
+}
+
+#agentshell-config-panel .panel-tx-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding-bottom: 0.6rem;
+    border-bottom: 1px solid var(--configurator-input-border);
+    margin-bottom: 0.6rem;
+}
+
+#agentshell-config-panel .panel-btn {
+    padding: 0.4rem 0.7rem;
+    border-radius: 6px;
+    border: 1px solid var(--configurator-input-border);
+    background: var(--configurator-input-bg);
+    color: var(--configurator-text);
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
+#agentshell-config-panel .panel-btn:hover:not([disabled]) {
+    background: var(--configurator-accent);
+    color: #fff;
+    border-color: var(--configurator-accent);
+}
+
+#agentshell-config-panel .panel-btn[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+#agentshell-config-panel .panel-doctor {
+    margin-left: auto;
+    font-size: 0.72rem;
+    color: var(--configurator-text-muted, #6b7280);
+}

@@ -1,6 +1,14 @@
 (function() {
     'use strict';
 
+    // Pure state model lives in a sibling file so Node tests can
+    // exercise it without a browser. The model handles idle / editing_open
+    // / locked transitions; the configurator wires the model to fetch
+    // calls and DOM events.
+    if ( typeof window !== 'undefined' && window.AgentshellConfiguratorState ) {
+        window.AgentshellConfigState = window.AgentshellConfiguratorState.make_state_model();
+    }
+
     const DEFAULTS = {
         '--zone-header-layout': 'space-between',
         '--zone-main-align': 'flex-start',
@@ -91,6 +99,8 @@
     let liveState  = {};
     let availableWidgets = []; // agent-defined widgets from blocks plugin
     let coreComponents   = []; // WP core components (site_title, nav_menu, etc.)
+    let txState    = 'idle';   // mirror of the pure state model
+    let txInfo     = null;    // payload from GET /wp/v2/agentshell/transaction
 
     // ── DOM init ───────────────────────────────────────────────
     function initElements() {
@@ -151,7 +161,13 @@
         let html = `
             <div class="panel-header">
                 <h2>Shell Config</h2>
+                <span class="panel-tx-pill" data-tx="idle" id="agentshell-tx-pill" aria-live="polite">Idle</span>
                 <button class="panel-close" aria-label="Close panel">&times;</button>
+            </div>
+            <div class="panel-section panel-tx-bar">
+                <button type="button" class="panel-btn panel-btn-secondary" id="agentshell-snapshot-btn" title="Snapshot now">Snapshot now</button>
+                <button type="button" class="panel-btn panel-btn-secondary" id="agentshell-discard-btn" disabled>Discard changes</button>
+                <span class="panel-doctor" id="agentshell-doctor" aria-live="polite"></span>
             </div>
         `;
 
@@ -516,6 +532,29 @@
 
         // Save button
         panel.querySelector('#agentshell-save')?.addEventListener('click', saveConfig);
+
+        // Discard changes
+        panel.querySelector('#agentshell-discard-btn')?.addEventListener('click', discardChanges);
+
+        // Snapshot now
+        panel.querySelector('#agentshell-snapshot-btn')?.addEventListener('click', async () => {
+            const btn = panel.querySelector('#agentshell-snapshot-btn');
+            if (btn) { btn.disabled = true; btn.textContent = 'Snapshoting…'; }
+            try {
+                const snap = await snapshotNow();
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Snapshotted as ' + (snap.name || '?');
+                    setTimeout(() => { btn.textContent = 'Snapshot now'; }, 4000);
+                }
+            } catch (e) {
+                if (btn) { btn.disabled = false; btn.textContent = 'Snapshot now'; }
+                alert('Snapshot failed: ' + e.message);
+            }
+        });
+
+        // Apply tx state to UI
+        updateTxPill();
     }
 
     // ── Add a block to a zone's composition or slot ─────────────
@@ -535,22 +574,151 @@
     // ── Load config from REST API ──────────────────────────────
     async function loadConfig() {
         try {
-            const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/config', {
-                headers: { 'X-WP-Nonce': AgentShellConfig.nonce }
-            });
-            if (!resp.ok) throw new Error('Failed to load config: ' + resp.status);
-            const data = await resp.json();
+            const [configResp, txResp] = await Promise.all([
+                fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/config', {
+                    headers: { 'X-WP-Nonce': AgentShellConfig.nonce }
+                }),
+                fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/transaction', {
+                    headers: { 'X-WP-Nonce': AgentShellConfig.nonce }
+                }),
+            ]);
+            if (!configResp.ok) throw new Error('Failed to load config: ' + configResp.status);
+            const data = await configResp.json();
             liveState = buildState(data);
             availableWidgets = data.available_widgets || [];
             coreComponents   = data.core_components || [];
+            if (txResp.ok) {
+                txInfo = await txResp.json();
+                if (window.AgentshellConfigState) {
+                    window.AgentshellConfigState.set_tx_snapshot(txInfo);
+                    txState = window.AgentshellConfigState.get_state().mode;
+                }
+            }
             renderPanel();
         } catch (e) {
             console.error('AgentShell: Failed to load config', e);
         }
     }
 
+    async function loadTx() {
+        try {
+            const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/transaction', {
+                headers: { 'X-WP-Nonce': AgentShellConfig.nonce }
+            });
+            if (!resp.ok) return;
+            txInfo = await resp.json();
+            if (window.AgentshellConfigState) {
+                window.AgentshellConfigState.set_tx_snapshot(txInfo);
+                txState = window.AgentshellConfigState.get_state().mode;
+            }
+            updateTxPill();
+        } catch (e) {
+            console.error('AgentShell: Failed to load tx state', e);
+        }
+    }
+
+    function updateTxPill() {
+        const pill = panel && panel.querySelector('#agentshell-tx-pill');
+        if (!pill || !window.AgentshellConfigState) return;
+        const label = window.AgentshellConfigState.status_label();
+        const mode = window.AgentshellConfigState.get_state().mode;
+        pill.textContent = label;
+        pill.setAttribute('data-tx', mode);
+        const saveBtn = panel.querySelector('#agentshell-save');
+        const discardBtn = panel.querySelector('#agentshell-discard-btn');
+        if (saveBtn) { saveBtn.disabled = !window.AgentshellConfigState.can_save(); }
+        if (discardBtn) {
+            discardBtn.disabled = mode !== 'editing_open';
+        }
+    }
+
+    async function beginTx(label) {
+        const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/transaction', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-WP-Nonce': AgentShellConfig.nonce,
+            },
+            body: JSON.stringify({ label: label || 'configurator edit' }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.message || 'Could not begin transaction (' + resp.status + ')');
+        }
+        return resp.json();
+    }
+
+    async function commitTx() {
+        const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/transaction/commit', {
+            method: 'POST',
+            headers: { 'X-WP-Nonce': AgentShellConfig.nonce },
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.message || 'Could not commit transaction (' + resp.status + ')');
+        }
+        return resp.json();
+    }
+
+    async function rollbackTx() {
+        const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/transaction', {
+            method: 'DELETE',
+            headers: { 'X-WP-Nonce': AgentShellConfig.nonce },
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.message || 'Could not rollback transaction (' + resp.status + ')');
+        }
+        return resp.json();
+    }
+
+    async function snapshotNow() {
+        const name  = 'snapshot-' + Math.floor(Date.now() / 1000);
+        const label = 'configurator snapshot ' + new Date().toISOString();
+        const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/snapshot', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-WP-Nonce': AgentShellConfig.nonce,
+            },
+            body: JSON.stringify({ name, label }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.message || 'Could not create snapshot (' + resp.status + ')');
+        }
+        return resp.json();
+    }
+
+    async function validateConfig(config) {
+        // Call the existing MCP tool via the standard MCP endpoint.
+        // We rely on the daemon's authenticated path; the response
+        // shape mirrors agentshell_validate.
+        const resp = await fetch(AgentShellConfig.restUrl + 'agentshell-mcp/v1/mcp', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-WP-Nonce': AgentShellConfig.nonce,
+            },
+            body: JSON.stringify({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'tools/call',
+                params: { name: 'agentshell_validate', arguments: config || {} },
+            }),
+        });
+        if (!resp.ok) return null;
+        const body = await resp.json().catch(() => null);
+        return body && body.result ? body.result : null;
+    }
+
     // ── Save config to REST API ────────────────────────────────
     async function saveConfig() {
+        if (window.AgentshellConfigState && !window.AgentshellConfigState.can_save()) {
+            alert('Cannot save while another actor owns an open transaction.');
+            return;
+        }
+
         const payload = {};
         Object.keys(DEFAULTS).forEach(key => {
             payload[key] = liveState[key] || DEFAULTS[key];
@@ -560,7 +728,17 @@
         payload.zones      = liveState.zones      || [];
 
         try {
-            const resp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/config', {
+            // If no tx is open, open one before the PUT so the write is
+            // staged and the operator can rollback from the panel.
+            let opened = null;
+            if (window.AgentshellConfigState && window.AgentshellConfigState.get_state().mode === 'idle') {
+                opened = await beginTx('configurator save');
+                if (window.AgentshellConfigState.begin) {
+                    window.AgentshellConfigState.begin('configurator save');
+                }
+            }
+
+            const putResp = await fetch(AgentShellConfig.restUrl + 'wp/v2/agentshell/config', {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
@@ -568,11 +746,39 @@
                 },
                 body: JSON.stringify(payload)
             });
-            if (!resp.ok) throw new Error('Save failed: ' + resp.status);
+            if (!putResp.ok) {
+                if (opened) await rollbackTx();
+                throw new Error('Save failed: ' + putResp.status);
+            }
+
+            await commitTx();
+            if (window.AgentshellConfigState && window.AgentshellConfigState.commit) {
+                window.AgentshellConfigState.commit(opened && opened.id);
+            }
+
             location.reload();
         } catch (e) {
             console.error('AgentShell: Failed to save config', e);
             alert('Failed to save. Check console for details.');
+        }
+    }
+
+    async function discardChanges() {
+        if (window.AgentshellConfigState && window.AgentshellConfigState.get_state().mode !== 'editing_open') {
+            return;
+        }
+        if (!confirm('Discard staged changes? The open transaction will be rolled back.')) {
+            return;
+        }
+        try {
+            await rollbackTx();
+            if (window.AgentshellConfigState && window.AgentshellConfigState.rollback) {
+                window.AgentshellConfigState.rollback();
+            }
+            location.reload();
+        } catch (e) {
+            console.error('AgentShell: Failed to discard changes', e);
+            alert('Failed to discard. Check console for details.');
         }
     }
 

@@ -1364,4 +1364,115 @@ add_action( 'rest_api_init', function() {
         }
         return $post;
     }, 10, 2 );
+
+    // ── Configurator v2 phase 1: transaction + snapshot REST endpoints ──
+    //
+    // These mirror the agentshell_begin_transaction / commit / rollback
+    // MCP tools but in REST form for the browser configurator. The
+    // capability gate is agentshell_rest_auth_callback (edit_theme_options).
+    // The transaction manager itself enforces per-actor ownership; the
+    // configurator never takes over a foreign transaction.
+    register_rest_route( 'wp/v2', '/agentshell/transaction', array(
+        'methods'             => 'GET',
+        'callback'            => function() {
+            $tx = \AgentShell_MCP\Transaction_Manager::instance()->payload();
+            if ( ! is_array( $tx ) ) {
+                return array(
+                    'open'          => false,
+                    'id'            => null,
+                    'actor'         => null,
+                    'label'         => null,
+                    'owned_by_us'   => false,
+                    'started_at'    => null,
+                    'has_staged'    => false,
+                    'can_take_over' => true,
+                );
+            }
+            $actor    = \AgentShell_MCP\Store::actor();
+            $staged   = \AgentShell_MCP\Transaction_Manager::instance()->staged_config();
+            return array(
+                'open'        => true,
+                'id'          => $tx['id']        ?? null,
+                'actor'       => $tx['actor']     ?? null,
+                'label'       => $tx['label']     ?? null,
+                'owned_by_us' => ( $tx['actor'] ?? null ) === $actor,
+                'started_at'  => isset( $tx['timestamp'] ) ? (int) $tx['timestamp'] : null,
+                'has_staged'  => is_array( $staged ) && ! empty( $staged ),
+                'can_take_over' => false,
+            );
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
+
+    register_rest_route( 'wp/v2', '/agentshell/transaction', array(
+        'methods'             => 'POST',
+        'callback'            => function( WP_REST_Request $request ) {
+            $tx = \AgentShell_MCP\Transaction_Manager::instance();
+            // Refuse to take over a foreign transaction.
+            if ( $tx->is_active() && ( $tx->payload()['actor'] ?? null ) !== \AgentShell_MCP\Store::actor() ) {
+                return new WP_Error(
+                    'transaction_locked_by_other',
+                    'Another actor owns the open transaction; the configurator cannot take it over.',
+                    array( 'status' => 409 )
+                );
+            }
+            try {
+                $opened = $tx->begin( (string) $request->get_param( 'label' ) );
+            } catch ( \Throwable $e ) {
+                return new WP_Error( 'transaction_begin_failed', $e->getMessage(), array( 'status' => 500 ) );
+            }
+            return array( 'id' => $opened['id'], 'label' => $opened['label'] );
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
+
+    register_rest_route( 'wp/v2', '/agentshell/transaction', array(
+        'methods'             => 'DELETE',
+        'callback'            => function() {
+            try {
+                \AgentShell_MCP\Transaction_Manager::instance()->rollback();
+                return array( 'rolled_back' => true );
+            } catch ( \Throwable $e ) {
+                return new WP_Error( 'transaction_rollback_failed', $e->getMessage(), array( 'status' => 500 ) );
+            }
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
+
+    register_rest_route( 'wp/v2', '/agentshell/transaction/commit', array(
+        'methods'             => 'POST',
+        'callback'            => function() {
+            try {
+                $result = \AgentShell_MCP\Transaction_Manager::instance()->commit();
+                return array( 'committed' => true, 'id' => $result['id'] ?? null );
+            } catch ( \Throwable $e ) {
+                return new WP_Error( 'transaction_commit_failed', $e->getMessage(), array( 'status' => 500 ) );
+            }
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
+
+    // Snapshot — create on demand. Reuses Store::create_snapshot
+    // which is the same path the MCP toolshell_create_snapshot uses.
+    register_rest_route( 'wp/v2', '/agentshell/snapshot', array(
+        'methods'             => 'POST',
+        'callback'            => function( WP_REST_Request $request ) {
+            $name  = sanitize_key( (string) $request->get_param( 'name' ) );
+            $label = sanitize_text_field( (string) $request->get_param( 'label' ) );
+            if ( $name === '' ) {
+                return new WP_Error( 'snapshot_name_required', 'name is required', array( 'status' => 400 ) );
+            }
+            try {
+                $snap = \AgentShell_MCP\Store::create_snapshot( $name, $label );
+                return array(
+                    'name'      => $snap['name']      ?? $name,
+                    'label'     => $snap['label']     ?? $label,
+                    'timestamp' => $snap['timestamp'] ?? time(),
+                );
+            } catch ( \Throwable $e ) {
+                return new WP_Error( 'snapshot_failed', $e->getMessage(), array( 'status' => 500 ) );
+            }
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
 } );
