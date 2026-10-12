@@ -30,6 +30,7 @@ $suites = array(
     'audit-log'            => __DIR__ . '/audit-log-test.php',
     'static-token-auth'    => __DIR__ . '/static-token-auth-test.php',
     'app-password-auth'    => __DIR__ . '/app-password-auth-test.php',
+    'tool-schema'          => __DIR__ . '/tool-schema-test.php',
     'security-headers'     => __DIR__ . '/security-headers-test.php',
     'daemon-version'       => __DIR__ . '/daemon-version-test.php',
     'navigation'           => __DIR__ . '/navigation-test.php',
