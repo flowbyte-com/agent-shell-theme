@@ -90,3 +90,7 @@ The CSS Grid layout obeys three load-bearing rules — every grid container uses
 | Header logo missing | No custom logo set under **Appearance → Customize → Site Identity** |
 
 For the complete list, the bilateral widget contract, the grid law, and the data-* / no-fetch boundary, see `AGENTS.md`.
+
+## Full installation guide
+
+For a complete end-to-end setup — LocalWP, development symlinks, theme and plugin activation, PHP CLI, Application Passwords, daemon configuration, Claude Code MCP registration, HTTPS certificate trust, connection verification, and troubleshooting — see [`CONFIG.md`](./CONFIG.md). It is a non-normative setup guide; every contract lives in `AGENTS.md`.

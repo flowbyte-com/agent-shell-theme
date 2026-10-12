@@ -186,6 +186,7 @@ Every other markdown in this repository is a pointer, an archive, or a non-norma
 | File | Status | Purpose |
 |---|---|---|
 | `README.md` | Pointer | Human-facing overview and setup; no normative contracts. |
+| `CONFIG.md` | **Non-normative setup guide** | End-to-end installation and connection walkthrough for humans: LocalWP, development symlinks, activation, Application Passwords, daemon config, Claude Code registration, verification, troubleshooting. Defines no contract; every contract is cited by section to this file. |
 | `CLAUDE.md` | Pointer | Claude Code orientation; "AGENTS.md is authoritative" stated up front. |
 | `AGENT-PROMT-EXAMPLE.md` | **Archive / deprecated** | v1 prompt fragments. The legacy "Unbreakable Grid Protocol" wording it contains is captured above in Section 5; the file itself is not normative. |
 | `agentshell-mcp/README.md` | Pointer | Plugin install + auth + capability hint; points to this file for the tool list. |
@@ -200,7 +201,7 @@ Every other markdown in this repository is a pointer, an archive, or a non-norma
 | `docs/superpowers/` | **Removed** | The historical SDD plan/spec tree was moved into `docs/_archive/2026-08-widget-builder-sdd/superpowers/`. The pre-existing `docs/` directory has been replaced with `docs/_archive/` to make the archive boundary explicit. |
 | `.superpowers/` | **Removed** | Moved into the archive above. The `.superpowers` directory at the project root no longer exists; the gitignore now points to `docs/_archive/`. |
 
-**Hard rule about new docs.** Any new markdown file must do one of: (a) pointer to this file, (b) archive notice, (c) single-task skill. No new file may redefine MCP tools, the operation loop, the bilateral widget registry, the data-* hydration law, the no-fetch boundary, the bilateral source of truth, or the 45+ tool count. New skill files inherit the widget and tool contracts by reference; they may not amend them.
+**Hard rule about new docs.** Any new markdown file must do one of: (a) pointer to this file, (b) archive notice, (c) single-task skill, (d) non-normative human setup guide. A setup guide (d) documents installation and connection procedure only — it defines no contract, and cites this file by section for anything normative. No new file may redefine MCP tools, the operation loop, the bilateral widget registry, the data-* hydration law, the no-fetch boundary, the bilateral source of truth, or the 45+ tool count. New skill files inherit the widget and tool contracts by reference; they may not amend them.
 
 ---
 
