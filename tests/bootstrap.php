@@ -137,7 +137,15 @@ if ( ! class_exists( 'WP_REST_Request' ) ) {
         public function get_param( $k )         { return $this->params[ $k ] ?? null; }
         public function get_json_params()       { return $this->params; }
         public function get_body()              { return wp_json_encode( $this->params ); }
-        public function get_header( $name )     { return ''; }
+        public function get_header( $name )     {
+            $headers = $this->params['headers'] ?? array();
+            foreach ( $headers as $key => $value ) {
+                if ( strtolower( (string) $key ) === strtolower( (string) $name ) ) {
+                    return $value;
+                }
+            }
+            return '';
+        }
         public function offsetExists( $k )      { return isset( $this->params[ $k ] ); }
         public function offsetGet( $k )         { return $this->params[ $k ] ?? null; }
     }
@@ -310,12 +318,39 @@ function agentshell_test_audit_all() {
     return $GLOBALS['_agentshell_test_audit_table'];
 }
 
-function add_action() {}
-function add_filter() {}
+/**
+ * Filter/action registry.
+ *
+ * Filters are recorded so a test can invoke the real registered closure
+ * (e.g. the rest_authentication_errors callback) instead of only the pure
+ * helper behind it. The registry is deliberately NOT cleared by
+ * agentshell_test_reset(): callbacks are registered once when functions.php
+ * is required, and suites call reset() repeatedly.
+ */
+$GLOBALS['_agentshell_test_filters'] = array();
+
+function add_action( $tag = '', $callback = null, $priority = 10, $accepted_args = 1 ) {
+    $GLOBALS['_agentshell_test_filters'][ $tag ][] = $callback;
+}
+function add_filter( $tag = '', $callback = null, $priority = 10, $accepted_args = 1 ) {
+    $GLOBALS['_agentshell_test_filters'][ $tag ][] = $callback;
+}
 function apply_filters( $tag, $value ) { return $value; }
 function do_action() {}
 function remove_filter() {}
 function remove_action() {}
+
+/**
+ * Invoke every recorded callback for $tag, threading $value through.
+ * Falls back to $value when nothing is registered.
+ */
+function agentshell_test_apply_filter( $tag, $value, ...$args ) {
+    if ( empty( $GLOBALS['_agentshell_test_filters'][ $tag ] ) ) { return $value; }
+    foreach ( $GLOBALS['_agentshell_test_filters'][ $tag ] as $callback ) {
+        $value = call_user_func_array( $callback, array_merge( array( $value ), $args ) );
+    }
+    return $value;
+}
 
 if ( ! function_exists( 'error_log' ) ) {
     function error_log( $msg ) {

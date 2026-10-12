@@ -782,6 +782,45 @@ function agentshell_check_static_token( $provided, $static_token, $configured_us
 }
 
 /**
+ * Normalize an application password to the form WordPress hashes.
+ *
+ * Core (wp_authenticate_application_password in wp-includes/user.php) strips
+ * every non-alphanumeric character before hashing, so the grouped display
+ * form ("abcd efgh ijkl ...") and the bare form are the same credential.
+ * Any re-implementation of application-password auth must mirror this, or
+ * the standard copy-pasted password is rejected.
+ *
+ * @param string $password
+ * @return string Alphanumeric-only password.
+ */
+function agentshell_normalize_app_password( $password ) {
+    return preg_replace( '/[^a-z\d]/i', '', (string) $password );
+}
+
+/**
+ * Check a supplied application password against a user's stored passwords.
+ *
+ * Normalizes first (see agentshell_normalize_app_password), then compares
+ * with WordPress's own verifier. Returns false for an empty password so a
+ * blank credential can never match.
+ *
+ * @param string $password  Raw password as supplied by the client.
+ * @param array  $stored    Array of application password records.
+ * @return bool
+ */
+function agentshell_check_app_password( $password, $stored ) {
+    if ( ! is_array( $stored ) ) { return false; }
+    $normalized = agentshell_normalize_app_password( $password );
+    if ( '' === $normalized ) { return false; }
+    foreach ( $stored as $item ) {
+        if ( isset( $item['password'] ) && WP_Application_Passwords::check_password( $normalized, $item['password'] ) ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
  * Authenticate REST requests via X-AgentShell-Token header.
  *
  * Supports two methods:
@@ -875,11 +914,16 @@ add_filter( 'rest_authentication_errors', function( $errors ) {
               ?: get_user_by( 'email', $username ?? '' );
         if ( $user ) {
             $stored = WP_Application_Passwords::get_user_application_passwords( $user->ID );
-            foreach ( $stored as $item ) {
-                if ( WP_Application_Passwords::check_password( $app_password, $item['password'] ) ) {
-                    wp_set_current_user( $user->ID );
-                    return null; // Auth succeeded
-                }
+            // Shared by the Basic-auth and X-App-Password branches. Core does
+            // not normalize application passwords itself (its own caller in
+            // wp_authenticate_application_password does), so this layer has
+            // to. Note the X-App-Password branch still cannot identify a user
+            // on its own — $username is only populated by the Basic branch
+            // above, which also overwrites $app_password. Documented as a
+            // known limitation; Basic auth is the supported path.
+            if ( agentshell_check_app_password( $app_password, $stored ) ) {
+                wp_set_current_user( $user->ID );
+                return null; // Auth succeeded
             }
         }
     }

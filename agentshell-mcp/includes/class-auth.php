@@ -26,6 +26,15 @@ class Auth {
             return new \WP_Error( 'user_not_found', 'User not found' );
         }
 
+        // WordPress hashes application passwords over the alphanumeric-only
+        // form. Core does this in wp_authenticate_application_password()
+        // (wp-includes/user.php) with exactly this expression, so the grouped
+        // display form ("abcd efgh ijkl ...") and the bare form hash
+        // identically. Application passwords are generated exclusively
+        // alphanumeric; the spaces exist only for readability. Without this
+        // normalization the standard, copy-pasted password is rejected.
+        $app_password = preg_replace( '/[^a-z\d]/i', '', $app_password );
+
         $stored = \WP_Application_Passwords::get_user_application_passwords( $user->ID );
         foreach ( $stored as $item ) {
             if ( \WP_Application_Passwords::check_password( $app_password, $item['password'] ) ) {
