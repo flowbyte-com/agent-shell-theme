@@ -1,7 +1,7 @@
 # Content transactions — design and investigation
 
-**Status: architecture review complete. Stage 0 is implemented; stages 1–6 are
-proposals.**
+**Status: architecture review complete. Stage 0 and the F3 partial-write fix
+(§5.1) are implemented; stages 1–6 are proposals.**
 Scope: AgentShell issue #8 (content tools do not participate in transactions)
 and issue #2 (no tool can delete content).
 
@@ -21,8 +21,8 @@ and issue #2 (no tool can delete content).
 >    **not** atomic, so §3 below keeps commit-time atomicity, pre-commit
 >    visibility, compensating rollback and non-database side effects as four
 >    separate things. The partial `wp_insert_post()` residue (F-numbered in §5)
->    is a precondition, not a later refinement. Normative form: §3 here; nothing
->    implemented.
+>    was a precondition, not a later refinement, and **it is now fixed** — see
+>    §5.1. Normative form: §3 here; nothing implemented.
 > 2. **Immediate-write behaviour outside transactions is preserved** for now, and
 >    the semantics are stated explicitly in tool results. Inside a transaction,
 >    supported mutations must be tracked and unsupported ones must fail rather
@@ -310,7 +310,10 @@ transaction. This is an availability bug that issue #8's design must fix rather
 than inherit.
 
 **(b) A `WP_Error` from `wp_insert_post` does not mean nothing was written.**
-Measured:
+
+**RESOLVED — see F3 below. The measurement stands; the conclusion has changed.**
+
+Measured, before the fix:
 
 ```
 wp_insert_post returned WP_Error: invalid_page_template — Invalid page template.
@@ -1046,7 +1049,7 @@ tests in §8.
 |---|---|---|
 | F1 | Content mutation outside a transaction | Refuse with a message naming `begin_transaction`. |
 | F2 | `create_page` succeeds, `update_zone_slots` then fails, agent rolls back | Page deleted; config unchanged; response states both outcomes. |
-| F3 | `create_page` returns `WP_Error` after a partial write (§1.6b) | Inside `Db_Transaction::run()` the whole step rolls back and **nothing** is left. Outside it, the orphan is found by the reaper and reported — because the caller never learns the id. |
+| F3 | `create_page` returns `WP_Error` after a partial write (§1.6b) | **FIXED.** Every content write runs inside `Content_Write_Guard`, which opens a bounded SQL transaction and rolls back on any failure — a `WP_Error`, a `false`/`0`, or a thrown exception. Nothing is left, so nothing has to be found later. See F3 in §5.1. |
 | F4 | Commit succeeds | Config committed; drafts promoted; `_agentshell_tx_id` cleared; audit stamped with tx id. |
 | F5 | Commit fails midway (invalid config, engine preflight, DB error) | `ROLLBACK`; **transaction row stays open**; no drafts promoted; no residue. |
 | F6 | PHP fatal error mid-apply | Connection drops → implicit `ROLLBACK` → zero residue. Demonstrated in §1.10. |
@@ -1066,6 +1069,107 @@ tests in §8.
 | F20 | Rollback after `force = true` | Post re-created from the journal; the **new id differs** and the response says so. |
 | F21 | Preview credential used after commit | Row deleted at commit ⇒ authorisation fails ⇒ 404/refusal, never a stale render. |
 | F22 | Staged content screenshot with `transaction=true, post_id=N` | Both credentials verified; staged config on staged draft; response no-store + noindex. |
+
+### 5.1 F3 — the partial content write, fixed at the boundary
+
+**Status: implemented and verified.** The ruling was that F3 is a hard
+prerequisite for transactional content mutations, and that it be fixed as a
+focused correctness change rather than as part of the content-transaction model.
+
+**Root cause.** `wp_insert_post()` is a sequence of independent writes — post
+row, slug, categories, tags, default terms, `meta_input`, GUID, status
+transition, then `save_post` / `wp_after_insert_post` — and it can return a
+`WP_Error` from a branch that runs after some of them. Measured against 7.1.3,
+every branch was checked rather than assumed:
+
+| Branch | Where | Row left behind? |
+|---|---|---|
+| `invalid_post` | before the write | no |
+| `empty_content` | before the write | no |
+| `invalid_date` | before the write | no |
+| `db_insert_error` | the insert itself | no — InnoDB makes a single-row insert atomic |
+| `db_update_error` | the update itself | no — same, and the row pre-existed |
+| **`invalid_page_template`** | **after** the row, terms and meta | **yes** |
+
+So the residue was one specific branch rather than a general property, and it
+returns an error that **never names the post it wrote**. There is no
+pre-allocation API, so an id cannot be reserved in advance either; the only
+post-hoc recovery is guessing from the title and the clock, which is not
+identification. A caller also cannot roll back itself, because by the time it
+sees the `WP_Error` the writes it would undo have already committed.
+
+**Fix — prevention at the write boundary.** `Content_Write_Guard` wraps each
+single `wp_insert_post()` / `wp_update_post()` call in a bounded SQL
+transaction and rolls back on any failure. Verified on the local install:
+
+```
+wp_insert_post returned WP_Error: invalid_page_template — Invalid page template.
+
+without the guard : post rows 1   meta rows 1   cache still serves the post
+with the guard    : post rows 0   meta rows 0   get_post() false
+```
+
+The transaction is bounded by one function call — ordinary PHP request scope,
+never held across an MCP call, a screenshot or agent reasoning.
+
+Three things the first cut of the fix got wrong, recorded because they are easy
+to reintroduce:
+
+1. **A rollback alone leaves the object cache lying.** After `ROLLBACK`,
+   `get_post()` still returned the post and `get_permalink()` still produced a
+   `?page_id=` URL for a row that no longer existed. The same failure in a
+   different costume. The guard now flushes on rollback.
+2. **`START TRANSACTION` inside an open transaction commits it.** MySQL has no
+   nested transactions, so a `save_post` hook creating its own post would have
+   committed the outer write mid-apply. A depth counter makes a nested call
+   join the open transaction instead.
+3. **A non-transactional engine silently has no protection.** `ROLLBACK` is a
+   no-op on MyISAM. The engine is checked once; when it is not InnoDB — or when
+   the lookup cannot be answered at all, which is *not* the same as "probably
+   InnoDB" — the write still happens and the tool result says it was
+   unprotected. A guarantee that cannot be kept is not reported as one.
+
+**What the guard explicitly does not promise**, and what every content tool now
+returns under an `atomicity` key in its result:
+
+```json
+{ "database_transaction": true, "engine": "InnoDB",
+  "on_failure": "rolled back — nothing this call wrote remains in the database",
+  "not_covered": "side effects outside the database (email, files, outbound HTTP)
+                  and any other plugin's database writes made during save_post,
+                  which this transaction also rolls back" }
+```
+
+**A second defect found while investigating.** `create_page` with an empty title
+*and* empty content wrote an untitled draft page and reported success — WordPress
+stores it happily and hands back an id. Nothing identifies it in a listing, an
+edit screen or a preview. `create()` now refuses it before any write, matching
+core's own `empty_content` rule. A titled page with an empty body is still
+allowed; the refusal is aimed at "neither field says anything".
+
+**Tests.** `tests/content-write-test.php` (17 groups) drives the boundary with a
+recording `wpdb`: statement order, the failure predicate, nesting, the three
+degradation paths, and that the primitives route through the guard at all.
+`tests/content-write-live-test.php` runs the real reproduction against a real
+WordPress — the genuine `invalid_page_template` branch, rows read straight from
+the tables, `get_post()` / `get_permalink()` checked after the rollback, the MCP
+tool classes themselves, and the site left exactly as it was found.
+`tests/content-write-mutation.php` removes each mechanism in turn: **22 of 22
+killed**, including "no transaction is opened", "a failure commits", "a
+`WP_Error` is not a failure", "a nested write opens its own transaction", "a
+MyISAM table is assumed transactional", "the primitives stop routing through the
+guard", and "the record claims an atomicity nobody measured".
+
+**Still latent, and the honest limit.** F3 was reproducible against WordPress but
+**not reachable through AgentShell's own arguments** — `page_template` is not a
+field `create_page` accepts, and core builds its `INSERT` column set from a fixed
+`compact()` list, so a plugin adding it through the late `wp_insert_post_data`
+filter gets a database error rather than this branch. The live suite therefore
+drives `Content_Write_Guard` directly for that case, which is exactly the boundary
+that will hold when the branch stops being latent: a new content option, an
+importer, or any future `wp_insert_post()` argument core validates after
+inserting. **A new `create_*` field that core validates after insertion must be
+checked against this list before it is added.**
 
 ---
 
@@ -1217,9 +1321,12 @@ all killed).
 
 ### Stage 3 — `Db_Transaction` around commit
 
-- Engine preflight, re-entrancy guard, cache invalidation on rollback.
-- Commit becomes all-or-nothing for database writes.
-- F3 (the `WP_Error`-with-a-row case) becomes structurally impossible.
+- Engine preflight, re-entrancy guard, cache invalidation on rollback —
+  **all three already exist** in `Content_Write_Guard`, which wrapped the
+  single-write case in §5.1. This stage generalises them from one write to a
+  whole commit: the transaction spans the configuration write *and* the content
+  promotion, so a commit that fails halfway leaves neither.
+- F3 is already fixed per-write (§5.1); here it stops being per-write.
 
 ### Stage 4 — Navigation joins the transaction
 
@@ -1311,16 +1418,21 @@ accepted.**
 
 ### 8.3 Database transaction — `tests/db-transaction-test.php`
 
+The single-write half of this already exists and is already tested. Rows marked
+**covered** are pinned by `tests/content-write-test.php` (boundary, via a
+recording `wpdb`) and `tests/content-write-live-test.php` (real WordPress); this
+stage re-runs the same properties across a whole multi-step commit.
+
 | # | Test | Asserts |
 |---|---|---|
-| B1 | successful apply | commits; rows present |
-| B2 | throw mid-apply | rolls back; **zero** rows in `wp_posts`, `wp_postmeta`, `term_relationships` |
-| B3 | `WP_Error` from `wp_insert_post` with a partial write (§1.6b) | **no row survives** — the F3 regression |
-| B4 | re-entrancy | nested `run()` throws; the outer transaction is not implicitly committed |
-| B5 | non-InnoDB table | refused, not degraded |
+| B1 | successful apply | commits; rows present — **covered** |
+| B2 | throw mid-apply | rolls back; **zero** rows in `wp_posts`, `wp_postmeta`, `term_relationships` — **covered** |
+| B3 | `WP_Error` from `wp_insert_post` with a partial write (§1.6b) | **no row survives** — the F3 regression — **covered** |
+| B4 | re-entrancy | a nested `run()` joins the open transaction rather than committing it — **covered** |
+| B5 | non-InnoDB table | not degraded silently: the write still happens and the result says it is unprotected — **covered** |
 | B6 | `SET autocommit` never appears | asserted against the source |
-| B7 | rollback cache invalidation | `get_post()` returns false after rollback; option cache cleared |
-| B8 | crash simulation (connection dropped mid-apply) | zero residue |
+| B7 | rollback cache invalidation | `get_post()` returns false after rollback — **covered** |
+| B8 | crash simulation (connection dropped mid-apply) | zero residue — §1.10 measured it, not yet a test |
 
 ### 8.4 Mutation testing — `tests/content-transaction-mutation.php`
 
@@ -1418,6 +1530,22 @@ Before merge, per `AGENTS.md` §9:
 10. **The engine preflight checks the tables it knows about.** A plugin writing
     to a non-transactional table during `save_post` would escape it, and DDL
     would implicitly commit. This is documented, not solved.
+11. **F3 is fixed per write, not per workflow.** `Content_Write_Guard` (§5.1)
+    makes one content write all-or-nothing at the database boundary. It does not
+    make `create_page` + `update_zone_slots` + `register_navigation` atomic
+    together — that is Stage 3.
+12. **A non-database transaction held by something else could be committed by
+    the guard's `START`.** MySQL 8 exposes no way to ask "is this connection
+    already in a transaction" — `@@autocommit` stays 1 inside an explicit
+    transaction, and `INNODB_TRX` did not report this session's own on the
+    verified install. The guard therefore protects against *its own* nesting and
+    nothing else. WordPress core opens no transactions, so this is a plugin
+    hazard, not a core one.
+13. **The F3 branch is latent for AgentShell.** `invalid_page_template` is not
+    reachable through the fields `create_page` accepts today (§5.1), so the live
+    regression drives the guard directly. The protection is in place for when it
+    stops being latent; it is not evidence that AgentShell has already been
+    leaking posts.
 
 ---
 

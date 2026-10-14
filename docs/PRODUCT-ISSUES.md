@@ -6,7 +6,8 @@ later, driving a real site through the Fieldwork Studio evaluation end to end.
 All are recorded so they are not rediscovered.
 
 Issue 3 has since been **fixed**; it keeps its place here because the failure
-modes it documents are the ones worth remembering. Nothing else is fixed.
+modes it documents are the ones worth remembering. The F3 prerequisite blocking
+issue 8 has been fixed too (§8a). Nothing else is fixed.
 
 ---
 
@@ -474,3 +475,46 @@ posts means staging the post array rather than the post id. Make content
 revisions first-class so restore_revision covers them. Ship `agentshell_delete_content`
 (issue 2) in the same change, since a transaction that cannot be un-done by
 rollback needs a delete that can be audited.
+
+### 8a. The prerequisite is now done: a content write can no longer half-happen
+
+**Status: FIXED.** Recorded here because issue 8's fix depends on it and because
+the failure mode is the one worth remembering.
+
+Fixing issue 8 was ruled to be blocked on F3 — the partial `wp_insert_post()`
+failure described in `CONTENT-TRANSACTIONS-DESIGN.md` §1.6b — so it was fixed
+first, as a standalone correctness change. Verified, not asserted:
+
+- Every content write runs inside `Content_Write_Guard`, a bounded SQL
+  transaction that rolls back on a `WP_Error`, a `false`/`0`, or a thrown
+  exception. On the local install, the genuine post-insert failure now leaves
+  **0 post rows, 0 metadata rows, and an object cache that no longer serves the
+  rolled-back post**. Before the fix it left 1 of each.
+- Two things that looked correct and were not: a rollback *alone* still left the
+  object cache serving a post that was no longer in the database, and a nested
+  write opening its own transaction would have **committed the outer one**,
+  because MySQL has no nested transactions.
+- A non-transactional engine gets no protection, and the tool says so in its
+  result rather than claiming one it cannot keep.
+- **A second, separate defect found while investigating:** `create_page` with an
+  empty title *and* empty content wrote an untitled draft page and reported
+  success. Nothing identifies it in a listing, an edit screen or a preview. It
+  is now refused before anything is written, matching core's own `empty_content`
+  rule. A titled page with an empty body is still allowed.
+
+**The honest limit.** F3 was reproducible against WordPress but was **not
+reachable through AgentShell's own arguments** — no `create_*` field reaches a
+`wp_insert_post()` branch that validates after inserting. The protection is in
+place for when that changes; it is not evidence that AgentShell has been leaking
+posts. A new content field must be checked against that branch list before it is
+added.
+
+**Tests.** `tests/content-write-test.php` (17 groups, boundary via a recording
+`wpdb`), `tests/content-write-live-test.php` (the real reproduction against a
+real WordPress, plus the MCP tool classes and a before/after site check), and
+`tests/content-write-mutation.php` — **22 of 22 mutants killed**.
+
+**What remains for issue 8.** Unchanged by this: the six content tools still do
+not participate in transactions, `rollback_transaction` still cannot undo a
+content change, content still creates no revision, and `list_revisions` /
+`restore_revision` still cover design only.

@@ -55,7 +55,7 @@ The plugin ships **45+ `agentshell_*` tools** (53 in `agentshell-mcp` + 4 in `ag
 - **Snapshots** — `agentshell_create_snapshot`, `agentshell_list_snapshots`, `agentshell_restore_snapshot`, `agentshell_diff_snapshot`.
 - **Theme profiles** — `agentshell_save_theme_profile`, `agentshell_list_theme_profiles`, `agentshell_apply_theme`, `agentshell_preview_theme`, `agentshell_export_theme`, `agentshell_import_theme`.
 - **Widget lifecycle** (bilateral registry) — `agentshell_list_widgets`, `agentshell_get_widget`, `agentshell_register_widget`, `agentshell_unregister_widget`, `agentshell_enable_widget`, `agentshell_disable_widget`, `agentshell_remove_widget`.
-- **Content primitives** — `agentshell_create_page`, `agentshell_create_post`, `agentshell_update_content`, `agentshell_update_post_content`, `agentshell_publish`, `agentshell_unpublish`, `agentshell_search_content`, `agentshell_get_content`.
+- **Content primitives** — `agentshell_create_page`, `agentshell_create_post`, `agentshell_update_content`, `agentshell_update_post_content`, `agentshell_publish`, `agentshell_unpublish`, `agentshell_search_content`, `agentshell_get_content`. All six mutating ones write immediately (not transaction-staged — §6.1) and each returns an `atomicity` block saying what it could guarantee (§6.3).
 - **Navigation management** — `agentshell_register_navigation` (create or replace a WordPress nav menu by name and optionally assign to a registered theme location). Reconciles the requested items against the menu in place, so item ids are stable across repeated runs. **Not transaction-staged**: writes take effect immediately and `agentshell_rollback_transaction` will not undo them.
 - **Transactions (the safe change loop)** — `agentshell_begin_transaction`, `agentshell_get_transaction`, `agentshell_preview_transaction`, `agentshell_validate_transaction`, `agentshell_commit_transaction`, `agentshell_rollback_transaction`. A transaction is **leased**: it carries a 60-minute inactivity TTL that only its owner renews, it stops staging once that lease expires, and an abandoned config-only transaction is reclaimed (and audited) when the next one begins. See §6.2.
 - **Site meta & visuals** — `agentshell_get_site_info`, `agentshell_screenshot`, `agentshell_get_screenshot`.
@@ -202,6 +202,38 @@ A transaction lives in one option row. Nothing removes that row except a `commit
 - **Preview isolation is not weakened, and the two clocks stay separate.** The lease reads a freezable clock used only for expiry; the preview credential's own window keeps reading real `time()`, so no test seam can stretch a bearer capability. An expired transaction refuses a preview **before** the signature is checked, which closes a window that existed before this change: a credential minted in minute 1 of an hour-long lease was still inside its own 900-second window when the lease died.
 
 Regressions: [`tests/transaction-lease-test.php`](tests/transaction-lease-test.php), with [`tests/transaction-lease-mutation.php`](tests/transaction-lease-mutation.php) removing each of these guarantees one at a time.
+
+### 6.3 Content write atomicity (normative, implemented)
+
+Content writes are **immediate and outside every transaction** (§6.1). What they *are* guaranteed is narrower and worth stating precisely, because the two are easily confused.
+
+`wp_insert_post()` is not all-or-nothing: it writes the post row, its slug, its categories, its other default terms, `meta_input`, its GUID and its status transitions as independent steps, and one of its branches returns `WP_Error` *after* some of them — without ever naming the post it wrote. So "the tool reported failure" did not, on its own, mean "nothing was written", and the caller had no id with which to find the residue.
+
+**Every content write therefore runs inside a bounded SQL transaction** (`Content_Write_Guard`) that rolls back on any failure: a `WP_Error`, a `false`/`0` result, or a thrown exception. An agent can rely on this:
+
+- **A failed content write leaves nothing behind** — no post row, no metadata, no cached copy of the post. If a content tool reports failure, there is no orphan to reconcile.
+- **A failed content write never damages existing content.** A failed update leaves every field of the target exactly as it was.
+- **A content tool that reports failure does not return a post id**, because there is nothing to return one for.
+- **A titled page with an empty body is valid** and is created. A page with *neither* a title nor content is refused before anything is written — WordPress would otherwise store an untitled draft that no listing, edit screen or preview can identify.
+- **The transaction is bounded by the single call.** It is never held across MCP calls, screenshots or agent reasoning.
+
+Every content result carries an `atomicity` block stating what actually happened, and agents should read it rather than assume:
+
+| Field | Meaning |
+|---|---|
+| `database_transaction` | `true` when the write really was inside a transaction on a transactional engine |
+| `engine` | the engine actually backing `wp_posts` / `wp_postmeta`, or `null` |
+| `on_failure` | what happens to the write if it fails — rolled back, or **not** rolled back |
+| `not_covered` | the side effects a rollback cannot undo, disclosed rather than assumed away |
+
+Two honest limits, which the `atomicity` block exists to make visible:
+
+- **Non-database side effects are not undone.** Email, files and outbound HTTP survive a rollback.
+- **A plugin's own database writes during `save_post` *are* rolled back.** They are inside the transaction. A plugin cannot rely on a failed `create_page` leaving its bookkeeping intact — deliberate, because a half-applied third-party write is worse than none.
+
+This is **per write, not per workflow.** `create_page` followed by a failed `register_navigation` is still two outcomes, not one. Design and the full findings: [`docs/CONTENT-TRANSACTIONS-DESIGN.md`](docs/CONTENT-TRANSACTIONS-DESIGN.md) §5.1.
+
+Regressions: [`tests/content-write-test.php`](tests/content-write-test.php) and [`tests/content-write-live-test.php`](tests/content-write-live-test.php) (the real reproduction against a real WordPress), with [`tests/content-write-mutation.php`](tests/content-write-mutation.php) removing each of these guarantees one at a time.
 
 ---
 
