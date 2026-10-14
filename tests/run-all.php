@@ -15,6 +15,11 @@
  *                          retention, legacy migration
  *   - browser-isolation    a fresh private browser profile per capture, and
  *                          its removal on success, failure and timeout
+ *   - navigation           nav menu row building and pre-write validation
+ *   - navigation-live      agentshell_register_navigation against a real
+ *                          WordPress install: ordering, idempotency, location
+ *                          assignment, frontend rendering, and the failure
+ *                          paths. Skips when no WordPress install is found.
  *   - transaction-preview transaction-scoped rendering of staged config,
  *                          and its failure to leak to visitors or logs
  *   - post-preview     draft capture without publishing: mint, signature,
@@ -56,6 +61,7 @@ $suites = array(
     'security-headers'     => __DIR__ . '/security-headers-test.php',
     'daemon-version'       => __DIR__ . '/daemon-version-test.php',
     'navigation'           => __DIR__ . '/navigation-test.php',
+    'navigation-live'      => __DIR__ . '/navigation-live-test.php',
     'screenshot'           => __DIR__ . '/screenshot-test.php',
     'screenshot-privacy'   => __DIR__ . '/screenshot-privacy-test.php',
     'browser-isolation'    => __DIR__ . '/browser-isolation-test.php',
