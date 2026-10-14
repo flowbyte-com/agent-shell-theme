@@ -252,6 +252,18 @@ class Transaction_Manager {
         if ( ! is_array( $tx ) || empty( $tx['content'] ) || ! is_array( $tx['content'] ) ) {
             return false;
         }
+        // A journalled row answers a sharper question than "is anything here".
+        // The generic recursion below has to say yes to any record it finds,
+        // because before journalling existed a record was the only evidence
+        // there was; with a real journal the record's own state says whether
+        // anything is still owed. An operation that has already been
+        // compensated is a completed one, and treating it as outstanding would
+        // keep refusing begin() after a successful recovery — the safeguard
+        // healing into its own permanent outage.
+        if ( isset( $tx['content']['ops'] ) && is_array( $tx['content']['ops'] )
+            && isset( $tx['content']['v'] ) ) {
+            return Content_Journal::has_outstanding_work( $tx['content'] );
+        }
         foreach ( $tx['content'] as $bucket ) {
             if ( self::journal_has_record( $bucket ) ) { return true; }
         }
@@ -340,6 +352,47 @@ class Transaction_Manager {
         );
         self::flush_option_cache();
         return 1 === (int) $affected;
+    }
+
+    /**
+     * Compare-and-swap the transaction row, on behalf of a collaborator that
+     * is not this class.
+     *
+     * The journal and its recovery engine live in other files but they mutate
+     * *this* row, and they have to mutate it under exactly the guard described
+     * above. Re-implementing the statement in a second place is how two
+     * implementations of "atomic" drift apart, so the capability is exposed
+     * rather than duplicated. Nothing else about the row is exposed: callers
+     * get a swap, not an API for rewriting somebody else's transaction.
+     *
+     * @param array $expected The exact row bytes the caller read.
+     * @param array $next     The row to write if it still matches.
+     * @return bool True when exactly this caller landed the write.
+     */
+    public static function cas_write_row( array $expected, array $next ) {
+        return self::cas( $expected, $next );
+    }
+
+    /** Guarded delete of the transaction row. See cas_write_row(). */
+    public static function cas_delete_row( array $expected ) {
+        return self::cas_delete( $expected );
+    }
+
+    /**
+     * The lease clock, for collaborators that keep their own timestamps.
+     *
+     * The recovery engine stamps claim and compensation times with it so that
+     * every clock in the row moves together: a claim judged against wall time
+     * while the lease is judged against the frozen clock would let a claim
+     * expire an hour early in a test, or never expire in production.
+     *
+     * Safe to expose even though the clock is freezable, because freezing it
+     * requires calling freeze_time() — the same seam the lease already has —
+     * and nothing a collaborator writes is a bearer capability. That is the
+     * whole reason the preview windows further down keep calling time().
+     */
+    public static function lease_now() {
+        return self::now();
     }
 
     /**

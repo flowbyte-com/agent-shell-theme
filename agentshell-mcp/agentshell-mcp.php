@@ -31,6 +31,8 @@ require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-transactions.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-doctor.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content-write-guard.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content-journal.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content-recovery.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot-store.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-post-preview.php';
@@ -81,6 +83,8 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-validate-transaction.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-commit-transaction.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-rollback-transaction.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-get-journal.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-recover-transaction.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-list-revisions.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-diff-revisions.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-restore-revision.php';
@@ -145,6 +149,8 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     $tools[] = new AgentShell_MCP\Tools\Validate_Transaction();
     $tools[] = new AgentShell_MCP\Tools\Commit_Transaction();
     $tools[] = new AgentShell_MCP\Tools\Rollback_Transaction();
+    $tools[] = new AgentShell_MCP\Tools\Get_Journal();
+    $tools[] = new AgentShell_MCP\Tools\Recover_Transaction();
 
     // Revisions & snapshots
     $tools[] = new AgentShell_MCP\Tools\List_Revisions();
