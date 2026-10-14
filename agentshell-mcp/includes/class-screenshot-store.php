@@ -363,6 +363,245 @@ class Screenshot_Store {
         }
     }
 
+    // ----------------------------------------------------------------- cron
+
+    const PURGE_HOOK = 'agentshell_screenshot_purge';
+
+    /**
+     * Schedule the retention sweep.
+     *
+     * Only scheduling happens here. The legacy migration cannot: `init` fires
+     * before the REST transport authenticates, so no current user exists yet
+     * and there is no principal to attribute migrated captures to. It runs from
+     * maybe_migrate_legacy(), in a request that has authenticated.
+     */
+    public static function register_hooks() {
+        if ( ! wp_next_scheduled( self::PURGE_HOOK ) ) {
+            wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', self::PURGE_HOOK );
+        }
+    }
+
+    /**
+     * Run the one-time legacy migration, if it has not run yet.
+     *
+     * Called from the transport immediately after authentication succeeds.
+     * Every path in must be non-fatal: failing to tidy old files must not take
+     * down the tool call that happened to trigger the attempt.
+     */
+    public static function maybe_migrate_legacy( $actor = null ) {
+        $result = array( 'migrated' => 0, 'removed' => 0 );
+
+        try {
+            $result['relocated'] = self::relocate_old_store();
+        } catch ( \Throwable $e ) {
+            // Never fatal: an un-relocated store is a tidiness problem, and
+            // failing here would take down the tool call that triggered it.
+            $result['relocate_error'] = $e->getMessage();
+        }
+
+        if ( get_option( self::MIGRATED_KEY ) ) {
+            return $result;
+        }
+        try {
+            return array_merge( $result, self::migrate_legacy( null === $actor ? Store::actor() : $actor ) );
+        } catch ( \Throwable $e ) {
+            return array_merge( $result, array( 'error' => $e->getMessage() ) );
+        }
+    }
+
+    /** Marker for the store-location change. Bumped per relocation. */
+    const RELOCATED_KEY = 'agentshell_screenshot_relocated_v1';
+
+    /**
+     * Move a store left at the old, web-served location to the current one.
+     *
+     * Earlier revisions put the store at wp-content/agentshell-private/. That
+     * is inside the document root, and the .htaccess and 0700 directory both
+     * failed to protect it: verified on the live site, an unauthenticated GET
+     * returned the capture bytes. A site that captured before this change
+     * therefore still has world-readable PNGs sitting in a served directory,
+     * and leaving them there would keep the original defect alive after
+     * "fixing" it. So they are moved, not merely forgotten.
+     *
+     * The index stores ids only — path_for() derives the filename — so a
+     * directory rename relocates every capture with no index rewrite. rename()
+     * is atomic within a filesystem; across one it degrades to copy-and-remove,
+     * which is why the source is removed rather than left behind.
+     */
+    public static function relocate_old_store() {
+        if ( get_option( self::RELOCATED_KEY ) ) {
+            return 0;
+        }
+        update_option( self::RELOCATED_KEY, 1, false );
+
+        $old_base = rtrim( self::normalize_path( WP_CONTENT_DIR ), '/' ) . '/agentshell-private';
+        $new_base = self::base_dir();
+
+        if ( $old_base === $new_base || ! is_dir( $old_base ) ) {
+            return 0;
+        }
+
+        // Only the parent is prepared: rename() needs the destination's parent
+        // to exist, but creating new_base first would trip the check below.
+        $new_parent = dirname( $new_base );
+        if ( ! is_dir( $new_parent ) && ! wp_mkdir_p( $new_parent ) ) {
+            throw new \RuntimeException( 'Could not create ' . $new_parent . ' for the screenshot store.' );
+        }
+        if ( is_dir( $new_base ) ) {
+            throw new \RuntimeException(
+                'Refusing to relocate the screenshot store: ' . $new_base . ' already exists.'
+            );
+        }
+        if ( ! @rename( $old_base, $new_base ) ) {
+            throw new \RuntimeException( 'Could not relocate the screenshot store from ' . $old_base );
+        }
+        // A partial cross-device copy can leave the source present; make sure
+        // the world-readable copy is gone either way.
+        if ( is_dir( $old_base ) ) {
+            self::rmtree( $old_base );
+        }
+        self::ensure_dir();
+
+        return 1;
+    }
+
+    /** Recursive delete, used only on a directory this class created. */
+    private static function rmtree( $path ) {
+        if ( is_link( $path ) || is_file( $path ) ) {
+            @unlink( $path );
+            return;
+        }
+        if ( ! is_dir( $path ) ) {
+            return;
+        }
+        foreach ( scandir( $path ) as $entry ) {
+            if ( '.' === $entry || '..' === $entry ) {
+                continue;
+            }
+            self::rmtree( $path . '/' . $entry );
+        }
+        @rmdir( $path );
+    }
+
+    /**
+     * Sweep expired captures. Idempotent, so a double-fired cron event is
+     * harmless.
+     */
+    public static function purge_expired() {
+        $removed = 0;
+        foreach ( self::index() as $id => $meta ) {
+            if ( ! is_array( $meta ) || (int) ( $meta['expires_at'] ?? 0 ) <= time() ) {
+                self::forget( $id );
+                $removed++;
+            }
+        }
+        return $removed;
+    }
+
+    // -------------------------------------------------------------- legacy
+
+    const MIGRATED_KEY = 'agentshell_screenshot_migrated_v1';
+
+    /**
+     * Move pre-fix captures out of the public uploads tree.
+     *
+     * The files in uploads/agentshell-screenshots/ are, by construction, already
+     * readable by anyone who can guess the URL. Migrating them therefore buys no
+     * new privacy — but leaving them there means the exposure never ends. The
+     * requirement is that the old public URLs stop serving images immediately,
+     * with no grace period, so the move and the delete are the same operation:
+     * each file is renamed into private storage and the public path is gone the
+     * moment it lands. A stale copy is never left behind as a compatibility
+     * measure.
+     *
+     * Each capture inherits the current actor as its owner. There is no
+     * recorded owner for a legacy file, and guessing wrong in the permissive
+     * direction would defeat the point of the ownership check.
+     *
+     * @return array { migrated: int, removed: int }
+     */
+    public static function migrate_legacy( $actor = 'agent' ) {
+        if ( get_option( self::MIGRATED_KEY ) ) {
+            return array( 'migrated' => 0, 'removed' => 0 );
+        }
+
+        $uploads = wp_upload_dir();
+        if ( ! empty( $uploads['error'] ) || empty( $uploads['basedir'] ) ) {
+            // Nothing we can do this request. Do not stamp the flag: the sweep
+            // must run on a later attempt rather than leave the files exposed
+            // forever because uploads was briefly unavailable.
+            return array( 'migrated' => 0, 'removed' => 0 );
+        }
+
+        $legacy_dir = $uploads['basedir'] . '/agentshell-screenshots';
+        self::ensure_dir();
+
+        $migrated = 0;
+        $removed  = 0;
+
+        foreach ( (array) glob( $legacy_dir . '/*.png' ) as $legacy_file ) {
+            if ( ! is_file( $legacy_file ) || is_link( $legacy_file ) ) {
+                continue;
+            }
+            $bytes = @filesize( $legacy_file );
+            if ( false === $bytes || $bytes < 1 ) {
+                continue;
+            }
+            // Read the timestamp before the move; afterwards the public path is
+            // gone and filemtime would just return the migration time.
+            $mtime = (int) @filemtime( $legacy_file );
+
+            $id    = self::new_id();
+            $final = self::path_for( $id );
+
+            // rename() within one filesystem is atomic, so there is no interval
+            // in which the bytes exist both publicly and privately. It can fail
+            // across a mount boundary, hence the copy fallback — but the public
+            // original is only unlinked once the private copy is verified.
+            $moved = @rename( $legacy_file, $final );
+            if ( ! $moved ) {
+                $bytes_data = @file_get_contents( $legacy_file );
+                if ( ! is_string( $bytes_data ) || '' === $bytes_data ) {
+                    continue;
+                }
+                if ( false === @file_put_contents( $final, $bytes_data ) ) {
+                    continue;
+                }
+                @unlink( $legacy_file );
+            }
+            @chmod( $final, 0640 );
+
+            $index = self::index();
+            $index[ $id ] = array(
+                'actor'      => (string) $actor,
+                'created_at' => $mtime ?: time(),
+                'expires_at' => time() + ( self::ttl_hours() * HOUR_IN_SECONDS ),
+                'migrated'   => true,
+            );
+            self::save_index( $index );
+
+            $migrated++;
+        }
+
+        // Sweep anything the loop did not claim: zero-byte files, dotfiles,
+        // and anything that is not a plain .png. Leaving them would keep the
+        // directory publicly listable.
+        foreach ( (array) glob( $legacy_dir . '/*' ) as $leftover ) {
+            if ( is_dir( $leftover ) ) {
+                continue;
+            }
+            if ( @unlink( $leftover ) ) {
+                $removed++;
+            }
+        }
+
+        @rmdir( $legacy_dir );
+
+        update_option( self::MIGRATED_KEY, 1, false );
+
+        return array( 'migrated' => $migrated, 'removed' => $removed );
+    }
+
     // ------------------------------------------------------------ filesystem
 
     /**

@@ -81,6 +81,7 @@ class Transport {
         }
 
         $id = (string) $request['id'];
+        Screenshot_Store::maybe_migrate_legacy();
         $authorized = Screenshot_Store::authorize_read( $id, Store::actor() );
         if ( is_wp_error( $authorized ) ) {
             return $this->screenshot_error( $authorized );
@@ -166,6 +167,12 @@ class Transport {
                 401
             );
         }
+
+        // Now that there is a principal, the one-time legacy migration can run.
+        // It must be attempted from an authenticated request: `init` fires
+        // before this point, when there is no current user to attribute the
+        // migrated captures to.
+        Screenshot_Store::maybe_migrate_legacy();
 
         // Parse JSON-RPC body
         $parsed = JSON_RPC::parse_request( $request->get_body() );

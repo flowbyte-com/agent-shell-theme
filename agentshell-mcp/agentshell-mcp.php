@@ -34,6 +34,15 @@ require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot-store.php';
 \AgentShell_MCP\Transaction_Manager::instance();
 
+// Screenshot retention. Expired captures are swept hourly; correctness does not
+// depend on this firing, because every read re-checks the expiry itself — but
+// without it the files would sit on disk until something happened to read one.
+// The one-time legacy migration is NOT hooked here: `init` runs before the REST
+// transport authenticates, so there is no principal to attribute captures to.
+// It runs from Transport, after authentication succeeds.
+add_action( 'agentshell_screenshot_purge', array( 'AgentShell_MCP\Screenshot_Store', 'purge_expired' ) );
+add_action( 'init', array( 'AgentShell_MCP\Screenshot_Store', 'register_hooks' ) );
+
 register_activation_hook( __FILE__, array( 'AgentShell_MCP\Activator', 'activate' ) );
 
 /**
