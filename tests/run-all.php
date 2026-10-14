@@ -29,6 +29,13 @@
  *                      HTML; the admin bar is suppressed only for an authorised
  *                      preview; expiry, invalidation and the combined draft +
  *                      transaction preview still hold
+ *   - config-consistency  the committed/effective split: register and enable
+ *                      in one transaction, validation sees what would be
+ *                      committed, ordinary renders do not see staged state,
+ *                      an authorised preview sees all of it, rollback and
+ *                      commit each restore the right thing, and the legacy
+ *                      agentshell_widgets option is reconciled rather than
+ *                      competing
  *   - mutation-sandbox  the mutation harnesses' isolation primitive really
  *                      isolates: a sandbox lives outside the checkout,
  *                      writing to it cannot change the checkout, and a change
@@ -59,6 +66,10 @@ $suites = array(
     // Shares the fixture globals with post-preview above, so it must run in the
     // same process and after it.
     'preview-credential-hygiene' => __DIR__ . '/preview-credential-hygiene-test.php',
+    // Loads the real Store, Doctor and Transaction_Manager and reads the
+    // preview gate's credential, so it belongs beside the suites that have
+    // already put those in memory.
+    'config-consistency'   => __DIR__ . '/config-consistency-test.php',
     'security'             => __DIR__ . '/security-test.php',
     'hardening'            => __DIR__ . '/hardening-test.php',
     'inject-block'         => __DIR__ . '/inject-block-test.php',

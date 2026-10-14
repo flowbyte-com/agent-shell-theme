@@ -46,6 +46,18 @@ function get_option( $key, $default = false ) {
 }
 
 function update_option( $key, $value, $autoload = null ) {
+    // Faithful to core: pre_update_option_{$option} is a transform filter, not
+    // a veto. Core assigns whatever comes back to $value and then skips the
+    // write only when it equals the stored value (wp-includes/option.php,
+    // "If the new and old values are the same, no need to update"). A stub
+    // that treats any non-null return as a short-circuit both lets a cancelled
+    // write land and drops a real write on the floor.
+    $old   = get_option( $key );
+    $value = apply_filters( "pre_update_option_{$key}", $value, $old, $key );
+
+    if ( $value === $old ) {
+        return false;
+    }
     $GLOBALS['_agentshell_test_options'][$key] = $value;
     return true;
 }
