@@ -10,7 +10,7 @@ if ( ! function_exists( 'agentshell_get_widget_assets' ) ) {
     return;
 }
 
-$registry = agentshell_get_widget_registry();
+$registry = agentshell_widget_registry_for_render();
 $assets   = agentshell_get_widget_assets();
 
 // Scoped CSS — all widget styles scoped to prevent bleed

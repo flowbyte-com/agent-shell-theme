@@ -166,7 +166,11 @@ function agentshell_get_zone_config( $zone_id ) {
         ),
     );
 
-    $config  = agentshell_get_config();
+    // Render-side: committed zones, or the staged ones for a request that has
+    // passed the transaction-preview gate. Reading the option directly here is
+    // what made a staged composition invisible to the preview that was
+    // otherwise showing the staged design tokens.
+    $config  = agentshell_config_for_render();
     $saved   = $config['zones'] ?? array();
 
     // Find saved zone by id

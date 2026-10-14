@@ -23,14 +23,17 @@ class Disable_Widget extends Base_Tool {
         $this->validate_required( $arguments, array( 'id' ) );
         $id = sanitize_key( $arguments['id'] );
 
+        // Effective, not committed — a widget registered earlier in this
+        // transaction has to be disableable before it is committed. See the
+        // matching note in enable_widget.
+        $config = $this->get_agentshell_config();
         $registry = function_exists( 'agentshell_get_widget_registry' )
-            ? agentshell_get_widget_registry()
+            ? agentshell_get_widget_registry( $config )
             : array();
         if ( ! isset( $registry[ $id ] ) ) {
             throw new \InvalidArgumentException( "Unknown widget '{$id}'. Use agentshell_list_widgets." );
         }
 
-        $config = $this->get_agentshell_config();
         if ( ! isset( $config['widget_overrides'] ) ) { $config['widget_overrides'] = array(); }
         $config['widget_overrides'][ $id ] = array( 'status' => 'disabled' );
         $this->update_agentshell_config( $config );

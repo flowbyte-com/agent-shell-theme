@@ -3,7 +3,7 @@
  * Footer template
  */
 
-$config = agentshell_get_config();
+$config = agentshell_config_for_render();
 
 // custom_js — trusted author context, injected before body close.
 // Trusted admins write arbitrary JS; we keep the bytes verbatim but run

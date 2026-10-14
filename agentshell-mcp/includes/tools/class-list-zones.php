@@ -10,8 +10,10 @@ class List_Zones extends Base_Tool {
 
     public function execute( array $arguments ) {
         // Use agentshell_get_zones() which now merges saved config with declared defaults
+        // Effective, for the same reason as list_widgets: a staged zone has to
+        // be visible to the agent that staged it.
         if ( function_exists( 'agentshell_get_zones' ) ) {
-            return array( 'zones' => agentshell_get_zones() );
+            return array( 'zones' => agentshell_get_zones( $this->get_agentshell_config() ) );
         }
         // Fallback to raw config zones
         $config = $this->get_agentshell_config();

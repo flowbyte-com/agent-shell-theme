@@ -89,7 +89,7 @@ class Inspect extends Base_Tool {
             return array();
         }
         $out = array();
-        foreach ( agentshell_get_widget_registry() as $id => $widget ) {
+        foreach ( agentshell_get_widget_registry( $this->get_agentshell_config() ) as $id => $widget ) {
             $out[] = array(
                 'id'     => $id,
                 'name'   => $widget['name'] ?? $id,

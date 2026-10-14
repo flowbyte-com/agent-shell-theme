@@ -51,27 +51,17 @@ add_action( 'admin_init', function() {
     }
 } );
 
-/**
- * Inject widget CSS in <head>.
- * Consolidated into a single <style> tag — no physical files.
+/*
+ * Widget CSS and init JS are emitted by the theme, from the canonical
+ * registry, in template-parts/widgets.php (head) and footer.php (assets).
+ *
+ * This plugin used to emit a second copy of both on wp_head and wp_footer.
+ * Two copies of the same rules is not a cosmetic problem here: the plugin's
+ * copy was built from a different store than the theme's, so on a site where
+ * they disagreed the page carried one widget's CSS and another's markup, and a
+ * transaction preview — which stages through the theme's reader — would show
+ * the staged widgets with the committed CSS. One emitter, one registry.
  */
-add_action( 'wp_head', function() {
-    $registry = AgentShell_Blocks\Widget_Registry::get_instance();
-    $assets   = $registry->get_all_css();
-    if ( empty( $assets ) ) { return; }
-    echo '<style id="agentshell-widgets-css">' . "\n" . $assets . "\n" . '</style>' . "\n";
-} );
-
-/**
- * Inject widget JS in footer — window.AgentshellWidgets registry + MutationObserver init.
- * Consolidated into a single <script> tag — no physical files.
- */
-add_action( 'wp_footer', function() {
-    $registry = AgentShell_Blocks\Widget_Registry::get_instance();
-    $js       = $registry->get_init_js();
-    if ( empty( $js ) ) { return; }
-    echo '<script id="agentshell-widgets-js">' . "\n" . $js . "\n" . '</script>' . "\n";
-} );
 
 /**
  * Shortcode: [agent_block id="widget-id"]
@@ -105,22 +95,30 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
 
 /**
  * Hook into agentshell_mcp_execute_tool to delegate widget tool execution.
+ *
+ * Only for the two tools that exist *only* here. `agentshell_register_widget`
+ * and `agentshell_list_widgets` are deliberately not intercepted: the main
+ * plugin registers implementations of both, and those are transaction-aware —
+ * they read the effective config and stage their writes. This plugin's copies
+ * wrote straight to the legacy `agentshell_widgets` option, so an agent that
+ * registered a widget inside a transaction produced a widget that no other tool
+ * could see and that a rollback could not undo.
+ *
+ * `agentshell_unregister_widget` and `agentshell_get_widget` have no counterpart
+ * elsewhere, so they are still delegated here — over a registry that now reads
+ * the canonical store.
  */
 add_filter( 'agentshell_mcp_execute_tool', function( $response, $tool_name, $arguments, $tool_registry ) {
-    $widget_tools = array( 'agentshell_list_widgets', 'agentshell_register_widget', 'agentshell_unregister_widget', 'agentshell_get_widget' );
+    $widget_tools = array( 'agentshell_unregister_widget', 'agentshell_get_widget' );
     if ( ! in_array( $tool_name, $widget_tools, true ) ) {
         return $response; // Not ours — pass through
     }
 
     // These tools live in this plugin; delegate to tool objects
-    require_once AGENTSHELL_BLOCKS_PLUGIN_DIR . 'includes/tools/class-list-widgets.php';
-    require_once AGENTSHELL_BLOCKS_PLUGIN_DIR . 'includes/tools/class-register-widget.php';
     require_once AGENTSHELL_BLOCKS_PLUGIN_DIR . 'includes/tools/class-unregister-widget.php';
     require_once AGENTSHELL_BLOCKS_PLUGIN_DIR . 'includes/tools/class-get-widget.php';
 
     $tool_map = array(
-        'agentshell_list_widgets'      => new AgentShell_Blocks\Tools\List_Widgets(),
-        'agentshell_register_widget'   => new AgentShell_Blocks\Tools\Register_Widget(),
         'agentshell_unregister_widget'=> new AgentShell_Blocks\Tools\Unregister_Widget(),
         'agentshell_get_widget'       => new AgentShell_Blocks\Tools\Get_Widget(),
     );

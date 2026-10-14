@@ -55,7 +55,7 @@ class Explain extends Base_Tool {
 
         // Widgets
         if ( function_exists( 'agentshell_get_widget_registry' ) ) {
-            $widgets = agentshell_get_widget_registry();
+            $widgets = agentshell_get_widget_registry( $this->get_agentshell_config() );
             if ( ! empty( $widgets ) ) {
                 $lines[] = 'Registered widgets:';
                 foreach ( $widgets as $id => $widget ) {

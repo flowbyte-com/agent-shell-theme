@@ -635,9 +635,16 @@ add_filter( 'redirect_canonical', 'agentshell_block_preview_redirects', 0, 2 );
  * object cache is primed with the staged array, and no filter is left attached
  * — so the staged values exist for exactly as long as this response is built.
  * Every failure path returns the committed config unchanged.
+ *
+ * This is the *only* function that decides what a render sees, and it covers
+ * the whole config — design tokens, zones and widgets alike. It used to be
+ * consulted only by the stylesheet, while zone composition and the widget
+ * registry read the committed option directly, so a transaction preview showed
+ * the staged colours and not the staged layout. The composition the preview
+ * showed was therefore never the composition that would be committed.
  */
 function agentshell_config_for_render() {
-    $config = get_option( 'agentshell_config', array() );
+    $config = agentshell_get_config();
 
     if ( ! agentshell_authorize_transaction_preview() ) {
         return $config;
@@ -645,6 +652,26 @@ function agentshell_config_for_render() {
 
     $staged = \AgentShell_MCP\Transaction_Manager::instance()->staged_config();
     return is_array( $staged ) ? $staged : $config;
+}
+
+/**
+ * Widget registry for the current render.
+ *
+ * Exists so a render path cannot quietly read the committed registry while the
+ * stylesheet next to it reads the staged one — the preview showed widgets and
+ * zones from two different states at once. Never call this from a tool; a tool
+ * wants agentshell_get_widget_registry( agentshell_get_config( 'effective' ) ).
+ */
+function agentshell_widget_registry_for_render() {
+    return agentshell_get_widget_registry( agentshell_config_for_render() );
+}
+
+/**
+ * Zones for the current render. Same contract as
+ * agentshell_widget_registry_for_render().
+ */
+function agentshell_zones_for_render() {
+    return agentshell_get_zones( agentshell_config_for_render() );
 }
 
 /**
@@ -846,7 +873,7 @@ add_action( 'after_setup_theme', 'agentshell_setup' );
  */
 function agentshell_enqueue_widget_libs() {
     $wanted = array();
-    foreach ( agentshell_get_widget_registry() as $widget ) {
+    foreach ( agentshell_widget_registry_for_render() as $widget ) {
         foreach ( (array) ( $widget['libs'] ?? array() ) as $lib ) {
             $wanted[ $lib ] = true;
         }
@@ -880,9 +907,80 @@ function agentshell_enqueue_widget_libs() {
 add_action( 'wp_enqueue_scripts', 'agentshell_enqueue_widget_libs' );
 
 /**
- * Get the full shell config.
+ * Whether a transaction is currently open.
+ *
+ * For readers that must decide whether a write they are about to make is safe.
+ * Deliberately the narrow question — "is there an open transaction?" — and not a
+ * configuration accessor: a caller that wants the staged values asks
+ * agentshell_get_config( 'effective' ), and a caller that wants what visitors
+ * see asks agentshell_get_config( 'committed' ). Nothing here returns config.
+ *
+ * Returns false when the MCP plugin is not loaded, which is every page render
+ * that is not an agent request.
+ *
+ * @return bool
  */
-function agentshell_get_config() {
+function agentshell_transaction_open() {
+    if ( ! class_exists( '\AgentShell_MCP\Transaction_Manager' ) ) {
+        return false;
+    }
+    return \AgentShell_MCP\Transaction_Manager::instance()->is_active();
+}
+
+/**
+ * The configuration contract.
+ *
+ * There are exactly two states, and which one a caller gets is always an
+ * explicit decision:
+ *
+ *   'committed'  What is stored. What an ordinary visitor sees, what the theme
+ *                renders, and what survives a rollback. Default.
+ *   'effective'  What an authorised tool should act on: the staged config when
+ *                a transaction is open, otherwise the committed config. This is
+ *                what lets register → enable → validate compose inside one
+ *                transaction.
+ *
+ * The source is a required argument to every *other* reader
+ * (agentshell_get_widget_registry, agentshell_get_zones), so a caller cannot
+ * reach the wrong state by forgetting — and an unrecognised source throws
+ * rather than defaulting, because a typo that silently fell back to
+ * 'committed' would reproduce exactly the split this contract exists to remove.
+ *
+ * Rendering does not call this with 'effective'. A render path calls
+ * agentshell_config_for_render(), which substitutes staged values only for a
+ * request that has already passed the transaction-preview credential gate.
+ * That keeps "an agent sees its staged work" and "a visitor sees only what is
+ * committed" from being the same decision made in two places.
+ *
+ * @param string $source 'committed' or 'effective'.
+ * @return array
+ * @throws InvalidArgumentException on an unrecognised source.
+ */
+function agentshell_get_config( $source = 'committed' ) {
+    if ( 'effective' === $source ) {
+        // Staged first, committed second — not the other way round. The
+        // committed path re-seeds an empty option, and a write during an open
+        // transaction is intercepted into staging, which would replace the
+        // agent's staged work with a default config on a read.
+        if ( class_exists( '\AgentShell_MCP\Transaction_Manager' ) ) {
+            $staged = \AgentShell_MCP\Transaction_Manager::instance()->staged_config();
+            // staged_config() is null unless a transaction is open, so every
+            // other case — including the very first call, before the plugin
+            // has loaded — falls through to the committed config.
+            if ( is_array( $staged ) ) {
+                return $staged;
+            }
+        }
+        return agentshell_get_config( 'committed' );
+    }
+
+    if ( 'committed' !== $source ) {
+        throw new \InvalidArgumentException(
+            "agentshell_get_config(): unknown source '{$source}'. "
+            . "Use 'committed' (stored, what visitors see) or 'effective' (staged when a transaction is open)."
+        );
+    }
+
     $config = get_option( 'agentshell_config' );
 
     // Re-seed from default-config.json if the DB option is missing or empty.
@@ -894,7 +992,15 @@ function agentshell_get_config() {
             if ( is_string( $raw_seed ) ) {
                 $seed = json_decode( $raw_seed, true );
                 if ( is_array( $seed ) ) {
-                    update_option( 'agentshell_config', $seed );
+                    // Do not persist the re-seed while a transaction is open.
+                    // A write here is staged, and staging replaces the buffer
+                    // wholesale rather than merging into it — so a *read* that
+                    // happened to find an empty option would silently discard
+                    // everything the agent had staged. A read must not be able
+                    // to do that.
+                    if ( ! agentshell_transaction_open() ) {
+                        update_option( 'agentshell_config', $seed );
+                    }
                     $config = $seed;
                 }
             }
@@ -929,15 +1035,22 @@ function agentshell_update_config( array $config ) {
  * Get the declared zones from config.
  * Falls back to default zones for existing installs that predate the zone registry.
  *
+ * @param array|null $config Config to read. Null means committed — the state a
+ *        visitor sees. Pass an explicit array (from agentshell_get_config(
+ *        'effective' ) or agentshell_config_for_render()) whenever the caller is
+ *        a tool working inside a transaction, or a render under an authorised
+ *        preview. Left implicit on purpose: this used to reach for the config
+ *        itself, so a staged zone was invisible to everything that asked here.
+ *
  * @return array
  */
-function agentshell_get_zones() {
+function agentshell_get_zones( $config = null ) {
     $defaults = array(
         array( 'id' => 'header', 'label' => 'Header', 'composition' => array( array( 'type' => 'wp_loop' ) ) ),
         array( 'id' => 'main',   'label' => 'Main',   'composition' => array( array( 'type' => 'wp_loop' ) ) ),
         array( 'id' => 'footer', 'label' => 'Footer', 'composition' => array( array( 'type' => 'wp_loop' ) ) ),
     );
-    $config = agentshell_get_config();
+    $config = is_array( $config ) ? $config : agentshell_get_config();
     $saved  = $config['zones'] ?? array();
 
     // Merge saved zone configs over defaults (saved overrides take precedence)
@@ -965,9 +1078,17 @@ function agentshell_get_zones() {
  * so consumers (the configurator, list_widgets, get_widget) do not have to
  * infer provenance by fragile heuristics.
  *
+ * @param array|null $config Config to read. Null means committed — the state a
+ *        visitor sees. Pass an explicit array whenever the caller is a tool
+ *        working inside a transaction, or a render under an authorised preview.
+ *        This is the parameter that fixes register → enable inside one
+ *        transaction: enable_widget's existence guard used to ask here with no
+ *        argument, so it read the committed registry, had never seen the widget
+ *        the previous call staged, and rejected it as unknown.
+ *
  * @return array Merged widget registry keyed by widget ID
  */
-function agentshell_get_widget_registry() {
+function agentshell_get_widget_registry( $config = null ) {
     $registry = array();
 
     // 1. Load stable widgets from /widgets/ directory
@@ -995,7 +1116,7 @@ function agentshell_get_widget_registry() {
     }
 
     // 2. Merge agent-defined widgets from config (these override stable with same ID)
-    $config = agentshell_get_config();
+    $config = is_array( $config ) ? $config : agentshell_get_config();
     foreach ( $config['widgets'] ?? array() as $widget ) {
         if ( empty( $widget['id'] ) ) {
             continue;
@@ -1060,6 +1181,27 @@ function agentshell_migrate_legacy_widgets_option() {
     // Persist (or stage) through the same path mutations use, so history
     // is recorded and transaction staging still works.
     update_option( 'agentshell_config', $config );
+
+    // Retire the legacy option only once the widgets are genuinely readable
+    // from the canonical store. `update_option` is intercepted while a
+    // transaction is open — the write is staged and never lands — so deleting
+    // unconditionally would destroy the only surviving copy of the data on
+    // exactly the path that did not save it. This helper runs on every
+    // admin_init, so the next request retries.
+    $persisted = get_option( 'agentshell_config' );
+    $migrated  = array();
+    foreach ( $legacy as $widget ) {
+        if ( empty( $widget['id'] ) || isset( $existing_ids[ $widget['id'] ] ) ) {
+            continue; // nothing to carry over from the legacy option
+        }
+        $migrated[ $widget['id'] ] = true;
+    }
+    foreach ( array_keys( $migrated ) as $id ) {
+        if ( ! is_array( $persisted ) || ! isset( $persisted['widgets'][ $id ] ) ) {
+            return; // not written — leave the legacy option alone
+        }
+    }
+
     delete_option( 'agentshell_widgets' );
 }
 
@@ -1196,7 +1338,7 @@ function agentshell_render_core_component( $id ) {
  * @return string HTML
  */
 function agentshell_render_widget( $widget_id ) {
-    $registry = agentshell_get_widget_registry();
+    $registry = agentshell_widget_registry_for_render();
     if ( ! isset( $registry[ $widget_id ] ) ) {
         return '';
     }
@@ -1225,7 +1367,7 @@ function agentshell_render_widget( $widget_id ) {
  * @return array
  */
 function agentshell_get_widget_assets() {
-    $registry = agentshell_get_widget_registry();
+    $registry = agentshell_widget_registry_for_render();
     $init_js  = '';
     $css      = '';
 
@@ -1249,7 +1391,7 @@ function agentshell_get_widget_assets() {
  * @return array
  */
 function agentshell_get_layout_config() {
-    $config = agentshell_get_config();
+    $config = agentshell_config_for_render();
     $layout = $config['layout'] ?? array();
 
     $defaults = array(

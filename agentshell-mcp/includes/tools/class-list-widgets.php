@@ -12,8 +12,10 @@ class List_Widgets extends Base_Tool {
     public function get_input_schema() { return array( 'type' => 'object', 'properties' => array(), 'additionalProperties' => false ); }
 
     public function execute( array $arguments ) {
+        // Effective: inside a transaction the agent has to be able to see what
+        // it has just staged, or every subsequent call reads as if it did nothing.
         if ( function_exists( 'agentshell_get_widget_registry' ) ) {
-            $registry = agentshell_get_widget_registry();
+            $registry = agentshell_get_widget_registry( $this->get_agentshell_config() );
             $widgets  = array();
             foreach ( $registry as $id => $widget ) {
                 $widgets[] = array(

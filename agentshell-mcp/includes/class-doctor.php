@@ -187,7 +187,11 @@ class Doctor {
                         self::err( $errors, 'WIDGET_REFERENCE_MISSING_ID', "Zone {$id} block #{$i}: widget block requires an id.", array( 'zone' => $id ) );
                         continue;
                     }
-                    $registry = function_exists( 'agentshell_get_widget_registry' ) ? agentshell_get_widget_registry() : array();
+                    // Built from the config being validated, not from the committed one.
+                    // Validating staged zones against committed widgets reports every
+                    // widget a transaction just registered as unknown — which is the
+                    // state the transaction is about to commit.
+                    $registry = function_exists( 'agentshell_get_widget_registry' ) ? agentshell_get_widget_registry( $config ) : array();
                     if ( ! isset( $registry[ $block['id'] ] ) ) {
                         self::err( $errors, 'WIDGET_REFERENCE_UNKNOWN', "Zone {$id} references unknown widget '{$block['id']}'.", array( 'zone' => $id, 'widget' => $block['id'] ) );
                     } elseif ( ( $registry[ $block['id'] ]['status'] ?? 'active' ) === 'disabled' ) {
@@ -212,7 +216,9 @@ class Doctor {
         if ( ! function_exists( 'agentshell_get_widget_registry' ) ) {
             return;
         }
-        $registry = agentshell_get_widget_registry();
+        // Same reason as in check_zones(): the registry has to be the one this
+        // config describes, or validation inspects a state nobody will commit.
+        $registry = agentshell_get_widget_registry( $config );
         $config_widgets = $config['widgets'] ?? array();
 
         $ids = array();

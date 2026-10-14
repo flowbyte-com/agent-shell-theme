@@ -46,8 +46,17 @@ abstract class Base_Tool {
     /**
      * Current config: staged value while a transaction is open, else stored.
      * This lets a sequence of mutation tools compose within a transaction.
+     *
+     * Delegates to the theme's reader when it is loaded, so there is exactly one
+     * implementation of "effective" rather than one here and one in functions.php
+     * that have to be kept in agreement. The transaction manager is still the
+     * fallback, because this class is loaded by tool-schema tests that stub
+     * WordPress without a theme.
      */
     protected function get_agentshell_config() {
+        if ( function_exists( 'agentshell_get_config' ) ) {
+            return agentshell_get_config( 'effective' );
+        }
         return \AgentShell_MCP\Transaction_Manager::instance()->effective_config();
     }
 

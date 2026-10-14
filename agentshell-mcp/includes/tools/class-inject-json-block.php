@@ -38,8 +38,10 @@ function agentshell_inject_json_block_into_zone( array $config, $zone_id, $html,
     }
 
     // Verify the zone is declared (matches agentshell_get_zones defaults).
+    // Effective: a zone staged earlier in this transaction is a declared zone
+    // for the rest of the transaction.
     $declared = function_exists( 'agentshell_get_zones' )
-        ? \agentshell_get_zones()
+        ? \agentshell_get_zones( $config )
         : array();
     $declared_ids = array();
     foreach ( $declared as $z ) {

@@ -11,7 +11,10 @@ class Get_Config extends Base_Tool {
     public function execute( array $arguments ) {
         $config = $this->get_agentshell_config();
         if ( function_exists( 'agentshell_get_widget_registry' ) ) {
-            $config['widgets'] = array_values( agentshell_get_widget_registry() );
+            // Built from $config — the effective one — not re-read from the
+            // committed option. Otherwise the two halves of this single response
+            // describe different transactions.
+            $config['widgets'] = array_values( agentshell_get_widget_registry( $config ) );
         }
         if ( function_exists( 'agentshell_flatten_config' ) ) {
             $config['tokens'] = agentshell_flatten_config( $config );
