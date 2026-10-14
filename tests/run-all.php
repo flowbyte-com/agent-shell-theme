@@ -59,6 +59,7 @@ $suites = array(
     'screenshot'           => __DIR__ . '/screenshot-test.php',
     'screenshot-privacy'   => __DIR__ . '/screenshot-privacy-test.php',
     'browser-isolation'    => __DIR__ . '/browser-isolation-test.php',
+    'browser-trust'        => __DIR__ . '/browser-trust-test.php',
     'configurator-state'   => __DIR__ . '/run-configurator-state.php',
 );
 

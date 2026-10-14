@@ -21,6 +21,7 @@
 
 $class_file  = dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php';
 $suite_file  = __DIR__ . '/browser-isolation-test.php';
+$trust_suite = __DIR__ . '/browser-trust-test.php';
 $original    = file_get_contents( $class_file );
 
 /**
@@ -39,7 +40,7 @@ $mutants = array(
         '@chmod( $path, 0755 );',
     ),
     'predictable profile name' => array(
-        "\$name = 'profile-' . bin2hex( random_bytes( 16 ) );",
+        "\$name = 'profile-' . bin2hex( random_bytes( (int) ( self::PROFILE_NAME_HEX / 2 ) ) );",
         "\$name = 'profile-' . getmypid();",
     ),
     'cleanup skipped entirely' => array(
@@ -71,11 +72,11 @@ $mutants = array(
         "        return rtrim( sys_get_temp_dir(), '/' ) . '/agentshell-chrome-na';",
     ),
     'HOME not redirected' => array(
-        "        \$env['HOME']             = \$profile . '/home';",
+        "        \$env['HOME']             = self::trust_home_dir( \$profile );",
         '',
     ),
     'path check accepts any name' => array(
-        "        if ( ! preg_match( '/\\/profile-[0-9a-f]{32}\$/', \$path ) ) {\n            return;\n        }",
+        "        if ( ! preg_match( '/\\/profile-[0-9a-f]{16,32}\$/', \$path ) ) {\n            return;\n        }",
         '',
     ),
     'cleanup trusts the name pattern alone' => array(
@@ -89,14 +90,41 @@ $mutants = array(
 );
 
 /**
+ * Mutants for the trust store and the browser temp directory.
+ *
+ * Separate from the isolation set because they are judged by a different
+ * suite. Real Chrome is skipped here on purpose: the two mutants below are
+ * each detected by the fake-browser cases, and standing up real TLS per mutant
+ * would turn a fast check into a slow one.
+ */
+$trust_mutants = array(
+    'TMPDIR not redirected into the profile' => array(
+        "\$env['TMPDIR']           = self::profile_tmp_dir( \$profile );",
+        '',
+    ),
+    'trust store never installed' => array(
+        '            self::install_trust_store( $path );',
+        '            // mutant: no trust store',
+    ),
+    'trust store built somewhere Chromium will not look' => array(
+        "        return self::trust_home_dir( \$profile ) . '/.pki/nssdb';",
+        "        return self::trust_home_dir( \$profile ) . '/nssdb';",
+    ),
+);
+
+/**
  * Run the isolation suite and count its failures.
  *
  * FAIL lines are indented by the reporter, so they are matched with a regex
  * anchored at line start rather than a substring search — a plain "\nFAIL "
  * count silently reads zero and reports every mutant as surviving.
  */
-function agentshell_isolation_run( $suite_file ) {
-    $cmd = escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $suite_file ) . ' 2>&1';
+function agentshell_isolation_run( $suite_file, $env = array() ) {
+    $cmd = '';
+    foreach ( $env as $k => $v ) {
+        $cmd .= $k . '=' . escapeshellarg( $v ) . ' ';
+    }
+    $cmd .= escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $suite_file ) . ' 2>&1';
     $output = (string) shell_exec( $cmd );
     return array( 'output' => $output, 'failed' => preg_match_all( '/^\s*FAIL /m', $output ) );
 }
@@ -163,7 +191,57 @@ foreach ( $mutants as $label => $mutation ) {
     }
 }
 
-$total = count( $mutants );
+// ── trust and temp mechanisms, judged by the trust suite ────────────────────
+echo "\n";
+$trust_baseline = agentshell_isolation_run( $trust_suite, array( 'AGENTSHELL_TRUST_SKIP_CHROME' => '1' ) );
+if ( $trust_baseline['failed'] > 0 ) {
+    echo "TRUST BASELINE FAILED — the suite is red before any mutation.\n";
+    echo $trust_baseline['output'];
+    exit( 1 );
+}
+echo "trust baseline: 0 failures\n\n";
+
+foreach ( $trust_mutants as $label => $mutation ) {
+    list( $find, $replace ) = $mutation;
+
+    if ( false === strpos( $original, $find ) ) {
+        echo "SKIP   $label — the target text is no longer in the source\n";
+        $survived[] = $label . ' (not applicable)';
+        continue;
+    }
+    $mutated = str_replace( $find, $replace, $original, $count );
+    if ( $count < 1 ) {
+        echo "SKIP   $label — no replacement made\n";
+        $survived[] = $label . ' (not applicable)';
+        continue;
+    }
+
+    $tmp = tempnam( sys_get_temp_dir(), 'as-mutant-' );
+    file_put_contents( $tmp . '.php', $mutated );
+    exec( escapeshellarg( PHP_BINARY ) . ' -l ' . escapeshellarg( $tmp . '.php' ) . ' 2>&1', $lint, $lint_rc );
+    @unlink( $tmp . '.php' );
+    @unlink( $tmp );
+
+    file_put_contents( $class_file, $mutated );
+    $result = agentshell_isolation_run( $trust_suite, array( 'AGENTSHELL_TRUST_SKIP_CHROME' => '1' ) );
+    file_put_contents( $class_file, $original );
+
+    if ( 0 !== $lint_rc ) {
+        echo "ERROR  $label — mutant does not parse, so it proves nothing:\n";
+        echo '       ' . implode( "\n       ", $lint ) . "\n";
+        $survived[] = $label . ' (does not parse)';
+        continue;
+    }
+    if ( $result['failed'] > 0 ) {
+        $killed++;
+        echo "killed $label ({$result['failed']} failing assertions)\n";
+    } else {
+        echo "SURVIVED $label — the suite did not notice\n";
+        $survived[] = $label;
+    }
+}
+
+$total = count( $mutants ) + count( $trust_mutants );
 echo "\n=== MUTATION ===\n";
 echo "$killed of $total killed\n";
 

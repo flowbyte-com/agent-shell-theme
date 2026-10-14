@@ -65,6 +65,11 @@ The plugin ships **45+ `agentshell_*` tools** (53 in `agentshell-mcp` + 4 in `ag
   Retrieval is authorised by **capture ownership**, not merely by authentication — a second administrator
   passing `manage_options` is refused. Never treat a returned retrieval URL as deliverable without fetching
   it. Full contract: [`docs/SCREENSHOT-PRIVACY-DESIGN.md`](docs/SCREENSHOT-PRIVACY-DESIGN.md).
+  Each capture runs in its own throwaway browser profile with `HOME` and `TMPDIR` inside it, so a site
+  on a private certificate authority must name that authority in `wp-config.php` as
+  `AGENTSHELL_TRUSTED_CA_FILES` (a path, a list of paths, or a directory of certificates). Certificate
+  verification is never disabled; an unnamed certificate still fails. Design and rationale:
+  [`docs/DRAFT-CAPTURE-DESIGN.md`](docs/DRAFT-CAPTURE-DESIGN.md).
 
 **Hard rules about tool use:**
 

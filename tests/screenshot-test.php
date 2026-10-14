@@ -153,7 +153,14 @@ class Screenshot_Test_Case {
     public $child;
 
     public function set_up() {
-        $this->dir = sys_get_temp_dir() . '/agentshell-shot-test-' . getmypid() . '-' . uniqid();
+        // Short by necessity. This directory is each case's TMPDIR, so the
+        // profile the browser ends up with sits at
+        // <dir>/agentshell-chrome-<uid>/profile-<16 hex>/tmp — a Chromium socket
+        // path, capped by Screenshot::MAX_TMPDIR_LENGTH. A self-describing name
+        // would put every case over the cap and fail for a reason unrelated to
+        // what the case is testing.
+        static $case = 0;
+        $this->dir   = '/tmp/ast' . getmypid() . '-' . ( ++$case );
         mkdir( $this->dir, 0700, true );
         $this->uploads = $this->dir . '/uploads';
         mkdir( $this->uploads, 0755, true );

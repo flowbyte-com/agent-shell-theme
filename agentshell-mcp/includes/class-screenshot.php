@@ -80,6 +80,33 @@ class Screenshot_Timeout_Exception extends \RuntimeException {}
  *           could read them. Nothing is left behind on any path: success,
  *           browser failure, or timeout.
  *
+ *   Trust   Redirecting HOME also moves the certificate trust store, because
+ *           Chromium keeps its roots in `$HOME/.pki/nssdb` and there is
+ *           commonly no system NSS database to fall back on. A self-signed
+ *           local site then fails with ERR_CERT_AUTHORITY_INVALID — the site
+ *           under test is the one thing that cannot be captured.
+ *
+ *           So when the operator names trusted authorities explicitly, via
+ *           `AGENTSHELL_TRUSTED_CA_FILES` in wp-config.php, this class builds
+ *           a *fresh* NSS database inside the throwaway profile and adds only
+ *           those certificates to it. Certificate validation is never
+ *           disabled and `--ignore-certificate-errors` is never passed: a
+ *           certificate that is not on that list still fails, which is the
+ *           whole point of pinning trust rather than skipping it.
+ *
+ *           The operator's own NSS database is never read or copied. It is a
+ *           browser *session* as much as a trust store — it can hold private
+ *           keys and its own history — and this class is under a duty to leave
+ *           the developer's account directory alone. Only the public
+ *           certificates the operator listed are read.
+ *
+ *   Temp    TMPDIR points inside the throwaway profile too. Chromium creates
+ *           auxiliary directories (`com.google.Chrome.chrome_chrome_url_fetcher_*`)
+ *           in the system temp dir while rendering, and they survived the
+ *           profile's removal because they were never inside it. Redirecting
+ *           TMPDIR is what makes "nothing outlives the capture" true for those
+ *           too, on the success, failure and timeout paths alike.
+ *
  * Screenshots land in wp-content/uploads/agentshell-screenshots/.
  */
 class Screenshot {
@@ -101,6 +128,35 @@ class Screenshot {
      * live capture is never mistaken for an abandoned one.
      */
     const PROFILE_STALE_SECONDS = 3600;
+
+    /**
+     * Longest TMPDIR this class will hand a browser.
+     *
+     * Chromium keeps its process-singleton socket inside TMPDIR, in a directory
+     * it names for itself (`com.google.Chrome.XXXXXX/SingletonSocket`), and a
+     * unix socket path is capped at the 107 bytes of `sockaddr_un`. That turns
+     * the profile path from a naming choice into a hard constraint: point
+     * TMPDIR inside the profile — which is what makes the browser's own scratch
+     * directories die with the profile instead of accumulating in the shared
+     * system temp dir — and the length of `<temp>/<profile>/<random>` decides
+     * whether the capture can run at all.
+     *
+     * Measured against Chrome on glibc: a 71-byte TMPDIR works and a 72-byte one
+     * does not. Anything longer than this is refused here, where the message can
+     * say what is wrong, rather than inside the browser, where it cannot.
+     */
+    const MAX_TMPDIR_LENGTH = 71;
+
+    /**
+     * Hex characters of randomness in a profile directory name.
+     *
+     * Sixteen hex characters is 64 bits, which is what "unpredictable" needs for
+     * a name another local user must not be able to guess or pre-create. It is
+     * also half of what this used to spend, because the name is on a socket path
+     * (see MAX_TMPDIR_LENGTH) and the saved characters are what leave the
+     * capture any headroom at all.
+     */
+    const PROFILE_NAME_HEX = 16;
 
     /**
      * Detect an available headless browser.
@@ -339,6 +395,13 @@ class Screenshot {
      * if the flag were ever dropped, misparsed, or ignored by a future Chrome,
      * the fallback path still lands inside a directory this class deletes.
      *
+     * TMPDIR is pinned for the same reason and for a different leak: Chromium
+     * creates its own scratch directories (`com.google.Chrome.chrome_chrome_url_fetcher_*`)
+     * in the system temp dir while rendering, and because they sit outside the
+     * profile they survived the profile's removal — one per capture, on every
+     * path including success. Redirecting TMPDIR puts them inside the profile
+     * the capture already deletes.
+     *
      * PATH is preserved from the parent — `setsid` and `timeout` are resolved
      * by absolute path today, but rebuilding the environment must not quietly
      * strip it from the child's other lookups.
@@ -351,11 +414,12 @@ class Screenshot {
         if ( ! is_array( $env ) ) {
             $env = array();
         }
-        $env['HOME']             = $profile . '/home';
+        $env['HOME']             = self::trust_home_dir( $profile );
         $env['XDG_CONFIG_HOME']  = $profile . '/xdg-config';
         $env['XDG_CACHE_HOME']   = $profile . '/xdg-cache';
         $env['XDG_DATA_HOME']    = $profile . '/xdg-data';
         $env['XDG_STATE_HOME']   = $profile . '/xdg-state';
+        $env['TMPDIR']           = self::profile_tmp_dir( $profile );
         return $env;
     }
 
@@ -388,8 +452,19 @@ class Screenshot {
         // behind. Sweep those first — narrowly, see purge_stale_profiles().
         self::purge_stale_profiles( $base );
 
-        $name = 'profile-' . bin2hex( random_bytes( 16 ) );
+        $name = 'profile-' . bin2hex( random_bytes( (int) ( self::PROFILE_NAME_HEX / 2 ) ) );
         $path = $base . '/' . $name;
+
+        // Before the directory exists, so a temp dir too deep for Chromium's
+        // singleton socket fails here rather than as a browser FATAL.
+        $tmp_dir = self::profile_tmp_dir( $path );
+        if ( strlen( $tmp_dir ) > self::MAX_TMPDIR_LENGTH ) {
+            throw new \RuntimeException(
+                'The system temp directory is too deep for an isolated browser capture. '
+                . 'TMPDIR would be ' . strlen( $tmp_dir ) . ' bytes, and Chromium caps a socket '
+                . 'path at ' . self::MAX_TMPDIR_LENGTH . '. Set TMPDIR to a shorter path.'
+            );
+        }
 
         if ( ! @mkdir( $path, 0700 ) ) {
             throw new \RuntimeException( 'Could not create a private browser profile directory: ' . $path );
@@ -404,8 +479,32 @@ class Screenshot {
         }
         @chmod( $path, 0700 );
         if ( @file_put_contents( $path . '/' . self::PROFILE_MARKER, self::PROFILE_MARKER_VALUE ) === false ) {
-            @rmdir( $path );
+            self::destroy_profile_dir( $path );
             throw new \RuntimeException( 'Could not mark the browser profile directory: ' . $path );
+        }
+
+        // HOME and TMPDIR both point inside the profile, so both directories
+        // must exist before the browser starts: HOME is where Chromium looks
+        // for its trust store, TMPDIR is where it creates scratch directories of
+        // its own. Both are created 0700 inside a 0700 parent.
+        foreach ( array( self::trust_home_dir( $path ), self::profile_tmp_dir( $path ) ) as $dir ) {
+            if ( ! @mkdir( $dir, 0700, true ) && ! is_dir( $dir ) ) {
+                self::destroy_profile_dir( $path );
+                throw new \RuntimeException( 'Could not create a browser profile subdirectory: ' . $dir );
+            }
+            @chmod( $dir, 0700 );
+        }
+
+        // Last, and inside a try, because by now the profile holds a marker and
+        // two subdirectories — a plain rmdir() cannot undo that, so a failure
+        // here has to unwind through the same recursive removal every other
+        // exit uses or the half-built profile stays for the stale sweep to find
+        // an hour later.
+        try {
+            self::install_trust_store( $path );
+        } catch ( \Throwable $e ) {
+            self::destroy_profile_dir( $path );
+            throw $e;
         }
 
         // Backstop for the case the brief calls out: PHP killed before its
@@ -416,6 +515,197 @@ class Screenshot {
         register_shutdown_function( array( __CLASS__, 'destroy_profile_dir' ), $path );
 
         return $path;
+    }
+
+    /**
+     * HOME for the browser process: the parent of the NSS trust store.
+     *
+     * @param string $profile
+     * @return string
+     */
+    public static function trust_home_dir( $profile ) {
+        return $profile . '/home';
+    }
+
+    /**
+     * The NSS database Chromium reads its trusted roots from.
+     *
+     * `$HOME/.pki/nssdb` is NSS's own default for a user, and Chromium follows
+     * it. There is no flag to point it elsewhere short of relocating HOME,
+     * which this class already does.
+     *
+     * @param string $profile
+     * @return string
+     */
+    public static function trust_db_dir( $profile ) {
+        return self::trust_home_dir( $profile ) . '/.pki/nssdb';
+    }
+
+    /**
+     * TMPDIR for the browser process.
+     *
+     * @param string $profile
+     * @return string
+     */
+    public static function profile_tmp_dir( $profile ) {
+        return $profile . '/tmp';
+    }
+
+    /**
+     * Certificate authorities the operator has explicitly trusted for captures.
+     *
+     * Configured in wp-config.php as AGENTSHELL_TRUSTED_CA_FILES: a string, or
+     * an array of strings, each a path to a certificate file or a directory of
+     * them. Empty by default, and when empty nothing here runs — a site with a
+     * valid certificate chain is unaffected by any of this.
+     *
+     * A configured path that cannot be read is an error rather than a silent
+     * skip. An operator who pinned a CA and then gets ERR_CERT_AUTHORITY_INVALID
+     * has no way to tell a typo from a genuinely untrusted certificate, and
+     * quietly dropping the entry would present a typo as a trust failure.
+     *
+     * @return string[] Absolute paths to certificate files.
+     * @throws \RuntimeException when a configured certificate is unreadable.
+     */
+    public static function trusted_ca_files() {
+        $configured = array();
+        if ( defined( 'AGENTSHELL_TRUSTED_CA_FILES' ) ) {
+            $raw = constant( 'AGENTSHELL_TRUSTED_CA_FILES' );
+            if ( is_string( $raw ) ) {
+                $raw = array( $raw );
+            }
+            if ( is_array( $raw ) ) {
+                $configured = $raw;
+            }
+        }
+
+        $certs = array();
+        foreach ( $configured as $entry ) {
+            if ( ! is_string( $entry ) || '' === trim( $entry ) ) {
+                continue;
+            }
+            $path = trim( $entry );
+            if ( is_dir( $path ) ) {
+                foreach ( (array) glob( rtrim( $path, '/' ) . '/*.{crt,pem,cer,der}', GLOB_BRACE ) as $found ) {
+                    $certs[] = $found;
+                }
+                continue;
+            }
+            $certs[] = $path;
+        }
+
+        foreach ( $certs as $cert ) {
+            if ( ! is_file( $cert ) || ! is_readable( $cert ) ) {
+                throw new \RuntimeException(
+                    'AGENTSHELL_TRUSTED_CA_FILES names a certificate that cannot be read: ' . $cert
+                );
+            }
+        }
+
+        return array_values( array_unique( $certs ) );
+    }
+
+    /**
+     * Build a fresh, private NSS trust store inside the throwaway profile.
+     *
+     * Fresh means `certutil -N` on an empty directory: the operator's own
+     * database is never opened, copied or merged. Their NSS store is part of
+     * their browser session and may contain private keys; this class leaves it
+     * alone even when reading it would have been convenient.
+     *
+     * @param string $profile
+     * @return int Number of certificates added, 0 when none are configured.
+     * @throws \RuntimeException when certutil is missing or fails.
+     */
+    private static function install_trust_store( $profile ) {
+        $certs = self::trusted_ca_files();
+        if ( empty( $certs ) ) {
+            return 0;
+        }
+
+        $certutil = self::helper_binary( 'certutil', array( '/usr/bin/certutil', '/bin/certutil' ) );
+        if ( null === $certutil ) {
+            throw new \RuntimeException(
+                'AGENTSHELL_TRUSTED_CA_FILES is configured but certutil was not found. Chromium reads its '
+                . 'trusted roots from an NSS database and only certutil can create one. Install the NSS '
+                . 'tools package, or unset AGENTSHELL_TRUSTED_CA_FILES.'
+            );
+        }
+
+        $db = self::trust_db_dir( $profile );
+        if ( ! @mkdir( $db, 0700, true ) && ! is_dir( $db ) ) {
+            throw new \RuntimeException( 'Could not create the browser trust store directory: ' . $db );
+        }
+        @chmod( $db, 0700 );
+
+        self::run_certutil( $certutil, array( '-N', '--empty-password', '-d', $db ), 'create the trust store' );
+
+        $added = 0;
+        foreach ( $certs as $cert ) {
+            $added++;
+            self::run_certutil(
+                $certutil,
+                array( '-A', '-n', 'agentshell-ca-' . $added, '-t', 'C,,', '-i', $cert, '-d', $db ),
+                'add ' . basename( $cert )
+            );
+        }
+
+        return $added;
+    }
+
+    /**
+     * Run certutil with a deadline, so a wedged helper cannot hold the worker.
+     *
+     * @param string   $bin  Absolute path to certutil.
+     * @param string[] $args Arguments after the binary.
+     * @param string   $what Human description used in the error message.
+     * @throws \RuntimeException on a non-zero exit or a timeout.
+     */
+    private static function run_certutil( $bin, array $args, $what ) {
+        $descriptors = array(
+            0 => array( 'file', '/dev/null', 'r' ),
+            1 => array( 'pipe', 'w' ),
+            2 => array( 'pipe', 'w' ),
+        );
+        $pipes   = array();
+        $process = @proc_open( array_merge( array( $bin ), $args ), $descriptors, $pipes );
+        if ( ! is_resource( $process ) ) {
+            throw new \RuntimeException( 'Could not run certutil to ' . $what . '.' );
+        }
+
+        $deadline = microtime( true ) + 10;
+        $exit     = -1;
+        $running  = true;
+        while ( true ) {
+            $status  = proc_get_status( $process );
+            $running = (bool) $status['running'];
+            if ( ! $running ) {
+                $exit = (int) $status['exitcode'];
+                break;
+            }
+            if ( microtime( true ) >= $deadline ) {
+                proc_terminate( $process, 9 );
+                break;
+            }
+            usleep( 20000 );
+        }
+
+        // Drain before closing so certutil cannot die writing into a full pipe.
+        $stdout = stream_get_contents( $pipes[1] );
+        $stderr = stream_get_contents( $pipes[2] );
+        fclose( $pipes[1] );
+        fclose( $pipes[2] );
+        @proc_close( $process );
+
+        if ( $running ) {
+            throw new \RuntimeException( 'certutil timed out trying to ' . $what . '.' );
+        }
+        if ( 0 !== $exit ) {
+            throw new \RuntimeException(
+                'certutil failed to ' . $what . ' (exit ' . $exit . '): '
+                . trim( (string) $stderr . ' ' . (string) $stdout )
+            );
+        }
     }
 
     /**
@@ -440,7 +730,7 @@ class Screenshot {
         if ( $path === $base || ! str_starts_with( $path, $base . '/' ) ) {
             return;
         }
-        if ( ! preg_match( '/\/profile-[0-9a-f]{32}$/', $path ) ) {
+        if ( ! preg_match( '/\/profile-[0-9a-f]{16,32}$/', $path ) ) {
             return;
         }
         if ( is_link( $path ) ) {
@@ -522,7 +812,7 @@ class Screenshot {
 
         $removed = 0;
         foreach ( $entries as $entry ) {
-            if ( ! preg_match( '/^profile-[0-9a-f]{32}$/', $entry ) ) {
+            if ( ! preg_match( '/^profile-[0-9a-f]{16,32}$/', $entry ) ) {
                 continue;
             }
             $path = $base . '/' . $entry;

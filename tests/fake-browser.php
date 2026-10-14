@@ -17,6 +17,10 @@
  *   AGENTSHELL_FAKE_CHROME_ENV    file to record HOME/XDG as received
  *   AGENTSHELL_FAKE_CHROME_CACHE  write this text into the profile directory
  *   AGENTSHELL_FAKE_CHROME_PROFILE_MODE  record the profile's permission bits
+ *   AGENTSHELL_FAKE_CHROME_SCRATCH   create this directory under TMPDIR, the
+ *                                    way Chromium creates its own scratch
+ *                                    directories while rendering, and record
+ *                                    the absolute path it used
  *
  * The size knob exists for the inline size-limit tests, which need a capture
  * above and below the limit without shipping a multi-megabyte fixture.
@@ -57,8 +61,19 @@ if [ -n "${AGENTSHELL_FAKE_CHROME_ENV:-}" ]; then
     printf 'XDG_CONFIG_HOME=%s\n' "${XDG_CONFIG_HOME:-<unset>}"
     printf 'XDG_CACHE_HOME=%s\n' "${XDG_CACHE_HOME:-<unset>}"
     printf 'XDG_DATA_HOME=%s\n' "${XDG_DATA_HOME:-<unset>}"
+    printf 'TMPDIR=%s\n' "${TMPDIR:-<unset>}"
     printf 'PROFILE=%s\n' "${PROFILE:-<none>}"
   } > "$AGENTSHELL_FAKE_CHROME_ENV"
+fi
+
+# Behave like Chromium's URLFetcher scratch directory: one per capture, created
+# in TMPDIR and otherwise left behind. Whether it survives is the property the
+# trust suite cares about — it must not outlive the profile.
+if [ -n "${AGENTSHELL_FAKE_CHROME_SCRATCH:-}" ] && [ -n "${TMPDIR:-}" ]; then
+  SCRATCH="${TMPDIR}/${AGENTSHELL_FAKE_CHROME_SCRATCH}"
+  mkdir -p "$SCRATCH" 2>/dev/null
+  printf 'rendered' > "$SCRATCH/payload.bin" 2>/dev/null
+  printf '%s' "$SCRATCH" > "${AGENTSHELL_FAKE_CHROME_ENV}.scratch" 2>/dev/null
 fi
 if [ -n "${AGENTSHELL_FAKE_CHROME_PROFILE_MODE:-}" ] && [ -n "$PROFILE" ]; then
   stat -c '%a' "$PROFILE" > "${AGENTSHELL_FAKE_CHROME_ARGV}.profilemode" 2>/dev/null

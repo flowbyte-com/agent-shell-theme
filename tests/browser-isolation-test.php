@@ -32,7 +32,13 @@ use AgentShell_MCP\Screenshot;
 // profile was not touched" is a statement about a directory this test created
 // and can therefore verify exhaustively, rather than about the developer's
 // actual home directory.
-define( 'AGENTSHELL_BROWSER_TEST_ROOT', sys_get_temp_dir() . '/agentshell-iso-' . getmypid() . '-' . uniqid() );
+// Short by necessity, not by taste. Each case runs with a directory of its own
+// as TMPDIR, so the profile the browser ends up with sits at
+// <case>/agentshell-chrome-<uid>/profile-<16 hex>/tmp — and that is a Chromium
+// socket path, capped by Screenshot::MAX_TMPDIR_LENGTH. A self-describing root
+// would put every case over the cap and fail for a reason unrelated to what the
+// case is testing.
+define( 'AGENTSHELL_BROWSER_TEST_ROOT', '/tmp/asi' . getmypid() );
 
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) { define( 'HOUR_IN_SECONDS', 3600 ); }
 
@@ -202,7 +208,8 @@ class Browser_Isolation_Test_Case {
     public $home;
 
     public function set_up() {
-        $this->dir = AGENTSHELL_BROWSER_TEST_ROOT . '-' . uniqid();
+        static $case = 0;
+        $this->dir    = AGENTSHELL_BROWSER_TEST_ROOT . '-' . ( ++$case );
         mkdir( $this->dir, 0700, true );
         mkdir( $this->dir . '/shots', 0700, true );
         // Stands in for the developer's real home. Nothing may be written
@@ -476,9 +483,10 @@ Agentshell_Test::run( 'isolation: different captures use different profile direc
 } );
 
 Agentshell_Test::run( 'isolation: the profile name is unpredictable', function () {
-    // 32 hex characters of random_bytes, not a counter or a pid: the temp dir is
+    // 16 hex characters of random_bytes, not a counter or a pid: the temp dir is
     // world-writable, so a guessable name is one another local user could
-    // create ahead of us.
+    // create ahead of us. Sixteen rather than thirty-two because the name is on
+    // a Chromium socket path — see Screenshot::MAX_TMPDIR_LENGTH.
     $t = new Browser_Isolation_Test_Case();
     $t->set_up();
     try {
@@ -486,7 +494,7 @@ Agentshell_Test::run( 'isolation: the profile name is unpredictable', function (
         for ( $i = 0; $i < 3; $i++ ) {
             $profile = Browser_Isolation_Test_Case::profile_from_argv( $t->capture( 'success' )['argv'] );
             Agentshell_Test::assert_true(
-                (bool) preg_match( '/profile-[0-9a-f]{32}$/', $profile ),
+                (bool) preg_match( '/profile-[0-9a-f]{16}$/', $profile ),
                 "unexpected profile name: {$profile}"
             );
             $names[] = basename( $profile );
@@ -673,7 +681,7 @@ Agentshell_Test::run( 'cleanup: removes a profile it owns, and nothing else', fu
 
         // The positive control. Without it, every refusal below would also pass
         // if destroy_profile_dir() simply did nothing at all.
-        $owned = $t->profile_base() . '/profile-' . str_repeat( '0', 32 );
+        $owned = $t->profile_base() . '/profile-' . str_repeat( '0', 16 );
         mkdir( $owned . '/Default/Cache', 0700, true );
         file_put_contents( $owned . '/.agentshell-profile', 'agentshell-browser-profile-v1' );
         file_put_contents( $owned . '/Default/Cache/entry.bin', 'cached' );
@@ -703,7 +711,7 @@ Agentshell_Test::run( 'cleanup: refuses paths outside the profile base', functio
         // check, so between them they cover every guard rather than relying on
         // one of them happening to catch everything.
         //
-        //  - a traversal that escapes the base but ends in the wrong name
+        //  - a traversal that escapes the base while keeping a legitimate name
         //  - a directory outside the base whose name is a *perfect* profile
         //    name, which is what separates the prefix check from the name
         //    check: only the prefix check refuses this one
@@ -739,13 +747,13 @@ Agentshell_Test::run( 'cleanup: refuses a path whose name is not a profile we cr
         file_put_contents( $impostor . '/keep.txt', 'not ours' );
 
         // Right shape, wrong length.
-        $short = $t->profile_base() . '/profile-' . str_repeat( 'b', 31 );
+        $short = $t->profile_base() . '/profile-' . str_repeat( 'b', 15 );
         mkdir( $short, 0700, true );
         file_put_contents( $short . '/keep.txt', 'not ours' );
 
         $t->destroy_in_child( array( $impostor, $short ) );
 
-        Agentshell_Test::assert_true( file_exists( $impostor . '/keep.txt' ), 'only profile-<32 hex> may be removed' );
+        Agentshell_Test::assert_true( file_exists( $impostor . '/keep.txt' ), 'only a profile-<16 hex> name may be removed' );
         Agentshell_Test::assert_true( file_exists( $short . '/keep.txt' ), 'a short hex suffix is not our name' );
     } finally {
         $t->tear_down();
@@ -793,7 +801,7 @@ Agentshell_Test::run( 'cleanup: a symlink inside a profile is unlinked without f
         mkdir( $outside, 0700, true );
         file_put_contents( $outside . '/precious.txt', 'must survive' );
 
-        $profile = $t->profile_base() . '/profile-' . str_repeat( 'd', 32 );
+        $profile = $t->profile_base() . '/profile-' . str_repeat( 'd', 16 );
         mkdir( $profile, 0700, true );
         file_put_contents( $profile . '/real.txt', 'cache' );
         // The browser writes symlinks of its own accord (SingletonLock and
@@ -817,21 +825,21 @@ Agentshell_Test::run( 'cleanup: the stale sweep only removes marked, owned, old 
         mkdir( $base, 0700, true );
 
         // What the sweep should remove: our name, our marker, old.
-        $stale = $base . '/profile-' . str_repeat( 'c', 32 );
+        $stale = $base . '/profile-' . str_repeat( 'c', 16 );
         mkdir( $stale, 0700, true );
         file_put_contents( $stale . '/.agentshell-profile', 'agentshell-browser-profile-v1' );
         touch( $stale, time() - 7200 );
 
         // What it must leave alone, each for a different reason.
-        $fresh = $base . '/profile-' . str_repeat( 'd', 32 );
+        $fresh = $base . '/profile-' . str_repeat( 'd', 16 );
         mkdir( $fresh, 0700, true );
         file_put_contents( $fresh . '/.agentshell-profile', 'agentshell-browser-profile-v1' );
 
-        $unmarked = $base . '/profile-' . str_repeat( 'e', 32 );
+        $unmarked = $base . '/profile-' . str_repeat( 'e', 16 );
         mkdir( $unmarked, 0700, true );
         touch( $unmarked, time() - 7200 );
 
-        $wrong_marker = $base . '/profile-' . str_repeat( 'f', 32 );
+        $wrong_marker = $base . '/profile-' . str_repeat( 'f', 16 );
         mkdir( $wrong_marker, 0700, true );
         file_put_contents( $wrong_marker . '/.agentshell-profile', 'something-else' );
         touch( $wrong_marker, time() - 7200 );

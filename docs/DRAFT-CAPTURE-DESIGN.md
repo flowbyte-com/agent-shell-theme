@@ -223,7 +223,7 @@ Item 6 of the original analysis — whether a rendered draft reaches a persisten
 browser profile — is now closed, and closed by measurement.
 
 `Screenshot::capture()` gives every capture its own throwaway browser profile:
-a fresh `profile-<32 hex>` name (unpredictable, because `/tmp` is
+a fresh `profile-<16 hex>` name (unpredictable, because `/tmp` is
 world-writable), created `0700` under a per-uid base directory, passed
 explicitly as `--user-data-dir`, and removed when the capture ends. `HOME` and
 the `XDG_*` paths are pointed inside it too, so a component that resolves its
@@ -235,7 +235,7 @@ Cleanup runs in a `finally` *inside* the capture lock, so it happens only after
 process tree is dead. A `register_shutdown_function` backstop covers a fatal
 error or an early exit, and a narrow stale sweep reclaims what a `SIGKILL` left
 behind. The recursive delete tests `is_link()` before `is_dir()`, and refuses
-any path that is not a direct `profile-<32 hex>` child of the base — so a
+any path that is not a direct `profile-<16 hex>` child of the base — so a
 planted symlink is unlinked as itself and never descended into.
 
 Verified against real Chrome under `strace`, which recorded the actual `execve`
@@ -243,7 +243,7 @@ rather than trusting the code:
 
 ```
 execve("/opt/google/chrome/chrome", ["--headless", ...,
-    "--user-data-dir=/tmp/agentshell-chrome-1000/profile-cdc2d25ba…",
+    "--user-data-dir=/tmp/agentshell-chrome-1000/profile-cdc2d25b…",
     "--screenshot=…", "http://agentshell.local/?page_id=14&preview=true&…"])
 ```
 
@@ -251,6 +251,62 @@ Every zygote child inherited the same profile. Afterwards: zero profile
 directories remained, and the developer's real Chrome profile gained **no
 paths at all** across a capture (identical sorted path set before and after),
 with zero occurrences of the draft's marker text anywhere in it.
+
+### Certificate trust inside the isolated profile
+
+Pointing `HOME` at the profile cost something nobody measured at the time:
+certificate trust. Chromium keeps its trusted roots in `$HOME/.pki/nssdb`, and
+on a host with no system NSS database there is nothing else for it to fall back
+on — so the isolation that stops a rendered draft from reaching a persistent
+profile also removes every root the capture had, and `https://agentshell.local`
+failed with `ERR_CERT_AUTHORITY_INVALID`.
+
+The fix is not to stop isolating, and not to pass `--ignore-certificate-errors`
+or `--no-sandbox`. When the operator names trusted authorities explicitly, via
+`AGENTSHELL_TRUSTED_CA_FILES` in `wp-config.php`, the capture builds a **fresh**
+NSS database inside the throwaway profile and adds only those certificates:
+
+```php
+define( 'AGENTSHELL_TRUSTED_CA_FILES', '/home/v/.config/Local/run/router/nginx/certs/agentshell.local.crt' );
+```
+
+The setting accepts a path, a list of paths, or a directory of
+`*.crt`/`*.pem`/`.cer`/`*.der` files. Nothing is built when it is unset, so a
+site with a valid chain is unaffected. A configured path that cannot be read is
+an error rather than a silent skip: an operator who pinned a CA and then sees
+`ERR_CERT_AUTHORITY_INVALID` otherwise cannot tell a typo from a genuinely
+untrusted certificate.
+
+What this deliberately does **not** do is copy the operator's NSS database. The
+operator's browser profile, cookies and session stay where they are; only the
+named certificates are trusted, and a certificate that is not named still fails.
+
+### Temporary files, and the socket path that limits them
+
+The same redirection fixed a second leak. Chromium creates scratch directories
+of its own while rendering — `com.google.Chrome.chrome_chrome_url_fetcher_*` —
+in the *system* temp dir. They sat outside the profile, so they survived its
+removal: one per capture, on the success path as much as the failure path.
+`TMPDIR` now points inside the profile, which puts every byte the browser writes
+where the existing `finally`, shutdown handler and stale sweep already reach.
+
+That fix has a constraint worth recording, because it was found by real Chrome
+rather than by reading code: Chromium keeps its process-singleton socket inside
+`TMPDIR`, in a directory it names itself, and a unix socket path is capped at
+the 107 bytes of `sockaddr_un`. Pointing `TMPDIR` at
+`<profile>/tmp` therefore puts the profile path on a socket path, and the full
+production path came to 112 bytes — over the cap, so every capture died with a
+`FATAL: Socket path too long`. Measured: 71 bytes of `TMPDIR` works, 72 does
+not.
+
+Two things follow, both in the source rather than in a comment:
+
+- The random component of the profile name is 16 hex characters rather than 32.
+  64 bits is what "unpredictable" needs for a name another local user must not
+  be able to guess or pre-create, and the saved characters are the headroom.
+- `create_profile_dir()` refuses a temp directory too deep to work with, and
+  says so. A capture that cannot run should say why before the browser starts,
+  not leave a `FATAL` for the caller to interpret.
 
 ### Credential hygiene
 
@@ -328,8 +384,21 @@ credential can mask a failure in the other.
   removal on success/failure/invalid render/timeout, descendants dead before
   cleanup, the pre-existing profile untouched, and no cached draft content or
   credential surviving anywhere.
-- `tests/browser-isolation-mutation.php` — **14 of 14 mutants killed**, including
-  the removal of `--user-data-dir` itself (7 failing assertions).
+- `tests/browser-trust-test.php` — 14 tests over trust and temporary files: no
+  trust store when nothing is configured, a configured certificate present in
+  `home/.pki/nssdb` under our own nickname, the operator's own NSS database and
+  its sentinels never copied, an unreadable configured path failing loudly, a
+  configured directory expanding to every certificate in it, `0700` throughout,
+  `TMPDIR` inside the profile, a Chromium scratch directory not outliving the
+  capture, profiles removed after failure and after a timeout, two captures
+  still getting different profiles, and the socket-path budget arithmetic.
+  Two of the fourteen run **real Chrome** against a TLS endpoint the suite
+  starts itself: with the certificate pinned the capture succeeds, and without
+  it the capture fails with `ERR_CERT_AUTHORITY_INVALID`.
+- `tests/browser-isolation-mutation.php` — **17 of 17 mutants killed**, including
+  the removal of `--user-data-dir` itself (7 failing assertions), the removal of
+  the `TMPDIR` redirection, the removal of the trust-store build, and building
+  the trust store somewhere Chromium will not look.
 - `tests/preview-credential-hygiene-test.php` — 18 tests: neither credential in
   the response (plain or URL-encoded), the `REQUEST_URI` scrub preserving the
   path and unrelated arguments, the admin bar suppressed only for an authorised
@@ -341,7 +410,7 @@ credential can mask a failure in the other.
   including suppression removed, suppression keyed off the arguments instead of
   the authorisation, the scrub removed, the scrub overreaching into `$_GET`, and
   the transaction `Referrer-Policy` dropped.
-- Full suite: **373 passed, 0 failed**.
+- Full suite: **387 passed, 0 failed**.
 - Live, against the real site with a real session cookie and a cookie-free
   client: the preview body contains neither credential in any form, the
   response carries `no-cache`/`no-store`, `X-Robots-Tag: noindex` and
@@ -372,8 +441,15 @@ credential can mask a failure in the other.
   including a plugin that hooks earlier — still holds the credential in its own
   copy. The scrub reduces the exposure surface; it cannot reach a value that was
   already copied out.
+- **The socket-path budget is a real ceiling.** `TMPDIR` must resolve to 71
+  bytes or fewer, which holds for any ordinary `/tmp` but not for a deeply
+  nested one. `create_profile_dir()` refuses the capture with an explicit
+  message rather than letting Chrome fail obscurely, but the fix is the
+  operator's: set `TMPDIR` to a shorter path.
 - **A SIGKILL leaves a profile behind.** No in-process mechanism can prevent
   that. The stale sweep reclaims such a directory once it is an hour old, so the
   exposure is bounded by that interval rather than being immediate — a killed
   capture can leave a rendered draft readable at a known path for up to an hour.
+  The `TMPDIR` moved inside that profile, so a killed capture takes its scratch
+  directories with it in the ordinary case.
   `SIGKILL`-proof cleanup would need a separate process or an OS-level sandbox.
