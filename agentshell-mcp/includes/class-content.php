@@ -3,12 +3,19 @@ namespace AgentShell_MCP;
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
+require_once __DIR__ . '/class-content-write-guard.php';
+
 /**
  * Content primitives — intent-level wrappers over post/page CRUD for agents.
  *
  * Content is passed as raw HTML; WordPress auto-formatting (wpautop, kses)
  * is not applied because these tools run as administrators (unfiltered_html).
  * This matches the theme's REST API behaviour, where raw HTML is preserved.
+ *
+ * Every write below runs inside `Content_Write_Guard`, because WordPress can
+ * report a failed `wp_insert_post()` after it has already written the post,
+ * its terms and its metadata — and then never tell the caller which content it
+ * wrote. See that class for the measurement and the limits.
  */
 class Content_Primitives {
     const TYPES = array( 'post', 'page' );
@@ -23,7 +30,7 @@ class Content_Primitives {
      * @param string $status  draft|publish|pending|private|future
      * @param array  $extra   Optional: post_name, parent (pages), comment_status,
      *                        ping_status, post_date
-     * @return array Created record { id, type, title, status, edit_url }
+     * @return array Created record { id, type, title, status, edit_url, atomicity }
      * @throws \InvalidArgumentException
      */
     public static function create( $type, $title, $content, $status = 'draft', array $extra = array() ) {
@@ -32,6 +39,18 @@ class Content_Primitives {
         }
         if ( ! in_array( $status, self::STATUSES, true ) ) {
             throw new \InvalidArgumentException( "Unsupported status '{$status}'. Use " . implode( ', ', self::STATUSES ) . '.' );
+        }
+
+        // WordPress will happily create an untitled, empty draft and hand back
+        // an id for it, which is not a page anyone can find, edit or preview.
+        // Refusing here costs nothing — nothing has been written yet — and
+        // stops the tool reporting success for content that was never asked
+        // for. This mirrors core's own `empty_content` rule: title and
+        // content both empty, with no excerpt to stand in for either.
+        if ( '' === trim( (string) $title ) && '' === trim( (string) $content ) ) {
+            throw new \InvalidArgumentException(
+                "Cannot create {$type}: a title and content are both empty, which WordPress stores as an untitled draft rather than a page. Pass a title, content, or both."
+            );
         }
 
         $postarr = array(
@@ -50,15 +69,22 @@ class Content_Primitives {
             $postarr['post_parent'] = (int) $extra['parent'];
         }
 
-        $id = wp_insert_post( wp_slash( $postarr ), true );
-        if ( is_wp_error( $id ) ) {
-            throw new \InvalidArgumentException( 'Could not create ' . $type . ': ' . $id->get_error_message() );
-        }
-        if ( ! $id ) {
-            throw new \InvalidArgumentException( 'Could not create ' . $type . '. WordPress returned no post ID.' );
-        }
+        // describe() is inside the guard on purpose: if reading the post back
+        // fails, the tool must not report a failure over a post that exists.
+        $record = Content_Write_Guard::run( function () use ( $postarr, $type ) {
+            $id = wp_insert_post( wp_slash( $postarr ), true );
+            if ( is_wp_error( $id ) ) {
+                throw new \InvalidArgumentException( 'Could not create ' . $type . ': ' . $id->get_error_message() );
+            }
+            if ( ! $id ) {
+                throw new \InvalidArgumentException( 'Could not create ' . $type . '. WordPress returned no post ID.' );
+            }
 
-        return self::describe( $id, $type );
+            return self::describe( $id, $type );
+        } );
+
+        $record['atomicity'] = Content_Write_Guard::report();
+        return $record;
     }
 
     /**
@@ -67,7 +93,7 @@ class Content_Primitives {
      * @param int    $id      Post ID
      * @param string $type    'post' | 'page'
      * @param array  $changes Keys: title, content, status, slug, parent
-     * @return array Updated record
+     * @return array Updated record, including an `atomicity` block
      * @throws \InvalidArgumentException
      */
     public static function update( $id, $type, array $changes ) {
@@ -102,15 +128,20 @@ class Content_Primitives {
             }
         }
 
-        $result = wp_update_post( wp_slash( $postarr ), true );
-        if ( is_wp_error( $result ) ) {
-            throw new \InvalidArgumentException( 'Could not update ' . $type . ' #' . $id . ': ' . $result->get_error_message() );
-        }
-        if ( ! $result ) {
-            throw new \InvalidArgumentException( 'Could not update ' . $type . ' #' . $id . '. WordPress returned no post ID.' );
-        }
+        $record = Content_Write_Guard::run( function () use ( $postarr, $type, $id ) {
+            $result = wp_update_post( wp_slash( $postarr ), true );
+            if ( is_wp_error( $result ) ) {
+                throw new \InvalidArgumentException( 'Could not update ' . $type . ' #' . $id . ': ' . $result->get_error_message() );
+            }
+            if ( ! $result ) {
+                throw new \InvalidArgumentException( 'Could not update ' . $type . ' #' . $id . '. WordPress returned no post ID.' );
+            }
 
-        return self::describe( (int) $id, $type );
+            return self::describe( (int) $id, $type );
+        } );
+
+        $record['atomicity'] = Content_Write_Guard::report();
+        return $record;
     }
 
     /**
