@@ -47,6 +47,14 @@ class Transaction_Manager {
     const PREVIEW_TTL_SECONDS = 900;
 
     private static $instance;
+
+    /**
+     * Whether the agentshell_config write hook is already attached.
+     *
+     * Per request, not per instance — see the constructor for why an instance
+     * bound hook is not interchangeable with a correctly dispatched one.
+     */
+    private static $config_hook_registered = false;
     private $active = null; // cached option payload
 
     public static function instance() {
@@ -59,7 +67,36 @@ class Transaction_Manager {
     private function __construct() {
         // Observe every write to agentshell_config: defer to staging while a
         // transaction is open, otherwise record history.
-        add_filter( 'pre_update_option_' . Store::CONFIG_KEY, array( $this, 'on_config_update' ), 10, 2 );
+        //
+        // Registered once per request against a static dispatcher rather than
+        // against $this. Two reasons, and the second is the one that bites:
+        //
+        //   - a filter chain is not the same as one filter. apply_filters()
+        //     threads each callback's return value into the next, so N
+        //     registered callbacks each see the previous one's answer, not the
+        //     value that was passed in.
+        //   - the manager memoises its payload in $this->active and only
+        //     re-reads the option when that is null. An instance that has been
+        //     replaced therefore believes a transaction is still open forever,
+        //     and keeps cancelling writes that were meant to land.
+        //
+        // The dispatcher always resolves the current singleton, so a replaced
+        // instance cannot be reached through the hook.
+        if ( ! self::$config_hook_registered ) {
+            self::$config_hook_registered = true;
+            add_filter( 'pre_update_option_' . Store::CONFIG_KEY, array( self::class, 'filter_config_update' ), 10, 2 );
+        }
+    }
+
+    /**
+     * Static entry point for the agentshell_config write hook.
+     *
+     * @param mixed $value     New value about to be written.
+     * @param mixed $old_value Currently stored value.
+     * @return mixed The value WordPress should store.
+     */
+    public static function filter_config_update( $value, $old_value ) {
+        return self::instance()->on_config_update( $value, $old_value );
     }
 
     public function payload() {
@@ -152,14 +189,24 @@ class Transaction_Manager {
      * REST endpoint, configurator). While a transaction is open, defer to
      * staging; otherwise record the mutation into history.
      *
+     * Cancellation is done by returning $old_value, not false. WordPress's
+     * pre_update_option_{$option} is a *transform* filter, not a veto: core
+     * assigns whatever comes back to $value and then compares it to the stored
+     * value, skipping the write only when they match (wp-includes/option.php,
+     * the "If the new and old values are the same" check). Returning false
+     * therefore did not cancel anything — it replaced the configuration with
+     * the boolean, which agentshell_get_config() then quietly re-seeded from
+     * default-config.json, so the agent's committed site silently reverted to
+     * defaults. Returning the old value is what actually cancels.
+     *
      * @param mixed $value     New value about to be written
      * @param mixed $old_value Currently stored value
-     * @return mixed|false
+     * @return mixed
      */
     public function on_config_update( $value, $old_value ) {
         if ( $this->is_active() ) {
             $this->stage( $value );
-            return false; // cancel the database write
+            return $old_value; // unchanged — WordPress skips the write
         }
         if ( $value !== $old_value && ! Store::$suppress_history ) {
             Store::record_mutation( $old_value, $value, 'config_update', Store::$operation_label );
