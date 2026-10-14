@@ -1,8 +1,26 @@
 # Screenshot storage — confirmed privacy/security defect
 
-**Status:** confirmed, open. Not fixed by the capture-hardening work in
-`fix/availability-screenshot-deadlock`; fixing it needs its own approval
-because it changes where screenshots live and how they are served.
+> **FIXED.** The recommendation below (authenticated retrieval URL) is **wrong
+> for AgentShell's topology** and is retained only as the original finding. The
+> daemon holds the WordPress credentials and attaches them when forwarding tool
+> calls; nothing passes those credentials to a client's image viewer, so a
+> protected endpoint would be secure *and* unusable. What shipped instead is
+> [`SCREENSHOT-PRIVACY-DESIGN.md`](./SCREENSHOT-PRIVACY-DESIGN.md) — a native
+> MCP image content block, with private storage and per-actor authorisation
+> behind it.
+
+**Status:** fixed. Captures are delivered inline as MCP image blocks by
+default; `inline: false` stores them outside the document root, readable only
+by the actor that took the capture, and expiring after 24h. The pre-existing
+public files under `uploads/agentshell-screenshots/` are migrated into private
+storage and their public paths are removed immediately.
+
+Note on item 1 below: the recommendation's `wp-content/` example does *not*
+satisfy "outside the web-served tree" — `wp-content/` is inside the document
+root on a standard install, and neither the suggested `.htaccess` nor directory
+permissions stop a co-located nginx. Verified live before writing it off: an
+unauthenticated `GET` returned the capture bytes. See
+[`SCREENSHOT-PRIVACY-DESIGN.md`](./SCREENSHOT-PRIVACY-DESIGN.md) §3.
 
 ## Finding
 

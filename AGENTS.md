@@ -45,7 +45,7 @@ No other document is allowed to redefine these three statements.
 
 ## 2. MCP tools (authoritative count: **45+**)
 
-The plugin ships **45+ `agentshell_*` tools** (50 in `agentshell-mcp` + 4 in `agentshell-blocks` = 54 at the time of writing; growth is expected). Earlier counts cited in other files ("10 tools", "11 tools", "12 tools") are deprecated and must not be reproduced.
+The plugin ships **45+ `agentshell_*` tools** (53 in `agentshell-mcp` + 4 in `agentshell-blocks` = 57 at the time of writing; growth is expected). Earlier counts cited in other files ("10 tools", "11 tools", "12 tools") are deprecated and must not be reproduced.
 
 **Categories (call by category; the names below are exhaustive at the time of writing — discover additions with `agentshell_get_capabilities`):**
 
@@ -58,7 +58,13 @@ The plugin ships **45+ `agentshell_*` tools** (50 in `agentshell-mcp` + 4 in `ag
 - **Content primitives** — `agentshell_create_page`, `agentshell_create_post`, `agentshell_update_content`, `agentshell_update_post_content`, `agentshell_publish`, `agentshell_unpublish`, `agentshell_search_content`, `agentshell_get_content`.
 - **Navigation management** — `agentshell_register_navigation` (create or replace a WordPress nav menu by name and optionally assign to a registered theme location).
 - **Transactions (the safe change loop)** — `agentshell_begin_transaction`, `agentshell_get_transaction`, `agentshell_preview_transaction`, `agentshell_validate_transaction`, `agentshell_commit_transaction`, `agentshell_rollback_transaction`.
-- **Site meta & visuals** — `agentshell_get_site_info`, `agentshell_screenshot`.
+- **Site meta & visuals** — `agentshell_get_site_info`, `agentshell_screenshot`, `agentshell_get_screenshot`.
+  `agentshell_screenshot` returns a native MCP **image content block** by default (`inline: true`), so no
+  credential handoff and no second request is needed to see the result. `inline: false` stores the capture
+  outside the document root and returns an opaque id instead; `agentshell_get_screenshot` retrieves it.
+  Retrieval is authorised by **capture ownership**, not merely by authentication — a second administrator
+  passing `manage_options` is refused. Never treat a returned retrieval URL as deliverable without fetching
+  it. Full contract: [`docs/SCREENSHOT-PRIVACY-DESIGN.md`](docs/SCREENSHOT-PRIVACY-DESIGN.md).
 
 **Hard rules about tool use:**
 

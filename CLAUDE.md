@@ -19,7 +19,7 @@
 - Compose zones: `agentshell_update_zone_slots` (header/footer), `agentshell_update_zone_composition` (main).
 - Register widgets: `agentshell_register_widget`. Lifecycle: `agentshell_enable_widget` / `agentshell_disable_widget` / `agentshell_remove_widget` (config-registered only).
 - Create / publish / search content: `agentshell_create_page` / `create_post`, `update_content`, `publish` / `unpublish`, `search_content`, `get_content`.
-- Verify visually: `agentshell_screenshot`. Validate: `agentshell_validate`. Audit: `agentshell_get_audit_log`. Time travel: `agentshell_restore_revision`, `agentshell_restore_snapshot`.
+- Verify visually: `agentshell_screenshot` (returns a native MCP image block). Validate: `agentshell_validate`. Audit: `agentshell_get_audit_log`. Time travel: `agentshell_restore_revision`, `agentshell_restore_snapshot`.
 
 ## Hard rules (cross-references to `AGENTS.md`)
 
@@ -55,7 +55,7 @@ Auth: `Authorization: Basic $(echo -n 'user:app_password' | base64)`, or `X-Agen
 |---|---|
 | `AGENTS.md` | **Authoritative agent guide** — full MCP tool reference, working pattern, hard rules. |
 | `agentshell-mcp/agentshell-mcp.php` | MCP plugin entrypoint; filter-based tool registry. |
-| `agentshell-mcp/includes/` | Core services: `class-store.php` (revisions / audit / snapshots / profiles), `class-transactions.php` (per-actor locks), `class-doctor.php` (validator), `class-content.php` (content primitives), `class-screenshot.php`, `tools/` (50 MCP tools). |
+| `agentshell-mcp/includes/` | Core services: `class-store.php` (revisions / audit / snapshots / profiles), `class-transactions.php` (per-actor locks), `class-doctor.php` (validator), `class-content.php` (content primitives), `class-screenshot.php`, `class-screenshot-store.php` (private store, retention, per-actor authorisation), `tools/` (53 MCP tools). |
 | `agentshell-blocks/agentshell-blocks.php` | Bilateral widget registry + 4 widget MCP tools. |
 | `agentshell-mcp-daemon/daemon.php` | PHP CLI proxy: stdio (MCP JSON-RPC) ↔ HTTP (WP REST). |
 | `functions.php` | Config helpers, `agentshell_inject_saved_styles` (CSS + structural prohibition), bilateral widget registry merge, REST auth, pre-approved library loader. |

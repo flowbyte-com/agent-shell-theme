@@ -21,6 +21,7 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/fake-browser.php';
 
 // The class under test, loaded directly. bootstrap.php does not pull in the
 // plugin, and the parent process needs the real Screenshot for lock_path() and
@@ -43,56 +44,9 @@ class Screenshot_Test_Helpers {
 // Harness
 // ---------------------------------------------------------------------------
 
-/**
- * A fake browser: a shell script standing in for Chrome.
- *
- * Modes are read from AGENTSHELL_FAKE_CHROME_MODE by the script itself, so a
- * single child process can be told how to behave.
- *
- *   success  write a valid PNG, exit 0
- *   hang     write a valid PNG, then block forever (and spawn a grandchild,
- *            so the tree-termination test has something to observe)
- *   fail     write nothing, exit 3
- *   garbage  write a file that is not a PNG at all
- *   truncate write a PNG header with no image data
- */
-function agentshell_fake_browser_path( $dir ) {
-    $path = $dir . '/fake-browser.sh';
-    if ( ! file_exists( $path ) ) {
-        $script = <<<'SH'
-#!/bin/bash
-# Fake headless browser. Parses --screenshot=<path>, behaves per mode.
-OUT=""
-for a in "$@"; do
-  case "$a" in
-    --screenshot=*) OUT="${a#--screenshot=}" ;;
-  esac
-done
-MODE="${AGENTSHELL_FAKE_CHROME_MODE:-success}"
-# 8-byte PNG magic + IEND-ish tail: enough for magic validation and >100 bytes.
-write_png() {
-  printf '\211PNG\r\n\032\n' > "$OUT"
-  head -c 200 /dev/zero | tr '\0' 'X' >> "$OUT"
-}
-case "$MODE" in
-  hang)
-    write_png
-    # A grandchild that would outlive us if only the direct child were killed.
-    sleep 300 &
-    echo "$!" > "${OUT}.gc"
-    wait
-    ;;
-  fail)     exit 3 ;;
-  garbage)  printf 'NOT-A-PNG-AT-ALL' > "$OUT"; head -c 200 /dev/zero | tr '\0' 'X' >> "$OUT" ;;
-  truncate) printf '\211PNG\r\n\032\n' > "$OUT"; head -c 20 /dev/zero | tr '\0' 'X' >> "$OUT" ;;
-  *)        write_png ;;
-esac
-SH;
-        file_put_contents( $path, $script );
-        chmod( $path, 0755 );
-    }
-    return $path;
-}
+// ---------------------------------------------------------------------------
+// Harness
+// ---------------------------------------------------------------------------
 
 /**
  * Child script: performs exactly one capture and reports the outcome as JSON.
@@ -161,7 +115,7 @@ define( 'AGENTSHELL_SCREENSHOT_TIMEOUT', $timeout );
 $out = array( 'ok' => false );
 $t0 = microtime( true );
 try {
-    $shot = Screenshot::capture( $url, 800, 600 );
+    $shot = Screenshot::capture( $url, 800, 600, $workdir . '/shots' );
     $out = array(
         'ok'      => true,
         'file'    => $shot['file'],
@@ -192,6 +146,8 @@ PHP;
 class Screenshot_Test_Case {
     public $dir;
     public $uploads;
+    /** Destination the child passes to capture(). Stands in for private storage. */
+    public $shots;
     public $browser;
     public $class_file;
     public $child;
@@ -201,6 +157,11 @@ class Screenshot_Test_Case {
         mkdir( $this->dir, 0700, true );
         $this->uploads = $this->dir . '/uploads';
         mkdir( $this->uploads, 0755, true );
+        // capture() no longer chooses its own destination: the caller passes a
+        // directory outside every web-served path. Tests assert against it
+        // directly rather than against a hardcoded uploads subdirectory.
+        $this->shots = $this->dir . '/shots';
+        mkdir( $this->shots, 0700, true );
 
         $this->browser    = agentshell_fake_browser_path( $this->dir );
         $this->class_file = dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php';
@@ -301,7 +262,7 @@ class Screenshot_Test_Case {
 echo "-- screenshot capture regressions --\n";
 
 /** 1. One successful capture. */
-Agentshell_Test::run( 'capture: a successful run produces a valid PNG in uploads', function () {
+Agentshell_Test::run( 'capture: a successful run produces a valid PNG in the caller-chosen directory', function () {
     $t = new Screenshot_Test_Case();
     $t->set_up();
     try {
@@ -328,7 +289,7 @@ Agentshell_Test::run( 'lock: a concurrent capture is refused immediately, not qu
         // running. Probing the parent's own lock path would not work:
         // sys_get_temp_dir() caches on first call, so the parent cannot see
         // the child's TMPDIR.
-        $marker = $t->uploads . '/agentshell-screenshots/.pending-*.png.gc';
+        $marker = $t->shots . '/.pending-*.png.gc';
         $in_flight = false;
         for ( $i = 0; $i < 100; $i++ ) {
             if ( glob( $marker ) ) { $in_flight = true; break; }
@@ -376,7 +337,7 @@ Agentshell_Test::run( 'timeout: the browser process tree is terminated, no orpha
         Agentshell_Test::assert_equals( 'timeout', $out['kind'] ?? '', 'precondition: the capture must time out' );
 
         // The fake browser wrote its grandchild's pid next to its output file.
-        $markers = glob( $t->uploads . '/agentshell-screenshots/.pending-*.png.gc' );
+        $markers = glob( $t->shots . '/.pending-*.png.gc' );
         Agentshell_Test::assert_true( is_array( $markers ) && count( $markers ) > 0, 'the fake browser must have recorded a grandchild pid' );
 
         $gc = (int) trim( (string) file_get_contents( $markers[0] ) );
@@ -428,7 +389,7 @@ Agentshell_Test::run( 'temp: a failed capture publishes nothing and leaves no te
             $out = $t->run_capture( $mode, 5 );
             Agentshell_Test::assert_false( $out['ok'], "$mode must not report success" );
 
-            $shot_dir = $t->uploads . '/agentshell-screenshots';
+            $shot_dir = $t->shots;
             $published = glob( $shot_dir . '/shot-*.png' );
             Agentshell_Test::assert_true( empty( $published ), "$mode must publish no PNG (found: " . implode( ',', (array) $published ) . ')' );
 
@@ -448,10 +409,10 @@ Agentshell_Test::run( 'temp: a timed-out capture publishes nothing', function ()
         $out = $t->run_capture( 'hang', 2 );
         Agentshell_Test::assert_equals( 'timeout', $out['kind'] ?? '', 'precondition: the capture must time out' );
 
-        $published = glob( $t->uploads . '/agentshell-screenshots/shot-*.png' );
+        $published = glob( $t->shots . '/shot-*.png' );
         Agentshell_Test::assert_true( empty( $published ), 'a timed-out capture must publish nothing' );
 
-        $pending = glob( $t->uploads . '/agentshell-screenshots/.pending-*.png' );
+        $pending = glob( $t->shots . '/.pending-*.png' );
         Agentshell_Test::assert_true( empty( $pending ), 'a timed-out capture must remove its temp PNG' );
     } finally { $t->tear_down(); }
 });
@@ -774,7 +735,7 @@ Agentshell_Test::run( 'timeout: enforced with neither setsid nor timeout availab
         // not exist and the signal is silently discarded — only proc_terminate
         // on the direct child runs. Chrome's zygote and renderers would then
         // outlive the request and hold the lock against the next attempt.
-        $markers = glob( $t->uploads . '/agentshell-screenshots/.pending-*.png.gc' );
+        $markers = glob( $t->shots . '/.pending-*.png.gc' );
         Agentshell_Test::assert_true( is_array( $markers ) && count( $markers ) > 0, 'the fake browser must have recorded a grandchild pid' );
         $gc = (int) trim( (string) file_get_contents( $markers[0] ) );
         usleep( 400000 );

@@ -131,7 +131,10 @@ class WP_Error {
 }
 
 if ( ! class_exists( 'WP_REST_Request' ) ) {
-    class WP_REST_Request {
+    // Implements ArrayAccess because production code reads route params with
+    // array syntax ($request['id']); without the interface PHP refuses the
+    // access outright, which is a stub artefact rather than a real defect.
+    class WP_REST_Request implements ArrayAccess {
         private $params;
         public function __construct( $params = array() ) { $this->params = $params; }
         public function get_param( $k )         { return $this->params[ $k ] ?? null; }
@@ -146,8 +149,26 @@ if ( ! class_exists( 'WP_REST_Request' ) ) {
             }
             return '';
         }
-        public function offsetExists( $k )      { return isset( $this->params[ $k ] ); }
-        public function offsetGet( $k )         { return $this->params[ $k ] ?? null; }
+        public function offsetExists( $k ): bool  { return isset( $this->params[ $k ] ); }
+        public function offsetGet( $k ): mixed    { return $this->params[ $k ] ?? null; }
+        public function offsetSet( $k, $v ): void { $this->params[ $k ] = $v; }
+        public function offsetUnset( $k ): void   { unset( $this->params[ $k ] ); }
+    }
+}
+
+if ( ! class_exists( 'WP_REST_Response' ) ) {
+    class WP_REST_Response {
+        public $data;
+        public $status;
+        private $headers = array();
+        public function __construct( $data = null, $status = 200 ) {
+            $this->data   = $data;
+            $this->status = $status;
+        }
+        public function header( $key, $value ) { $this->headers[ $key ] = $value; }
+        public function get_headers() { return $this->headers; }
+        public function get_data() { return $this->data; }
+        public function get_status() { return $this->status; }
     }
 }
 
@@ -335,7 +356,20 @@ function add_action( $tag = '', $callback = null, $priority = 10, $accepted_args
 function add_filter( $tag = '', $callback = null, $priority = 10, $accepted_args = 1 ) {
     $GLOBALS['_agentshell_test_filters'][ $tag ][] = $callback;
 }
-function apply_filters( $tag, $value ) { return $value; }
+/**
+ * Dispatch to registered callbacks, as WordPress does.
+ *
+ * A no-op stub would make any code path that gathers tools through a filter
+ * untestable — Server::gather_tools() would always see an empty list, and a
+ * test could not tell "the tool misbehaved" from "the tool was never called".
+ */
+function apply_filters( $tag, $value, ...$args ) {
+    if ( empty( $GLOBALS['_agentshell_test_filters'][ $tag ] ) ) { return $value; }
+    foreach ( $GLOBALS['_agentshell_test_filters'][ $tag ] as $callback ) {
+        $value = call_user_func_array( $callback, array_merge( array( $value ), $args ) );
+    }
+    return $value;
+}
 function do_action() {}
 function remove_filter() {}
 function remove_action() {}
@@ -343,13 +377,12 @@ function remove_action() {}
 /**
  * Invoke every recorded callback for $tag, threading $value through.
  * Falls back to $value when nothing is registered.
+ *
+ * Identical to apply_filters() now that the latter dispatches; kept as an
+ * explicit alias so existing call sites read as intent rather than accident.
  */
 function agentshell_test_apply_filter( $tag, $value, ...$args ) {
-    if ( empty( $GLOBALS['_agentshell_test_filters'][ $tag ] ) ) { return $value; }
-    foreach ( $GLOBALS['_agentshell_test_filters'][ $tag ] as $callback ) {
-        $value = call_user_func_array( $callback, array_merge( array( $value ), $args ) );
-    }
-    return $value;
+    return apply_filters( $tag, $value, ...$args );
 }
 
 if ( ! function_exists( 'error_log' ) ) {

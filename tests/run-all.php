@@ -11,6 +11,8 @@
  *   - flatten          flatten/unflatten roundtrip + custom-var precedence
  *   - doctor           minimal validator surface coverage
  *   - screenshot       capture lock, wall-clock deadline, no stale/unsafe output
+ *   - screenshot-privacy  inline delivery, private storage, authorisation,
+ *                          retention, legacy migration
  *
  * Usage:
  *   php tests/run-all.php
@@ -36,6 +38,7 @@ $suites = array(
     'daemon-version'       => __DIR__ . '/daemon-version-test.php',
     'navigation'           => __DIR__ . '/navigation-test.php',
     'screenshot'           => __DIR__ . '/screenshot-test.php',
+    'screenshot-privacy'   => __DIR__ . '/screenshot-privacy-test.php',
     'configurator-state'   => __DIR__ . '/run-configurator-state.php',
 );
 
