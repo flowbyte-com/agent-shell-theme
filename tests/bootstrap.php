@@ -146,6 +146,30 @@ function wp_json_encode( $data ) {
     return json_encode( $data, JSON_UNESCAPED_SLASHES );
 }
 
+/**
+ * Serialisation, as wp-includes/functions.php defines it.
+ *
+ * The transaction lease compare-and-swaps on the *stored* bytes, so a test
+ * cannot exercise it against an option store that hands back PHP values and a
+ * guard that compares strings unless both sides agree on what the column
+ * holds. These are the two halves of that agreement.
+ */
+if ( ! function_exists( 'maybe_serialize' ) ) {
+    function maybe_serialize( $data ) {
+        if ( is_array( $data ) || is_object( $data ) ) { return serialize( $data ); }
+        return $data;
+    }
+}
+if ( ! function_exists( 'maybe_unserialize' ) ) {
+    function maybe_unserialize( $data ) {
+        if ( is_string( $data ) && preg_match( '/^a:\d+:|^s:\d+:|^O:\d+:/', $data ) ) {
+            $out = @unserialize( $data );
+            return false === $out && 'b:0;' !== $data ? $data : $out;
+        }
+        return $data;
+    }
+}
+
 function is_wp_error( $thing ) {
     return $thing instanceof WP_Error;
 }
@@ -299,11 +323,20 @@ function agentshell_test_send_security_headers() {
  * Fake wpdb for the audit-log tests. Operates on a global array, so
  * tests can seed rows, run a prune, and inspect what survived.
  *
- * The stub understands only the SQL the audit-log class emits:
- *   - DELETE FROM {table} WHERE created_at < '<cutoff>'
- *   - DELETE FROM {table} ORDER BY id ASC LIMIT {n}
- *   - SELECT COUNT(*) FROM {table}
- *   - INSERT INTO {table} (...) VALUES (...)
+ * The stub understands two families of SQL:
+ *   - the audit-log prune:
+ *       DELETE FROM {table} WHERE created_at < '<cutoff>'
+ *       DELETE FROM {table} ORDER BY id ASC LIMIT {n}
+ *       SELECT COUNT(*) FROM {table}
+ *       INSERT INTO {table} (...) VALUES (...)
+ *   - the transaction lease's compare-and-swap on wp_options:
+ *       UPDATE {options} SET option_value = ... WHERE option_name = ... AND option_value = ...
+ *       DELETE FROM {options} WHERE option_name = ... AND option_value = ...
+ *
+ * The second family is the reason the guard is honoured rather than ignored:
+ * the lease's entire safety argument is that a write lands only if the row
+ * still holds the value the caller read, and a stub that quietly accepted
+ * every write would let that argument go untested.
  *
  * Any other query returns 0 / null and is harmless for tests that only
  * exercise the prune path. A global $_agentshell_test_audit_fail flag
@@ -317,26 +350,86 @@ $GLOBALS['_agentshell_test_audit_nextid'] = 0;
 if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
     class wpdb_stub_for_tests {
         public $prefix = 'wp_';
+        public $options = 'wp_options';
+
+        /**
+         * Faithful placeholder substitution.
+         *
+         * The previous version built the replacement string and handed it to
+         * preg_replace(), which silently ate backslashes: the regex engine
+         * treats `\\` in a replacement as an escape, so any escaped quote
+         * inside a value came out wrong. That stayed invisible because every
+         * existing caller passed a bare timestamp. The transaction lease swaps
+         * whole serialised option rows — dense with backslashes and quotes —
+         * so substitution has to genuinely round-trip. A callback keeps the
+         * replacement out of the regex engine's hands entirely.
+         */
         public function prepare( $sql, ...$args ) {
-            // Very small vsprintf-style substitution; sufficient for the
-            // audit-log class which only uses %s and %d with positional args.
-            $out = $sql;
+            if ( ! $args ) { return $sql; }
             $i = 0;
-            foreach ( $args as $a ) {
-                $marker = $i === 0 ? '%s' : ( strpos( $out, "'%s'" ) !== false ? "'%s'" : '%d' );
-                if ( is_numeric( $a ) ) {
-                    $out = preg_replace( '/%s|%d/', (string) $a, $out, 1 );
-                } else {
-                    $out = preg_replace( "/%s/", "'" . addslashes( (string) $a ) . "'", $out, 1 );
+            return preg_replace_callback(
+                '/%[%sdfF]/',
+                function ( $m ) use ( &$i, $args ) {
+                    $a = array_key_exists( $i, $args ) ? $args[ $i ] : null;
+                    $i++;
+                    switch ( $m[0] ) {
+                        case '%d': return (string) (int) $a;
+                        case '%f':
+                        case '%F': return (string) (float) $a;
+                        default:   return "'" . addslashes( (string) $a ) . "'";
+                    }
+                },
+                $sql
+            );
+        }
+
+        /**
+         * Pull `col = 'literal'` pairs out of a fragment, in order.
+         *
+         * The literal pattern accepts backslash escapes, so a value containing
+         * quotes — every serialised option, for instance — survives the round
+         * trip instead of terminating the match early.
+         */
+        private function conditions( $sql ) {
+            $pairs = array();
+            if ( preg_match_all( "/([A-Za-z_]+)\s*=\s*'((?:[^'\\\\]|\\\\.)*)'/", $sql, $m, PREG_SET_ORDER ) ) {
+                foreach ( $m as $set ) {
+                    if ( ! array_key_exists( $set[1], $pairs ) ) {
+                        $pairs[ $set[1] ] = stripslashes( $set[2] );
+                    }
                 }
-                $i++;
             }
-            return $out;
+            return $pairs;
         }
         public function query( $sql ) {
             if ( $GLOBALS['_agentshell_test_audit_fail'] ) {
                 throw new \RuntimeException( 'wpdb query failure (test)' );
             }
+
+            // ── Compare-and-swap on wp_options ────────────────────────────
+            // The transaction lease guards every write with the row's current
+            // bytes and has to know which side won. A stub that ignored the
+            // guard would let every concurrency assertion pass for the wrong
+            // reason — the code under test would look correct while the thing
+            // that makes it correct was never exercised. So these two shapes
+            // are honoured precisely, *including* the losing case: a guard
+            // that does not match what is stored now affects no rows, exactly
+            // as the database would report.
+            if ( preg_match( '/^UPDATE\s+\S*options\s+SET\s/i', $sql ) ) {
+                $split = stripos( $sql, ' WHERE ' );
+                if ( false === $split ) { return 0; }
+                return $this->cas_apply(
+                    $this->conditions( substr( $sql, 0, $split ) ),
+                    $this->conditions( substr( $sql, $split ) ),
+                    true
+                );
+            }
+            if ( preg_match( '/^DELETE\s+FROM\s+\S*options\s+WHERE\s+option_name/i', $sql ) ) {
+                $split = stripos( $sql, ' WHERE ' );
+                if ( false === $split ) { return 0; }
+                return $this->cas_apply( array(), $this->conditions( substr( $sql, $split ) ), false );
+            }
+
             $table = $GLOBALS['_agentshell_test_audit_table'];
             $before = count( $table );
             // INSERT handled by the dedicated test helper, not by SQL
@@ -364,6 +457,31 @@ if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
             }
             return 0;
         }
+
+        /**
+         * Apply a guarded write to the in-memory option store.
+         *
+         * The guard is `option_value = '<the bytes the caller read>'`, compared
+         * against what is stored *now*, after serialisation. Returning 0 when
+         * it does not match is the entire mechanism by which a losing racer
+         * learns it lost, so it is not a detail of the stub.
+         */
+        private function cas_apply( array $set, array $where, $is_update ) {
+            $options = $GLOBALS['_agentshell_test_options'];
+            $name    = isset( $where['option_name'] ) ? $where['option_name'] : null;
+            if ( null === $name || ! array_key_exists( $name, $options ) ) { return 0; }
+            if ( ! isset( $where['option_value'] ) ) { return 0; }
+            if ( maybe_serialize( $options[ $name ] ) !== $where['option_value'] ) { return 0; }
+            if ( $is_update ) {
+                if ( ! isset( $set['option_value'] ) ) { return 0; }
+                $options[ $name ] = maybe_unserialize( $set['option_value'] );
+            } else {
+                unset( $options[ $name ] );
+            }
+            $GLOBALS['_agentshell_test_options'] = $options;
+            return 1;
+        }
+
         public function get_var( $sql ) {
             if ( $GLOBALS['_agentshell_test_audit_fail'] ) {
                 throw new \RuntimeException( 'wpdb get_var failure (test)' );

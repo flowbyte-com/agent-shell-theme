@@ -80,8 +80,8 @@ $mutants = array(
 
     "a direct config write during a transaction is stored instead of staged" => array(
         $TX_REL,
-        "            \$this->stage( \$value );\n            return \$old_value; // unchanged — WordPress skips the write",
-        "            \$this->stage( \$value );",
+        "        if ( \$this->stage( \$value ) ) {\n            return \$old_value; // unchanged — WordPress skips the write\n        }",
+        "        \$this->stage( \$value );",
     ),
 
     // ── readers that must take their configuration explicitly ──────────────

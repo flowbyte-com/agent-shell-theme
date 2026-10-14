@@ -29,6 +29,11 @@
  *                      HTML; the admin bar is suppressed only for an authorised
  *                      preview; expiry, invalidation and the combined draft +
  *                      transaction preview still hold
+ *   - transaction-lease   the inactivity lease and stale recovery: expiry is
+ *                          effective, recovery is audited and never silently
+ *                          destroys journalled work, and the option row is
+ *                          swapped under a value guard rather than by
+ *                          read-then-delete
  *   - config-consistency  the committed/effective split: register and enable
  *                      in one transaction, validation sees what would be
  *                      committed, ordinary renders do not see staged state,
@@ -70,6 +75,10 @@ $suites = array(
     // preview gate's credential, so it belongs beside the suites that have
     // already put those in memory.
     'config-consistency'   => __DIR__ . '/config-consistency-test.php',
+    // Loads the real Store, Doctor and Transaction_Manager and drives the
+    // lease with a frozen clock, so it belongs after the suites that have
+    // already put those in memory.
+    'transaction-lease'    => __DIR__ . '/transaction-lease-test.php',
     'security'             => __DIR__ . '/security-test.php',
     'hardening'            => __DIR__ . '/hardening-test.php',
     'inject-block'         => __DIR__ . '/inject-block-test.php',
