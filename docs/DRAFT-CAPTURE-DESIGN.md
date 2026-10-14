@@ -1,8 +1,10 @@
 # Phase 2 — screenshotting drafts without publishing them
 
-**Status: proposal. Not implemented.** Phase 1 is
-[`TRANSACTION-PREVIEW.md`](./TRANSACTION-PREVIEW.md); this is the next piece,
-designed and stopped at for review.
+**Status: implemented.** Phase 1 is
+[`TRANSACTION-PREVIEW.md`](./TRANSACTION-PREVIEW.md). The design below was
+written first and settled the approach; the sections marked *As built* record
+what implementation and live measurement actually showed, including the two
+vulnerabilities that surfaced only under negative testing.
 
 ## The problem
 
@@ -141,7 +143,156 @@ Why this one:
 - Re-run the Phase 2 core probe against a *revision* and an *auto-draft*, not
   only `draft` and `private`.
 
-## Status
+## As built
 
-Design only. Nothing in this document is implemented, and no MCP tool exposes
-draft capture yet.
+The open questions above are answered by measurement, not assumption.
+
+### Chrome makes one request per capture
+
+Measured with a logging mu-plugin rather than inferred. Chrome fetches the
+preview document exactly once, so single-use would have been technically
+feasible. It was not adopted: the decision was that the credential need not be
+single-use, and the cost of that is paid back with a **300-second TTL** instead
+of the transaction preview's 900 — the exposure that argues for single-use is
+the URL travelling in access logs, and a short window makes a log line a dead
+end rather than a standing capability.
+
+### The caller identity travels as a signed argument, not in the signature
+
+An HMAC is one-way, and Chrome's request has no identity to read the actor back
+out of. So `agentshell_post_user` travels as its own query argument, in the
+clear — a user id is not a secret — and the signature is what makes it
+trustworthy, since any edit to it invalidates the match.
+
+This is what makes item 2 above enforceable: the post id *and* the actor id are
+both inside the signed string.
+
+### The naive version was measured, and it is why the gates exist
+
+A deliberately unrestricted `?asprobe_user=1` impersonation was built and
+measured. It opened **both** unrelated private posts **and** the entire REST
+API, including user enumeration — because REST is served on `parse_request`,
+which runs *after* `init`, so an identity restored at `init` is already in place
+when the REST server authorises. That measurement is the justification for four
+independent gates rather than one:
+
+| Gate | Refuses |
+|---|---|
+| Route (`agentshell_post_preview_route_allowed()`) | anything that is not a plain front-end page GET — REST, admin, admin-ajax, XML-RPC, wp-login, wp-cron, non-GET |
+| Signature (`Post_Preview::authenticate()`) | missing, forged, replayed, expired, or actor-less credentials |
+| Post binding (`agentshell_bind_post_preview_to_query()`) | a valid credential whose request resolved to some other post |
+| Capability | core's own check, untouched — `edit_post` for protected statuses, `read_post` for private |
+
+### Two vulnerabilities found by negative testing, both fixed
+
+Neither was visible by reading the code.
+
+1. **Cross-post render leak.** `WP_Query::set_404()` raises a flag and changes
+   nothing else: `$wp_query->posts` and the global `$post` still hold the
+   resolved object. So a credential for post 10 aimed at private post 11
+   returned **post 11's content with a 404 behind it**. Fix:
+   `agentshell_refuse_post_preview()` empties the query and clears the global.
+2. **Credential propagation through a redirect.** `redirect_canonical()`
+   preserves unknown query arguments, so a request carrying a preview key was
+   answered `301` with the full key in the `Location` header. Found with
+   `curl -I` — a HEAD request, which the route gate refuses, so it was invisible
+   from the browser path. Fix: `agentshell_block_preview_redirects()` suppresses
+   the redirect, parsing the query rather than substring-matching it so an
+   unrelated `?my_agentshell_post=1` still redirects normally.
+
+### Timing
+
+As predicted and confirmed against core source: the credential is verified on
+`init` priority 0 and the post binding is checked on `template_redirect`
+priority 0. Checking the target post *before* the main query is not merely
+insufficient — it cannot work, because before the query nobody knows what the
+request resolves to, and a request can reach the bound post through several
+aliases.
+
+### `agentshell_authorize_post_preview()` memoises per credential
+
+Keyed on the credential, not on a bare flag, matching
+`agentshell_authorize_transaction_preview()` beside it. In production one
+request carries one credential, so this changes no behaviour; it is what lets
+the decision be tested at all, since a single-process test run evaluates many
+credentials in sequence.
+
+### Browser profile isolation
+
+Item 6 of the original analysis — whether a rendered draft reaches a persistent
+browser profile — is now closed, and closed by measurement.
+
+`Screenshot::capture()` gives every capture its own throwaway browser profile:
+a fresh `profile-<32 hex>` name (unpredictable, because `/tmp` is
+world-writable), created `0700` under a per-uid base directory, passed
+explicitly as `--user-data-dir`, and removed when the capture ends. `HOME` and
+the `XDG_*` paths are pointed inside it too, so a component that resolves its
+own profile location still lands in the directory that is about to be deleted.
+Chrome's sandbox is untouched, and no TLS or SSRF control was relaxed.
+
+Cleanup runs in a `finally` *inside* the capture lock, so it happens only after
+`run_browser()` has returned or thrown — the point at which the browser's
+process tree is dead. A `register_shutdown_function` backstop covers a fatal
+error or an early exit, and a narrow stale sweep reclaims what a `SIGKILL` left
+behind. The recursive delete tests `is_link()` before `is_dir()`, and refuses
+any path that is not a direct `profile-<32 hex>` child of the base — so a
+planted symlink is unlinked as itself and never descended into.
+
+Verified against real Chrome under `strace`, which recorded the actual `execve`
+rather than trusting the code:
+
+```
+execve("/opt/google/chrome/chrome", ["--headless", ...,
+    "--user-data-dir=/tmp/agentshell-chrome-1000/profile-cdc2d25ba…",
+    "--screenshot=…", "http://agentshell.local/?page_id=14&preview=true&…"])
+```
+
+Every zygote child inherited the same profile. Afterwards: zero profile
+directories remained, and the developer's real Chrome profile gained **no
+paths at all** across a capture (identical sorted path set before and after),
+with zero occurrences of the draft's marker text anywhere in it.
+
+## Verification
+
+- `tests/post-preview-test.php` — 62 assertions, 0 failures. Positive and
+  negative cases: cross-post misuse, unauthorised actors, expired and stretched
+  expiries, deleted accounts, REST/admin/login/cron/POST routes, query aliases,
+  redirect suppression, credential hygiene.
+- `tests/post-preview-child.php` — the branches that cannot share a process
+  (`REST_REQUEST` / `XMLRPC_REQUEST` constants, and the unconfigured-secret
+  path), since a constant cannot be undefined once set.
+- 11 of 11 hand-written mutants of the four gates are killed by the suite.
+- `tests/browser-isolation-test.php` — 28 tests over browser profile isolation:
+  the flag reaching Chrome, `0700` permissions, per-capture uniqueness,
+  removal on success/failure/invalid render/timeout, descendants dead before
+  cleanup, the pre-existing profile untouched, and no cached draft content or
+  credential surviving anywhere.
+- `tests/browser-isolation-mutation.php` — **14 of 14 mutants killed**, including
+  the removal of `--user-data-dir` itself (7 failing assertions).
+- Full suite: **355 passed, 0 failed**.
+
+## Known limitations
+
+- **The credential is a bearer in a URL.** It reaches web server access logs.
+  The 300-second TTL bounds this; it does not eliminate it. Log scrubbing for
+  `agentshell_post_key` is the operator's responsibility.
+- **The rendered page contains the credential.** WordPress's admin bar builds
+  the "Customise" link from the current request URL, so a preview response
+  embeds `?agentshell_post_key=…` in a live `href` in its own body. Measured
+  live, not inferred. It is visible only to a request that already holds a
+  valid credential — an anonymous request to the same URL gets a bare 404 with
+  nothing in it — and the key expires with the TTL, but it does mean the
+  credential is in the HTML, the browser DOM, and anything that saves the page.
+  Stripping it from the admin bar was not attempted: it means filtering core's
+  admin-bar output, which is a wider change than this work should make.
+- **Revisions and auto-drafts are untested against core's check.** The status
+  list covers `draft`, `pending`, `private` and `future`; core's own behaviour
+  for `auto-draft` and revision previews was not probed.
+- **The binding gate trusts `get_queried_object_id()`.** A WordPress plugin
+  that rewrites query results after `template_redirect` priority 0 could
+  reintroduce the cross-post leak it closes. Nothing in this theme does.
+- **A SIGKILL leaves a profile behind.** No in-process mechanism can prevent
+  that. The stale sweep reclaims such a directory once it is an hour old, so the
+  exposure is bounded by that interval rather than being immediate — a killed
+  capture can leave a rendered draft readable at a known path for up to an hour.
+  `SIGKILL`-proof cleanup would need a separate process or an OS-level sandbox.

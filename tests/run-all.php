@@ -13,8 +13,13 @@
  *   - screenshot       capture lock, wall-clock deadline, no stale/unsafe output
  *   - screenshot-privacy  inline delivery, private storage, authorisation,
  *                          retention, legacy migration
+ *   - browser-isolation    a fresh private browser profile per capture, and
+ *                          its removal on success, failure and timeout
  *   - transaction-preview transaction-scoped rendering of staged config,
  *                          and its failure to leak to visitors or logs
+ *   - post-preview     draft capture without publishing: mint, signature,
+ *                      route and post-binding gates, cross-post misuse,
+ *                      privilege escalation, credential hygiene
  *
  * Usage:
  *   php tests/run-all.php
@@ -29,6 +34,7 @@ $suites = array(
     // suites then reuse instead of installing their own stubs. Anything that
     // needs a different Store has to run before it, in its own process.
     'transaction-preview'  => __DIR__ . '/transaction-preview-test.php',
+    'post-preview'         => __DIR__ . '/post-preview-test.php',
     'security'             => __DIR__ . '/security-test.php',
     'hardening'            => __DIR__ . '/hardening-test.php',
     'inject-block'         => __DIR__ . '/inject-block-test.php',
@@ -45,6 +51,7 @@ $suites = array(
     'navigation'           => __DIR__ . '/navigation-test.php',
     'screenshot'           => __DIR__ . '/screenshot-test.php',
     'screenshot-privacy'   => __DIR__ . '/screenshot-privacy-test.php',
+    'browser-isolation'    => __DIR__ . '/browser-isolation-test.php',
     'configurator-state'   => __DIR__ . '/run-configurator-state.php',
 );
 

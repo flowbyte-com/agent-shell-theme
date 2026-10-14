@@ -69,6 +69,17 @@ class Screenshot_Timeout_Exception extends \RuntimeException {}
  *           therefore never leave a truncated PNG behind for a later request
  *           to serve.
  *
+ *   Profile Every capture gets its own fresh, unpredictable, 0700 browser
+ *           profile directory, passed with --user-data-dir and deleted when the
+ *           capture ends. This is a privacy control, not a performance one: a
+ *           capture of an unpublished draft renders that draft's content and
+ *           the preview credential in its URL, and a browser's default profile
+ *           would keep both — cookies, cache, the HTTP cache entries, and the
+ *           rendered bytes — in the developer's own account directory, where
+ *           the next capture, another tool, or the next person at that machine
+ *           could read them. Nothing is left behind on any path: success,
+ *           browser failure, or timeout.
+ *
  * Screenshots land in wp-content/uploads/agentshell-screenshots/.
  */
 class Screenshot {
@@ -77,6 +88,19 @@ class Screenshot {
         'mobile'  => array( 390, 844 ),
         'tablet'  => array( 768, 1024 ),
     );
+
+    /** Marker file written into every profile this class creates. */
+    const PROFILE_MARKER = '.agentshell-profile';
+
+    /** Its contents. Proves a directory is ours before a sweep removes it. */
+    const PROFILE_MARKER_VALUE = 'agentshell-browser-profile-v1';
+
+    /**
+     * How old a profile must be before the stale sweep will consider removing
+     * it. Comfortably above the maximum capture timeout (300s) so a slow but
+     * live capture is never mistaken for an abandoned one.
+     */
+    const PROFILE_STALE_SECONDS = 3600;
 
     /**
      * Detect an available headless browser.
@@ -148,9 +172,21 @@ class Screenshot {
 
         // Everything below runs under the capture lock. try/finally so the
         // lock is released on success, on browser failure, and on timeout.
+        //
+        // The browser profile is created and destroyed *inside* the lock, and
+        // destroyed in a finally that runs after run_browser() has returned or
+        // thrown — which is the point at which the browser's process tree is
+        // guaranteed dead. Removing a profile while a surviving renderer still
+        // holds files open in it would leave the deletion partial and the
+        // leftovers on disk.
         $lock = self::acquire_lock();
         try {
-            $result = self::run_browser( $backend['command'], $url, $width, $height, $file );
+            $profile = self::create_profile_dir();
+            try {
+                $result = self::run_browser( $backend['command'], $url, $width, $height, $file, $profile );
+            } finally {
+                self::destroy_profile_dir( $profile );
+            }
         } finally {
             self::release_lock( $lock );
         }
@@ -171,12 +207,13 @@ class Screenshot {
      * Execute the headless browser under an enforced wall-clock deadline.
      *
      * The browser writes to $file via a private temp path, so a capture that
-     * fails or times out leaves nothing behind.
+     * fails or times out leaves nothing behind. The browser itself runs against
+     * a throwaway user-data directory that this class owns and removes.
      *
      * @return array { timed_out: bool, elapsed_ms: int }
      * @throws \InvalidArgumentException
      */
-    private static function run_browser( $binary, $url, $width, $height, $file ) {
+    private static function run_browser( $binary, $url, $width, $height, $file, $profile ) {
         $timeout = self::timeout_seconds();
 
         $dir  = dirname( $file );
@@ -193,6 +230,12 @@ class Screenshot {
             '--hide-scrollbars',
             '--window-size=' . $width . ',' . $height,
             '--virtual-time-budget=6000',
+            // The privacy-critical flag. Without it the browser resolves its
+            // default profile location itself, and a rendered draft — plus the
+            // preview credential in its URL, and every cookie the site's
+            // response set — can persist there across captures and outlive the
+            // request that rendered it. See the class docblock.
+            '--user-data-dir=' . $profile,
             '--screenshot=' . $tmp,
             $url,
         );
@@ -207,7 +250,7 @@ class Screenshot {
         $pipes = array();
 
         $started = microtime( true );
-        $handle  = @proc_open( $wrapped, $descriptors, $pipes );
+        $handle  = @proc_open( $wrapped, $descriptors, $pipes, null, self::isolated_env( $profile ) );
         if ( ! is_resource( $handle ) ) {
             @unlink( $tmp );
             throw new \InvalidArgumentException( 'Could not start the headless browser process.' );
@@ -279,6 +322,245 @@ class Screenshot {
         @unlink( $tmp . '.log' );
 
         return array( 'timed_out' => false, 'elapsed_ms' => $elapsed_ms );
+    }
+
+    /**
+     * Environment for the browser process, with every profile location it
+     * might reach redirected inside the throwaway directory.
+     *
+     * `--user-data-dir` alone is not enough to make the capture forgettable.
+     * Chromium reads several *other* locations before and alongside the user
+     * data dir: `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` for caches and
+     * component state, and `$HOME` as the fallback when those are unset —
+     * which, under php-fpm with a cleared environment, is frequently empty and
+     * resolves via the password-database entry to a real user's home.
+     *
+     * So HOME is pinned too. That is the belt to `--user-data-dir`'s braces:
+     * if the flag were ever dropped, misparsed, or ignored by a future Chrome,
+     * the fallback path still lands inside a directory this class deletes.
+     *
+     * PATH is preserved from the parent — `setsid` and `timeout` are resolved
+     * by absolute path today, but rebuilding the environment must not quietly
+     * strip it from the child's other lookups.
+     *
+     * @param string $profile Throwaway user-data directory for this capture.
+     * @return array Environment for proc_open().
+     */
+    private static function isolated_env( $profile ) {
+        $env = getenv();
+        if ( ! is_array( $env ) ) {
+            $env = array();
+        }
+        $env['HOME']             = $profile . '/home';
+        $env['XDG_CONFIG_HOME']  = $profile . '/xdg-config';
+        $env['XDG_CACHE_HOME']   = $profile . '/xdg-cache';
+        $env['XDG_DATA_HOME']    = $profile . '/xdg-data';
+        $env['XDG_STATE_HOME']   = $profile . '/xdg-state';
+        return $env;
+    }
+
+    /**
+     * Create a fresh, private, unpredictable browser profile directory.
+     *
+     * Fresh per capture, because the whole point is that one capture's history
+     * cannot be read by the next: a shared profile would carry cookies, cache
+     * and form state from a previous render into this one.
+     *
+     * Unpredictable, because the path is inside a world-writable temp dir. It
+     * is created with random_bytes() rather than a counter or a pid, so it
+     * cannot be guessed into existence by another local user ahead of us and
+     * then symlinked under the capture. assert_private_dir() would refuse such
+     * a pre-emptive directory — but refusing means captures stop working, and
+     * not guessing is cheaper than defending.
+     *
+     * The marker file is what makes the stale sweep below safe: it is the
+     * difference between "a directory this class created" and "a directory
+     * that happens to match a pattern".
+     *
+     * @return string Absolute path to the new profile directory.
+     * @throws \RuntimeException when no private directory can be established.
+     */
+    public static function create_profile_dir() {
+        $base = self::profile_base_dir();
+        self::assert_private_dir( $base );
+
+        // A previous run killed before its cleanup handler ran leaves a profile
+        // behind. Sweep those first — narrowly, see purge_stale_profiles().
+        self::purge_stale_profiles( $base );
+
+        $name = 'profile-' . bin2hex( random_bytes( 16 ) );
+        $path = $base . '/' . $name;
+
+        if ( ! @mkdir( $path, 0700 ) ) {
+            throw new \RuntimeException( 'Could not create a private browser profile directory: ' . $path );
+        }
+        clearstatcache( true, $path );
+
+        // mkdir() with an existing path fails, so a path we just created cannot
+        // be a symlink — but verify rather than reason from it, since the
+        // failure modes of this code are exactly the ones worth not assuming.
+        if ( ! is_dir( $path ) || is_link( $path ) ) {
+            throw new \RuntimeException( 'Browser profile path is not a real private directory: ' . $path );
+        }
+        @chmod( $path, 0700 );
+        if ( @file_put_contents( $path . '/' . self::PROFILE_MARKER, self::PROFILE_MARKER_VALUE ) === false ) {
+            @rmdir( $path );
+            throw new \RuntimeException( 'Could not mark the browser profile directory: ' . $path );
+        }
+
+        // Backstop for the case the brief calls out: PHP killed before its
+        // cleanup runs. This cannot help a SIGKILL — nothing does — but it does
+        // cover a fatal error, an uncaught exception or a normal exit on a path
+        // that skipped the finally. Idempotent, so it is harmless when the
+        // finally has already removed the directory.
+        register_shutdown_function( array( __CLASS__, 'destroy_profile_dir' ), $path );
+
+        return $path;
+    }
+
+    /**
+     * Remove a profile directory and everything the browser wrote into it.
+     *
+     * Never throws: this runs from a finally and from a shutdown handler, where
+     * an exception would mask whatever the capture was actually reporting.
+     *
+     * @param string $path
+     */
+    public static function destroy_profile_dir( $path ) {
+        if ( ! is_string( $path ) || '' === $path ) {
+            return;
+        }
+        $base = self::profile_base_dir();
+        $path = rtrim( $path, '/' );
+
+        // Refuse anything that is not a profile directory we could have
+        // created: not the base itself, not outside it, not via a traversal.
+        // A rename-based attack that swaps our profile for a symlink must not
+        // turn cleanup into an arbitrary recursive delete.
+        if ( $path === $base || ! str_starts_with( $path, $base . '/' ) ) {
+            return;
+        }
+        if ( ! preg_match( '/\/profile-[0-9a-f]{32}$/', $path ) ) {
+            return;
+        }
+        if ( is_link( $path ) ) {
+            @unlink( $path );
+            return;
+        }
+        if ( ! is_dir( $path ) ) {
+            return;
+        }
+
+        self::rm_tree( $path );
+    }
+
+    /**
+     * Recursive delete that does not follow symlinks.
+     *
+     * is_link() is tested *before* is_dir(), and that order is the whole
+     * safety property: is_dir() resolves a symlink to its target, so testing
+     * is_dir() first would recurse into whatever a planted link points at —
+     * including a directory far outside the profile being removed. A symlink is
+     * unlinked as itself and never descended into.
+     *
+     * Depth is bounded because Chromium builds a deep profile tree and a
+     * pathological one should cost us the profile, not the worker.
+     */
+    private static function rm_tree( $path, $depth = 0 ) {
+        if ( $depth > 32 ) {
+            return false;
+        }
+        if ( is_link( $path ) ) {
+            return @unlink( $path );
+        }
+        if ( ! is_dir( $path ) ) {
+            return @unlink( $path );
+        }
+
+        $entries = @scandir( $path );
+        if ( ! is_array( $entries ) ) {
+            return false;
+        }
+        foreach ( $entries as $entry ) {
+            if ( '.' === $entry || '..' === $entry ) {
+                continue;
+            }
+            self::rm_tree( $path . '/' . $entry, $depth + 1 );
+        }
+        return @rmdir( $path );
+    }
+
+    /**
+     * Remove profile directories abandoned by a killed run.
+     *
+     * Deliberately narrow, because the alternative — a sweeper that deletes
+     * things in the temp dir — is a foot-gun pointed at every other process on
+     * the host. A directory is removed only when *all* of these hold:
+     *
+     *   - it is a direct child of our own per-uid private base;
+     *   - its basename matches `profile-<32 hex>`, the exact shape we create;
+     *   - it is a real directory, not a symlink;
+     *   - it is owned by us;
+     *   - it carries our marker file with our marker value;
+     *   - it is older than PROFILE_STALE_SECONDS, which is several times the
+     *     maximum capture timeout, so a slow live capture is never swept.
+     *
+     * Anything else is left alone. Failing to clean up is recoverable; deleting
+     * a stranger's directory is not.
+     *
+     * Called under the capture lock, so a concurrent capture's profile cannot
+     * be caught by its own sweep.
+     */
+    private static function purge_stale_profiles( $base, $now = null ) {
+        $now  = null === $now ? time() : (int) $now;
+        $self = self::euid();
+
+        $entries = @scandir( $base );
+        if ( ! is_array( $entries ) ) {
+            return 0;
+        }
+
+        $removed = 0;
+        foreach ( $entries as $entry ) {
+            if ( ! preg_match( '/^profile-[0-9a-f]{32}$/', $entry ) ) {
+                continue;
+            }
+            $path = $base . '/' . $entry;
+            if ( is_link( $path ) || ! is_dir( $path ) ) {
+                continue;
+            }
+            if ( null !== $self && (int) @fileowner( $path ) !== $self ) {
+                continue;
+            }
+            $marker = @file_get_contents( $path . '/' . self::PROFILE_MARKER );
+            if ( self::PROFILE_MARKER_VALUE !== $marker ) {
+                continue;
+            }
+            $mtime = @filemtime( $path );
+            if ( ! is_int( $mtime ) || ( $now - $mtime ) < self::PROFILE_STALE_SECONDS ) {
+                continue;
+            }
+            if ( self::rm_tree( $path ) ) {
+                $removed++;
+            }
+        }
+        return $removed;
+    }
+
+    private static function euid() {
+        return function_exists( 'posix_geteuid' ) ? (int) posix_geteuid() : null;
+    }
+
+    /**
+     * Private per-uid directory holding this site's browser profiles.
+     *
+     * Under sys_get_temp_dir() like the lock, and per-uid for the same reason:
+     * the temp dir is world-writable, so a name another user could claim is a
+     * name another user could own.
+     */
+    public static function profile_base_dir() {
+        $uid = self::euid();
+        return rtrim( sys_get_temp_dir(), '/' ) . '/agentshell-chrome-' . ( null === $uid ? 'na' : $uid );
     }
 
     /**
