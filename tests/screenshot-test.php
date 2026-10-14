@@ -585,7 +585,15 @@ Agentshell_Test::run( 'lock: a symlink at the lock path is refused', function ()
             'untouched', file_get_contents( $canary ),
             'the symlink target must not be chmod-ed through the link'
         );
-    } finally { $t->tear_down(); }
+    } finally {
+        // Remove the planted link. sys_get_temp_dir() caches its value per
+        // process, so putenv() cannot relocate it: this link lands in the real
+        // /tmp lock directory and would outlive the test. Left behind, it makes
+        // every later capture fail — fopen() cannot create a file through a
+        // dangling symlink.
+        if ( isset( $path ) ) { @unlink( $path ); }
+        $t->tear_down();
+    }
 });
 
 /** 9d. The process kill must never signal PHP's own process or group. */

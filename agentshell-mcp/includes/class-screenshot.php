@@ -569,7 +569,15 @@ class Screenshot {
         clearstatcache( true, $path );
 
         if ( is_link( $path ) ) {
-            return 'Refusing to lock a symlinked screenshot lock file: ' . $path;
+            // Deliberately fatal and deliberately not self-healing. Removing a
+            // path we cannot prove is safe to remove is exactly the wrong
+            // reflex for a symlink. But say what to do: without this the
+            // operator sees a lock failure with no route to a fix, and the
+            // capture stays broken until they find this file by hand.
+            return 'Refusing to lock a symlinked screenshot lock file: ' . $path
+                . ' — another process may have placed it, or a previous run was interrupted mid-write. '
+                . 'Inspect it, then remove it (or the containing '
+                . dirname( $path ) . ' directory) to restore captures.';
         }
 
         $stat = @fstat( $handle );
