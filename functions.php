@@ -136,13 +136,106 @@ function agentshell_enqueue_assets() {
 add_action( 'wp_enqueue_scripts', 'agentshell_enqueue_assets' );
 
 /**
+ * Authorise this request's transaction preview, once, before any output.
+ *
+ * Runs on template_redirect priority 0 — the last point before WordPress
+ * renders, and the only one where headers can still be changed. Its job is
+ * twofold:
+ *
+ *  1. Decide whether the staged config may be rendered at all.
+ *  2. If so, mark the response uncacheable.
+ *
+ * (2) is not optional. Without an explicit Cache-Control, a host with a shared
+ * page cache — nginx proxy_cache, a CDN, Varnish — is free to store a
+ * response carrying uncommitted design and replay it to ordinary visitors. The
+ * same bytes, served to the wrong person, are exactly the disclosure the
+ * transaction exists to prevent. WordPress sends no cache headers on ordinary
+ * front-end pages, so this has to be set here rather than inherited.
+ *
+ * The authorisation decision is memoised per credential so the later render-time
+ * call in agentshell_config_for_render() cannot disagree with it. The header
+ * emission deliberately sits *outside* that memo: it is idempotent, and folding
+ * it in would let a repeat call report "authorised" without ever having marked
+ * the response uncacheable.
+ *
+ * @return bool Whether the staged config is authorised for this request.
+ */
+function agentshell_authorize_transaction_preview() {
+    static $decided = array();
+
+    $tx_id = isset( $_GET['agentshell_tx'] ) ? sanitize_text_field( wp_unslash( $_GET['agentshell_tx'] ) ) : '';
+    $key   = isset( $_GET['agentshell_tx_key'] ) ? sanitize_text_field( wp_unslash( $_GET['agentshell_tx_key'] ) ) : '';
+    $exp   = isset( $_GET['agentshell_tx_exp'] ) ? sanitize_text_field( wp_unslash( $_GET['agentshell_tx_exp'] ) ) : '';
+
+    // Keyed on the credential rather than a bare flag, so a different
+    // credential is decided on its own merits rather than inheriting a verdict.
+    $fingerprint = $tx_id . '|' . $key . '|' . $exp;
+
+    if ( ! array_key_exists( $fingerprint, $decided ) ) {
+        $decided[ $fingerprint ] = false;
+        if ( '' !== $tx_id && '' !== $key && '' !== $exp
+            && class_exists( '\AgentShell_MCP\Transaction_Manager' )
+            && \AgentShell_MCP\Transaction_Manager::authorize_preview( $tx_id, $key, $exp )
+        ) {
+            $decided[ $fingerprint ] = true;
+        }
+    }
+
+    if ( ! $decided[ $fingerprint ] ) {
+        return false;
+    }
+
+    // Authorised — so the response must be marked uncacheable before it is
+    // built. If headers have already gone we cannot do that, and a staged
+    // render we cannot protect from a shared cache is worse than no render at
+    // all: it costs a screenshot to refuse, and a visitor's privacy to allow.
+    if ( agentshell_response_headers_sent() ) {
+        return false;
+    }
+    nocache_headers();
+    agentshell_emit_response_header( 'X-Robots-Tag: noindex, nofollow, noarchive' );
+    return true;
+}
+add_action( 'template_redirect', 'agentshell_authorize_transaction_preview', 0 );
+
+/**
+ * Config to render for the current request.
+ *
+ * Normally this is the committed config, read straight from the option. When
+ * the caller presents a valid transaction-preview credential it is the staged
+ * config instead — substituted here, in memory, for this one request only.
+ *
+ * Why substitution rather than an extra :root block appended after the saved
+ * config: a commit rewrites the whole option, so a preview has to reflect the
+ * whole rewrite. Tokens the transaction *removes* must disappear, and an
+ * override block cannot express that — the stale value from the committed block
+ * would still win. Substituting before rendering makes the preview byte-for-byte
+ * what the page will look like after the commit.
+ *
+ * Nothing is persisted on this path. `get_option` above is never written, no
+ * object cache is primed with the staged array, and no filter is left attached
+ * — so the staged values exist for exactly as long as this response is built.
+ * Every failure path returns the committed config unchanged.
+ */
+function agentshell_config_for_render() {
+    $config = get_option( 'agentshell_config', array() );
+
+    if ( ! agentshell_authorize_transaction_preview() ) {
+        return $config;
+    }
+
+    $staged = \AgentShell_MCP\Transaction_Manager::instance()->staged_config();
+    return is_array( $staged ) ? $staged : $config;
+}
+
+/**
  * 1. Inject Saved CSS Variables, custom_css, and structural prohibition.
  * Injects all -- vars from flattened config, custom_css if present,
  * and a grid-fix rule that prevents agents from breaking layout with
  * position: fixed/absolute on zone containers.
  */
 function agentshell_inject_saved_styles() {
-    $config = get_option( 'agentshell_config', array() );
+    $config = agentshell_config_for_render();
 
     if ( function_exists( 'agentshell_flatten_config' ) ) {
         $flat = agentshell_flatten_config( $config );

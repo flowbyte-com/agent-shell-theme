@@ -68,13 +68,19 @@ if ( ! function_exists( 'add_action' ) ) { function add_action( ...$a ) { return
 if ( ! function_exists( 'wp_schedule_event' ) ) { function wp_schedule_event( ...$a ) { return true; } }
 if ( ! function_exists( 'wp_next_scheduled' ) ) { function wp_next_scheduled( $h ) { return false; } }
 
-class WP_User {
-    public $ID = 0;
-    public $user_login = '';
+if ( ! class_exists( 'WP_User' ) ) {
+    class WP_User {
+        public $ID = 0;
+        public $user_login = '';
+    }
 }
 if ( ! function_exists( 'wp_get_current_user' ) ) {
     function wp_get_current_user() {
         $u = new WP_User();
+        // ID is set so the real Store::actor() (loaded by an earlier suite in
+        // run-all.php) resolves the login these tests control, instead of
+        // falling back to its own 'agent' default.
+        $u->ID = 1;
         $u->user_login = $GLOBALS['_agentshell_test_login'];
         return $u;
     }

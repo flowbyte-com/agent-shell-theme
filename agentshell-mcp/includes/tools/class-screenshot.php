@@ -26,6 +26,7 @@ class Screenshot extends Base_Tool {
                 'height'   => array( 'type' => 'integer', 'description' => 'Explicit viewport height in px (overrides viewport preset)' ),
                 'url'      => array( 'type' => 'string', 'description' => 'URL to capture (defaults to the site home page)' ),
                 'profile'  => array( 'type' => 'string', 'description' => 'Optional theme profile name — the screenshot renders its design tokens as preview overrides (requires AGENTSHELL_REST_TOKEN)' ),
+                'transaction' => array( 'type' => 'boolean', 'description' => 'Capture the open transaction\'s staged design instead of the committed one. Requires an open transaction; the staged config is rendered for this request only and is never persisted. Ordinary visitors continue to see the committed config until you commit.' ),
                 'inline'   => array( 'type' => 'boolean', 'description' => 'Default true: return the image in this tool result and write nothing to disk. Set false to store the capture in private, expiring storage and receive an id instead.' ),
             ),
         );
@@ -73,6 +74,12 @@ class Screenshot extends Base_Tool {
             throw new \InvalidArgumentException( 'url is not a valid URL.' );
         }
 
+        // The caller does not supply preview credentials; this tool mints its
+        // own just below. Strip anything that arrived in the URL so a key
+        // pasted into a `url` argument cannot reach the audit log (which
+        // records arguments) or ride along in the returned captured_url.
+        $url = self::strip_preview_args( $url );
+
         // SSRF guard: a trusted agent could otherwise point Chrome at
         // http://169.254.169.254/ (cloud metadata), http://localhost:8080/admin, or any
         // internal host, and whatever that host renders would end up in the
@@ -105,6 +112,32 @@ class Screenshot extends Base_Tool {
                 ),
                 $url
             );
+        }
+
+        // Transaction preview — sign it so the theme renders the staged config
+        // for this one request. Same shape as the profile preview above, but
+        // scoped to one transaction, its owner, and a 15-minute window, and it
+        // reads the staging buffer rather than a saved profile.
+        $tx_preview_args = array();
+        $transaction_preview = ! empty( $arguments['transaction'] );
+        if ( $transaction_preview && ! empty( $arguments['profile'] ) ) {
+            throw new \InvalidArgumentException(
+                'transaction and profile cannot be combined: one renders the open transaction\'s staged '
+                . 'config, the other a saved theme profile. Pick the one you mean.'
+            );
+        }
+        if ( $transaction_preview ) {
+            if ( ! class_exists( '\AgentShell_MCP\Transaction_Manager' ) ) {
+                throw new \InvalidArgumentException(
+                    'Transaction preview requires the agentshell-mcp plugin, which is not active.'
+                );
+            }
+            // Throws when no transaction is open, or when there is no secret to
+            // sign with — both are the caller asking for something that cannot
+            // be granted, and both must fail rather than degrade to an ordinary
+            // screenshot of the committed site.
+            $tx_preview_args = \AgentShell_MCP\Transaction_Manager::preview_args();
+            $url = add_query_arg( $tx_preview_args, $url );
         }
 
         // Inline is the default and the reason the feature exists: the point of
@@ -144,9 +177,20 @@ class Screenshot extends Base_Tool {
                 'inline'  => $inline,
             ),
             'elapsed_ms' => $shot['elapsed_ms'],
-            'captured_url' => $url,
+            // Never the credential-bearing URL. This summary is returned to the
+            // agent, written to transcripts, and recorded by callers — a
+            // preview key in it is a preview capability in a log file.
+            'captured_url' => self::redact_preview_credentials( $url ),
             'tip' => 'Evaluate the screenshot, then iterate: adjust design tokens, re-screenshot. Use agentshell_list_theme_profiles + agentshell_screenshot(profile=...) to compare profiles side by side.',
         );
+
+        if ( $transaction_preview ) {
+            $summary['screenshot']['previewed_transaction'] = $tx_preview_args[ \AgentShell_MCP\Transaction_Manager::PREVIEW_TX_ARG ];
+            $summary['preview_note'] = 'Rendered the open transaction\'s staged design. Visitors are still '
+                . 'seeing the committed config — the preview credential is scoped to this transaction, expires in '
+                . \AgentShell_MCP\Transaction_Manager::PREVIEW_TTL_SECONDS
+                . 's, and stops working the moment you commit or roll back.';
+        }
 
         // Every path below deletes the PNG. Inline has no reason to keep it,
         // and a stored capture that turns out to be oversized must not leave a
@@ -230,6 +274,34 @@ class Screenshot extends Base_Tool {
         );
 
         return $summary;
+    }
+
+    /**
+     * Strip any preview capability from a URL destined for a caller.
+     *
+     * Delegates to Transaction_Manager so the list of bearer parameters lives
+     * next to the code that mints them, and degrades to the raw URL when the
+     * class is not loaded — a tool loaded on its own should still work, and
+     * with no preview support there is nothing to scrub.
+     */
+    private static function strip_preview_args( $url ) {
+        if ( ! class_exists( '\AgentShell_MCP\Transaction_Manager' ) ) {
+            return $url;
+        }
+        return \AgentShell_MCP\Transaction_Manager::strip_preview_args( $url );
+    }
+
+    /**
+     * Strip any preview capability from a URL destined for a caller.
+     *
+     * The transaction id and expiry survive — they are useless without the
+     * signature — so a returned URL still says which transaction it meant.
+     */
+    private static function redact_preview_credentials( $url ) {
+        if ( ! class_exists( '\AgentShell_MCP\Transaction_Manager' ) ) {
+            return $url;
+        }
+        return \AgentShell_MCP\Transaction_Manager::redact_preview_url( $url );
     }
 
     /**

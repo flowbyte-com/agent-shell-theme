@@ -13,6 +13,8 @@
  *   - screenshot       capture lock, wall-clock deadline, no stale/unsafe output
  *   - screenshot-privacy  inline delivery, private storage, authorisation,
  *                          retention, legacy migration
+ *   - transaction-preview transaction-scoped rendering of staged config,
+ *                          and its failure to leak to visitors or logs
  *
  * Usage:
  *   php tests/run-all.php
@@ -23,6 +25,10 @@ require_once __DIR__ . '/bootstrap.php';
 define( 'AGENTSHELL_TEST_AGGREGATE', true );
 
 $suites = array(
+    // First: this suite loads the real AgentShell_MCP\Store, which later
+    // suites then reuse instead of installing their own stubs. Anything that
+    // needs a different Store has to run before it, in its own process.
+    'transaction-preview'  => __DIR__ . '/transaction-preview-test.php',
     'security'             => __DIR__ . '/security-test.php',
     'hardening'            => __DIR__ . '/hardening-test.php',
     'inject-block'         => __DIR__ . '/inject-block-test.php',

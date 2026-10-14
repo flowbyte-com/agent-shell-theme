@@ -199,6 +199,26 @@ function esc_html__( $text, $domain = null ) { return htmlspecialchars( $text, E
 function esc_html( $text ) { return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' ); }
 function esc_attr( $text ) { return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' ); }
 function esc_url( $url ) { return $url; }
+
+/**
+ * Real query-string removal, matching WordPress for the cases the tools use.
+ *
+ * The screenshot tool strips caller-supplied preview credentials and scrubs
+ * the ones it mints; a stub that appended instead of removing would have made
+ * both assertions pass for the wrong reason.
+ */
+if ( ! function_exists( 'remove_query_arg' ) ) {
+    function remove_query_arg( $keys, $url ) {
+        if ( ! is_array( $keys ) ) { $keys = array( $keys ); }
+        $pos = strpos( $url, '?' );
+        if ( false === $pos ) { return $url; }
+        $frag = str_contains( $url, '#' ) ? '#' . substr( $url, strpos( $url, '#' ) + 1 ) : '';
+        parse_str( substr( $url, $pos + 1 ), $params );
+        foreach ( $keys as $k ) { unset( $params[ $k ] ); }
+        if ( empty( $params ) ) { return substr( $url, 0, $pos ) . $frag; }
+        return substr( $url, 0, $pos ) . '?' . http_build_query( $params ) . $frag;
+    }
+}
 function esc_js( $text ) { return $text; }
 function __( $text, $domain = null ) { return $text; }
 function dynamic_sidebar( $id ) {}

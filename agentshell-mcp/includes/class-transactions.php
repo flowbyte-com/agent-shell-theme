@@ -19,6 +19,33 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 class Transaction_Manager {
     const KEY = 'agentshell_transaction';
 
+    /**
+     * Query arguments that authorise rendering of the staged config.
+     *
+     * A preview URL is a bearer capability: anyone holding it can see the
+     * uncommitted design. So it is scoped to one transaction, one actor, and
+     * a short window, and it stops working the moment the transaction closes.
+     */
+    const PREVIEW_TX_ARG  = 'agentshell_tx';
+    const PREVIEW_KEY_ARG = 'agentshell_tx_key';
+    const PREVIEW_EXP_ARG = 'agentshell_tx_exp';
+
+    /**
+     * The existing theme-profile preview key. Listed here so the same scrubber
+     * covers every bearer capability a preview URL can carry.
+     */
+    const PREVIEW_PROFILE_KEY_ARG = 'agentshell_preview_key';
+
+    /**
+     * Preview credential lifetime.
+     *
+     * Long enough for an agent to capture and inspect several viewports in
+     * one turn, short enough that a leaked URL is not a standing capability.
+     * Expiry is enforced at render time, not merely baked into the signature,
+     * so it fails closed rather than depending on the client honouring it.
+     */
+    const PREVIEW_TTL_SECONDS = 900;
+
     private static $instance;
     private $active = null; // cached option payload
 
@@ -235,5 +262,153 @@ class Transaction_Manager {
             $data['items'][0]['transaction_id'] = $tx_id;
             update_option( Store::REVISIONS_KEY, $data, false );
         }
+    }
+
+    // ------------------------------------------------------- preview access
+
+    /**
+     * Secret used to sign preview credentials.
+     *
+     * AGENTSHELL_REST_TOKEN is preferred — it is already the agent-facing
+     * secret and never leaves the server. AUTH_SALT is the documented
+     * fallback, and is what wp_hash() itself uses for the same purpose.
+     *
+     * Returns '' when neither is defined, and every caller must fail closed
+     * on that rather than falling back to something guessable.
+     */
+    public static function preview_secret() {
+        if ( defined( 'AGENTSHELL_REST_TOKEN' ) && is_string( constant( 'AGENTSHELL_REST_TOKEN' ) )
+            && '' !== constant( 'AGENTSHELL_REST_TOKEN' ) ) {
+            return (string) constant( 'AGENTSHELL_REST_TOKEN' );
+        }
+        if ( defined( 'AUTH_SALT' ) && is_string( constant( 'AUTH_SALT' ) ) && '' !== constant( 'AUTH_SALT' ) ) {
+            return (string) constant( 'AUTH_SALT' );
+        }
+        return '';
+    }
+
+    /**
+     * Query arguments authorising a preview of the currently open transaction.
+     *
+     * @throws \InvalidArgumentException when no transaction is open, or when
+     *         no signing secret exists. Refusing here is deliberate: minting a
+     *         credential from a guessable secret would be worse than not
+     *         offering the preview at all.
+     */
+    public static function preview_args() {
+        $tx = self::instance()->payload();
+        if ( ! is_array( $tx ) ) {
+            throw new \InvalidArgumentException(
+                'No transaction is open. Call agentshell_begin_transaction before previewing one.'
+            );
+        }
+        $secret = self::preview_secret();
+        if ( '' === $secret ) {
+            throw new \InvalidArgumentException(
+                'Cannot authorise a transaction preview: neither AGENTSHELL_REST_TOKEN nor AUTH_SALT is defined.'
+            );
+        }
+
+        $expires = time() + self::PREVIEW_TTL_SECONDS;
+        return array(
+            self::PREVIEW_TX_ARG  => (string) $tx['id'],
+            self::PREVIEW_EXP_ARG => (string) $expires,
+            self::PREVIEW_KEY_ARG => self::sign_preview( $tx['id'], $tx['actor'], $expires, $secret ),
+        );
+    }
+
+    /**
+     * HMAC over the transaction identity and the expiry window.
+     *
+     * Bound to the transaction id and its owner, so a credential issued for
+     * one transaction cannot be replayed against another — including against
+     * a later transaction that happens to reuse the id. Bound to the expiry,
+     * so shortening the window changes the signature and an old credential
+     * cannot be stretched by editing the timestamp parameter.
+     */
+    private static function sign_preview( $tx_id, $actor, $expires, $secret ) {
+        return hash_hmac( 'sha256', 'agentshell-tx-preview|' . $tx_id . '|' . $actor . '|' . (int) $expires, $secret );
+    }
+
+    /**
+     * True when these preview credentials may render the staged config now.
+     *
+     * Fails closed on every path: no open transaction, wrong transaction,
+     * expired window, missing or non-numeric expiry, malformed id, or a
+     * signature mismatch. A closed transaction fails because rollback and
+     * commit both delete the option this reads, so a revoked preview stops
+     * working on the very next request with no separate revocation list.
+     */
+    public static function authorize_preview( $tx_id, $key, $expires ) {
+        $tx = self::instance()->payload();
+        if ( ! is_array( $tx ) || empty( $tx['id'] ) ) {
+            return false;
+        }
+        $secret = self::preview_secret();
+        if ( '' === $secret || ! is_string( $key ) || '' === $key || ! is_string( $tx_id ) || '' === $tx_id ) {
+            return false;
+        }
+        // Reject anything that is not a plain positive integer before it is
+        // used in arithmetic or string comparison.
+        if ( ! is_string( $expires ) && ! is_int( $expires ) ) {
+            return false;
+        }
+        $expires = (int) $expires;
+        // A zero or non-numeric expiry casts to 0, which is always in the
+        // past — so one comparison covers "expired", "zero", and "not a
+        // number" alike. That is not an accident; adding a separate
+        // `$expires <= 0` arm is a branch that can never fail differently,
+        // and mutation testing showed as much.
+        if ( $expires < time() ) {
+            return false;
+        }
+        // Bind to the transaction that is actually open.
+        if ( ! hash_equals( (string) $tx['id'], $tx_id ) ) {
+            return false;
+        }
+
+        return hash_equals(
+            self::sign_preview( $tx['id'], $tx['actor'], $expires, $secret ),
+            $key
+        );
+    }
+
+    /**
+     * Strip preview credentials from a URL before it is shown or logged.
+     *
+     * The returned summary and the audit log must never carry a bearer
+     * capability. The transaction id and expiry are kept — they are useless
+     * without the signature — because they make the URL diagnosable.
+     *
+     * Both preview key parameters are removed, not just the transaction one:
+     * the profile preview key has the same properties and the same exposure
+     * path, and a scrubber that only knows about one of them is a scrubber
+     * that eventually leaks the other.
+     */
+    public static function redact_preview_url( $url ) {
+        return remove_query_arg(
+            array( self::PREVIEW_KEY_ARG, self::PREVIEW_PROFILE_KEY_ARG ),
+            (string) $url
+        );
+    }
+
+    /**
+     * Remove every preview parameter from a URL supplied by a caller.
+     *
+     * The screenshot tool mints its own credentials, so anything arriving in
+     * a `url` argument is either stale or borrowed — and the audit log records
+     * arguments verbatim. Stripping first means a capability cannot be
+     * persisted there by being pasted into a URL.
+     */
+    public static function strip_preview_args( $url ) {
+        return remove_query_arg(
+            array(
+                self::PREVIEW_TX_ARG,
+                self::PREVIEW_KEY_ARG,
+                self::PREVIEW_EXP_ARG,
+                self::PREVIEW_PROFILE_KEY_ARG,
+            ),
+            (string) $url
+        );
     }
 }
