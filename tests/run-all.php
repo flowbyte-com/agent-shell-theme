@@ -34,6 +34,17 @@
  *                          destroys journalled work, and the option row is
  *                          swapped under a value guard rather than by
  *                          read-then-delete
+ *   - journal-recovery    the durable content journal and the recovery engine:
+ *                          an expired journalled transaction is resolved by
+ *                          evidence rather than by the journal's own account of
+ *                          itself, two callers cannot compensate the same
+ *                          operation, a diverged post is refused and kept, and
+ *                          an unresolved conflict is never discarded to free
+ *                          the slot
+ *   - journal-recovery-live  the same guarantee against a real WordPress and
+ *                          database: that a force delete really removes the
+ *                          row, that a trashed orphan is really found, and
+ *                          that nothing unrelated is touched
  *   - config-consistency  the committed/effective split: register and enable
  *                      in one transaction, validation sees what would be
  *                      committed, ordinary renders do not see staged state,
@@ -85,6 +96,14 @@ $suites = array(
     'content-write'        => __DIR__ . '/content-write-test.php',
     // Needs those same stubs, and a real WordPress. Skips without one.
     'content-write-live'   => __DIR__ . '/content-write-live-test.php',
+    // Defines get_post_meta()/wp_delete_post() for the runner's shared process,
+    // which the earlier content-write stubs deliberately did not, and drives the
+    // journal's compensation path against them.
+    'journal-recovery'     => __DIR__ . '/journal-recovery-test.php',
+    // Needs that post meta, and a real WordPress and database — which is the
+    // point of it, since the marker lookup and the force delete are exactly what
+    // a stub would agree with for the wrong reason. Skips without one.
+    'journal-recovery-live' => __DIR__ . '/journal-recovery-live-test.php',
     'security'             => __DIR__ . '/security-test.php',
     'hardening'            => __DIR__ . '/hardening-test.php',
     'inject-block'         => __DIR__ . '/inject-block-test.php',

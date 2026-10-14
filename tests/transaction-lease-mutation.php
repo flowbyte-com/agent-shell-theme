@@ -68,8 +68,8 @@ $mutants = array(
 
     // ── unrecovered work ─────────────────────────────────────────────────
     'has_durable_work is always false' => array(
-        "    public static function has_durable_work( \$tx ) {\n        if ( ! is_array( \$tx ) || empty( \$tx['content'] ) || ! is_array( \$tx['content'] ) ) {\n            return false;\n        }\n        foreach ( \$tx['content'] as \$bucket ) {\n            if ( self::journal_has_record( \$bucket ) ) { return true; }\n        }\n        return false;\n    }",
-        "    public static function has_durable_work( \$tx ) {\n        return false;\n    }",
+        "    public static function has_durable_work( \$tx ) {\n        if ( ! is_array( \$tx ) || empty( \$tx['content'] ) || ! is_array( \$tx['content'] ) ) {\n            return false;\n        }",
+        "    public static function has_durable_work( \$tx ) {\n        if ( ! is_array( \$tx ) || empty( \$tx['content'] ) || ! is_array( \$tx['content'] ) ) {\n            return false;\n        }\n        return false;\n        //",
     ),
     'reclaim ignores durable work' => array(
         "            if ( self::has_durable_work( \$tx ) ) {\n                \$this->orphaned = \$tx;\n                return null;\n            }\n",

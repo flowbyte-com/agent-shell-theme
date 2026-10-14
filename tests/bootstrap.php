@@ -384,6 +384,32 @@ if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
         }
 
         /**
+         * Find the ` WHERE ` that separates a statement's assignments from its
+         * conditions — the first one that is not inside a quoted literal.
+         *
+         * A plain `stripos( $sql, ' WHERE ' )` was enough until the transaction
+         * row started carrying text a human might read: a conflict reason that
+         * contains the words "where the journal recorded", say. Splitting there
+         * hands `cas_apply()` a fragment that ends mid-string and a condition it
+         * cannot parse, so the guarded write reports "no rows matched" for a row
+         * that had not moved — a false race, in the one place a false race is
+         * most expensive to debug. MySQL tokenises the literal and never sees
+         * that `where`; the stub now does the same.
+         */
+        private function top_level_where( $sql ) {
+            $len = strlen( $sql );
+            $in  = false;
+            for ( $i = 0; $i < $len; $i++ ) {
+                if ( '\\' === $sql[ $i ] && $in ) { $i++; continue; }
+                if ( "'" === $sql[ $i ] ) { $in = ! $in; continue; }
+                if ( ! $in && 0 === substr_compare( $sql, ' WHERE ', $i, 7, true ) ) {
+                    return $i;
+                }
+            }
+            return false;
+        }
+
+        /**
          * Pull `col = 'literal'` pairs out of a fragment, in order.
          *
          * The literal pattern accepts backslash escapes, so a value containing
@@ -416,7 +442,7 @@ if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
             // that does not match what is stored now affects no rows, exactly
             // as the database would report.
             if ( preg_match( '/^UPDATE\s+\S*options\s+SET\s/i', $sql ) ) {
-                $split = stripos( $sql, ' WHERE ' );
+                $split = $this->top_level_where( $sql );
                 if ( false === $split ) { return 0; }
                 return $this->cas_apply(
                     $this->conditions( substr( $sql, 0, $split ) ),
@@ -425,7 +451,7 @@ if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
                 );
             }
             if ( preg_match( '/^DELETE\s+FROM\s+\S*options\s+WHERE\s+option_name/i', $sql ) ) {
-                $split = stripos( $sql, ' WHERE ' );
+                $split = $this->top_level_where( $sql );
                 if ( false === $split ) { return 0; }
                 return $this->cas_apply( array(), $this->conditions( substr( $sql, $split ) ), false );
             }
