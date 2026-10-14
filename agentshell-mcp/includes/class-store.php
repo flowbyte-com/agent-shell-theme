@@ -68,6 +68,21 @@ class Store {
     }
 
     /**
+     * Record something the system did that is not a config mutation.
+     *
+     * append_audit() is private because it is a step inside record_mutation(),
+     * and every step there needs a before/after pair to be meaningful. Some
+     * events still belong in the same ring — the audit log is how an operator
+     * finds out what happened when a session died — without such a pair.
+     * Reclaimed transactions are the case that matters: nothing about the site
+     * changed, so no revision exists, and an abandoned transaction discarded
+     * with no trace would leave an operator with a wedge and no explanation.
+     */
+    public static function record_event( $actor, $operation, array $changed = array(), $revision_id = null ) {
+        self::append_audit( $actor, $operation, $changed, $revision_id );
+    }
+
+    /**
      * Current actor: logged-in user login, or 'agent' for machine contexts.
      */
     public static function actor() {
