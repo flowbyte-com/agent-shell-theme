@@ -194,6 +194,20 @@ function agentshell_authorize_transaction_preview() {
     }
     nocache_headers();
     agentshell_emit_response_header( 'X-Robots-Tag: noindex, nofollow, noarchive' );
+    // same-origin would still hand the full URL — transaction key included — to
+    // same-origin subresources. This page has no reason to refer anywhere.
+    agentshell_emit_response_header( 'Referrer-Policy: no-referrer' );
+
+    // Record the authorisation for the render-time checks in
+    // agentshell_is_preview_request(). Set only after the credential has actually
+    // verified, never merely because the arguments are present, so it cannot be
+    // used as a "is this a preview" oracle by an anonymous request.
+    $GLOBALS['agentshell_transaction_preview'] = array(
+        'tx_id' => $tx_id,
+        'key'   => $key,
+        'exp'   => $exp,
+    );
+
     return true;
 }
 add_action( 'template_redirect', 'agentshell_authorize_transaction_preview', 0 );
@@ -413,9 +427,148 @@ function agentshell_bind_post_preview_to_query() {
         // Refuse quietly, and identically to how an unauthorised request is
         // refused, so this cannot be used to probe which posts a user can read.
         agentshell_refuse_post_preview();
+        return;
     }
 }
 add_action( 'template_redirect', 'agentshell_bind_post_preview_to_query', 0 );
+
+/**
+ * Whether this request is rendering an authorised preview.
+ *
+ * Both gates set their global only after a credential has actually verified, and
+ * never merely because credential-shaped arguments are present. That distinction
+ * is load-bearing: if this keyed off the *arguments*, an anonymous visitor could
+ * suppress the admin bar on any page just by appending `?agentshell_post_key=x`,
+ * which is both an information leak and a griefing primitive.
+ *
+ * Both gates run on `template_redirect` at priority 0; the scrub below runs at
+ * priority 1 on the same hook, so by the time anything asks, both globals have
+ * their final value.
+ *
+ * @return bool
+ */
+function agentshell_is_preview_request() {
+    return ! empty( $GLOBALS['agentshell_post_preview'] )
+        || ! empty( $GLOBALS['agentshell_transaction_preview'] );
+}
+
+/**
+ * Hide the admin bar on a credential-authorised preview.
+ *
+ * Measured, not hypothesised: with the bar present, the preview response carried
+ * both credentials in a single element. WordPress builds the bar's "Customise"
+ * link from `$_SERVER['REQUEST_URI']`, so the full request URL — credential
+ * arguments included — was written into an `href` in the rendered HTML, URL-encoded.
+ * That puts the post key and the transaction key into the page body, the DOM, and
+ * anything that saves the page, all of which outlive the 300-second TTL that is
+ * supposed to be their whole life.
+ *
+ * The bar is the whole fix rather than patching the one link, because it is the
+ * only place either credential appeared: every occurrence in the response came
+ * from that single `ab-item` link. It is also the right answer on the merits — an
+ * admin bar is a control surface for editing, and a headless capture has no use
+ * for it. Nothing navigates it, so removing it costs the capture nothing.
+ *
+ * Scoped deliberately. This returns false only for a request that has already
+ * passed a credential gate; every other request — logged-in or not — keeps its
+ * admin bar exactly as before.
+ *
+ * Timing is safe without any extra bookkeeping. Core builds the bar lazily:
+ * `_wp_admin_bar_init()` (on `template_redirect`, priority 0) merely instantiates
+ * the object, and the nodes are assembled by `admin_bar_menu` inside
+ * `wp_admin_bar_render()`, which runs much later — on `wp_body_open`, and failing
+ * that `wp_footer`. Both call `is_admin_bar_showing()`, which consults this filter,
+ * so by the time the credential-bearing href would be built the bar has already
+ * been ruled out. It also returns early before `admin_bar_menu` fires, so no
+ * callback runs and nothing is built from the request URL at all.
+ *
+ * @param bool $show Whether core wants to show the admin bar.
+ * @return bool
+ */
+function agentshell_suppress_preview_admin_bar( $show ) {
+    if ( ! agentshell_is_preview_request() ) {
+        return $show;
+    }
+    return false;
+}
+add_filter( 'show_admin_bar', 'agentshell_suppress_preview_admin_bar' );
+
+/**
+ * Remove preview credential arguments from the request, once they are spent.
+ *
+ * Defence in depth behind the admin bar suppression, and it is deliberately not
+ * the primary control: the credential has to be read from `$_GET` before the
+ * gates can verify it, and several parts of core read the request URL later on.
+ * Clearing it here means that whatever else reproduces `REQUEST_URI` — a
+ * canonical link, a shortlink, a plugin, a template — finds nothing to reproduce.
+ *
+ * Scoped to `$_SERVER['REQUEST_URI']` and nothing else, deliberately. `$_GET` is
+ * the credential's transport and has to survive: `agentshell_config_for_render()`
+ * calls the transaction verifier *again* at render time, and that verifier reads
+ * `$_GET`. Clearing it here would make the second call see an empty credential and
+ * quietly drop the staged design from the render — a correctness bug traded for a
+ * leak that the admin-bar filter already prevents.
+ *
+ * `REQUEST_URI` is where the leak was actually measured: core's
+ * `wp_admin_bar_customize_menu()` builds its href from `$_SERVER['REQUEST_URI']`,
+ * so any code that reproduces the current URL — the admin bar, and any plugin or
+ * template doing the same — finds nothing to reproduce once this runs.
+ *
+ * Runs only once a credential has verified, so it cannot interfere with
+ * verification, and only for a preview, so an ordinary request is never modified.
+ *
+ * Hooked separately from the post gate, rather than inside it, because a
+ * transaction-only preview carries `agentshell_tx_key` and has no post credential
+ * to bind to — folding this into the post gate would leave that key in the HTML.
+ */
+function agentshell_scrub_preview_credentials_from_request() {
+    if ( ! agentshell_is_preview_request() ) {
+        return;
+    }
+
+    $args = array(
+        'agentshell_post', 'agentshell_post_key', 'agentshell_post_exp', 'agentshell_post_user',
+        'agentshell_tx', 'agentshell_tx_key', 'agentshell_tx_exp',
+        'agentshell_preview', 'agentshell_preview_key',
+    );
+
+    if ( ! isset( $_SERVER['REQUEST_URI'] ) ) {
+        return;
+    }
+
+    $uri   = (string) $_SERVER['REQUEST_URI'];
+    $parts = explode( '?', $uri, 2 );
+    if ( ! isset( $parts[1] ) || '' === $parts[1] ) {
+        return;
+    }
+
+    // Keep the path, and every unrelated argument, byte-identical apart from the
+    // credentials — so nothing downstream changes except the disappearance of the
+    // secrets. parse_str/http_build_query rather than a regex so an encoded or
+    // oddly-ordered argument is handled by the same parser that produced it.
+    parse_str( $parts[1], $query );
+
+    $removed = false;
+    foreach ( $args as $arg ) {
+        if ( array_key_exists( $arg, $query ) ) {
+            unset( $query[ $arg ] );
+            $removed = true;
+        }
+    }
+    if ( ! $removed ) {
+        return;
+    }
+
+    $rebuilt = http_build_query( $query );
+    $_SERVER['REQUEST_URI'] = '' === $rebuilt ? $parts[0] : $parts[0] . '?' . $rebuilt;
+
+    // WP_HOME/WP_SITEURL are unaffected — this is a request-local value only. The
+    // original URL is deliberately not restored afterwards: restoring it would
+    // reintroduce the leak for any hook that runs after this one.
+}
+// Priority 1: strictly after both credential gates (priority 0), so the globals
+// are final and no gate can be confused by having had its inputs removed.
+add_action( 'template_redirect', 'agentshell_scrub_preview_credentials_from_request', 1 );
 
 /**
  * Never let a canonical redirect propagate a preview credential.

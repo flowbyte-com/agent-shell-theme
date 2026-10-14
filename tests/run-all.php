@@ -20,6 +20,10 @@
  *   - post-preview     draft capture without publishing: mint, signature,
  *                      route and post-binding gates, cross-post misuse,
  *                      privilege escalation, credential hygiene
+ *   - preview-credential-hygiene  the credential never reaches the rendered
+ *                      HTML; the admin bar is suppressed only for an authorised
+ *                      preview; expiry, invalidation and the combined draft +
+ *                      transaction preview still hold
  *
  * Usage:
  *   php tests/run-all.php
@@ -35,6 +39,9 @@ $suites = array(
     // needs a different Store has to run before it, in its own process.
     'transaction-preview'  => __DIR__ . '/transaction-preview-test.php',
     'post-preview'         => __DIR__ . '/post-preview-test.php',
+    // Shares the fixture globals with post-preview above, so it must run in the
+    // same process and after it.
+    'preview-credential-hygiene' => __DIR__ . '/preview-credential-hygiene-test.php',
     'security'             => __DIR__ . '/security-test.php',
     'hardening'            => __DIR__ . '/hardening-test.php',
     'inject-block'         => __DIR__ . '/inject-block-test.php',
