@@ -10,6 +10,7 @@
  *   - render-block     renderer block-type coverage
  *   - flatten          flatten/unflatten roundtrip + custom-var precedence
  *   - doctor           minimal validator surface coverage
+ *   - screenshot       capture lock, wall-clock deadline, no stale/unsafe output
  *
  * Usage:
  *   php tests/run-all.php
@@ -34,6 +35,7 @@ $suites = array(
     'security-headers'     => __DIR__ . '/security-headers-test.php',
     'daemon-version'       => __DIR__ . '/daemon-version-test.php',
     'navigation'           => __DIR__ . '/navigation-test.php',
+    'screenshot'           => __DIR__ . '/screenshot-test.php',
     'configurator-state'   => __DIR__ . '/run-configurator-state.php',
 );
 

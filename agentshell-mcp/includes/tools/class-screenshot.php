@@ -57,10 +57,12 @@ class Screenshot extends Base_Tool {
 
         // SSRF guard: a trusted agent could otherwise point Chrome at
         // http://169.254.169.254/ (cloud metadata), http://localhost:8080/admin, or any
-        // internal host; --no-sandbox means the rendered page leaks into
+        // internal host, and whatever that host returns is written verbatim into
         // wp-content/uploads/agentshell-screenshots/, which is publicly readable.
         // Reject any URL whose host differs from home_url() — the legitimate use
         // case (previewing theme profiles) is same-site by construction.
+        // This host check is the whole control; it does not depend on the
+        // browser sandbox, which capture() now leaves enabled.
         $site_host = wp_parse_url( home_url(), PHP_URL_HOST );
         $target_host = wp_parse_url( $url, PHP_URL_HOST );
         if ( ! $target_host || strcasecmp( $target_host, (string) $site_host ) !== 0 ) {
@@ -88,7 +90,20 @@ class Screenshot extends Base_Tool {
             );
         }
 
-        $shot = \AgentShell_MCP\Screenshot::capture( $url, $width, $height );
+        // A busy lock is expected under concurrent agents, not a broken
+        // install — report it as a structured, retryable result rather than an
+        // exception, so the calling agent does not treat it as a site fault.
+        try {
+            $shot = \AgentShell_MCP\Screenshot::capture( $url, $width, $height );
+        } catch ( \AgentShell_MCP\Screenshot_Busy_Exception $e ) {
+            return array(
+                'captured'  => false,
+                'reason'    => 'busy',
+                'message'   => $e->getMessage(),
+                'retryable' => true,
+                'tip'       => 'Retry once the in-flight capture finishes. Do not issue concurrent screenshot calls — they contend for the same PHP-FPM worker pool.',
+            );
+        }
 
         return array(
             'captured'  => true,
@@ -99,6 +114,7 @@ class Screenshot extends Base_Tool {
                 'height'  => $shot['height'],
                 'backend' => $shot['backend'],
             ),
+            'elapsed_ms' => $shot['elapsed_ms'],
             'captured_url' => $url,
             'tip' => 'Evaluate the screenshot, then iterate: adjust design tokens, re-screenshot. Use agentshell_list_theme_profiles + agentshell_screenshot(profile=...) to compare profiles side by side.',
         );
