@@ -12,6 +12,15 @@
  * parse error would satisfy a naive check and prove nothing, so each mutant is
  * linted before it counts, and reported separately if it does not parse.
  *
+ * Isolation
+ * ---------
+ * Mutants are written into a throwaway copy of the repository under the system
+ * temp directory, and the suite runs from that copy. This file used to mutate
+ * `functions.php` in the working tree — a file the theme serves live — and
+ * restore it afterwards, so a concurrent run could execute mutated theme code
+ * and a killed harness could leave the checkout broken. Nothing here opens the
+ * working tree for writing.
+ *
  * Note on the kill condition: standalone `*-test.php` files do not set an exit
  * status — run-all.php does — so the verdict keys on FAIL lines in the output.
  * Those lines are indented by the reporter, so the match is anchored at line
@@ -21,9 +30,13 @@
  *   php tests/preview-credential-hygiene-mutation.php
  */
 
-$theme_file = dirname( __DIR__ ) . '/functions.php';
-$suite_file = __DIR__ . '/preview-credential-hygiene-test.php';
-$original   = file_get_contents( $theme_file );
+require_once __DIR__ . '/mutation-sandbox.php';
+
+/** Paths are relative to the repository root, and identical in the sandbox. */
+$THEME_REL = 'functions.php';
+$SUITE_REL = 'tests/preview-credential-hygiene-test.php';
+
+$original = file_get_contents( agentshell_repo_root() . '/' . $THEME_REL );
 
 /**
  * Mutants, each the minimal edit that removes one guarantee.
@@ -67,29 +80,28 @@ $mutants = array(
     ),
 );
 
-/**
- * Run the hygiene suite and count its failures.
- */
-function agentshell_hygiene_run( $suite_file ) {
-    $cmd     = escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $suite_file ) . ' 2>&1';
-    $output  = (string) shell_exec( $cmd );
-    return array(
-        'output' => $output,
-        'failed' => preg_match_all( '/^\s*FAIL /m', $output ),
-    );
+$killed   = 0;
+$survived = array();
+
+$repo_before = agentshell_repo_snapshot();
+$sandbox     = agentshell_mutation_sandbox_create();
+
+$sandbox_theme = $sandbox . '/' . $THEME_REL;
+if ( ! is_file( $sandbox_theme ) ) {
+    echo "SANDBOX FAILED — {$THEME_REL} is missing from the copy.\n";
+    echo "Nothing was written to the checkout.\n";
+    exit( 1 );
 }
 
 // Sanity: the unmutated suite must be green, or "killed" means nothing.
-$baseline = agentshell_hygiene_run( $suite_file );
+$baseline = agentshell_mutation_run_suite( $sandbox . '/' . $SUITE_REL );
 if ( $baseline['failed'] > 0 ) {
     echo "BASELINE FAILED — the suite is red before any mutation, so kill counts mean nothing.\n";
     echo $baseline['output'];
+    agentshell_mutation_sandbox_destroy( $sandbox );
     exit( 1 );
 }
 echo "baseline: 0 failures\n\n";
-
-$killed   = 0;
-$survived = array();
 
 foreach ( $mutants as $label => $mutation ) {
     list( $find, $replace ) = $mutation;
@@ -108,27 +120,18 @@ foreach ( $mutants as $label => $mutation ) {
         continue;
     }
 
-    // Sanity: the mutant must still parse, or a syntax error would be counted
-    // as "killed" for the wrong reason. tempnam() already creates the file it
-    // returns, so appending '.php' names a second path — both need removing or
-    // every mutant leaves an orphan in the temp dir.
-    $tmp       = tempnam( sys_get_temp_dir(), 'as-hyg-mutant-' );
-    $lint_file = $tmp . '.php';
-    file_put_contents( $lint_file, $mutated );
-    exec( escapeshellarg( PHP_BINARY ) . ' -l ' . escapeshellarg( $lint_file ) . ' 2>&1', $lint, $lint_rc );
-    @unlink( $lint_file );
-    @unlink( $tmp );
-
-    file_put_contents( $theme_file, $mutated );
-    $result = agentshell_hygiene_run( $suite_file );
-    file_put_contents( $theme_file, $original );
-
-    if ( 0 !== $lint_rc ) {
+    $lint = agentshell_mutation_lint( $mutated );
+    if ( 0 !== $lint['rc'] ) {
         echo "ERROR  $label — mutant does not parse, so it proves nothing:\n";
-        echo '       ' . implode( "\n       ", $lint ) . "\n";
+        echo '       ' . $lint['output'] . "\n";
         $survived[] = $label . ' (does not parse)';
         continue;
     }
+
+    // The only write in the whole harness, and it is inside the sandbox.
+    file_put_contents( $sandbox_theme, $mutated );
+    $result = agentshell_mutation_run_suite( $sandbox . '/' . $SUITE_REL );
+    file_put_contents( $sandbox_theme, $original );
 
     if ( $result['failed'] > 0 ) {
         $killed++;
@@ -138,6 +141,8 @@ foreach ( $mutants as $label => $mutation ) {
         $survived[] = $label;
     }
 }
+
+agentshell_mutation_sandbox_destroy( $sandbox );
 
 $total = count( $mutants );
 echo "\n=== MUTATION ===\n";
@@ -150,7 +155,17 @@ if ( $survived ) {
     }
 }
 
-// Restore unconditionally, so an interrupted run cannot leave the source mutated.
-file_put_contents( $theme_file, $original );
+// The whole point of the sandbox: prove it, do not assume it.
+$diff = agentshell_repo_diff( $repo_before, array( agentshell_repo_root() . '/' . $THEME_REL ) );
+if ( $diff['changed'] || $diff['added'] || $diff['removed'] ) {
+    echo "\nREPO INTEGRITY FAILURE — the harness modified the checkout:\n";
+    foreach ( array( 'changed', 'added', 'removed' ) as $kind ) {
+        foreach ( $diff[ $kind ] as $path ) {
+            echo "  $kind: $path\n";
+        }
+    }
+    exit( 1 );
+}
+echo "checkout untouched\n";
 
 exit( $survived ? 1 : 0 );

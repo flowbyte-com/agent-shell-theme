@@ -29,14 +29,26 @@
  *                      HTML; the admin bar is suppressed only for an authorised
  *                      preview; expiry, invalidation and the combined draft +
  *                      transaction preview still hold
+ *   - mutation-sandbox  the mutation harnesses' isolation primitive really
+ *                      isolates: a sandbox lives outside the checkout,
+ *                      writing to it cannot change the checkout, and a change
+ *                      to the checkout is detected rather than assumed away
+ *
+ * The run fingerprints the checkout before it starts and again after it ends.
+ * A test that writes into the working tree turns every other suite into a
+ * reader of mutated production code — a failure mode that looks exactly like a
+ * real regression and is not one. That case now fails the run outright.
  *
  * Usage:
  *   php tests/run-all.php
  */
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/mutation-sandbox.php';
 
 define( 'AGENTSHELL_TEST_AGGREGATE', true );
+
+$agentshell_repo_before = agentshell_repo_snapshot();
 
 $suites = array(
     // First: this suite loads the real AgentShell_MCP\Store, which later
@@ -67,6 +79,7 @@ $suites = array(
     'browser-isolation'    => __DIR__ . '/browser-isolation-test.php',
     'browser-trust'        => __DIR__ . '/browser-trust-test.php',
     'configurator-state'   => __DIR__ . '/run-configurator-state.php',
+    'mutation-sandbox'     => __DIR__ . '/mutation-sandbox-test.php',
 );
 
 $total_passed = 0;
@@ -91,6 +104,29 @@ echo "\n=== TOTAL ===\n";
 echo "$total_passed passed, $total_failed failed\n";
 if ( ! empty( $failed_suites ) ) {
     echo "Failed suites: " . implode( ', ', $failed_suites ) . "\n";
+}
+
+// ── checkout integrity ──────────────────────────────────────────────────────
+// Compare against the fingerprint taken before the first suite ran, so a test
+// that wrote into the working tree is reported as the infrastructure failure it
+// is instead of surfacing later as a mystery regression somewhere else.
+$repo_diff = agentshell_repo_diff( $agentshell_repo_before );
+// count(), not `+`: PHP's array union is not addition, and `array() + array()`
+// is an empty array, which is never `=== 0` — the gate would then report a
+// modified checkout on every clean run, and everyone would learn to ignore it.
+$touched = count( $repo_diff['changed'] ) + count( $repo_diff['added'] ) + count( $repo_diff['removed'] );
+
+echo "\n=== CHECKOUT INTEGRITY ===\n";
+if ( 0 === $touched ) {
+    echo "untouched\n";
+} else {
+    echo "MODIFIED BY THE TEST RUN — every suite above may have read mutated code:\n";
+    foreach ( array( 'changed', 'added', 'removed' ) as $kind ) {
+        foreach ( $repo_diff[ $kind ] as $path ) {
+            echo "  $kind: $path\n";
+        }
+    }
+    $total_failed++;
 }
 
 exit( $total_failed === 0 ? 0 : 1 );
