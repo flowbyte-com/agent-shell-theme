@@ -107,13 +107,22 @@ class Screenshot {
     /**
      * Capture a screenshot of $url at $width x $height.
      *
+     * The caller chooses where the PNG lands. There is deliberately no default
+     * under wp-content/uploads/: that path is web-readable, and a capture is a
+     * rendering of whatever the agent was looking at — including unpublished
+     * drafts — so a public file is a disclosure, not a cache. An inline capture
+     * passes a scratch directory it deletes immediately; a stored capture
+     * passes Screenshot_Store::screenshot_dir().
+     *
      * @param string $url    Fully-qualified URL
      * @param int    $width  Viewport width in px
      * @param int    $height Viewport height in px
-     * @return array { file, url, width, height, backend, label }
+     * @param string $dir    Destination directory. Must exist or be creatable,
+     *                       and must NOT be a web-served path.
+     * @return array { file, url, width, height, backend, timed_out, elapsed_ms }
      * @throws \InvalidArgumentException
      */
-    public static function capture( $url, $width, $height ) {
+    public static function capture( $url, $width, $height, $dir = null ) {
         $backend = self::backend();
         if ( null === $backend ) {
             throw new \InvalidArgumentException(
@@ -124,11 +133,13 @@ class Screenshot {
         $width  = max( 320, min( 4096, (int) $width ) );
         $height = max( 240, min( 4096, (int) $height ) );
 
-        $uploads = wp_upload_dir();
-        if ( ! empty( $uploads['error'] ) ) {
-            throw new \InvalidArgumentException( 'Upload directory is not writable: ' . $uploads['error'] );
+        if ( null === $dir ) {
+            throw new \InvalidArgumentException(
+                'Screenshot destination directory is required. Screenshots must not be written to a web-served path; '
+                . 'pass Screenshot_Store::screenshot_dir() for a stored capture, or a scratch directory for an inline one.'
+            );
         }
-        $dir = $uploads['basedir'] . '/agentshell-screenshots';
+
         if ( ! wp_mkdir_p( $dir ) ) {
             throw new \InvalidArgumentException( 'Could not create screenshot directory: ' . $dir );
         }
@@ -146,7 +157,8 @@ class Screenshot {
 
         return array(
             'file'    => $file,
-            'url'     => $uploads['baseurl'] . '/agentshell-screenshots/' . basename( $file ),
+            // No public URL. Every route to these bytes is now authenticated;
+            // see Screenshot_Store.
             'width'   => $width,
             'height'  => $height,
             'backend' => $backend['label'],
@@ -250,7 +262,7 @@ class Screenshot {
         }
 
         // Validate before publishing. A truncated or absent file must never
-        // reach uploads/ where a later request could serve it.
+        // be handed back as if it were the site.
         if ( ! file_exists( $tmp ) || filesize( $tmp ) < 100 || ! self::is_png( $tmp ) ) {
             $reason = self::tail( $tmp . '.log' );
             self::discard_temp( $tmp );

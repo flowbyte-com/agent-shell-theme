@@ -110,7 +110,30 @@ class Server {
 
         try {
             $result = $tool->execute( $arguments );
-            $text   = is_string( $result ) ? $result : wp_json_encode( $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
+
+            // A tool may return a raw MCP content array under the reserved
+            // __mcp_content key, for results that are not text — an image
+            // block, for instance. This is strictly additive: a tool that does
+            // not use the key is unaffected, and because the key is reserved
+            // and stripped here, no tool can leak it into a text payload.
+            if ( is_array( $result ) && isset( $result['__mcp_content'] ) ) {
+                $content = self::normalize_content( $result['__mcp_content'] );
+                unset( $result['__mcp_content'] );
+
+                // Any remaining keys ride alongside as a trailing text block,
+                // so an image result can still carry its structured summary
+                // without a second round trip.
+                if ( ! empty( $result ) ) {
+                    $content[] = array(
+                        'type' => 'text',
+                        'text' => wp_json_encode( $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ),
+                    );
+                }
+
+                return JSON_RPC::success_response( $id, array( 'content' => $content ) );
+            }
+
+            $text = is_string( $result ) ? $result : wp_json_encode( $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
             return JSON_RPC::success_response( $id, array(
                 'content' => array( array( 'type' => 'text', 'text' => $text ) ),
             ) );
@@ -119,5 +142,56 @@ class Server {
         } catch ( \Exception $e ) {
             return JSON_RPC::error_response( $id, Error_Codes::INTERNAL_ERROR, $e->getMessage() );
         }
+    }
+
+    /**
+     * Validate a tool-supplied MCP content array.
+     *
+     * Only the block shapes this server understands are allowed through, and
+     * anything unrecognised is dropped rather than forwarded. The point is that
+     * __mcp_content is a channel into the protocol: without validation a tool
+     * could emit arbitrary block types — a `resource` pointing at a local file,
+     * or an image carrying a non-image mime type — and a client would act on
+     * it. Text and image are the two this server supports.
+     *
+     * @param mixed $content
+     * @return array valid content blocks
+     */
+    public static function normalize_content( $content ) {
+        if ( ! is_array( $content ) ) {
+            return array();
+        }
+
+        $out = array();
+        foreach ( $content as $block ) {
+            if ( ! is_array( $block ) || ! isset( $block['type'] ) ) {
+                continue;
+            }
+            if ( 'text' === $block['type'] ) {
+                $text = isset( $block['text'] ) && is_scalar( $block['text'] ) ? (string) $block['text'] : '';
+                $out[] = array( 'type' => 'text', 'text' => $text );
+                continue;
+            }
+            if ( 'image' === $block['type'] ) {
+                $data = isset( $block['data'] ) ? $block['data'] : '';
+                // A malformed payload would reach the client as an undecodable
+                // image and fail there, far from the cause. Validate here so
+                // the tool gets an error it can act on.
+                if ( ! is_string( $data ) || '' === $data || ! base64_decode( $data, true ) ) {
+                    continue;
+                }
+                $mime = isset( $block['mimeType'] ) && is_string( $block['mimeType'] ) ? $block['mimeType'] : '';
+                if ( ! preg_match( '#^image/[a-z0-9.+-]+$#i', $mime ) ) {
+                    continue;
+                }
+                $out[] = array(
+                    'type'     => 'image',
+                    'data'     => $data,
+                    'mimeType' => $mime,
+                );
+            }
+        }
+
+        return $out;
     }
 }
