@@ -199,6 +199,272 @@ function agentshell_authorize_transaction_preview() {
 add_action( 'template_redirect', 'agentshell_authorize_transaction_preview', 0 );
 
 /**
+ * Whether the current request may carry a post-preview credential at all.
+ *
+ * Separated from verification because it is a different question and a
+ * different answer: a signature can verify perfectly for a request that has no
+ * business impersonating anyone. Measured on a naive implementation, an
+ * identity restored at `init` also authorised unrelated private posts and the
+ * entire REST API — including user enumeration — because REST is served on
+ * `parse_request`, which runs after `init`. The credential is therefore only
+ * honoured for a plain front-end page GET, and only when the user cannot act
+ * on the request.
+ *
+ * @return bool
+ */
+function agentshell_post_preview_route_allowed() {
+    // Anything but a GET. A GET is idempotent by construction; anything that
+    // changes state should never run under a temporarily restored identity.
+    $method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( $_SERVER['REQUEST_METHOD'] ) : 'GET';
+    if ( 'GET' !== $method ) {
+        return false;
+    }
+
+    // wp-admin, and anything routing through it (admin-ajax, admin-post).
+    if ( is_admin() ) {
+        return false;
+    }
+
+    // The REST server runs on `parse_request`, i.e. after `init`, so an identity
+    // restored here would otherwise authorise the whole API for this request.
+    if ( defined( 'REST_REQUEST' ) || isset( $_GET['rest_route'] ) ) {
+        return false;
+    }
+    // XML-RPC authenticates independently and has no business here.
+    if ( defined( 'XMLRPC_REQUEST' ) ) {
+        return false;
+    }
+
+    // The permalink-prefix route to REST, for the case where REST_REQUEST is not
+    // yet defined at `init` priority 0.
+    $uri  = isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '';
+    $path = wp_parse_url( $uri, PHP_URL_PATH );
+    if ( is_string( $path ) && function_exists( 'rest_get_url_prefix' ) ) {
+        $prefix = trim( (string) rest_get_url_prefix(), '/' );
+        if ( '' !== $prefix && preg_match( '#(^|/)' . preg_quote( $prefix, '#' ) . '(/|$)#', $path ) ) {
+            return false;
+        }
+    }
+
+    // wp-login.php serves its own auth flows; a restored identity there is
+    // pointless at best.
+    if ( is_string( $path ) && preg_match('#/wp-login\.php$#', $path ) ) {
+        return false;
+    }
+
+    // Cron runs unauthenticated maintenance; do not lend it an identity.
+    if ( is_string( $path ) && preg_match('#/wp-cron\.php$#', $path ) ) {
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * Restore the previewing caller's identity for this request, if authorised.
+ *
+ * Runs on `init` priority 0, and that timing is not negotiable: WordPress
+ * evaluates the capability check for an unpublished post inside the main query
+ * (`wp()` -> `WP::main()` -> `query_posts()`), which happens after `init`.
+ * Verifying later — `template_redirect`, say, where the transaction preview is
+ * verified — is too late, and produces a 404 that looks like a bad credential.
+ *
+ * What it does *not* do is decide the request is a preview of this post. That
+ * is `agentshell_bind_post_preview_to_query()`'s job, and the separation is the
+ * point: identity and post binding are independent gates, so satisfying one
+ * never implies the other.
+ *
+ * @return bool Whether an identity was restored.
+ */
+function agentshell_authorize_post_preview() {
+    // Keyed on the credential rather than a bare flag, for the same reason as
+    // agentshell_authorize_transaction_preview(): a different credential must be
+    // decided on its own merits rather than inheriting the previous verdict.
+    // In production one request carries one credential, so this is not a
+    // behaviour change — it is what lets the decision be tested at all, since a
+    // single-process test run evaluates many credentials in sequence.
+    static $decided = array();
+
+    $post_id = isset( $_GET[ 'agentshell_post' ] ) ? sanitize_text_field( wp_unslash( $_GET['agentshell_post'] ) ) : '';
+    $user_id = isset( $_GET[ 'agentshell_post_user' ] ) ? sanitize_text_field( wp_unslash( $_GET['agentshell_post_user'] ) ) : '';
+    $key     = isset( $_GET[ 'agentshell_post_key' ] ) ? sanitize_text_field( wp_unslash( $_GET['agentshell_post_key'] ) ) : '';
+    $exp     = isset( $_GET[ 'agentshell_post_exp' ] ) ? sanitize_text_field( wp_unslash( $_GET['agentshell_post_exp'] ) ) : '';
+
+    $fingerprint = $post_id . '|' . $user_id . '|' . $key . '|' . $exp;
+    if ( array_key_exists( $fingerprint, $decided ) ) {
+        return $decided[ $fingerprint ];
+    }
+    $decided[ $fingerprint ] = false;
+
+    if ( ! class_exists( '\AgentShell_MCP\Post_Preview' ) ) {
+        return false;
+    }
+
+    // Nothing to authorise: an ordinary request. This is the overwhelmingly
+    // common path and must stay free of side effects.
+    if ( '' === $post_id || '' === $user_id || '' === $key || '' === $exp ) {
+        return false;
+    }
+
+    if ( ! agentshell_post_preview_route_allowed() ) {
+        return false;
+    }
+
+    $resolved = \AgentShell_MCP\Post_Preview::authenticate( $post_id, $user_id, $key, $exp );
+    if ( ! $resolved ) {
+        return false;
+    }
+
+    wp_set_current_user( $resolved );
+    $GLOBALS['agentshell_post_preview'] = array(
+        'post_id' => (int) $post_id,
+        'user_id' => $resolved,
+        'exp'     => (int) $exp,
+    );
+    $decided[ $fingerprint ] = true;
+    return true;
+}
+add_action( 'init', 'agentshell_authorize_post_preview', 0 );
+
+/**
+ * Turn an authorised-but-mismatched post preview into the ordinary 404.
+ *
+ * `WP_Query::set_404()` alone is not enough, and this is worth stating because
+ * it looks sufficient: it raises the `is_404` flag and nothing else. The query
+ * keeps its posts and the global `$post` still points at the resolved object, so
+ * a singular template goes on to render exactly the content that was just
+ * refused. Measured: a credential minted for post 10, pointed at private post
+ * 11, returned post 11's content with a 404 flag set behind it.
+ *
+ * So the query is emptied as well, and the request is turned into the same 404
+ * an anonymous visitor receives — same status, same template, same body.
+ *
+ * @param string $reason Recorded for diagnosis; never rendered.
+ */
+function agentshell_refuse_post_preview( $reason = 'post-binding-mismatch' ) {
+    if ( ! agentshell_response_headers_sent() ) {
+        status_header( 404 );
+        nocache_headers();
+        agentshell_emit_response_header( 'X-Robots-Tag: noindex, nofollow, noarchive' );
+    }
+    $GLOBALS['agentshell_post_preview'] = null;
+    $GLOBALS['agentshell_post_preview_refused'] = $reason;
+
+    $query = isset( $GLOBALS['wp_query'] ) ? $GLOBALS['wp_query'] : null;
+    if ( is_object( $query ) ) {
+        if ( method_exists( $query, 'set_404' ) ) {
+            $query->set_404();
+        }
+        // The flag is not the refusal; emptying the query is. Both, because a
+        // template that reads the global $post rather than looping needs the
+        // global cleared too.
+        $query->posts         = array();
+        $query->post          = null;
+        $query->post_count    = 0;
+        $query->found_posts   = 0;
+        $query->is_singular   = false;
+        $query->is_page       = false;
+        $query->is_single     = false;
+    }
+    // Cleared so a template cannot reach the refused post through it.
+    $GLOBALS['post'] = null;
+    if ( function_exists( 'wp_reset_postdata' ) ) {
+        @wp_reset_postdata();
+    }
+    // Nothing should redirect from here: a Location header carrying the
+    // credential to some other path would both leak it and hand the browser a
+    // second chance at the same request.
+    if ( ! agentshell_response_headers_sent() ) {
+        remove_action( 'template_redirect', 'redirect_canonical' );
+    }
+}
+
+/**
+ * Confirm the authorised request actually resolved to the bound post, and mark
+ * the response so it cannot be cached, indexed or referred.
+ *
+ * Runs on `template_redirect` priority 0 — after `wp()` has run the main query
+ * and its capability check, but before any template output. Checking before and
+ * after the query is not belt-and-braces here; the after-check is the only one
+ * that works, because before the query nobody knows what the request resolves
+ * to — and a request can resolve to the bound post through several aliases.
+ */
+function agentshell_bind_post_preview_to_query() {
+    $preview = isset( $GLOBALS['agentshell_post_preview'] ) ? $GLOBALS['agentshell_post_preview'] : null;
+    if ( ! is_array( $preview ) ) {
+        return;
+    }
+
+    // Whatever happens next, this response must not be stored or indexed: it is
+    // one person's unpublished content.
+    if ( ! agentshell_response_headers_sent() ) {
+        nocache_headers();
+        agentshell_emit_response_header( 'X-Robots-Tag: noindex, nofollow, noarchive' );
+        // same-origin would still hand the full URL — credential included — to
+        // same-origin subresources. This page has no reason to refer anywhere.
+        agentshell_emit_response_header( 'Referrer-Policy: no-referrer' );
+    }
+
+    $resolved_id = function_exists( 'get_queried_object_id' ) ? (int) get_queried_object_id() : 0;
+    $is_singular = function_exists( 'is_singular' ) ? is_singular() : false;
+
+    if ( $resolved_id !== (int) $preview['post_id'] || ! $is_singular ) {
+        // The credential is valid but this request is not that post's preview.
+        // Refuse quietly, and identically to how an unauthorised request is
+        // refused, so this cannot be used to probe which posts a user can read.
+        agentshell_refuse_post_preview();
+    }
+}
+add_action( 'template_redirect', 'agentshell_bind_post_preview_to_query', 0 );
+
+/**
+ * Never let a canonical redirect propagate a preview credential.
+ *
+ * `redirect_canonical()` preserves unknown query arguments, so a request
+ * carrying a preview key is redirected *with the key still attached* — the
+ * credential then travels to a path the theme never vetted, and would be
+ * written to whatever logs sit in front of the site. Measured: a published
+ * page requested with a post-preview credential answered `301` with the full
+ * credential in the `Location` header.
+ *
+ * Returning false suppresses the redirect entirely. That is the safe direction
+ * to fail: the worst outcome is an un-canonicalised URL, which costs a redirect
+ * nobody relies on, rather than a bearer credential relayed to an unreviewed
+ * destination.
+ *
+ * @param string|false $redirect_url  Target, or false/'' to stop.
+ * @param string       $requested_url URL as requested.
+ * @return string|false
+ */
+function agentshell_block_preview_redirects( $redirect_url, $requested_url = '' ) {
+    if ( ! $redirect_url ) {
+        return $redirect_url;
+    }
+
+    // Parse the query rather than substring-matching it. Matching the literal
+    // "name=" is over-broad in a way that changes unrelated behaviour: a site
+    // with its own `?my_agentshell_post=1` would silently lose canonical
+    // redirects. Checking the parsed argument names matches exactly the
+    // arguments that actually carry a credential.
+    $query = wp_parse_url( (string) $requested_url, PHP_URL_QUERY );
+    if ( ! is_string( $query ) || '' === $query ) {
+        return $redirect_url;
+    }
+    parse_str( $query, $params );
+    foreach ( array(
+        'agentshell_tx', 'agentshell_tx_key', 'agentshell_tx_exp',
+        'agentshell_post', 'agentshell_post_key', 'agentshell_post_exp', 'agentshell_post_user',
+        'agentshell_preview', 'agentshell_preview_key',
+    ) as $arg ) {
+        if ( array_key_exists( $arg, $params ) ) {
+            return false;
+        }
+    }
+    return $redirect_url;
+}
+add_filter( 'redirect_canonical', 'agentshell_block_preview_redirects', 0, 2 );
+
+/**
  * Config to render for the current request.
  *
  * Normally this is the committed config, read straight from the option. When

@@ -32,6 +32,7 @@ require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-doctor.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot-store.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-post-preview.php';
 \AgentShell_MCP\Transaction_Manager::instance();
 
 // Screenshot retention. Expired captures are swept hourly; correctness does not

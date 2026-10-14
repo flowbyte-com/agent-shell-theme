@@ -27,6 +27,7 @@ class Screenshot extends Base_Tool {
                 'url'      => array( 'type' => 'string', 'description' => 'URL to capture (defaults to the site home page)' ),
                 'profile'  => array( 'type' => 'string', 'description' => 'Optional theme profile name — the screenshot renders its design tokens as preview overrides (requires AGENTSHELL_REST_TOKEN)' ),
                 'transaction' => array( 'type' => 'boolean', 'description' => 'Capture the open transaction\'s staged design instead of the committed one. Requires an open transaction; the staged config is rendered for this request only and is never persisted. Ordinary visitors continue to see the committed config until you commit.' ),
+                'post_id'    => array( 'type' => 'integer', 'description' => 'Capture an unpublished post (draft, pending, private or scheduled) without publishing it. Requires permission to read or edit that post. WordPress\' own per-post capability rules stay authoritative; the credential only restores your identity for that one request. Combine with transaction=true to see uncommitted design on a draft.' ),
                 'inline'   => array( 'type' => 'boolean', 'description' => 'Default true: return the image in this tool result and write nothing to disk. Set false to store the capture in private, expiring storage and receive an id instead.' ),
             ),
         );
@@ -79,6 +80,40 @@ class Screenshot extends Base_Tool {
         // pasted into a `url` argument cannot reach the audit log (which
         // records arguments) or ride along in the returned captured_url.
         $url = self::strip_preview_args( $url );
+        $url = self::strip_post_preview_args( $url );
+
+        // Unpublished post preview — restore the caller's own identity for one
+        // request so WordPress's existing per-post preview check can run.
+        //
+        // This replaces the URL rather than decorating it. The credential is
+        // therefore aimed by this tool rather than by the caller: it cannot be
+        // pointed at an arbitrary path, and any url argument the caller passed
+        // is irrelevant to where the capture happens. The theme independently
+        // re-checks that the request resolved to this post and 404s it if not,
+        // so a mismatch fails closed rather than rendering something else under
+        // the restored identity.
+        $post_preview_args = array();
+        $post_preview = isset( $arguments['post_id'] ) && '' !== $arguments['post_id'] && null !== $arguments['post_id'];
+        if ( $post_preview ) {
+            if ( ! class_exists( '\AgentShell_MCP\Post_Preview' ) ) {
+                throw new \InvalidArgumentException(
+                    'Post preview requires the agentshell-mcp plugin, which is not active.'
+                );
+            }
+            $post_id = (int) $arguments['post_id'];
+            // Throws rather than degrading to a screenshot of a 404 page, which
+            // an agent would reasonably read as a successful capture of the draft.
+            $post_preview_args = \AgentShell_MCP\Post_Preview::preview_args( $post_id );
+
+            $link = get_preview_post_link( $post_id );
+            if ( ! is_string( $link ) || '' === $link ) {
+                throw new \InvalidArgumentException(
+                    "Post {$post_id} has no previewable permalink, so it cannot be captured."
+                );
+            }
+            $url = $link;
+            $url = add_query_arg( $post_preview_args, $url );
+        }
 
         // SSRF guard: a trusted agent could otherwise point Chrome at
         // http://169.254.169.254/ (cloud metadata), http://localhost:8080/admin, or any
@@ -180,7 +215,9 @@ class Screenshot extends Base_Tool {
             // Never the credential-bearing URL. This summary is returned to the
             // agent, written to transcripts, and recorded by callers — a
             // preview key in it is a preview capability in a log file.
-            'captured_url' => self::redact_preview_credentials( $url ),
+            'captured_url' => self::redact_post_preview_credentials(
+                self::redact_preview_credentials( $url )
+            ),
             'tip' => 'Evaluate the screenshot, then iterate: adjust design tokens, re-screenshot. Use agentshell_list_theme_profiles + agentshell_screenshot(profile=...) to compare profiles side by side.',
         );
 
@@ -190,6 +227,16 @@ class Screenshot extends Base_Tool {
                 . 'seeing the committed config — the preview credential is scoped to this transaction, expires in '
                 . \AgentShell_MCP\Transaction_Manager::PREVIEW_TTL_SECONDS
                 . 's, and stops working the moment you commit or roll back.';
+        }
+
+        if ( $post_preview ) {
+            $summary['screenshot']['previewed_post'] = $post_preview_args[ \AgentShell_MCP\Post_Preview::POST_ARG ];
+            $summary['preview_note'] = trim(
+                ( isset( $summary['preview_note'] ) ? $summary['preview_note'] . ' ' : '' )
+                . 'Rendered an unpublished post without publishing it. The post stays unpublished and no visitor '
+                . 'can reach it; the credential restores your own WordPress identity for this one request and '
+                . 'expires in ' . \AgentShell_MCP\Post_Preview::TTL_SECONDS . 's.'
+            );
         }
 
         // Every path below deletes the PNG. Inline has no reason to keep it,
@@ -302,6 +349,29 @@ class Screenshot extends Base_Tool {
             return $url;
         }
         return \AgentShell_MCP\Transaction_Manager::redact_preview_url( $url );
+    }
+
+    /**
+     * Strip any post-preview capability from a URL supplied by a caller.
+     *
+     * Same reasoning as strip_preview_args(): this tool mints its own, and the
+     * audit log records arguments verbatim.
+     */
+    private static function strip_post_preview_args( $url ) {
+        if ( ! class_exists( '\AgentShell_MCP\Post_Preview' ) ) {
+            return $url;
+        }
+        return \AgentShell_MCP\Post_Preview::strip_args( $url );
+    }
+
+    /**
+     * Strip the post-preview key from a URL destined for a caller.
+     */
+    private static function redact_post_preview_credentials( $url ) {
+        if ( ! class_exists( '\AgentShell_MCP\Post_Preview' ) ) {
+            return $url;
+        }
+        return \AgentShell_MCP\Post_Preview::redact( $url );
     }
 
     /**

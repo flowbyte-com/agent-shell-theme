@@ -74,9 +74,30 @@ function wp_set_current_user( $id ) {
     $GLOBALS['_agentshell_test_user_id'] = (int) $id;
 }
 
+/**
+ * Capability check.
+ *
+ * A stored value may be a bool, or — when the capability is object-scoped, as
+ * `edit_post` / `read_post` are — a list of object ids the user may act on, or a
+ * callable receiving ( $cap, $object_id ). The object-aware forms exist because
+ * per-post capability is precisely what WordPress's own preview authorisation
+ * turns on: a bool-only stub would let a test pass while proving nothing about
+ * whether a user may read *this* post. Suites written before this ignore the
+ * extra shapes and keep working.
+ */
 function current_user_can( $cap, $object_id = null ) {
     $caps = $GLOBALS['_agentshell_test_user_caps'];
-    return ! empty( $caps[ $cap ] );
+    if ( ! array_key_exists( $cap, $caps ) ) {
+        return false;
+    }
+    $value = $caps[ $cap ];
+    if ( is_callable( $value ) ) {
+        return (bool) call_user_func( $value, $cap, $object_id );
+    }
+    if ( is_array( $value ) ) {
+        return null === $object_id || in_array( (int) $object_id, array_map( 'intval', $value ), true );
+    }
+    return (bool) $value;
 }
 
 function user_can( $user, $cap ) {
