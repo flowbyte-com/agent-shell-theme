@@ -57,7 +57,7 @@ The plugin ships **45+ `agentshell_*` tools** (53 in `agentshell-mcp` + 4 in `ag
 - **Widget lifecycle** (bilateral registry) — `agentshell_list_widgets`, `agentshell_get_widget`, `agentshell_register_widget`, `agentshell_unregister_widget`, `agentshell_enable_widget`, `agentshell_disable_widget`, `agentshell_remove_widget`.
 - **Content primitives** — `agentshell_create_page`, `agentshell_create_post`, `agentshell_update_content`, `agentshell_update_post_content`, `agentshell_publish`, `agentshell_unpublish`, `agentshell_search_content`, `agentshell_get_content`.
 - **Navigation management** — `agentshell_register_navigation` (create or replace a WordPress nav menu by name and optionally assign to a registered theme location). Reconciles the requested items against the menu in place, so item ids are stable across repeated runs. **Not transaction-staged**: writes take effect immediately and `agentshell_rollback_transaction` will not undo them.
-- **Transactions (the safe change loop)** — `agentshell_begin_transaction`, `agentshell_get_transaction`, `agentshell_preview_transaction`, `agentshell_validate_transaction`, `agentshell_commit_transaction`, `agentshell_rollback_transaction`.
+- **Transactions (the safe change loop)** — `agentshell_begin_transaction`, `agentshell_get_transaction`, `agentshell_preview_transaction`, `agentshell_validate_transaction`, `agentshell_commit_transaction`, `agentshell_rollback_transaction`. A transaction is **leased**: it carries a 60-minute inactivity TTL that only its owner renews, it stops staging once that lease expires, and an abandoned config-only transaction is reclaimed (and audited) when the next one begins. See §6.2.
 - **Site meta & visuals** — `agentshell_get_site_info`, `agentshell_screenshot`, `agentshell_get_screenshot`.
   `agentshell_screenshot` returns a native MCP **image content block** by default (`inline: true`), so no
   credential handoff and no second request is needed to see the result. `inline: false` stores the capture
@@ -176,6 +176,33 @@ agentshell_get_audit_log          # confirm
 
 Two-phase: read-only calls (`inspect`, `explain`, `validate`, `get_*`, `list_*`, `diff_*`, `preview_*`) are always safe. Mutating calls (`set_*`, `update_*`, `create_*`, `publish`, `register_*`, `unregister_*`, `remove_*`, `enable_*`, `disable_*`, `save_*`, `apply_*`, `restore_*`, `commit_*`, `rollback_*`, `screenshot`, `export_*`, `import_*`) must run inside an open transaction or be flagged as needing recovery.
 
+### 6.1 What a transaction actually covers — and what it does not
+
+**The current contract (normative, unchanged):** a transaction stages **configuration only** — the `agentshell_config` option and everything derived from it (design tokens, zone composition, zone slots, widget registration and enablement, injected blocks). Mutations outside a transaction write through immediately, and that behaviour is **preserved deliberately**: this pass did not change it, and changing it is a separate, approved step.
+
+Two tools are outside even that, and their results say so:
+
+- `agentshell_register_navigation` — writes immediately; `agentshell_rollback_transaction` does not undo it.
+- Content (`agentshell_create_page`, `agentshell_create_post`, `agentshell_update_content`, `agentshell_publish`, `agentshell_unpublish`) — writes immediately, outside any transaction, and is **not** transaction-staged today.
+
+An agent must therefore not describe a run as "transactional" if it used either of those. The accurate phrasing is "the configuration was transactional; content and navigation were immediate."
+
+**The proposed contract (design record, *not* implemented):** once content transactions land, mutations **inside** an active transaction must be tracked, and any mutation that cannot be tracked must **fail loudly** rather than quietly write past the transaction. Silently bypassing is the failure mode this rule exists to prevent: an agent that believes it can roll back a run that actually already wrote. Design and status: [`docs/CONTENT-TRANSACTIONS-DESIGN.md`](docs/CONTENT-TRANSACTIONS-DESIGN.md). Until that lands, the rule above is a plan, not behaviour.
+
+### 6.2 Transaction lease and stale recovery (normative, implemented)
+
+A transaction lives in one option row. Nothing removes that row except a `commit` or `rollback` the owner actually reached, so before this lease existed a crashed session wedged the site permanently. The lease is the fix, and it is part of the contract:
+
+- **Every transaction carries a lease**: `created`, `last_activity`, `expires`, `lease_ttl_seconds` (60 minutes), `seconds_remaining`. `agentshell_get_transaction` reports it for a live transaction and reports an expired one under `stale` — never as `open`.
+- **Only owner activity renews it** — `stage`, `commit`, `rollback`, `pre_update_option`, and re-beginning your own transaction. A peer's `preview` or `validate` does not, or any reader anywhere could pin a transaction open forever.
+- **An expired transaction is not a transaction.** It no longer stages, no longer shapes `effective_config`, cannot be previewed, and cannot be committed or rolled back. A mutation arriving after expiry **writes to the database** rather than into a buffer nobody can commit.
+- **Config-only transactions are reclaimed automatically** — on the next `agentshell_begin_transaction` — and the reclaim is **named in the result** (`reclaimed`, `note`) and **written to the audit log** as `transaction_reclaimed`. A silent fix is the same as no fix when somebody later asks where their work went.
+- **A transaction holding durable work is never reclaimed.** A journal whose only copy is that row is preserved, `begin` refuses with an explicit "unrecovered work" message, and `get_transaction` reports `recovery: required`. This guard is written and enforced today, while no transaction can yet hold such work, so that the change which makes it load-bearing does not have to invent it.
+- **Every write to the row is a compare-and-swap**, guarded on the row's current bytes. WordPress's `update_option()` is a bare `UPDATE … WHERE option_name = ?` and `delete_option()` is an unguarded read-then-delete; both lose a race, and the delete destroys whatever now occupies that name. Opening a transaction uses `add_option()` — an `INSERT` against the `UNIQUE` key on `option_name` — so two actors racing to open one produce a loser that is told, not two owners who both think they won.
+- **Preview isolation is not weakened, and the two clocks stay separate.** The lease reads a freezable clock used only for expiry; the preview credential's own window keeps reading real `time()`, so no test seam can stretch a bearer capability. An expired transaction refuses a preview **before** the signature is checked, which closes a window that existed before this change: a credential minted in minute 1 of an hour-long lease was still inside its own 900-second window when the lease died.
+
+Regressions: [`tests/transaction-lease-test.php`](tests/transaction-lease-test.php), with [`tests/transaction-lease-mutation.php`](tests/transaction-lease-mutation.php) removing each of these guarantees one at a time.
+
 ---
 
 ## 7. Files agents must not modify
@@ -192,7 +219,7 @@ These files are part of the system contract. Style changes belong in CSS variabl
 
 ## 8. Other markdown files — pointer map
 
-Every other markdown in this repository is a pointer, an archive, or a non-normative note. If it disagrees with this file, **this file wins** and the other file is wrong.
+Every other markdown in this repository is a pointer, an archive, a non-normative note, or a **design record**. If it disagrees with this file, **this file wins** and the other file is wrong. That includes design records: a design record records an investigation, a proposal, a decision and its evidence. It cannot amend this file, and it cannot make behaviour it has not implemented normative — see category (e) below.
 
 | File | Status | Purpose |
 |---|---|---|
@@ -209,10 +236,25 @@ Every other markdown in this repository is a pointer, an archive, or a non-norma
 | `skills/agentshell/widget-builder/README.md` | Pointer | Human overview of the widget-builder skill. |
 | `docs/_archive/2026-08-widget-builder-sdd/` | Archive | Historical SDD artifacts, plans, and specs from the widget-builder initiative. Non-normative. |
 | `docs/_archive/2026-08-widget-builder-sdd/agent-sdd/` | Archive | Sub-agent progress notes. Non-normative. |
+| `docs/_archive/AUDIT-2026-09-13.md` | Archive | Historical audit report, preserved as found. Non-normative and not a statement of current behaviour. |
 | `docs/superpowers/` | **Removed** | The historical SDD plan/spec tree was moved into `docs/_archive/2026-08-widget-builder-sdd/superpowers/`. The pre-existing `docs/` directory has been replaced with `docs/_archive/` to make the archive boundary explicit. |
 | `.superpowers/` | **Removed** | Moved into the archive above. The `.superpowers` directory at the project root no longer exists; the gitignore now points to `docs/_archive/`. |
+| `docs/SCREENSHOT-PRIVACY-DESIGN.md` | **Design record** | The screenshot privacy investigation and the design adopted from it. The normative part — inline delivery, storage outside the document root, ownership-based retrieval authorisation, per-capture browser profiles — is restated in §2 and implemented. Anything else in it is a record. |
+| `docs/SCREENSHOT-STORAGE.md` | **Design record** | On-disk layout and retention for the screenshot store. Companion to the above. |
+| `docs/DRAFT-CAPTURE-DESIGN.md` | **Design record** | The draft-capture investigation behind the post-preview tools. |
+| `docs/TRANSACTION-PREVIEW.md` | **Design record** | Why transaction preview is rendered from a staged draft rather than from live config, and the credential model that follows from it. |
+| `docs/CONTENT-TRANSACTIONS-DESIGN.md` | **Design record** | The transactional-content investigation, the approved decisions (persisted drafts + durable pre-image journal + short-lived SQL transactions, deliberately *not* one open DB transaction), the failure inventory, and the staged implementation plan. Stage 0 — the lease — is implemented; §6.2 is the normative form of it. Stages 1+ are proposals, not behaviour. |
+| `docs/PRODUCT-ISSUES.md` | **Design record** | The issue backlog these designs answer. A backlog entry is a request, not a contract. |
 
-**Hard rule about new docs.** Any new markdown file must do one of: (a) pointer to this file, (b) archive notice, (c) single-task skill, (d) non-normative human setup guide. A setup guide (d) documents installation and connection procedure only — it defines no contract, and cites this file by section for anything normative. No new file may redefine MCP tools, the operation loop, the bilateral widget registry, the data-* hydration law, the no-fetch boundary, the bilateral source of truth, or the 45+ tool count. New skill files inherit the widget and tool contracts by reference; they may not amend them.
+**Hard rule about new docs.** Any new markdown file must do one of: (a) pointer to this file, (b) archive notice, (c) single-task skill, (d) non-normative human setup guide, (e) **design record**.
+
+(e) is a record of an architectural investigation, a proposal, the decision taken, and the evidence for it. It exists so that reasoning is not lost and cannot be quietly re-litigated. Three obligations come with it:
+
+1. It **cannot override this file.** Where it disagrees, this file is right and the record is out of date — and the record must be corrected or marked superseded rather than left to mislead.
+2. It **cannot make unimplemented behaviour normative.** A design record describes what was decided, not what exists. Anything in it that is merely planned must be marked as planned, and must point at the section of this file that governs the behaviour as it actually is.
+3. It **inherits the hard rules** below by reference and adds none of its own.
+
+A setup guide (d) documents installation and connection procedure only — it defines no contract, and cites this file by section for anything normative. No new file may redefine MCP tools, the operation loop, the bilateral widget registry, the data-* hydration law, the no-fetch boundary, the bilateral source of truth, or the 45+ tool count. New skill files inherit the widget and tool contracts by reference; they may not amend them.
 
 ---
 
@@ -228,6 +270,7 @@ Before merging any markdown change in this repository, the change must pass thes
 6. **No `<script type="application/json">` example or "data hydration" mention that doesn't use `data-*`.** Section 4.2 is the only pattern.
 7. **No `fetch()` example in any widget skill that isn't an explicit "FORBIDDEN" callout.** Section 4.3 is the only law.
 8. **No violation of the three grid rules** (1fr, descendant scope, quoted rows). Section 5 is the only law.
+9. **No design record presented as normative.** A file in category (e) must not state a contract, must not claim that unimplemented behaviour exists, and must not contradict a section of this file without being updated in the same change. Where a record and this file disagree, the gate fails on the record.
 
 If a doc change fails any gate, the PR is rejected. If a doc change requires amending the contract, the change must be applied here in `AGENTS.md` *first* and any dependent skill or note updated by reference, not by duplication.
 
