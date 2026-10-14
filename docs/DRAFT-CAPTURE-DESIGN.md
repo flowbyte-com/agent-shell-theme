@@ -252,6 +252,67 @@ directories remained, and the developer's real Chrome profile gained **no
 paths at all** across a capture (identical sorted path set before and after),
 with zero occurrences of the draft's marker text anywhere in it.
 
+### Credential hygiene
+
+A live test found the preview response carrying **both** credentials inside a
+live `href` in its own body. One element caused it: `wp_admin_bar_customize_menu()`
+builds the bar's "Customise" link from `$_SERVER['REQUEST_URI']`, so the entire
+request URL — key and expiry — was written into the page and URL-encoded. Every
+occurrence in the response came from that one link; no canonical, shortlink,
+`og:url`, inline script or form carried either credential.
+
+The fix is to hide the admin bar for an authorised preview, on `show_admin_bar`.
+Core's own docs name this the supported way to hide the bar, so it needs no
+output filtering of core's internals. It is also the right answer on the merits:
+an admin bar is an editing control surface, and a headless capture has no use
+for it.
+
+Two scoping properties make this safe rather than merely effective:
+
+- **It keys off authorisation, not arguments.** `agentshell_is_preview_request()`
+  reads the globals the credential gates set, and only after a credential has
+  verified. An implementation keyed off the *arguments* would let any anonymous
+  visitor hide the bar on any page by appending `?agentshell_post_key=x` — both
+  an information leak and a griefing primitive. Measured live: a logged-in
+  visitor sending a junk key to an ordinary page keeps the bar.
+- **Ordinary pages are untouched.** No logged-in page loses the bar except an
+  authorised preview. Measured live with a real session cookie on both paths.
+
+Behind the suppression sits a second control: the credential arguments are
+stripped from `$_SERVER['REQUEST_URI']` once spent, so anything else that
+reproduces the request URL — a plugin, a template, a future core change — finds
+nothing to reproduce. It deliberately does **not** clear `$_GET`:
+`agentshell_config_for_render()` calls the transaction verifier a second time at
+render time, and that verifier reads `$_GET`, so clearing it would silently drop
+the staged design from the render. A mutation that does exactly that is killed by
+the suite, along with the one that strips the whole query string.
+
+### The security model, stated as measured rather than assumed
+
+Measured live with a cookie-free HTTP client, because the bearer semantics do
+not behave the way a session-based intuition would predict:
+
+| Request | Result |
+|---|---|
+| anonymous, no credential | 404, nothing rendered |
+| **anonymous, valid credential, no cookie at all** | **200, draft rendered** |
+| tampered post key | 404 |
+| tampered transaction key, post key valid | 200, draft rendered, **staged design not applied** |
+| credential retargeted to another post | 404 |
+| credential replayed against the REST route | 200, but only public content; the draft is absent and no credential appears |
+
+The second row is the point. **The credential is a bearer; possession is
+authorisation.** No WordPress session is required, and none is checked — the
+post key alone is sufficient. The actor binding is *inside the signature*, so it
+proves which user's authority the credential speaks for, not that the browser
+presenting it is that user's browser.
+
+Replay is unlimited within the TTL. There is no single-use nonce, so a captured
+URL works for its whole 300-second life, from any number of clients. The row
+that shows the gates are independent is worth stating plainly: a broken
+transaction key does not stop the post credential, and vice versa, so neither
+credential can mask a failure in the other.
+
 ## Verification
 
 - `tests/post-preview-test.php` — 62 assertions, 0 failures. Positive and
@@ -262,35 +323,55 @@ with zero occurrences of the draft's marker text anywhere in it.
   (`REST_REQUEST` / `XMLRPC_REQUEST` constants, and the unconfigured-secret
   path), since a constant cannot be undefined once set.
 - 11 of 11 hand-written mutants of the four gates are killed by the suite.
-- `tests/browser-isolation-test.php` — 28 tests over browser profile isolation:
+- `tests/browser-isolation-test.php` — 27 tests over browser profile isolation:
   the flag reaching Chrome, `0700` permissions, per-capture uniqueness,
   removal on success/failure/invalid render/timeout, descendants dead before
   cleanup, the pre-existing profile untouched, and no cached draft content or
   credential surviving anywhere.
 - `tests/browser-isolation-mutation.php` — **14 of 14 mutants killed**, including
   the removal of `--user-data-dir` itself (7 failing assertions).
-- Full suite: **355 passed, 0 failed**.
+- `tests/preview-credential-hygiene-test.php` — 18 tests: neither credential in
+  the response (plain or URL-encoded), the `REQUEST_URI` scrub preserving the
+  path and unrelated arguments, the admin bar suppressed only for an authorised
+  preview, ordinary pages unchanged logged-in and not, junk credentials
+  suppressing nothing, unauthorised and mismatched requests rendering nothing,
+  expiry and transaction invalidation still holding, and draft + transaction
+  previews combining.
+- `tests/preview-credential-hygiene-mutation.php` — **9 of 9 mutants killed**,
+  including suppression removed, suppression keyed off the arguments instead of
+  the authorisation, the scrub removed, the scrub overreaching into `$_GET`, and
+  the transaction `Referrer-Policy` dropped.
+- Full suite: **373 passed, 0 failed**.
+- Live, against the real site with a real session cookie and a cookie-free
+  client: the preview body contains neither credential in any form, the
+  response carries `no-cache`/`no-store`, `X-Robots-Tag: noindex` and
+  `Referrer-Policy: no-referrer`, and the scoping table above holds.
 
 ## Known limitations
 
 - **The credential is a bearer in a URL.** It reaches web server access logs.
   The 300-second TTL bounds this; it does not eliminate it. Log scrubbing for
-  `agentshell_post_key` is the operator's responsibility.
-- **The rendered page contains the credential.** WordPress's admin bar builds
-  the "Customise" link from the current request URL, so a preview response
-  embeds `?agentshell_post_key=…` in a live `href` in its own body. Measured
-  live, not inferred. It is visible only to a request that already holds a
-  valid credential — an anonymous request to the same URL gets a bare 404 with
-  nothing in it — and the key expires with the TTL, but it does mean the
-  credential is in the HTML, the browser DOM, and anything that saves the page.
-  Stripping it from the admin bar was not attempted: it means filtering core's
-  admin-bar output, which is a wider change than this work should make.
+  `agentshell_post_key` is the operator's responsibility. On the LocalWP site
+  used for verification, `access_log off` is set at every level, so no log line
+  was written — that is a property of that environment, not a guarantee the code
+  makes, and a deployment with logging on would need the scrubbing.
+- **Replay is unlimited within the TTL.** There is no single-use nonce, so a URL
+  captured in transit is good for its whole window. Single-use was considered and
+  rejected for the reason in "Chrome makes one request per capture": Chrome may
+  legitimately fetch a page more than once, and a strict one-shot token can be
+  burned by a prefetch and break the render it was minted for. The shorter 300s
+  TTL is the mitigation.
 - **Revisions and auto-drafts are untested against core's check.** The status
   list covers `draft`, `pending`, `private` and `future`; core's own behaviour
   for `auto-draft` and revision previews was not probed.
 - **The binding gate trusts `get_queried_object_id()`.** A WordPress plugin
   that rewrites query results after `template_redirect` priority 0 could
   reintroduce the cross-post leak it closes. Nothing in this theme does.
+- **The scrub rewrites `$_SERVER['REQUEST_URI']`, which is process-global.** Any
+  code that captured the original URL before `template_redirect` priority 1 —
+  including a plugin that hooks earlier — still holds the credential in its own
+  copy. The scrub reduces the exposure surface; it cannot reach a value that was
+  already copied out.
 - **A SIGKILL leaves a profile behind.** No in-process mechanism can prevent
   that. The stale sweep reclaims such a directory once it is an hour old, so the
   exposure is bounded by that interval rather than being immediate — a killed
