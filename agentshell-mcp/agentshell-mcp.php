@@ -106,6 +106,7 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
 
     // Screenshot loop (v1.3)
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-screenshot.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-get-screenshot.php';
 
     $tools[] = new AgentShell_MCP\Tools\Get_Config();
     $tools[] = new AgentShell_MCP\Tools\Set_Css_Var();
@@ -178,6 +179,7 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
 
     // Screenshot loop (v1.3)
     $tools[] = new AgentShell_MCP\Tools\Screenshot();
+    $tools[] = new AgentShell_MCP\Tools\Get_Screenshot();
 
     return $tools;
 }, 5 );
