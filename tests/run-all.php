@@ -79,6 +79,12 @@ $suites = array(
     // lease with a frozen clock, so it belongs after the suites that have
     // already put those in memory.
     'transaction-lease'    => __DIR__ . '/transaction-lease-test.php',
+    // Defines wp_insert_post()/wp_update_post()/get_permalink() stubs for the
+    // runner's shared process, and drives the bounded content-write guard with
+    // a recording wpdb. Runs after the suites that need the real Store.
+    'content-write'        => __DIR__ . '/content-write-test.php',
+    // Needs those same stubs, and a real WordPress. Skips without one.
+    'content-write-live'   => __DIR__ . '/content-write-live-test.php',
     'security'             => __DIR__ . '/security-test.php',
     'hardening'            => __DIR__ . '/hardening-test.php',
     'inject-block'         => __DIR__ . '/inject-block-test.php',
