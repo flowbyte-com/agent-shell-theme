@@ -216,6 +216,118 @@ exactly one reader. Render paths keep passing stored config explicitly (a live
 visitor must never see staged design); tool paths pass effective. Add a test
 that registers and enables in one transaction.
 
+**Status: fixed.** The two readers are now one reader with an explicit
+committed/effective contract, and the defect turned out to be wider than
+described above.
+
+**The contract.** `agentshell_get_config()` takes an explicit source argument,
+defaulting to `'committed'`:
+
+- `agentshell_get_config( 'committed' )` — what is stored, what every ordinary
+  visitor sees, what survives a rollback. The default, so an existing call that
+  passes nothing keeps its meaning.
+- `agentshell_get_config( 'effective' )` — staged configuration when a
+  transaction is open, falling back to committed. What tools act on.
+- Anything else throws `InvalidArgumentException` rather than silently defaulting.
+
+`agentshell_get_config()` was deliberately *not* changed to expose staged values
+globally; a visitor request and a tool call are different questions and now ask
+them by name. `agentshell_get_widget_registry()` and `agentshell_get_zones()`
+take the config explicitly, and passing none means committed.
+
+**Rendering** goes through `agentshell_config_for_render()`, gated by
+`agentshell_authorize_transaction_preview()` and memoised per credential
+fingerprint (`tx|key|exp`) so the `template_redirect` decision and the later
+render-time call cannot disagree. `agentshell_widget_registry_for_render()` and
+`agentshell_zones_for_render()` are the only places that answer "may this request
+see staged state".
+
+**Wider than documented — three further causes, all fixed:**
+
+1. **The staging filter cancelled itself.** `Transaction_Manager::filter_config_update()`
+   returned `false` to mean "do not write this yet". But
+   `pre_update_option_{$option}` is a *transform* filter, not a veto — core only
+   skips a write when the returned value is identical to the old one
+   (`option.php`, `update_option()`). A `false` return was therefore **stored**.
+   Worse, the callback was registered per instance, and `apply_filters` threads
+   each return value into the next callback, so a second instance received the
+   first one's `false` and `stage()` was called with a non-array. The dispatcher
+   is now a single static registration and a transaction returns `$old_value`,
+   which is how a filter actually cancels.
+
+2. **Two widget stores.** `agentshell-blocks` kept its own `agentshell_widgets`
+   option alongside the canonical `agentshell_config.widgets`. `Widget_Registry`
+   now defers to the theme's canonical registry when the theme is loaded, and the
+   legacy option is only written when there is no canonical store. The legacy
+   migration reconciles into the canonical store and deliberately does **not**
+   delete the legacy option unless the canonical write actually landed — the write
+   is staged inside a transaction, so "the migration ran" is not evidence that
+   anything was persisted.
+
+3. **Doctor validated a configuration that did not exist.** Doctor resolved
+   staged zones against committed widgets, so `validate_transaction` could pass a
+   transaction whose staged widget ids it had never seen.
+
+**One defect the tests did not catch, found live.** The preview gate authorised
+correctly and staged design tokens rendered, but the staged widget rendered as
+`<!-- Widget not found: … -->`. `template-parts/shell-render.php` does not render
+widgets itself — it fires `do_action( 'agentshell_render_widget', $id )` and the
+blocks plugin answers. The plugin's `render_widget()` resolved that id against
+the **committed** registry. So one preview could resolve its zone composition
+from staged config and its widget body from committed config, and the two halves
+disagreed. `render_widget()`, `get_all_css()` and `get_init_js()` now resolve
+through the theme's preview-aware registry.
+
+The regression that should have caught this called the theme's
+`agentshell_render_widget()` directly — a function production never calls when
+the plugin is active. It passed while the live site was broken. The replacement
+calls `Widget_Registry::render_widget()`, which is exactly what the hook handler
+calls. `agentshell_render_block()` cannot be used to get there because the test
+bootstrap stubs `do_action()` as a no-op.
+
+**Coverage.** `tests/config-consistency-test.php` (31 tests) covers the ten
+numbered scenarios plus negatives: register-then-enable in one transaction, a
+staged widget visible to the next tool, `get_config` reporting staged values,
+register-then-disable and register-then-remove, validate accepting a staged
+widget *and* still rejecting a genuinely unknown one, ordinary render seeing
+neither staged widget nor staged zone through both resolvers, authorised preview
+rendering both, rollback, commit, existing widgets surviving, legacy migration,
+the blocks plugin reading the canonical store, its renderer honouring disabled,
+and credential negatives (no credential, forged key, valid signature for another
+transaction, closed transaction).
+
+`tests/config-consistency-mutation.php` (15 mutants, all killed, checkout
+untouched) targets `functions.php`, `class-base-tool.php`, `class-transactions.php`,
+`class-doctor.php`, `template-parts/shell-render.php` and
+`agentshell-blocks/includes/class-widget-registry.php`. Two of its mutants exist
+specifically to fail if the plugin's render path ever goes back to committed-only.
+
+**Live verification.** Every step went through the MCP tools; nothing was written
+by any other route. `begin_transaction → register_widget → enable_widget →
+update_zone_composition → set_css_var → validate_transaction` returns
+`status: ok` with no `WIDGET_REFERENCE_UNKNOWN`. Under an authorised credential
+the page renders the staged widget and the staged accent and carries
+`X-Robots-Tag: noindex, nofollow, noarchive` and `Cache-Control: … no-store`;
+an anonymous request and a request with a forged key render neither and carry no
+cache-suppressing headers. `agentshell_rollback_transaction` restored the site
+(registry back to `hello-world` only, accent back to `#3b82f6`, main zone back to
+`[wp_loop]`), and a separate commit path published the staged state to ordinary
+visitors and then restored the same baseline through a second transaction.
+
+**Remaining inconsistencies, found but not fixed** (they are new work, not part
+of this issue):
+
+- `Transaction_Manager::begin()` builds the id as `'tx_' . time()`. Two
+  transactions begun in the same second share an id, so a stale preview credential
+  for the first would authorise the second. A collision-resistant id belongs here.
+- `agentshell_remove_widget` reports `remaining` as the length of
+  `config.widgets`, which excludes file widgets. After removing the only
+  config-registered widget it reports `remaining: 0` on a registry that still
+  contains `hello-world`. Correct, but it reads like data loss.
+- `agentshell_get_render_widget()` — the theme's own renderer — is defined and
+  never hooked while the blocks plugin is active. Not a behaviour bug, but two
+  implementations of the same decision is one more than there should be.
+
 ---
 
 ## 5. Core WordPress blocks render completely unstyled
