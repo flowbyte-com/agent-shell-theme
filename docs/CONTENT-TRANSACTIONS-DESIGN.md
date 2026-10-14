@@ -1,7 +1,8 @@
 # Content transactions — design and investigation
 
-**Status: architecture review complete. Stage 0 and the F3 partial-write fix
-(§5.1) are implemented; stages 1–6 are proposals.**
+**Status: architecture review complete. Stage 0, the F3 partial-write fix
+(§5.1), and Stage 1a (the journal and its recovery engine, one operation type)
+are implemented; stages 1b–6 are proposals.**
 Scope: AgentShell issue #8 (content tools do not participate in transactions)
 and issue #2 (no tool can delete content).
 
@@ -40,6 +41,16 @@ and issue #2 (no tool can delete content).
 >    `has_durable_work()` guard this document depends on: a transaction holding
 >    a journal is never reclaimed, which is why §4's journal can be made
 >    load-bearing later without a second recovery design.
+> 5. **Stage 1a — the journal, and recovery for one operation type.** Built and
+>    implemented, because Stage 0's `has_durable_work()` guard only ever fired
+>    vacuously and an unwedged site is not what it was for. **Normative form is
+>    `AGENTS.md` §6.4**; the schema actually built is in §4.1a, which supersedes
+>    the sketch in §4.1; the recovery failure scenarios are F23–F35 in §5.0; and
+>    the limitations that matter are §9's closing list. Two things it deliberately
+>    did **not** do: it did not enable journalling in any content tool, and it
+>    did not implement any operation type beyond compensating a
+>    transaction-created draft. §10 lists what must close before the first
+>    production tool may write a journal.
 
 ---
 
@@ -859,6 +870,76 @@ recurses rather than testing one level: a transaction that journalled nothing
 still has its bucket keys, and treating those as work would make the safeguard
 permanent rather than selective.
 
+#### 4.1a The sketch above, superseded — the schema Stage 1a actually built
+
+The buckets in the sketch are **not** what was built, and the difference is not
+cosmetic. A bag of `created` / `updated` / `trashed` lists can describe *what a
+transaction did*, but recovery cannot be driven from it, because every question
+recovery has to answer is per-operation: is this one still owed? who is
+compensating it right now? did it already settle? was the post's evidence
+checked? A bucket layout answers none of those without a second structure
+alongside it — and two structures over the same facts can disagree, which is
+exactly the failure a journal exists to prevent.
+
+So the journal is a flat map of operation id → record, keyed by the same id the
+post carries as its marker:
+
+```php
+'content' => array(
+    'v'    => 1,                  // schema version, per journal
+    'tx'   => 'tx_1789…_a1b2c3d4', // the row it must be found in; a mismatch is a problem
+    'ops'  => array(
+        'op_1789…_9f3c' => array(
+            'op'          => 'create_draft',
+            'v'           => 1,          // per-operation, so two builds cannot half-understand a row
+            'state'       => 'intended', // intended | applied | compensating | compensated | conflict
+            'actor'       => 'agent',
+            'recorded_at' => 1789…,
+            'updated_at'  => 1789…,
+            'target'      => array( 'post_type' => 'page', 'post_status' => 'draft' ),
+            'before'      => null,       // a creation has no pre-image; null says so explicitly
+            'after'       => array(
+                'post_type'      => 'page',
+                'post_status'    => 'draft',
+                'post_name'      => 'acme-home',
+                'op_meta_value'  => 'op_1789…_9f3c',  // the marker value the post must carry
+                'post_modified_gmt' => '…',            // optional OCC guard, when known
+            ),
+            'post_id'     => 0,          // 0 = never learned; NOT "nothing was created"
+            'claim'      => null,        // { actor, at } while another caller is inside compensation
+            'comp'       => null,        // { outcome, detail, at, deleted_post_id }
+            'notes'      => array(),
+        ),
+    ),
+    'signature' => '…',                 // HMAC over the serialised ops; verify-before-replay
+),
+```
+
+Three decisions in there are load-bearing and the sketch gave no hint of them:
+
+- **`op_meta_value` is the operation id.** The post's own metadata is the
+  evidence that it is ours; the journal is only the claimant. When `post_id` was
+  never recorded — the crash between `mark_applied()` and the row write — the
+  marker is the *only* way to find the post. That inverts the sketch's
+  assumption that the journal finds things.
+- **`after` is mandatory, `before` is not.** Compensation deletes, so it needs
+  enough to identify the object and to prove it has not changed underneath:
+  `post_type`, `post_status`, `post_name`, `op_meta_value`. A record missing any
+  of them fails `validate()` and is refused. A creation's `before` is `null`
+  because an empty array would be indistinguishable from a lost pre-image.
+- **`v` is on the operation as well as the journal.** A row written by an older
+  build is read by a newer one without either pretending to understand the
+  other's fields.
+
+Only `create_draft` exists in `SUPPORTED_OPERATIONS`. Updates, navigation,
+taxonomy and permanent deletion are refused by name at validation, at record
+time and again inside compensation. §3.2.2 rates create-draft compensation as
+*Exact* — "we created it" — and that rating is the only reason any of this can
+ship; every other operation type in this document lacks the before/after
+contract that would make an inverse safe to attempt.
+
+Normative: `AGENTS.md` §6.4.
+
 ### 4.2 Post meta ownership stamp
 
 ```
@@ -869,6 +950,37 @@ _agentshell_provenance— 'agentshell'  survives commit; explains where the post
 
 `_agentshell_provenance` is what makes §6.3's "protection against deleting
 unrelated content" enforceable: a post without it was not made by AgentShell.
+
+**Status of these three keys: not implemented.** None is written by any tool
+today, because no tool journals. What Stage 1a *did* add is a fourth key with a
+different job, used by the recovery engine and by nothing else:
+
+```
+_agentshell_journal_op  — 'op_1789…_9f3c'
+```
+
+It is a per-operation ownership stamp whose value **is** the operation id, and
+that is deliberate. The three keys above are transaction-scoped: every post in
+a transaction would carry the same value, which is enough to say "this
+transaction created it" and not enough to say "this specific operation created
+*this* specific post". Recovery's hardest case — a crash before any id was
+recorded — needs the second. A per-operation marker means the question "did
+*operation X* happen?" is answerable from the post itself, without trusting a
+journal row that may itself be stale, truncated or wrong.
+
+The trade is that the key is per-operation rather than per-transaction, so
+finding "everything this transaction created" is now a query rather than a
+lookup. Nothing needs that query yet; recovery needs the narrower one, so the
+narrower key won. `_agentshell_provenance` remains the right answer for the
+"was this post made by AgentShell at all" question that §6.3 asks, and is still
+a Stage 2 prerequisite.
+
+The marker lookup is direct SQL against `wp_postmeta`, not `get_posts()`,
+because `get_posts()` does not return trashed posts by default — so the one
+case most likely to matter (a post somebody has since trashed) would be invisible
+to it. Verified live: `journal-recovery-live-test.php` asserts that
+`get_posts()` cannot see the trashed orphan while the marker query finds and
+names it.
 
 ### 4.3 The SQL commit wrapper
 
@@ -1038,6 +1150,24 @@ destructive operation behind a mutating-sounding one.
 No other new tool is proposed. Everything else is an argument or a change to an
 existing tool's behaviour.
 
+**Superseded by Stage 1a, which added two.** The sentence above was true when
+written and is now false, so it is corrected rather than left to mislead:
+
+| Tool | Implemented | Why an argument would not do |
+|---|---|---|
+| `agentshell_get_journal` | yes | Read-only inspection of a transaction's journal: what was recorded, in what state, by whom, and whether it verifies. A journal nobody can look at is a journal that can only be resolved by running the destructive tool — which is the wrong order. |
+| `agentshell_recover_transaction` | yes | Destructive, confirmed (`confirm: true`). §6.3 calls the rollback path an attack surface, and the mitigation for that is a separate, narrow, authority-checked, audited operation — not an argument on a tool whose name does not say what it destroys. |
+
+`agentshell_delete_content` is **not** implemented and remains Stage 2. Recovery
+compensates drafts a transaction created; it is not a general delete capability,
+and there is no `force` argument anywhere in it that bypasses the evidence and
+authority checks.
+
+The reason these two are allowed to be new tools at all is the same reason
+`delete_content` is: the canonical count is "45+", not a fixed number, and
+overloading an existing tool's name with a capability that destroys things
+hides the destruction behind a mutating-sounding word.
+
 ---
 
 ## 5. Failure and recovery scenarios
@@ -1069,6 +1199,42 @@ tests in §8.
 | F20 | Rollback after `force = true` | Post re-created from the journal; the **new id differs** and the response says so. |
 | F21 | Preview credential used after commit | Row deleted at commit ⇒ authorisation fails ⇒ 404/refusal, never a stale render. |
 | F22 | Staged content screenshot with `transaction=true, post_id=N` | Both credentials verified; staged config on staged draft; response no-store + noindex. |
+
+### 5.0 Expired-transaction recovery — F23 to F30
+
+Added by Stage 1a, and the only rows in this table that describe behaviour that
+**exists**. The rest are still proposals. Each is a regression in
+`tests/journal-recovery-test.php`; F24, F27, F29 and F30 are also measured
+against a real WordPress in `tests/journal-recovery-live-test.php`.
+
+| # | Scenario | Required behaviour |
+|---|---|---|
+| F23 | Transaction expires holding a journal, no recovery run | Never deleted by a later `begin()`. `begin()` refuses and names it. §6.2's rule, now non-vacuous. |
+| F24 | Recovery run against an expired journalled transaction | Each operation claimed by CAS, evidence verified, draft force-deleted, operation marked `compensated`, transaction row released by a guarded delete — only after nothing is outstanding. |
+| F25 | Crash after the intent swap, before `wp_insert_post()` | `post_id` is 0 and that is **not** read as "nothing was created". Marker lookup finds nothing, and nothing is deleted; the operation settles as "no evidence the write ever happened". |
+| F26 | Crash after `wp_insert_post()`, before `mark_applied()` | The post is found by its `_agentshell_journal_op` marker, identified, and compensated. This is the case the sketch in §4.1 could not express. |
+| F27 | Recovery repeated after completion | Second run is a success reporting nothing done, never an error that sends someone hunting; the post stays gone. |
+| F28 | Crash *during* recovery; a second caller arrives | The first caller's claim is younger than 120 s and the second is refused `contended`. After 120 s the claim ages out and the second takes over — which is what makes recovery resumable rather than permanently wedged. |
+| F29 | Content changed by another actor after the interrupted transaction | `post_type` / `post_status` / `post_name` / `post_modified_gmt` mismatch ⇒ **conflict**. Nothing is deleted, the post survives with its real state, and the row is *kept*. Trashing a draft counts as divergence, so a trashed orphan is found, named, and refused rather than silently removed. |
+| F30 | Journal missing, corrupt, or of an unsupported operation type | Validation failure is reported by name; recovery refuses and deletes nothing. A journal that cannot be read counts as outstanding work, so the row is never discarded unread. |
+| F31 | Two callers recover simultaneously | Exactly one claim lands. The loser is told `contended` and deletes nothing. |
+| F32 | Unauthorised actor attempts recovery | Refused before any inspection of content; the draft survives; the journal is kept; the refusal is audited. The owner needs `confirm: true`; anyone else needs `manage_options` **and** an explicit `authorize_recovery`. |
+| F33 | A new transaction is opened while recovery is in flight | The recovery's release CAS is guarded, so it cannot erase the new row. The new transaction survives intact and the recovery reports `contended`. |
+| F34 | Recovery is run against a transaction holding an operation type this build cannot compensate | Refused whole. Nothing deleted, nothing approximated, and the operation type is named. |
+| F35 | Any recovery, refusal or conflict | Written to the audit log, naming the actor and the role they acted under, plus each deleted post id. |
+
+Two of these are worth stating as design positions rather than test rows, because
+the alternative is tempting and wrong:
+
+- **A conflict keeps the transaction row.** Only `compensated` counts as settled.
+  Discarding a conflicted journal to free the slot would throw away the record
+  that a human still has to decide something — which is the one thing §6.3 says
+  must never happen quietly. The cost is that `begin()` keeps refusing until
+  someone acts, and that is the intended trade.
+- **Compensation deletes, it does not trash.** `wp_delete_post()`'s default
+  branch trashes, and `wp_trash_post()` rewrites the slug — so a trash-based
+  compensation would leave a row behind *and* break the identity the journal
+  records. Verified live: a trashed row still exists and its slug has changed.
 
 ### 5.1 F3 — the partial content write, fixed at the boundary
 
@@ -1273,8 +1439,9 @@ Persisting staged content is a real change in the site's data footprint:
 
 ## 7. Implementation stages
 
-Each stage is independently shippable and independently revertible. Stage 0 is
-done; stages 1–6 are a proposal for review, not a commitment to build them.
+Each stage is independently shippable and independently revertible. Stage 0 and
+Stage 1a are done; stages 1b–6 are a proposal for review, not a commitment to
+build them.
 
 ### Stage 0 — Fix the lock's lifetime *(no content work; small; do first)* — **IMPLEMENTED**
 
@@ -1301,12 +1468,43 @@ Normative: `AGENTS.md` §6.2. Regressions: `tests/transaction-lease-test.php`
 (36 cases, frozen clock). Mutants: `tests/transaction-lease-mutation.php` (29,
 all killed).
 
-### Stage 1 — Journal primitives *(no behaviour change to any tool)*
+### Stage 1 — Journal primitives *(no behaviour change to any tool)* — **PARTIALLY IMPLEMENTED (1a)**
 
 - `Content_Journal` class: capture/apply/replay for post rows, terms, the meta
   keys we write, and the front-page option cascade.
 - HMAC over the journal contents; verify-before-replay.
 - *Tests:* capture fidelity, replay idempotence, tamper detection.
+
+**Stage 1a is done, and is a deliberate subset of the bullets above.** Built:
+`Content_Journal` (flat op map, schema validation, HMAC verify, `record_intent()`
+/ `mark_applied()` / `claim` / `settle`), `Content_Recovery` (compensate,
+conflict, resumable, audited), the two tools, and `has_durable_work()`'s
+schema-aware delegation.
+
+Deliberately **not** built: terms, the meta keys we write, and the front-page
+option cascade — i.e. every operation type except `create_draft`. Those have
+before/after contracts in §3.2 that would have to be *implemented*, not
+assumed, and shipping a half-compensating journal is worse than shipping a
+narrow one. `SUPPORTED_OPERATIONS` has exactly one entry and each refusal is by
+name.
+
+Also deliberately not built: `record_intent()` has **no production caller**. No
+content tool journals. A journal record with no compensation path behind it is a
+record that can never be resolved, and §6.3's whole argument is that the
+unresolvable case is the dangerous one. Stage 2 is what gives it a caller.
+
+What Stage 1a changed that the stage description did not foresee: `has_durable_work()`
+gained a schema-aware branch. Pre-journal rows (a bare `content` array of
+buckets) still take the original recursive path unchanged; a row carrying `ops`
+and `v` delegates to `Content_Journal::has_outstanding_work()`. Without the
+branch, a journal that cannot be read would look like a transaction with nothing
+to do, and the next `begin()` would reclaim it — the exact silent deletion §6.2
+was written to prevent.
+
+Normative: `AGENTS.md` §6.4. Regressions: `tests/journal-recovery-test.php`
+(33 cases) and `tests/journal-recovery-live-test.php` (11 assertions against a
+real WordPress). Mutants: `tests/journal-recovery-mutation.php` (31: 30 killed,
+1 provably equivalent and recorded as such).
 
 ### Stage 2 — Content mutations journal, and refuse outside a transaction
 
@@ -1339,11 +1537,15 @@ all killed).
 ### Stage 5 — Staged content previews and reaper hardening
 
 - `scope=staged` reads; combined `transaction=true, post_id=N` screenshots.
-- Recovery sweep for transactions holding unrecovered work. Stage 0 made the
-  case *safe* — such a transaction is never reclaimed, and `begin` refuses —
-  but nothing yet offers to resolve it, so today it is a permanent refusal
-  rather than a decision point. That is the deliberate trade: a visible block
-  beats silent deletion of a pre-image.
+- A recovery *sweep* for transactions holding unrecovered work. Partly answered
+  by Stage 1a: an expired journalled transaction is no longer a permanent
+  refusal, because `agentshell_recover_transaction` can resolve it. What is
+  still missing is the discovery — nothing lists transactions that need
+  attention, and no background scheduler runs (deliberately; §6 of the brief
+  forbids one). Recovery is something an actor asks for, after
+  `agentshell_get_journal` shows them what is owed. Extending this to the other
+  operation types is also still open, and each needs its own compensation
+  contract first.
 
 ### Stage 6 — Documentation, gates, live verification
 
@@ -1523,8 +1725,9 @@ Before merge, per `AGENTS.md` §9:
    transaction runs on the next `begin_transaction`; it is not a background
    service, so between a crash and the next begin, the row sits there — now
    visible as `stale` rather than as an open transaction. A transaction holding
-   a journal is never reclaimed at all, so today it is a permanent refusal until
-   Stage 5 offers a way to resolve it.
+   a journal is never reclaimed at all; since Stage 1a it can be *resolved* by
+   `agentshell_recover_transaction`, but only by an actor who runs it, and only
+   for `create_draft`. Nothing sweeps, nothing schedules, nothing notifies.
 9. **The design does not cover comments, attachments, or post types beyond
    `post` and `page`.**
 10. **The engine preflight checks the tables it knows about.** A plugin writing
@@ -1546,6 +1749,81 @@ Before merge, per `AGENTS.md` §9:
     regression drives the guard directly. The protection is in place for when it
     stops being latent; it is not evidence that AgentShell has already been
     leaking posts.
+
+### Limitations of the implemented journal and recovery engine
+
+Everything above is about the design. These are about what Stage 1a actually
+built, and they are the ones that matter when reading the code.
+
+14. **It compensates drafts, and only drafts.** `SUPPORTED_OPERATIONS` has one
+    entry. Updates, navigation, taxonomy changes and permanent deletion are
+    refused by name — not approximated, not silently skipped. A transaction
+    holding any of them cannot be recovered at all until each one brings its
+    own complete before/after and compensation contract.
+15. **No content tool journals yet, so nothing produces a journal.** The
+    recording primitives and the recovery engine exist and are tested against
+    hand-built journals and, live, against a real orphan post. That is the
+    strongest evidence obtainable without a production caller, and it is not
+    the same thing as evidence from production.
+16. **Compensation is exact for creation and best-effort for everything else.**
+    Deleting a draft we created is exact. Restoring a prior state is not
+    implemented at all, so the §3.2 "best effort" caveat above applies to
+    everything in this document that has not been built.
+17. **A journal's HMAC is only as good as the secret it is signed with.** Where
+    no signing secret is defined, `verify()` reports `unverified` with a reason
+    rather than claiming the journal is intact, and recovery falls back to the
+    per-post evidence checks — which are the stronger guarantee anyway, because
+    they consult the WordPress objects rather than the record of them.
+18. **Nothing here makes a workflow atomic.** Two content writes in one
+    transaction are two journalled operations, not one atomic step. F11, F12 and
+    the OCC guard for pre-existing posts are still Stage 2/3 work.
+19. **Plugin side effects are still not reversed, and this is now a sharper
+    gap.** A `save_post` handler that writes outside `wp_posts` produced content
+    that the journal cannot see and recovery cannot compensate. Deleting the post
+    does not undo what the plugin wrote. This was always true; it was tolerable
+    while nothing was journalled, and it is the first thing to check before
+    Stage 2 turns journalling on for a real site.
+
+---
+
+## 10. Before the first production tool may write a journal
+
+Stage 1a built the mechanism. Nothing uses it. This is the list that has to be
+closed first, in order, and each item names the check that would show it closed.
+
+1. **Decide the operation set Stage 2 actually journals, and write each
+   compensation contract before the code that depends on it.** For anything
+   beyond `create_draft`: what the before-image is, where it is stored, what
+   "the post has not changed underneath us" means for that type, and what the
+   inverse operation is. An entry in `SUPPORTED_OPERATIONS` is the commit that
+   makes an operation recoverable, so it must arrive with its contract.
+2. **Settle `_agentshell_provenance` and `_agentshell_tx_id`.** §4.2's three
+   keys are still unimplemented, and `_agentshell_provenance` is what makes
+   §6.3's "is this post even ours?" enforceable at the *transaction* level.
+   `_agentshell_journal_op` answers a narrower question and was not chosen as a
+   replacement.
+3. **Wire the recording primitives into a tool, with the crash windows
+   deliberately provoked.** `record_intent()` → write → `mark_applied()` in that
+   order, with the mutation refused if the intent swap did not land. Tests must
+   kill the process between each pair, not merely mock the gap.
+4. **Prove the plugin side-effect gap on a real site** (limitation 19). If a
+   `save_post` handler writes outside `wp_posts`, decide explicitly whether
+   AgentShell refuses on such a site, or documents the gap and accepts it.
+   Do not discover it during a recovery.
+5. **Extend the OCC guard from the journal to live writes.** F11/F12 — an actor
+   updating a post another transaction owns — is not implemented and is not a
+   journal concern. Journalling without it would record an intent to modify
+   something that had already moved.
+6. **Decide the concurrency story for two *writers*, not two recoverers.** The
+   claim CAS serialises recovery. Nothing serialises two tools inside one
+   transaction, and nothing stops an agent outside the transaction from editing
+   a draft between intent and write. The evidence checks make that a *refusal*;
+   they do not make it *impossible*.
+7. **Re-read `AGENTS.md` §6.1 and make the proposal there true.** It currently
+   describes the contract content tools will obey and marks it as proposed.
+   Turning Stage 2 on makes it normative, which is a separate, explicit act.
+8. **Only then** add operation types, and only in commits that bring their own
+   before/after contracts and their own recovery regressions.
 
 ---
 

@@ -45,7 +45,7 @@ No other document is allowed to redefine these three statements.
 
 ## 2. MCP tools (authoritative count: **45+**)
 
-The plugin ships **45+ `agentshell_*` tools** (53 in `agentshell-mcp` + 4 in `agentshell-blocks` = 57 at the time of writing; growth is expected). Earlier counts cited in other files ("10 tools", "11 tools", "12 tools") are deprecated and must not be reproduced.
+The plugin ships **45+ `agentshell_*` tools** (55 in `agentshell-mcp` + 4 in `agentshell-blocks` = 59 at the time of writing; growth is expected). Earlier counts cited in other files ("10 tools", "11 tools", "12 tools") are deprecated and must not be reproduced.
 
 **Categories (call by category; the names below are exhaustive at the time of writing — discover additions with `agentshell_get_capabilities`):**
 
@@ -58,6 +58,7 @@ The plugin ships **45+ `agentshell_*` tools** (53 in `agentshell-mcp` + 4 in `ag
 - **Content primitives** — `agentshell_create_page`, `agentshell_create_post`, `agentshell_update_content`, `agentshell_update_post_content`, `agentshell_publish`, `agentshell_unpublish`, `agentshell_search_content`, `agentshell_get_content`. All six mutating ones write immediately (not transaction-staged — §6.1) and each returns an `atomicity` block saying what it could guarantee (§6.3).
 - **Navigation management** — `agentshell_register_navigation` (create or replace a WordPress nav menu by name and optionally assign to a registered theme location). Reconciles the requested items against the menu in place, so item ids are stable across repeated runs. **Not transaction-staged**: writes take effect immediately and `agentshell_rollback_transaction` will not undo them.
 - **Transactions (the safe change loop)** — `agentshell_begin_transaction`, `agentshell_get_transaction`, `agentshell_preview_transaction`, `agentshell_validate_transaction`, `agentshell_commit_transaction`, `agentshell_rollback_transaction`. A transaction is **leased**: it carries a 60-minute inactivity TTL that only its owner renews, it stops staging once that lease expires, and an abandoned config-only transaction is reclaimed (and audited) when the next one begins. See §6.2.
+- **Content journal & recovery** — `agentshell_get_journal`, `agentshell_recover_transaction`. Read-only inspection of a transaction's durable content journal, and the resolution of an expired transaction that holds one. **Recovery compensates drafts only**: updates, navigation, taxonomy and permanent deletion are refused by name, not approximated. See §6.4.
 - **Site meta & visuals** — `agentshell_get_site_info`, `agentshell_screenshot`, `agentshell_get_screenshot`.
   `agentshell_screenshot` returns a native MCP **image content block** by default (`inline: true`), so no
   credential handoff and no second request is needed to see the result. `inline: false` stores the capture
@@ -235,6 +236,30 @@ This is **per write, not per workflow.** `create_page` followed by a failed `reg
 
 Regressions: [`tests/content-write-test.php`](tests/content-write-test.php) and [`tests/content-write-live-test.php`](tests/content-write-live-test.php) (the real reproduction against a real WordPress), with [`tests/content-write-mutation.php`](tests/content-write-mutation.php) removing each of these guarantees one at a time.
 
+### 6.4 Content journal and expired-transaction recovery (normative, implemented)
+
+A journal is the transaction row's record of durable content work, and it lives inside that row — which is why §6.2's rule that a transaction holding durable work is never reclaimed is now load-bearing rather than vacuous. Two tools: `agentshell_get_journal` (read-only) and `agentshell_recover_transaction` (destructive, confirmed).
+
+**What exists today, and nothing more:**
+
+- **The journal is durable before anything depends on it.** Recording an intent is a compare-and-swap on the transaction row, and it returns `false` rather than reporting success when the row has moved underneath it. A write is never attempted unless its intent is already recorded.
+- **A recorded intention is not proof that the write happened.** An operation left at `intended` is resolved from the post's own marker meta (`_agentshell_journal_op`, whose value *is* the operation id) — not from the journal's own account of itself. No marker and no lookalike ⇒ "no evidence the write ever happened", and nothing is deleted. A lookalike without a marker is a **conflict**, never a deletion by guess.
+- **Only `create_draft` is supported.** Updates, navigation, taxonomy and permanent deletion are refused by name — at validation, at record time and again inside compensation. They are not approximated and not silently skipped.
+- **Compensation verifies before it destroys.** Marker identity, `post_type`, `post_status`, `post_name` and (when recorded) `post_modified_gmt` must all match, or the operation is recorded as a **conflict** and the post is left alone.
+- **Compensation deletes; it does not trash.** `wp_delete_post()`'s default branch trashes, gated on `EMPTY_TRASH_DAYS` — which would leave a row that is itself content, and `wp_trash_post()` rewrites the slug so the object would no longer be the one the journal described. The delete is wrapped in `Content_Write_Guard`, so a delete that fails part-way is rolled back and the draft is left whole.
+- **Concurrency is a claim, not a hope.** Each operation is claimed by a compare-and-swap on the transaction row (`intended`/`applied` → `compensating`, with `{actor, at}`), and released only when it settles. Two callers computing the same claim means exactly one lands. A claim older than 120 seconds is taken over, which is what makes a crash mid-recovery resumable.
+- **Recovery is repeatable and resumable, and never erases anybody else's transaction.** A settled operation is reported as settled; a failed delete leaves the operation owed with its claim released so a retry is immediate; and the transaction row is released by a guarded delete, only after nothing is outstanding, so a transaction opened in the meantime is left alone and the result says `contended`.
+- **A conflict keeps the row.** Only `compensated` is settled; a conflicted operation stays outstanding, so `begin` keeps refusing and the record of what a human still has to decide is never discarded to free the slot.
+- **Inspection is read-only and open.** It does not settle, renew, reclaim or write. Reading a journal is not gated on being allowed to resolve one, because looking is free of consequences and the actor most likely to need it after a crash is the one a capability check would shut out.
+- **Authority is two-part for anyone but the owner.** A non-owner needs `manage_options` **and** an explicit `authorize_recovery` in the same call. `agentshell_recover_transaction` requires `confirm: true` from the owner too.
+- **Every outcome is audited**, refusals included, naming the actor and the role they acted under — a recovery that quietly did nothing is otherwise indistinguishable from one that was never run.
+
+**Four things this is not, stated so they are not assumed:** it is not a general force-delete; there is no `force` argument anywhere in it. It is not a background scheduler — recovery is something an actor asks for. It does not make a *workflow* atomic. And it compensates drafts only: a transaction holding an operation type this build cannot compensate is refused whole, with nothing deleted.
+
+What is **not** yet implemented, and must not be described as if it were: no content tool writes a journal today (§6.1 still governs content), `agentshell_delete_content` does not exist, navigation staging does not exist, and this says nothing about atomicity across a multi-step workflow. Prerequisites before the first production content tool may write a journal are listed in [`docs/CONTENT-TRANSACTIONS-DESIGN.md`](docs/CONTENT-TRANSACTIONS-DESIGN.md) §10.
+
+Regressions: [`tests/journal-recovery-test.php`](tests/journal-recovery-test.php) and [`tests/journal-recovery-live-test.php`](tests/journal-recovery-live-test.php) (the real reproduction, including that a force delete really removes the row and that a trashed orphan is really found), with [`tests/journal-recovery-mutation.php`](tests/journal-recovery-mutation.php) removing each of these guarantees one at a time.
+
 ---
 
 ## 7. Files agents must not modify
@@ -275,7 +300,7 @@ Every other markdown in this repository is a pointer, an archive, a non-normativ
 | `docs/SCREENSHOT-STORAGE.md` | **Design record** | On-disk layout and retention for the screenshot store. Companion to the above. |
 | `docs/DRAFT-CAPTURE-DESIGN.md` | **Design record** | The draft-capture investigation behind the post-preview tools. |
 | `docs/TRANSACTION-PREVIEW.md` | **Design record** | Why transaction preview is rendered from a staged draft rather than from live config, and the credential model that follows from it. |
-| `docs/CONTENT-TRANSACTIONS-DESIGN.md` | **Design record** | The transactional-content investigation, the approved decisions (persisted drafts + durable pre-image journal + short-lived SQL transactions, deliberately *not* one open DB transaction), the failure inventory, and the staged implementation plan. Stage 0 — the lease — is implemented; §6.2 is the normative form of it. Stages 1+ are proposals, not behaviour. |
+| `docs/CONTENT-TRANSACTIONS-DESIGN.md` | **Design record** | The transactional-content investigation, the approved decisions (persisted drafts + durable pre-image journal + short-lived SQL transactions, deliberately *not* one open DB transaction), the failure inventory, and the staged implementation plan. Stage 0 — the lease — is implemented; §6.2 is the normative form of it. The Stage 1a journal and its recovery engine are implemented for one operation type; §6.4 is the normative form of them, and its §4.1 sketch is superseded by the schema actually built. Stages 1b+ are proposals, not behaviour. |
 | `docs/PRODUCT-ISSUES.md` | **Design record** | The issue backlog these designs answer. A backlog entry is a request, not a contract. |
 
 **Hard rule about new docs.** Any new markdown file must do one of: (a) pointer to this file, (b) archive notice, (c) single-task skill, (d) non-normative human setup guide, (e) **design record**.
