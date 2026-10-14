@@ -381,6 +381,135 @@ function agentshell_test_audit_all() {
 }
 
 /**
+ * Posts, users and the fake main query.
+ *
+ * Shared because two suites need the same model of "what the request resolved
+ * to", and a second copy would drift from the first — the point of the fixture
+ * is that a suite cannot assert against its own private idea of WordPress.
+ *
+ * authenticate() requires get_userdata() to still resolve the actor, so a
+ * deleted account is representable.
+ */
+
+$GLOBALS['_agentshell_test_posts'] = array();
+$GLOBALS['_agentshell_test_users'] = array();
+
+function agentshell_test_add_post( $id, $status ) {
+    $GLOBALS['_agentshell_test_posts'][ (int) $id ] = (object) array(
+        'ID'          => (int) $id,
+        'post_status' => $status,
+        'post_type'   => 'page',
+        'post_title'  => "Post {$id}",
+    );
+}
+function agentshell_test_add_user( $id ) {
+    $GLOBALS['_agentshell_test_users'][ (int) $id ] = (object) array(
+        'ID'           => (int) $id,
+        'user_login'   => "user{$id}",
+    );
+}
+function get_post( $id = null ) {
+    if ( null === $id ) { return $GLOBALS['post'] ?? null; }
+    return $GLOBALS['_agentshell_test_posts'][ (int) $id ] ?? null;
+}
+function get_userdata( $id ) {
+    return $GLOBALS['_agentshell_test_users'][ (int) $id ] ?? false;
+}
+
+// ── Query surface the binding gate reads ─────────────────────────────────────
+// A fake WP_Query whose resolved object the test controls, so "the credential
+// was valid but the request resolved somewhere else" is expressible.
+
+class Agentshell_Test_Query {
+    public $posts = array();
+    public $post = null;
+    public $post_count = 0;
+    public $found_posts = 0;
+    public $is_singular = true;
+    public $is_page = true;
+    public $is_single = false;
+    public $is_404 = false;
+    public function set_404() { $this->is_404 = true; }
+}
+
+$GLOBALS['_agentshell_test_query'] = new Agentshell_Test_Query();
+
+if ( ! function_exists( 'WP_User' ) ) {
+    // Minimal stand-in. Store::actor() only reads ID and user_login, and
+    // suites that need a specific principal set $GLOBALS['_agentshell_test_login'].
+    class WP_User {
+        public $ID = 1;
+        public $user_login = 'agent';
+    }
+}
+
+if ( ! function_exists( 'wp_get_current_user' ) ) {
+    /**
+     * Store::actor() reads this to name whoever is mutating config, and a
+     * transaction cannot even be opened without it. Three suites each defined
+     * it locally; hoisting one definition here means a suite reaching the same
+     * code path standalone fails for its own reason rather than an undefined
+     * function.
+     *
+     * WP_User is declared just above, so this always resolves to a real user
+     * whose login comes from the shared fixture — which is what lets a suite
+     * that stores captures per-actor still get distinct principals.
+     */
+    function wp_get_current_user() {
+        $u = new WP_User();
+        $u->ID = 1;
+        $u->user_login = $GLOBALS['_agentshell_test_login'] ?? 'agent';
+        return $u;
+    }
+}
+
+if ( ! function_exists( 'add_query_arg' ) ) {
+    /**
+     * Core accepts two call shapes — add_query_arg('k', $v, $url) and
+     * add_query_arg(array('k' => $v), $url) — and both are used by the paths
+     * under test. Defined once, here, because suites share a process: a
+     * per-suite definition is either a redeclare fatal or, worse, a
+     * two-argument version that silently breaks the three-argument callers.
+     */
+    function add_query_arg( ...$a ) {
+        if ( is_array( $a[0] ) ) {
+            $args = $a[0];
+            $url  = $a[1];
+        } else {
+            $args = array( $a[0] => $a[1] );
+            $url  = $a[2];
+        }
+        $sep = str_contains( $url, '?' ) ? '&' : '?';
+        return $url . $sep . http_build_query( $args );
+    }
+}
+
+function get_queried_object_id() {
+    $q = $GLOBALS['_agentshell_test_query'];
+    return $q->post ? (int) $q->post->ID : 0;
+}
+function is_singular() { return (bool) $GLOBALS['_agentshell_test_query']->is_singular; }
+
+/**
+ * Put the fake main query into the state it would hold after wp() resolved a
+ * request to $resolved_id (or to nothing, for an archive / 404).
+ */
+function agentshell_test_resolve_query( $resolved_id ) {
+    $q = new Agentshell_Test_Query();
+    if ( null !== $resolved_id ) {
+        $post = get_post( $resolved_id );
+        if ( $post ) {
+            $q->post = $post;
+            $q->posts = array( $post );
+            $q->post_count = 1;
+            $q->found_posts = 1;
+        }
+    }
+    $GLOBALS['_agentshell_test_query'] = $q;
+    return $q;
+}
+
+/**
  * Filter/action registry.
  *
  * Filters are recorded so a test can invoke the real registered closure

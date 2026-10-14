@@ -53,12 +53,7 @@ if ( ! function_exists( 'wp_unslash' ) ) { function wp_unslash( $v ) { return is
 if ( ! function_exists( 'esc_url_raw' ) ) { function esc_url_raw( $url ) { return $url; } }
 if ( ! function_exists( 'home_url' ) ) { function home_url( $p = '/' ) { return 'https://example.test' . $p; } }
 if ( ! function_exists( 'wp_parse_url' ) ) { function wp_parse_url( $u, $c = -1 ) { return parse_url( $u, $c ); } }
-if ( ! function_exists( 'add_query_arg' ) ) {
-    function add_query_arg( $args, $url ) {
-        $sep = str_contains( $url, '?' ) ? '&' : '?';
-        return $url . $sep . http_build_query( $args );
-    }
-}
+// add_query_arg is defined in bootstrap.php with both of core's call shapes.
 if ( ! function_exists( 'nocache_headers' ) ) {
     // Mirrors WordPress: the headers that make a response uncacheable by
     // intermediaries as well as by the browser.
@@ -90,73 +85,9 @@ function wp_reset_postdata() { $GLOBALS['_agentshell_test_post_reset'] = true; }
 // authenticate() requires get_userdata() to still resolve the actor, so a
 // deleted account is representable.
 
-$GLOBALS['_agentshell_test_posts'] = array();
-$GLOBALS['_agentshell_test_users'] = array();
-
-function agentshell_test_add_post( $id, $status ) {
-    $GLOBALS['_agentshell_test_posts'][ (int) $id ] = (object) array(
-        'ID'          => (int) $id,
-        'post_status' => $status,
-        'post_type'   => 'page',
-        'post_title'  => "Post {$id}",
-    );
-}
-function agentshell_test_add_user( $id ) {
-    $GLOBALS['_agentshell_test_users'][ (int) $id ] = (object) array(
-        'ID'           => (int) $id,
-        'user_login'   => "user{$id}",
-    );
-}
-function get_post( $id = null ) {
-    if ( null === $id ) { return $GLOBALS['post'] ?? null; }
-    return $GLOBALS['_agentshell_test_posts'][ (int) $id ] ?? null;
-}
-function get_userdata( $id ) {
-    return $GLOBALS['_agentshell_test_users'][ (int) $id ] ?? false;
-}
-
-// ── Query surface the binding gate reads ─────────────────────────────────────
-// A fake WP_Query whose resolved object the test controls, so "the credential
-// was valid but the request resolved somewhere else" is expressible.
-
-class Agentshell_Test_Query {
-    public $posts = array();
-    public $post = null;
-    public $post_count = 0;
-    public $found_posts = 0;
-    public $is_singular = true;
-    public $is_page = true;
-    public $is_single = false;
-    public $is_404 = false;
-    public function set_404() { $this->is_404 = true; }
-}
-
-$GLOBALS['_agentshell_test_query'] = new Agentshell_Test_Query();
-
-function get_queried_object_id() {
-    $q = $GLOBALS['_agentshell_test_query'];
-    return $q->post ? (int) $q->post->ID : 0;
-}
-function is_singular() { return (bool) $GLOBALS['_agentshell_test_query']->is_singular; }
-
-/**
- * Put the fake main query into the state it would hold after wp() resolved a
- * request to $resolved_id (or to nothing, for an archive / 404).
- */
-function agentshell_test_resolve_query( $resolved_id ) {
-    $q = new Agentshell_Test_Query();
-    if ( null !== $resolved_id ) {
-        $post = get_post( $resolved_id );
-        if ( $post ) {
-            $q->post = $post;
-            $q->posts = array( $post );
-            $q->post_count = 1;
-            $q->found_posts = 1;
-        }
-    }
-    $GLOBALS['_agentshell_test_query'] = $q;
-    return $q;
-}
+// Posts, users and the fake main query are shared fixtures, defined in
+// bootstrap.php: a second copy here would drift, and the point of the fixture is
+// that suites cannot assert against their own private idea of WordPress.
 
 require_once dirname( __DIR__ ) . '/functions.php';
 foreach ( array(

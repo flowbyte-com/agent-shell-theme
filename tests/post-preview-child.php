@@ -21,9 +21,7 @@ if ( ! function_exists( 'wp_parse_url' ) ) { function wp_parse_url( $u, $c = -1 
 if ( ! function_exists( 'home_url' ) ) { function home_url( $p = '/' ) { return 'https://example.test' . $p; } }
 function is_admin() { return false; }
 function rest_get_url_prefix() { return 'wp-json'; }
-function get_post( $id = null ) {
-    return $GLOBALS['_agentshell_test_posts'][ (int) $id ] ?? null;
-}
+// get_post() comes from bootstrap.php, which owns the shared post fixture.
 
 use AgentShell_MCP\Post_Preview;
 

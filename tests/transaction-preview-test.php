@@ -65,12 +65,7 @@ if ( ! function_exists( 'wp_generate_password' ) ) {
         return substr( bin2hex( random_bytes( (int) ceil( $len / 2 ) ) ), 0, $len );
     }
 }
-if ( ! function_exists( 'add_query_arg' ) ) {
-    function add_query_arg( $args, $url ) {
-        $sep = str_contains( $url, '?' ) ? '&' : '?';
-        return $url . $sep . http_build_query( $args );
-    }
-}
+// add_query_arg is defined in bootstrap.php with both of core's call shapes.
 
 // Declared unguarded by the screenshot-privacy suite, which shares this
 // process under run-all.php.
