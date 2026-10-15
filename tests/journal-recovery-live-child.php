@@ -951,6 +951,303 @@ $f['mark_applied_cas_failure'] = array(
     'op_state'       => $tx16_after['content']['ops'][ $intent16['id'] ]['state'] ?? '',
 );
 
+// ── 12. update_draft against real WordPress ───────────────────────────────────
+// Stage 2a added agentshell_update_draft. The stubbed suite pins the state
+// machine; this section asks the questions a stub cannot answer honestly:
+//   - When a rollback fires after an update, does the before-image really
+//     overwrite the live post's content, slug, and title back to what they
+//     were, before the create op's inverse deletes the post?
+//   - Does the tool refuse when the post carries no journal marker?
+//   - Does the tool refuse when the post has been published?
+//   - Does the retry-with-same-idempotency_key path return the same op id
+//     without creating a second op, and does a retry with the same key but
+//     different content refuse as a content conflict?
+//
+// Note: the live suite does not test "update + commit" because commit's
+// revalidation step re-runs verify_post against the live post for every
+// applied op. A create op's recorded after-image is the post at creation
+// time; after a successful update, the live post no longer matches. The
+// current production design does not re-stamp the create op's after-image
+// on update, so commit-after-update is expected to transition the create
+// op to `conflict` and refuse. The stubbed test suite (UD1-UD15) covers
+// the tool's own contract; the lifecycle gap is documented in the
+// directive's blockers section.
+//
+// Defensive cleanup: a prior run that crashed before reaching the
+// end-of-file cleanup may have left an orphan transaction row on the
+// site with stale journal ops. Each `live ` labelled row in
+// `wp_options` belongs to this test suite; sweep them so the journal
+// starts empty. (The end-of-file cleanup at the bottom of this file
+// deletes *this run's* row, but cannot reach a prior run's residue.)
+$orphan_journal = (array) get_option( Tx::KEY, null );
+if ( is_array( $orphan_journal )
+    && isset( $orphan_journal['label'] )
+    && 0 === strpos( (string) ( $orphan_journal['label'] ?? '' ), 'live ' ) ) {
+    delete_option( Tx::KEY );
+}
+require_once $theme_root . '/agentshell-mcp/includes/tools/class-update-draft.php';
+use AgentShell_MCP\Tools\Update_Draft;
+
+// 12a — DOCUMENTED GAP, NOT A TEST.
+//
+//      A successful Update_Draft followed by rollback is broken at the
+//      design level. The recovery engine processes update ops before
+//      create ops (so the before-image is applied to the live post
+//      before the create's inverse deletes it). But the inverse of
+//      `compensate_update` is `wp_update_post($restore)`, which
+//      necessarily bumps the live post's `post_modified_gmt` to a new
+//      value. The create op's recorded after-image — captured at
+//      `mark_applied` time during the original `wp_insert_post` — has
+//      the original creation-time `post_modified_gmt`. When the create
+//      op's `verify_post` runs after the update op's compensation, the
+//      six-field check finds a `post_modified_gmt` mismatch and the op
+//      transitions to `conflict`. The rollback refuses.
+//
+//      This is a fundamental incompatibility, not a test-setup bug.
+//      It is reported as a known limitation in the Stage 2a report. A
+//      fix would require the recovery engine to either (a) re-capture
+//      the create op's after-image after each successful update op
+//      (which would need a new transaction-shaped protocol), or (b)
+//      skip the `post_modified_gmt` check on a post that an update op
+//      has just restored (which would weaken the OCC guarantee). Both
+//      options are Stage 2+ work and are out of scope for Stage 2a.
+//
+//      The sub-tests 12b, 12c, 12d below cover the Update_Draft tool
+//      itself and do not depend on rollback-after-update semantics.
+
+// Defensive: clear any live-labelled row left in case a prior test in
+// this section crashed. Keeps subsequent sub-tests from inheriting
+// orphan journal ops.
+$u_orphan = (array) get_option( Tx::KEY, null );
+if ( is_array( $u_orphan ) && isset( $u_orphan['label'] )
+    && 0 === strpos( (string) ( $u_orphan['label'] ?? '' ), 'live update ' ) ) {
+    delete_option( Tx::KEY );
+}
+
+// 12b — Update_Draft refuses when the post carries no journal marker.
+//      A draft created outside any transaction (or by a different
+//      transaction) is exactly the case the marker check is meant to
+//      catch. The tool throws transaction_update_draft_not_transaction_owned.
+$tx_u4 = Tx::instance()->begin( 'live update no-marker probe' );
+$tx_u4['staged'] = array();
+update_option( Tx::KEY, $tx_u4 );
+$u4_post = wp_insert_post( wp_slash( array(
+    'post_type'    => 'page',
+    'post_status'  => 'draft',
+    'post_title'   => $token . '-u4-nomarker',
+    'post_content' => '<p>no marker</p>',
+    'post_name'    => strtolower( $token . '-u4-nomarker' ),
+) ), true );
+$GLOBALS['jr_mine'][] = (int) $u4_post;
+// Deliberately do NOT stamp the OP_META on this post.
+$u4_tool = new Update_Draft();
+$u4_threw = false;
+$u4_msg   = '';
+try {
+    $u4_tool->execute( array(
+        'id'              => (int) $u4_post,
+        'type'            => 'page',
+        'title'           => $token . '-u4-attempted',
+        'idempotency_key' => 'u4-update-key',
+    ) );
+} catch ( \Throwable $e ) {
+    $u4_threw = true;
+    $u4_msg   = $e->getMessage();
+}
+clean_post_cache( $u4_post );
+$u4_after_p = get_post( $u4_post );
+
+// Roll the empty tx back so the test leaves the option row clean.
+( new \AgentShell_MCP\Tools\Rollback_Transaction() )->execute( array() );
+
+$f['update_no_marker'] = array(
+    'refused'             => $u4_threw,
+    'names_cause'         => is_string( $u4_msg ) && false !== strpos( $u4_msg, 'transaction_update_draft_not_transaction_owned' ),
+    'title_unchanged'     => (string) ( $u4_after_p->post_title ?? '' ) === $token . '-u4-nomarker',
+    'transaction_gone'    => ! is_array( get_option( Tx::KEY, null ) ),
+);
+
+// 12c — Update_Draft refuses when the post is not a draft (status = publish).
+//      A status transition is a different lifecycle and is out of scope.
+$tx_u5 = Tx::instance()->begin( 'live update not-draft probe' );
+$tx_u5['staged'] = array();
+update_option( Tx::KEY, $tx_u5 );
+$u5_intent = Content_Journal::record_intent(
+    Content_Journal::OP_CREATE_DRAFT,
+    array( 'post_type' => 'page', 'post_status' => 'draft', 'post_title' => $token . '-u5' ),
+    array(),
+    $tx_actor,
+    time()
+);
+Content_Journal::attach( $tx_u5, $u5_intent );
+$tx_u5 = (array) get_option( Tx::KEY, null );
+$u5_post = Content_Write_Guard::run( function () use ( $u5_intent, $token ) {
+    return wp_insert_post( wp_slash( array(
+        'post_type'    => 'page',
+        'post_status'  => 'draft',
+        'post_title'   => $token . '-u5',
+        'post_content' => '<p>u5 body</p>',
+        'post_name'    => strtolower( $token . '-u5' ),
+        'meta_input'   => array( Content_Journal::OP_META => $u5_intent['id'] ),
+    ) ), true );
+} );
+$GLOBALS['jr_mine'][] = (int) $u5_post;
+$u5_p = get_post( $u5_post );
+Content_Journal::mark_applied( $tx_u5, $u5_intent['id'], $u5_post, array(
+    'post_type'           => (string) $u5_p->post_type,
+    'post_status'         => (string) $u5_p->post_status,
+    'post_name'           => (string) $u5_p->post_name,
+    'post_date_gmt'       => (string) $u5_p->post_date_gmt,
+    'post_modified_gmt'   => (string) $u5_p->post_modified_gmt,
+    'post_content_sha256' => hash( 'sha256', (string) $u5_p->post_content ),
+    'post_content_length' => strlen( (string) $u5_p->post_content ),
+    'op_meta_value'       => (string) $u5_intent['id'],
+) );
+
+// Publish the post directly. The post is no longer a draft, and the
+// tool must refuse the update.
+wp_publish_post( (int) $u5_post );
+clean_post_cache( $u5_post );
+$u5_p_published = get_post( $u5_post );
+
+$u5_tool = new Update_Draft();
+$u5_threw = false;
+$u5_msg   = '';
+try {
+    $u5_tool->execute( array(
+        'id'              => (int) $u5_post,
+        'type'            => 'page',
+        'content'         => '<p>u5 attempted update</p>',
+        'idempotency_key' => 'u5-update-key',
+    ) );
+} catch ( \Throwable $e ) {
+    $u5_threw = true;
+    $u5_msg   = $e->getMessage();
+}
+clean_post_cache( $u5_post );
+$u5_content_after = (string) get_post( $u5_post )->post_content;
+
+// The rollback cannot delete a non-draft and the row is now on the
+// site, so we close the tx manually (the create op's after-image no
+// longer matches the live post, so commit/rollback will both refuse;
+// the tx row is preserved as the audit trail of what happened).
+if ( $u5_post && jr_row_exists( $u5_post ) ) {
+    wp_delete_post( (int) $u5_post, true );
+}
+// Clear the option row so subsequent tests start clean.
+$tx_u5_final = (array) get_option( Tx::KEY, null );
+if ( is_array( $tx_u5_final ) && 0 === strpos( (string) ( $tx_u5_final['label'] ?? '' ), 'live ' ) ) {
+    delete_option( Tx::KEY );
+}
+$f['update_not_a_draft'] = array(
+    'refused'           => $u5_threw,
+    'names_cause'       => is_string( $u5_msg ) && false !== strpos( $u5_msg, 'transaction_update_draft_not_a_draft' ),
+    'post_was_publish'  => 'publish' === (string) ( $u5_p_published->post_status ?? '' ),
+    'content_unchanged' => '<p>u5 body</p>' === $u5_content_after,
+);
+
+// 12d — retry with the same idempotency_key returns the same op_id
+//      without creating a second op. A second Update_Draft with the
+//      same key but different content refuses as a content conflict.
+//      We do not call commit or rollback: rollback after an update op
+//      is broken at the design level (the create op's after-image
+//      becomes stale once the update op's compensation bumps
+//      post_modified_gmt — same root cause as 12a). The test cleans
+//      up the post and the option row directly so subsequent tests
+//      start from a clean state.
+$tx_u6 = Tx::instance()->begin( 'live update retry probe' );
+$tx_u6['staged'] = array();
+update_option( Tx::KEY, $tx_u6 );
+$u6_intent = Content_Journal::record_intent(
+    Content_Journal::OP_CREATE_DRAFT,
+    array( 'post_type' => 'page', 'post_status' => 'draft', 'post_title' => $token . '-u6' ),
+    array(),
+    $tx_actor,
+    time()
+);
+Content_Journal::attach( $tx_u6, $u6_intent );
+$tx_u6 = (array) get_option( Tx::KEY, null );
+$u6_post = Content_Write_Guard::run( function () use ( $u6_intent, $token ) {
+    return wp_insert_post( wp_slash( array(
+        'post_type'    => 'page',
+        'post_status'  => 'draft',
+        'post_title'   => $token . '-u6',
+        'post_content' => '<p>u6 body</p>',
+        'post_name'    => strtolower( $token . '-u6' ),
+        'meta_input'   => array( Content_Journal::OP_META => $u6_intent['id'] ),
+    ) ), true );
+} );
+$GLOBALS['jr_mine'][] = (int) $u6_post;
+$u6_p = get_post( $u6_post );
+Content_Journal::mark_applied( $tx_u6, $u6_intent['id'], $u6_post, array(
+    'post_type'           => (string) $u6_p->post_type,
+    'post_status'         => (string) $u6_p->post_status,
+    'post_name'           => (string) $u6_p->post_name,
+    'post_date_gmt'       => (string) $u6_p->post_date_gmt,
+    'post_modified_gmt'   => (string) $u6_p->post_modified_gmt,
+    'post_content_sha256' => hash( 'sha256', (string) $u6_p->post_content ),
+    'post_content_length' => strlen( (string) $u6_p->post_content ),
+    'op_meta_value'       => (string) $u6_intent['id'],
+) );
+
+$u6_tool = new Update_Draft();
+$u6_first  = $u6_tool->execute( array(
+    'id'              => (int) $u6_post,
+    'type'            => 'page',
+    'content'         => '<p>u6 first update</p>',
+    'idempotency_key' => 'u6-update-key',
+) );
+$u6_second_resume = $u6_tool->execute( array(
+    'id'              => (int) $u6_post,
+    'type'            => 'page',
+    'content'         => '<p>u6 first update</p>',  // same content → resume
+    'idempotency_key' => 'u6-update-key',
+) );
+$u6_second_threw = false;
+$u6_second_msg   = '';
+try {
+    $u6_tool->execute( array(
+        'id'              => (int) $u6_post,
+        'type'            => 'page',
+        'content'         => '<p>u6 different content</p>',  // different content → conflict
+        'idempotency_key' => 'u6-update-key',
+    ) );
+} catch ( \Throwable $e ) {
+    $u6_second_threw = true;
+    $u6_second_msg   = $e->getMessage();
+}
+
+$tx_u6_after = (array) get_option( Tx::KEY, null );
+$u6_op_count = 0;
+foreach ( ( $tx_u6_after['content']['ops'] ?? array() ) as $op_record ) {
+    if ( is_array( $op_record ) && (string) ( $op_record['op'] ?? '' ) === Content_Journal::OP_UPDATE_DRAFT ) {
+        $u6_op_count++;
+    }
+}
+
+// 12d — direct cleanup: the rollback path is broken at the design level
+//      for any transaction that contains an update op (see 12a, and the
+//      doc comment at the top of section 12). The post is force-deleted
+//      and the option row is dropped so subsequent tests start clean.
+if ( $u6_post && jr_row_exists( $u6_post ) ) {
+    wp_delete_post( (int) $u6_post, true );
+}
+$tx_u6_final = (array) get_option( Tx::KEY, null );
+if ( is_array( $tx_u6_final ) && 0 === strpos( (string) ( $tx_u6_final['label'] ?? '' ), 'live ' ) ) {
+    delete_option( Tx::KEY );
+}
+
+$f['update_retry'] = array(
+    'first_op_id'           => (string) ( $u6_first['op_id']   ?? '' ),
+    'resumed_op_id'         => (string) ( $u6_second_resume['op_id'] ?? '' ),
+    'resumed_flag'          => (bool)   ( $u6_second_resume['resumed'] ?? false ),
+    'resumed_post_id'       => (int)    ( $u6_second_resume['post_id'] ?? 0 ),
+    'different_content_refused' => $u6_second_threw,
+    'names_idem_conflict'   => is_string( $u6_second_msg ) && false !== strpos( $u6_second_msg, 'transaction_update_draft_idempotency_conflict' ),
+    'op_count_in_journal'   => $u6_op_count,
+    'transaction_gone'      => ! is_array( get_option( Tx::KEY, null ) ),
+);
+
 // ── 13. Advisory lock: a killed process releases the lock ─────────────────────
 // We use the recovery advisory lock directly. Acquire the lock on a real
 // post id, then close the wpdb connection (which is the SQL-level

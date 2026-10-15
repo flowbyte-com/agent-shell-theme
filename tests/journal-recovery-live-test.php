@@ -370,6 +370,47 @@ Agentshell_Test::run(
     }
 );
 
+// ── 12. update_draft inside a real transaction (the Update_Draft tool) ────────
+// The auto-compensate path for update + rollback (12a) is a documented gap
+// in Stage 2a (see journal-recovery-live-child.php:991). The sub-tests
+// below cover the Update_Draft tool itself: the no-marker refusal, the
+// not-a-draft refusal, and the retry-with-same-key idempotency.
+
+Agentshell_Test::run(
+    'live: update_draft refuses when the post carries no journal marker',
+    function () {
+        $u = jr_live( 'update_no_marker', array() );
+        Agentshell_Test::assert_true( $u['refused'] ?? false, 'the tool threw rather than touching an unmarked post' );
+        Agentshell_Test::assert_true( $u['names_cause'] ?? false, 'and the message names transaction_update_draft_not_transaction_owned' );
+        Agentshell_Test::assert_true( $u['title_unchanged'] ?? false, 'and the post title was not changed' );
+        Agentshell_Test::assert_true( $u['transaction_gone'] ?? false, 'and the empty transaction row is closed by the rollback' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: update_draft refuses when the post is not a draft',
+    function () {
+        $u = jr_live( 'update_not_a_draft', array() );
+        Agentshell_Test::assert_true( $u['refused'] ?? false, 'the tool threw when the post was a published page' );
+        Agentshell_Test::assert_true( $u['names_cause'] ?? false, 'and the message names transaction_update_draft_not_a_draft' );
+        Agentshell_Test::assert_true( $u['post_was_publish'] ?? false, 'and the post was indeed a published page' );
+        Agentshell_Test::assert_true( $u['content_unchanged'] ?? false, 'and the post content was not modified' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: update_draft with the same idempotency_key reuses the op; a different content refuses',
+    function () {
+        $u = jr_live( 'update_retry', array() );
+        Agentshell_Test::assert_true( '' !== ( $u['first_op_id'] ?? '' ), 'the first call returned an op id' );
+        Agentshell_Test::assert_equals( $u['first_op_id'] ?? 'X', $u['resumed_op_id'] ?? 'Y', 'and a same-content retry returns the same op id' );
+        Agentshell_Test::assert_true( $u['resumed_flag'] ?? false, 'with resumed=true on the second call' );
+        Agentshell_Test::assert_equals( 1, (int) ( $u['op_count_in_journal'] ?? -1 ), 'and the journal holds exactly one update op, not two' );
+        Agentshell_Test::assert_true( $u['different_content_refused'] ?? false, 'and a retry with different content is refused' );
+        Agentshell_Test::assert_true( $u['names_idem_conflict'] ?? false, 'with a transaction_update_draft_idempotency_conflict name' );
+    }
+);
+
 // ── 13. Advisory lock: KILL -9 of the owning process releases the lock ────────
 Agentshell_Test::run(
     'live: dropping the wpdb connection releases the advisory lock to a second acquirer',
