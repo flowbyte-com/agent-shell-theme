@@ -492,7 +492,7 @@ class Content_Recovery {
 
         // ── the compensation itself ──────────────────────────────────────
         $claimed_op      = $claimed_content['ops'][ $op_id ];
-        $result          = self::compensate( $claimed_op, $actor, $explicitly_authorized );
+        $result          = self::compensate( $claimed_op, $claimed, $actor, $explicitly_authorized );
         $base['outcome'] = $result['outcome'];
         $base['detail']  = $result['reason'];
 
@@ -569,8 +569,15 @@ class Content_Recovery {
      * The recovery engine is the only place destructive action is allowed;
      * commit must not delete anything, but it must know whether the post the
      * journal still names is actually the one it would be committing. This
-     * is the read-only counterpart to `verify_post()`: same six-field check,
-     * same `marker_of()` lookup, no `wp_delete_post()`.
+     * is the read-only counterpart to `verify_against_after()`.
+     *
+     * Stage 2a (revised) — head-pointer model. The check uses the
+     * per-post head after-image, not the op's own `after`. For a chain
+     * [create, update1, update2] the head is update2's after; the create
+     * op's per-op after is the original creation state, which is stale
+     * once any update has been applied. Verifying against the head is what
+     * makes the chain "the post is in the state the latest update said it
+     * was in".
      *
      * Returns one of three shapes:
      *   - `''` (empty string): the live post matches every recorded field;
@@ -580,14 +587,14 @@ class Content_Recovery {
      *     and the commit may proceed (recording
      *     `transaction_committed_after_compensation`).
      *   - a string mismatch reason: a divergence between the live post and
-     *     the journal's recorded after-image. The op transitions to
+     *     the head's recorded after-image. The op transitions to
      *     `conflict`, the post is preserved, and the commit refuses.
      *
      * The op's `state` is not changed here; the caller writes the new state
      * through the journal CAS, the same way recovery does. The contract is
      * "what does the live state say", not "what should the row say".
      */
-    public static function revalidate_applied_op_for_commit( array $op ) {
+    public static function revalidate_applied_op_for_commit( array $op, $tx = null ) {
         $post_id = (int) ( $op['post_id'] ?? 0 );
         if ( $post_id <= 0 ) {
             // An applied op without a post id is a half-applied op: the
@@ -602,8 +609,18 @@ class Content_Recovery {
         if ( ! $post ) {
             return 'gone';
         }
-        $marker  = self::marker_of( $op );
-        $mismatch = self::verify_post( $op, $post, $marker );
+        $marker = self::marker_of( $op );
+
+        // Prefer the head after-image (the chain's expected current state)
+        // when one is available. For the very first applied op of a freshly
+        // created post the head equals $op['after']; for any subsequent
+        // applied op (any update in a chain) the head is the latest
+        // applied op's after, not the op being revalidated.
+        $head = is_array( $tx ) ? Content_Journal::head_after( $tx, $post_id ) : null;
+        if ( ! is_array( $head ) || empty( $head ) ) {
+            $head = is_array( $op['after'] ?? null ) ? $op['after'] : array();
+        }
+        $mismatch = self::verify_against_after( $head, $post, $marker );
         if ( '' !== $mismatch ) {
             return $mismatch;
         }
@@ -675,40 +692,39 @@ class Content_Recovery {
      * every outcome has to be recordable, and a reason is the only thing that
      * makes a refusal actionable by a human later.
      *
+     * Stage 2a (revised) — head-pointer model.
+     *
+     * The journal is a chain of authorised state transitions for the post,
+     * not a log of independent actions. The head of the chain — the most
+     * recently applied op's after-image — is the expected current state of
+     * the post. Compensation verifies the live post against the head, and
+     * on success deletes the post once. It never reverts individual
+     * updates with `wp_update_post()`.
+     *
+     * For OP_CREATE_DRAFT: this is the operation that actually deletes the
+     * post, after verifying the live post against the head. The head is
+     * used (not $op['after']) so that the create op's compensation is
+     * checking the current expected state, not the original creation
+     * state — which would be stale once any update has been applied.
+     *
+     * For OP_UPDATE_DRAFT: there is no destructive inverse. The update is
+     * part of the chain; the create op's compensation deletes the post.
+     * This method records the op as compensated and explains why nothing
+     * was done here.
+     *
      * @param array    $op             The journalled operation.
+     * @param array    $tx             The current transaction row, used to
+     *                                 read the per-post head after-image.
      * @param string   $current_actor  The actor who triggered this
-     *                                 compensation. Used to re-check the
-     *                                 per-post `delete_post` capability
-     *                                 against the original op's `actor`
-     *                                 field via authorize_destruction().
+     *                                 compensation.
      * @param bool     $explicitly_authorized  Pass-through of the
-     *                                 tool-boundary opt-in. The owner
-     *                                 path of `authorize_destruction()`
-     *                                 gates on the per-post cap; the
-     *                                 recovery_administrator path gates
-     *                                 on `manage_options` plus this flag,
-     *                                 and the per-op re-check must use
-     *                                 the same authority the caller held
-     *                                 at tool entry. Without the
-     *                                 pass-through a recovery_administrator
-     *                                 would be refused per-op even though
-     *                                 they were accepted at the boundary.
+     *                                 tool-boundary opt-in.
      */
-    private static function compensate( array $op, $current_actor = '', $explicitly_authorized = false ) {
+    private static function compensate( array $op, array $tx, $current_actor = '', $explicitly_authorized = false ) {
         $type = (string) $op['op'];
 
         if ( Content_Journal::OP_UPDATE_DRAFT === $type ) {
-            return self::compensate_update( $op, $current_actor, $explicitly_authorized );
-        }
-
-        if ( ! in_array( $type, Content_Journal::SUPPORTED_OPERATIONS, true ) ) {
-            return array(
-                'outcome' => 'conflict',
-                'post_id' => (int) $op['post_id'],
-                'reason'  => 'Operation type "' . $type . '" has no compensation contract in this build '
-                    . '(supported: ' . implode( ', ', Content_Journal::SUPPORTED_OPERATIONS )
-                    . '). It is not guessed at and not deleted; a human must decide.',
-            );
+            return self::compensate_update( $op, $tx, $current_actor, $explicitly_authorized );
         }
 
         if ( ! in_array( $type, Content_Journal::SUPPORTED_OPERATIONS, true ) ) {
@@ -801,7 +817,32 @@ class Content_Recovery {
             }
         }
 
-        $mismatch = self::verify_post( $op, $post, $marker );
+        // The OCC check uses the head (the most recently applied op's
+        // after-image for this post) rather than the per-op after. The head
+        // is the chain's expected current state. For a create-only journal
+        // it equals the create op's after; for a create+updates journal it
+        // is the latest update's after. The strong evidence (post_type,
+        // post_status, post_name, post_date_gmt, post_content_sha256,
+        // post_content_length) is checked, and post_modified_gmt is a fast
+        // pre-check.
+        $head = Content_Journal::head_after( $tx, $post_id );
+        if ( ! is_array( $head ) || empty( $head ) ) {
+            // No head recorded for this post. This should be impossible
+            // for a create op whose mark_applied ran (mark_applied is the
+            // only writer of the head), but a crash between record_intent
+            // and mark_applied could leave a record with post_id=0 set
+            // some other way. The branch above handles post_id=0; this
+            // branch handles the "we have a post_id but no head" case.
+            // Refuse to delete by guess.
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $post_id,
+                'reason'  => 'post ' . $post_id . ' is recorded in this operation but the journal carries no '
+                    . 'head after-image for it, so the post\'s current state cannot be verified. The draft '
+                    . 'is preserved.',
+            );
+        }
+        $mismatch = self::verify_against_after( $head, $post, $marker );
         if ( '' !== $mismatch ) {
             return array(
                 'outcome' => 'conflict',
@@ -915,54 +956,49 @@ class Content_Recovery {
         return array(
             'outcome' => 'compensated',
             'post_id' => $post_id,
-            'reason'  => 'post ' . $post_id . ' was created by this transaction and still matched its recorded '
-                . 'after-image; deleted permanently under the per-post advisory lock',
+            'reason'  => 'post ' . $post_id . ' was created by this transaction and still matched the chain\'s '
+                . 'head after-image (the most recent applied op\'s after); deleted permanently under the '
+                . 'per-post advisory lock',
         );
     }
 
     /**
-     * Compensate an OP_UPDATE_DRAFT op: apply the recorded before-image so the
-     * post is restored to the state it had before this update ran.
+     * Compensate an OP_UPDATE_DRAFT op: under the head-pointer model, the
+     * update has no destructive inverse. The chain of authorised state
+     * transitions is rolled back by deleting the post once (via the create
+     * op's compensation), and the update op's effect is undone by that
+     * single deletion.
      *
-     * The inverse of an update is "write the prior state back". This is not
-     * destructive of the post itself (the post is still there afterwards), so
-     * the gate is the per-post `edit_post` capability, not `delete_post` —
-     * and the OCC check is the same six-field check the create path uses,
-     * against the after-image this op recorded. A divergence between the
-     * live post and the recorded after-image means somebody has edited the
-     * post since the update was applied; the op transitions to `conflict`,
-     * the post is preserved, and a human resolves the divergence.
+     * Why no `wp_update_post( before )`? The previous design reverted each
+     * update by writing the before-image back, but `wp_update_post` bumps
+     * `post_modified_gmt`, which made the create op's per-op after-image
+     * stale and forced a false-positive `conflict` at rollback. The
+     * head-pointer model fixes this by having the create op verify against
+     * the head (the most recently applied op's after), not against its own
+     * per-op after. Each update op is then just a historical state
+     * transition; the only inverse that matters is the create op's
+     * `wp_delete_post`.
      *
-     * The before-image is the load-bearing piece: a record without one is
-     * refused by `Content_Journal::validate_update_draft()` and never reaches
-     * this method. A compensation that cannot run because the live post has
-     * moved is not a failure to compensate, it is a refusal to compensate
-     * with the post preserved, and the journal's `comp` field records the
-     * reason.
-     *
-     * The per-post advisory lock is the same exclusion primitive the create
-     * path uses: a second recoverer acquiring `GET_LOCK` on the same name
-     * while this one is mid-`wp_update_post` is refused at the lock layer
-     * (promptly, with timeout 0) rather than racing the update. The lock is
-     * connection-scoped and is released by the server on connection close
-     * (KILL -9, PHP-FPM worker death) — which is what the previous
-     * `add_option`-based lock could not guarantee.
+     * The op is recorded as `compensated` with an explanatory reason. No
+     * destructive action is taken here; the post is preserved if the create
+     * op is later found in `conflict` (and a recovery_administrator must
+     * reconcile), and gone if the create op's compensation succeeded. Both
+     * outcomes are correct: the chain is settled either way.
      *
      * @param array  $op                    The op record.
+     * @param array  $tx                    The current transaction row.
      * @param string $current_actor         The actor who triggered compensation.
      * @param bool   $explicitly_authorized Pass-through of the tool-boundary opt-in.
      * @return array{outcome:string,post_id:int,reason:string}
      */
-    private static function compensate_update( array $op, $current_actor = '', $explicitly_authorized = false ) {
+    private static function compensate_update( array $op, array $tx, $current_actor = '', $explicitly_authorized = false ) {
         $post_id = (int) ( $op['post_id'] ?? 0 );
-        $marker  = self::marker_of( $op );
 
         if ( $post_id <= 0 ) {
             // An update op without a post id is unrecoverable here: it has
-            // nothing to apply the before-image to, and the create-side
-            // partial-applied path does not produce an update op (only the
-            // create tool ever records a post id). Refuse and keep the
-            // journal so a human can reconcile.
+            // nothing to act on, and the create-side partial-applied path
+            // does not produce an update op. Refuse and keep the journal so
+            // a human can reconcile.
             return array(
                 'outcome' => 'conflict',
                 'post_id' => 0,
@@ -974,104 +1010,31 @@ class Content_Recovery {
 
         $post = get_post( $post_id );
         if ( ! $post ) {
-            // Post already gone. The create op's compensation (or an outside
-            // actor) has done our work; nothing to restore.
+            // Post already gone. The create op's compensation (or an
+            // outside actor) has done our work; this update op is settled
+            // by the deletion.
             return array(
                 'outcome' => 'compensated',
                 'post_id' => $post_id,
-                'reason'  => 'post ' . $post_id . ' is already gone; nothing to restore',
+                'reason'  => 'post ' . $post_id . ' is already gone; the update is settled by the deletion',
             );
         }
 
-        // The OCC check: the live post must still match the after-image this
-        // op recorded. A divergence means the post has been edited since the
-        // update was applied; the op transitions to conflict and the post is
-        // preserved. The same six-field check the create path uses — the
-        // strong after-image makes the content hash the load-bearing piece.
-        $mismatch = self::verify_post( $op, $post, $marker );
-        if ( '' !== $mismatch ) {
-            return array(
-                'outcome' => 'conflict',
-                'post_id' => $post_id,
-                'reason'  => $mismatch,
-            );
-        }
-
-        // Per-post `edit_post` re-check, immediately before applying the
-        // before-image. The op is destructive of the post's *current* content
-        // (it overwrites the live state with the recorded prior state), so
-        // the same "the cap is a property of the destructive call, not of
-        // the original create" reasoning applies. An owner who lost the
-        // per-post cap since the update was applied is refused here, and the
-        // post is preserved.
-        if ( function_exists( 'current_user_can' )
-            && ! current_user_can( 'edit_post', $post_id ) ) {
-            return array(
-                'outcome' => 'conflict',
-                'post_id' => $post_id,
-                'reason'  => 'post ' . $post_id . ' cannot be modified by the current actor: the per-post '
-                    . '`edit_post` capability is no longer held. The draft is preserved and the journal '
-                    . 'is kept so a recovery_administrator (manage_options + explicit opt-in) can resolve it.',
-            );
-        }
-
-        $before = is_array( $op['before'] ?? null ) ? $op['before'] : array();
-
-        // Per-post advisory lock: same exclusion primitive as the create
-        // path. A second recoverer is refused at the lock layer rather than
-        // racing the update.
-        $acquired = false;
-        try {
-            $acquired = Recovery_Advisory_Lock::acquire( $post_id );
-        } catch ( \RuntimeException $e ) {
-            return array(
-                'outcome' => 'conflict',
-                'post_id' => $post_id,
-                'reason'  => $e->getMessage() . ' The draft is preserved and the journal is kept so a '
-                    . 'recovery_administrator (manage_options + explicit opt-in) can resolve it on an '
-                    . 'engine that supports advisory locks.',
-            );
-        }
-        if ( ! $acquired ) {
-            return array(
-                'outcome' => 'conflict',
-                'post_id' => $post_id,
-                'reason'  => 'another recovery holds the per-post advisory lock for post ' . $post_id
-                    . '. The draft is preserved; retry once the holder has finished.',
-            );
-        }
-
-        try {
-            $restore = array(
-                'ID'           => $post_id,
-                'post_title'   => (string) ( $before['post_title'] ?? $post->post_title ),
-                'post_content' => (string) ( $before['post_content'] ?? $post->post_content ),
-                'post_name'    => (string) ( $before['post_name'] ?? $post->post_name ),
-            );
-            $updated = Content_Write_Guard::run(
-                function () use ( $restore ) {
-                    return wp_update_post( wp_slash( $restore ), true );
-                }
-            );
-            if ( Content_Write_Guard::is_failure( $updated ) ) {
-                return array(
-                    'outcome' => 'update_failed',
-                    'post_id' => $post_id,
-                    'reason'  => 'wp_update_post( ' . $post_id . ' ) to restore the before-image failed'
-                        . ( is_wp_error( $updated ) ? ': ' . $updated->get_error_code() . ' — ' . $updated->get_error_message() : '' )
-                        . '. The write was rolled back, so the post is unchanged and this operation is still owed. '
-                        . 'Recovery can be retried.',
-                );
-            }
-        } finally {
-            Recovery_Advisory_Lock::release( $post_id );
-        }
-
+        // The post is still here. The update op has no destructive inverse
+        // in the head-pointer model: the chain is rolled back by the create
+        // op's `wp_delete_post`, not by reverting each update. Mark the op
+        // compensated; the create op's compensation in this same settle
+        // pass will delete the post. If the create op is in `conflict` (an
+        // external edit detected via the head), the post is preserved and a
+        // human reconciles; this update op's "compensated" status still
+        // reads correctly because the chain is settled (the post is no
+        // longer in the state this update recorded).
         return array(
             'outcome' => 'compensated',
             'post_id' => $post_id,
-            'reason'  => 'post ' . $post_id . ' was updated by this transaction and still matched its recorded '
-                . 'after-image; the before-image was applied under the per-post advisory lock',
+            'reason'  => 'post ' . $post_id . ' is part of the chain this transaction owns; the chain is rolled '
+                . 'back by the create op\'s `wp_delete_post`, not by reverting individual updates. No '
+                . 'destructive action was taken here.',
         );
     }
 
@@ -1087,23 +1050,27 @@ class Content_Recovery {
     }
 
     /**
-     * Compare the live post against what the journal said it would find.
+     * Compare the live post against a recorded after-image.
      *
-     * Returns '' when it is the post we created and never touched since, or a
-     * sentence explaining why it is not. It never repairs a mismatch and never
-     * decides one is fine — a mismatch means a human looks at it.
+     * Returns '' when the live post matches every recorded field, or a
+     * sentence explaining the divergence. The after-image is the
+     * journal's "expected current state" — for a tx-owned draft chain,
+     * this is the head (the most recently applied op's after-image).
      *
-     * The check runs the six recorded fields when the journal carried a
-     * strong after-image: post_type, post_status, post_name, post_date_gmt,
-     * post_content_sha256, post_content_length. The post_modified_gmt is a
-     * fast pre-check; the SHA-256 of post_content is the strong evidence
-     * (catches same-second edits and content-only edits that leave the slug
-     * unchanged). When the strong after-image is absent (an op whose
-     * mark_applied() never ran — found by marker alone), the four-field
-     * evidence is what is available, and the recovery path refuses to
-     * compensate a marked post that cannot be content-verified.
+     * The check runs the strong evidence: post_type, post_status,
+     * post_name, post_date_gmt, post_content_sha256,
+     * post_content_length. The post_modified_gmt is a fast pre-check; the
+     * SHA-256 of post_content is the strong evidence (catches same-second
+     * edits and content-only edits that leave the slug unchanged).
+     *
+     * @param array $after  The recorded after-image. May come from
+     *                      `$op['after']` (the per-op after) or from
+     *                      `Content_Journal::head_after($tx, $post_id)`
+     *                      (the head of the post's mutation chain).
+     * @param mixed $post   The live `WP_Post` to verify.
+     * @param string $marker The marker the live post must carry.
      */
-    private static function verify_post( array $op, $post, $marker ) {
+    public static function verify_against_after( array $after, $post, $marker ) {
         $id = (int) ( $post->ID ?? 0 );
 
         $found_marker = get_post_meta( $id, Content_Journal::OP_META, true );
@@ -1113,7 +1080,6 @@ class Content_Recovery {
                 . 'Nothing was deleted.';
         }
 
-        $after = is_array( $op['after'] ?? null ) ? $op['after'] : array();
         foreach ( array( 'post_type', 'post_status', 'post_name' ) as $field ) {
             if ( ! isset( $after[ $field ] ) || '' === $after[ $field ] ) { continue; }
             $have = isset( $post->$field ) ? (string) $post->$field : '';
@@ -1124,10 +1090,6 @@ class Content_Recovery {
             }
         }
 
-        // post_date_gmt is set by WP at insert and not auto-bumped on edit,
-        // so it acts as a creation-time anchor that an edit cannot silently
-        // change. When the journal recorded it (the strong-after-image path),
-        // a mismatch means the row was not the one we wrote.
         $recorded_date = (string) ( $after['post_date_gmt'] ?? '' );
         if ( '' !== $recorded_date ) {
             $have = (string) ( $post->post_date_gmt ?? '' );
@@ -1138,8 +1100,6 @@ class Content_Recovery {
             }
         }
 
-        // The modification guard catches edits that move post_modified_gmt
-        // forward but not the strong evidence below.
         $recorded_modified = (string) ( $after['post_modified_gmt'] ?? '' );
         if ( '' !== $recorded_modified ) {
             $have = (string) ( $post->post_modified_gmt ?? '' );
@@ -1150,11 +1110,6 @@ class Content_Recovery {
             }
         }
 
-        // The strong evidence: SHA-256 of post_content at the moment of
-        // mark_applied(). A mismatch (including same-second edits that do not
-        // move post_modified_gmt) is the conflict. The length is a sanity
-        // check that the post the recovery engine is hashing is the one the
-        // journal hashed.
         $recorded_sha = (string) ( $after['post_content_sha256'] ?? '' );
         if ( '' !== $recorded_sha ) {
             $have_sha = hash( 'sha256', (string) ( $post->post_content ?? '' ) );
@@ -1176,6 +1131,24 @@ class Content_Recovery {
         }
 
         return '';
+    }
+
+    /**
+     * Compare the live post against what the journal said it would find.
+     *
+     * This is a thin shim over verify_against_after() that pulls the
+     * after-image from the op record. For tx-owned chains, callers should
+     * prefer verify_against_after() with the head (the most recently
+     * applied op's after-image), so that historical after-images from
+     * superseded ops do not cause a false conflict.
+     *
+     * Returns '' on match, or a sentence explaining the divergence. It
+     * never repairs a mismatch and never decides one is fine — a
+     * mismatch means a human looks at it.
+     */
+    private static function verify_post( array $op, $post, $marker ) {
+        $after = is_array( $op['after'] ?? null ) ? $op['after'] : array();
+        return self::verify_against_after( $after, $post, $marker );
     }
 
     // ── Evidence ───────────────────────────────────────────────────────────

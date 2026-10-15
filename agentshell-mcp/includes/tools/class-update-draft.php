@@ -227,6 +227,32 @@ class Update_Draft extends Base_Tool {
             );
         }
 
+        // OCC pre-check against the head (the most recently applied op's
+        // after-image for this post). If the live post has been edited
+        // outside the transaction since the last authorised update, the
+        // head will not match and the update must refuse — applying the
+        // change would silently overwrite an external edit. The head may
+        // be null for the first update after a create (in which case the
+        // pre-check is skipped; the create op's after-image is the
+        // reference).
+        $head = \AgentShell_MCP\Content_Journal::head_after( $tx, $id );
+        if ( is_array( $head ) && ! empty( $head ) ) {
+            $oc_mismatch = \AgentShell_MCP\Content_Recovery::verify_against_after(
+                $head,
+                $post,
+                $marker
+            );
+            if ( '' !== $oc_mismatch ) {
+                throw new \InvalidArgumentException(
+                    "transaction_update_draft_external_edit_detected: post #{$id} has been edited since the "
+                    . "last authorised update by this transaction. {$oc_mismatch} The update is refused to "
+                    . "avoid silently overwriting an external change. Reconcile by inspecting the post and "
+                    . "either accepting the external change (rollback or commit) or rolling back the post "
+                    . "to the head's recorded state before retrying."
+                );
+            }
+        }
+
         // 3. Build the before-image from the live post. This is what makes
         //    the inverse operation a `wp_update_post` rather than a guess.
         $before = array(
@@ -291,7 +317,7 @@ class Update_Draft extends Base_Tool {
             $postarr['post_name'] = (string) $new_slug;
         }
 
-        $result = \AgentShell_MCP\Content_Write_Guard::run( function () use ( $postarr, $id, $tx, $op_id ) {
+        $result = \AgentShell_MCP\Content_Write_Guard::run( function () use ( $postarr, $id, $tx, $op_id, $head ) {
             $upd = wp_update_post( wp_slash( $postarr ), true );
             if ( is_wp_error( $upd ) ) {
                 throw new \InvalidArgumentException( 'Could not update post: ' . $upd->get_error_message() );
@@ -322,19 +348,61 @@ class Update_Draft extends Base_Tool {
             // mark_applied needs the *post-attach* $tx: the closure captured
             // the pre-attach value, which has no `ops[$op_id]` for mark_applied
             // to find. Re-read the row so the CAS can land and the op
-            // transitions from intended to applied.
+            // transitions from intended to applied. mark_applied() also
+            // writes the head pointer inside the same CAS — the head
+            // advance is atomic with the op-state transition.
             $tx_fresh = (array) get_option( \AgentShell_MCP\Transaction_Manager::KEY, null );
             $applied_tx = \AgentShell_MCP\Content_Journal::mark_applied( $tx_fresh, $op_id, $id, $after_image );
-            return array( 'post_id' => (int) $id, 'applied_tx' => $applied_tx );
+            if ( ! is_array( $applied_tx ) ) {
+                // mark_applied returned null: the row moved between
+                // record_intent's attach and this guard. The journal will
+                // have an op in `intended` (or worse) for $op_id, and the
+                // post has been updated. The caller re-reads the row to
+                // report the actual state — see the journal_applied
+                // handling below. The head pointer is *not* advanced in
+                // this case: a CAS failure means the row is not ours to
+                // mutate, and compare_and_set_head() would refuse.
+                return array( 'post_id' => (int) $id, 'applied_tx' => null, 'head_advanced' => false );
+            }
+            // Atomic head advance. The CAS is `compare_and_set_head`:
+            // the head is updated only if the current head equals the one
+            // we verified the live post against (i.e. a concurrent caller
+            // has not already advanced it). A CAS failure here means a
+            // concurrent update won; the post on disk reflects whichever
+            // caller's write landed first, and the journal's head pointer
+            // is whichever caller's head won the CAS. Our op is recorded
+            // as applied, but the live post is not in the state our
+            // after-image captured. The tool surfaces this to the caller
+            // via `journal_note` so the operator knows to reconcile.
+            $head_after = is_array( $head ) ? $head : null;
+            $advanced   = \AgentShell_MCP\Content_Journal::compare_and_set_head(
+                $applied_tx,
+                (int) $id,
+                $head_after,
+                array_merge( $after_image, array(
+                    'idempotency_key'     => (string) ( $applied_tx['content']['ops'][ $op_id ]['after']['idempotency_key'] ?? '' ),
+                    'content_fingerprint' => (string) ( $applied_tx['content']['ops'][ $op_id ]['after']['content_fingerprint'] ?? '' ),
+                ) )
+            );
+            return array(
+                'post_id'        => (int) $id,
+                'applied_tx'     => $applied_tx,
+                'head_advanced'  => is_array( $advanced ),
+            );
         } );
 
-        $post_id_v  = (int) $result['post_id'];
-        $applied_tx = $result['applied_tx'];
+        $post_id_v     = (int) $result['post_id'];
+        $applied_tx    = $result['applied_tx'];
+        $head_advanced = ! empty( $result['head_advanced'] );
 
         // 7. CAS-failure re-read: if mark_applied returned null the row
         //    moved; the actual state could be applied, partial-applied, or
         //    intended. Re-read the journal to find out, and report the
-        //    truthful state.
+        //    truthful state. A failed head-advance after a successful
+        //    mark_applied is a different shape: the op is recorded as
+        //    applied but the head pointer did not move, which means a
+        //    concurrent caller won the head CAS — surface that to the
+        //    operator via journal_note.
         $journal_applied = is_array( $applied_tx );
         $journal_note    = null;
         if ( ! $journal_applied ) {
@@ -344,6 +412,11 @@ class Update_Draft extends Base_Tool {
             $re_state   = is_array( $re_op ) ? (string) ( $re_op['state'] ?? '' ) : '';
             $journal_note = 'mark_applied() CAS did not land; the journal currently reports state="' . $re_state
                 . '". The post is updated; recovery can settle it.';
+        } elseif ( ! $head_advanced ) {
+            $journal_note = 'mark_applied() landed but compare_and_set_head() did not. A concurrent update '
+                . 'for the same post has already advanced the head pointer, which means the live post is no '
+                . 'longer in the state this op\'s after-image captured. The op is recorded as applied; '
+                . 'recovery or a manual reconciliation can settle the divergence.';
         }
 
         return array(

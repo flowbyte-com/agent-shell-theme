@@ -143,12 +143,16 @@ function jr_meta_rows( $id, $key ) {
 /** What WordPress really wrote, in the shape a journal record expects. */
 function jr_after_image( $id, $op_id ) {
     $p = get_post( $id );
+    $content = (string) $p->post_content;
     return array(
-        'post_type'        => $p->post_type,
-        'post_status'      => $p->post_status,
-        'post_name'        => $p->post_name,
-        'post_modified_gmt'=> $p->post_modified_gmt,
-        'op_meta_value'    => $op_id,
+        'post_type'           => $p->post_type,
+        'post_status'         => $p->post_status,
+        'post_name'           => $p->post_name,
+        'post_date_gmt'       => $p->post_date_gmt,
+        'post_modified_gmt'   => $p->post_modified_gmt,
+        'post_content_sha256' => hash( 'sha256', $content ),
+        'post_content_length' => strlen( $content ),
+        'op_meta_value'       => $op_id,
     );
 }
 
@@ -167,10 +171,20 @@ function jr_expired_row( $op, array $over = array() ) {
         'staged'        => null,
     ), $over );
 
-    $content               = Content_Journal::empty_journal( $tx['id'] );
-    $content['ops'][ $op['id'] ] = $op;
-    $content['sig']               = Content_Journal::sign( $content );
-    $tx['content']                = $content;
+    $content                       = Content_Journal::empty_journal( $tx['id'] );
+    $content['ops'][ $op['id'] ]   = $op;
+    // Stage 2a (revised) — head-pointer model. The compensation path
+    // verifies the live post against the head (the latest applied
+    // after-image), not against the per-op after. The live fixture
+    // plants the head explicitly so the new model can run its six-field
+    // check. Without this, compensate() would refuse with
+    // "no head after-image" and the test would test the wrong code.
+    $post_id                       = (int) ( $op['post_id'] ?? 0 );
+    if ( $post_id > 0 && ! empty( $op['after'] ) ) {
+        $content[ Content_Journal::HEAD_KEY ] = array( $post_id => $op['after'] );
+    }
+    $content['sig']                = Content_Journal::sign( $content );
+    $tx['content']                 = $content;
     return $tx;
 }
 

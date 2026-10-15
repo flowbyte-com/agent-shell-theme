@@ -1126,7 +1126,7 @@ class Transaction_Manager {
             if ( ! is_array( $op ) || Content_Journal::STATE_APPLIED !== ( $op['state'] ?? '' ) ) {
                 continue;
             }
-            $result = Content_Recovery::revalidate_applied_op_for_commit( $op );
+            $result = Content_Recovery::revalidate_applied_op_for_commit( $op, $tx );
             if ( 'gone' === $result ) {
                 $next['ops'][ $op_id ]['state']       = Content_Journal::STATE_COMPENSATED;
                 $next['ops'][ $op_id ]['updated_at']  = $now;

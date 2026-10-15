@@ -85,16 +85,20 @@ class Content_Journal {
     /**
      * Update a draft this transaction already created.
      *
-     * Stage 2a: the inverse of an update is "apply the before-image via
-     * `wp_update_post`", so a rollback that has compensated a chain of
-     * updates must apply them in reverse chronological order before
-     * compensating the create. The contract is narrower than update_content's
-     * (no status, no parent, no taxonomy; the post is required to be a draft
-     * the current transaction owns), and the before-image is the strong
-     * after-image's predecessor: `post_title`, `post_content`, `post_name`,
-     * `post_content_sha256`, `post_content_length`, `post_modified_gmt`,
-     * and `op_meta_value` (the create op's id, which is what the post
-     * carries as its `_agentshell_journal_op`).
+     * Stage 2a (revised): the journal is a chain of authorised state
+     * transitions, not a log of independent actions. The head of the
+     * chain — the latest applied after-image — is the expected current
+     * state. Compensation does NOT revert individual updates with
+     * `wp_update_post()`; it verifies the live post against the head and
+     * deletes the post once. Pre-existing-draft updates remain Stage 2b.
+     *
+     * Each update's `before` is preserved as the historical evidence of
+     * what was at that point, and the OCC chain (pre-check before
+     * applying, atomic head advancement after applying) catches an
+     * external edit at the next authorised update rather than at rollback
+     * time. The contract is narrower than update_content's (no status,
+     * no parent, no taxonomy; the post is required to be a draft the
+     * current transaction owns).
      */
     const OP_UPDATE_DRAFT = 'update_draft';
 
@@ -114,6 +118,17 @@ class Content_Journal {
 
     /** Where operations live inside the journal. */
     const OPS_KEY = 'ops';
+
+    /**
+     * Where the per-post head after-image lives inside the journal.
+     *
+     * For each post the journal owns (one entry per `post_id` that has
+     * been created or updated by an applied op), `$tx['content']['head'][$post_id]`
+     * is the after-image of the most recently applied op. It is the
+     * expected current state. Compensation verifies the live post
+     * against this map; it never reverts via `wp_update_post()`.
+     */
+    const HEAD_KEY = 'head';
 
     // ── Operation states ───────────────────────────────────────────────────
     //
@@ -253,6 +268,88 @@ class Content_Journal {
 
     public static function has_journal( $tx ) {
         return ! empty( self::of( $tx )[ self::OPS_KEY ] ) || self::is_schema( $tx );
+    }
+
+    /**
+     * The expected current state of a post this transaction owns.
+     *
+     * Returns the after-image of the most recently applied op for
+     * `$post_id`, or null when the transaction has no head for that
+     * post (the post was never created, or its journal is from an older
+     * build that did not maintain the head map).
+     *
+     * This is what compensation verifies the live post against, and
+     * what the next update op pre-checks against before applying. The
+     * historical `after` fields on each op are preserved for audit and
+     * for backwards compatibility; they are not what compensation
+     * compares against.
+     */
+    public static function head_after( $tx, $post_id ) {
+        $post_id = (int) $post_id;
+        $content = self::of( $tx );
+        $head    = is_array( $content[ self::HEAD_KEY ] ?? null ) ? $content[ self::HEAD_KEY ] : array();
+        return is_array( $head[ $post_id ] ?? null ) ? $head[ $post_id ] : null;
+    }
+
+    /**
+     * Atomically advance the head for a post, conditional on the
+     * current head matching `$expected_prev`.
+     *
+     * Used by Update_Draft to refuse a concurrent update that has
+     * already advanced the head. The CAS is the value-guarded one
+     * `cas_write_row` provides: a row that moved between the read and
+     * the write is detected, and the function returns false without
+     * overwriting the new head.
+     *
+     * @param array       $tx             The pre-write transaction row.
+     * @param int         $post_id        Post whose head to advance.
+     * @param array|null  $expected_prev  The head the caller verified
+     *                                    the live post against. Pass
+     *                                    null when no head existed
+     *                                    (this is the first op for the
+     *                                    post).
+     * @param array       $new_after      The new after-image.
+     * @return array|false The updated row, or false on CAS failure.
+     */
+    public static function compare_and_set_head( array $tx, $post_id, $expected_prev, array $new_after ) {
+        $content = self::of( $tx );
+        $head    = is_array( $content[ self::HEAD_KEY ] ?? null ) ? $content[ self::HEAD_KEY ] : array();
+        $current = $head[ (int) $post_id ] ?? null;
+
+        if ( null === $expected_prev ) {
+            if ( null !== $current ) {
+                return false;
+            }
+        } else {
+            if ( ! is_array( $current ) ) {
+                return false;
+            }
+            // Compare by the strong evidence, not by byte-equality: a
+            // head written by an older build (no sha256 / length) should
+            // still be comparable to a head written by this build.
+            $expected_prev = (array) $expected_prev;
+            $current       = (array) $current;
+            foreach ( array( 'post_type', 'post_status', 'post_name' ) as $field ) {
+                $a = isset( $expected_prev[ $field ] ) ? (string) $expected_prev[ $field ] : '';
+                $b = isset( $current[ $field ] ) ? (string) $current[ $field ] : '';
+                if ( $a !== $b ) {
+                    return false;
+                }
+            }
+            $a = (string) ( $expected_prev['post_content_sha256'] ?? '' );
+            $b = (string) ( $current['post_content_sha256'] ?? '' );
+            if ( '' !== $a && '' !== $b && $a !== $b ) {
+                return false;
+            }
+        }
+
+        $head[ (int) $post_id ] = $new_after;
+        $content[ self::HEAD_KEY ] = $head;
+        $content['sig']           = self::sign( $content );
+
+        $next = $tx;
+        $next[ self::CONTENT_KEY ] = $content;
+        return Transaction_Manager::cas_write_row( $tx, $next ) ? $next : false;
     }
 
     /** Is this row carrying a journal of our schema? */
@@ -499,6 +596,17 @@ class Content_Journal {
                 $after
             );
         }
+        // The head map is the expected current state of each post this
+        // transaction owns. mark_applied() is the only writer — every
+        // applied op advances the head for its post, regardless of op
+        // type. Compensation verifies the live post against the head
+        // and (on success) deletes the post once. The head update is
+        // inside the same value-guarded CAS as the op-state transition;
+        // either both land on disk at COMMIT, or both are rolled back.
+        $head = is_array( $content[ self::HEAD_KEY ] ?? null ) ? $content[ self::HEAD_KEY ] : array();
+        $head[ (int) $post_id ] = $content['ops'][ $op_id ]['after'];
+        $content[ self::HEAD_KEY ] = $head;
+
         $content['sig'] = self::sign( $content );
 
         $next                     = $tx;

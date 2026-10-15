@@ -543,6 +543,26 @@ function jr_row( array $ops, array $over = array() ) {
     foreach ( $ops as $op ) {
         $content['ops'][ $op['id'] ] = $op;
     }
+    // Plant the per-post head after-image for every op that has both a
+    // post_id and a non-empty after. The head is the chain's expected
+    // current state; the recovery engine verifies the live post against
+    // it before any destructive step. For an op without a post_id, the
+    // head is not planted (the post was never identified). For an op
+    // whose after is empty (e.g. an intended op with no recorded after
+    // evidence), the head is also not planted. The compensate() method
+    // refuses with conflict in that case, which the tests that need
+    // that branch assert.
+    $head = array();
+    foreach ( $ops as $op ) {
+        $post_id = (int) ( $op['post_id'] ?? 0 );
+        $after    = is_array( $op['after'] ?? null ) ? $op['after'] : array();
+        if ( $post_id > 0 && ! empty( $after ) ) {
+            $head[ $post_id ] = $after;
+        }
+    }
+    if ( ! empty( $head ) ) {
+        $content[ Content_Journal::HEAD_KEY ] = $head;
+    }
     $content['sig'] = Content_Journal::sign( $content );
     $tx['content']  = $content;
     return $tx;
@@ -3563,18 +3583,20 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
-    'UR1: a single OP_UPDATE_DRAFT op is compensated by re-applying the before-image; the post survives',
+    'UR1: a single OP_UPDATE_DRAFT op is settled as compensated without a destructive step; the post survives',
     function () {
-        // The happy path. The post is in the after-state; the recovery
-        // engine re-applies the before-state via wp_update_post under the
-        // per-post advisory lock. The post is preserved (it is a draft the
-        // journal created; the inverse of an update is not a delete), the
-        // content is rolled back to what it was, and the op transitions to
-        // compensated.
+        // Stage 2a (revised) — head-pointer model. A single update op has
+        // no destructive inverse: the chain is rolled back by deleting the
+        // post via the create op's compensation. With no create op in the
+        // journal, the update op is settled as compensated with no
+        // destructive action, and the post is preserved (the journal
+        // refuses to take any action on a chain it does not own). The
+        // recorded before / after fields are preserved as historical
+        // evidence; they are not the OCC target.
         jr_reset();
         jr_as_administrator();
         $marker = 'op_create_root';
-        $post = jr_post( 600, array(
+        jr_post( 600, array(
             'post_title'        => 'after',
             'post_content'      => 'after-content',
             'post_date_gmt'     => '2026-01-01 00:00:00',
@@ -3599,50 +3621,42 @@ Agentshell_Test::run(
             )
         );
         jr_seed( jr_row( array( $op ) ) );
-        jr_with_post_cap( 600, 'edit_post' );
 
         $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
 
         Agentshell_Test::assert_equals(
             'compensated', $report['operations'][0]['outcome'] ?? '',
-            'a well-formed update op is compensated'
+            'a well-formed update op is compensated by the head-pointer model (no destructive inverse)'
         );
         Agentshell_Test::assert_true(
             jr_post_exists( 600 ),
-            'the draft itself is preserved (an update\'s inverse is not a delete)'
+            'the post is preserved (an update\'s inverse is not a delete)'
         );
-        $after = $GLOBALS['_agentshell_test_posts'][600];
-        Agentshell_Test::assert_equals( 'before', $after->post_title, 'the title was rolled back' );
-        Agentshell_Test::assert_equals( 'before-content', $after->post_content, 'and the content was rolled back' );
-        Agentshell_Test::assert_equals( array(), $GLOBALS['jr_delete_calls'], 'no wp_delete_post ran' );
-        Agentshell_Test::assert_true(
-            ! empty( $GLOBALS['jr_update_calls'] ),
-            'a wp_update_post ran to apply the before-image: ' . count( $GLOBALS['jr_update_calls'] )
-        );
+        Agentshell_Test::assert_equals( array(), $GLOBALS['jr_update_calls'], 'no wp_update_post ran' );
+        Agentshell_Test::assert_equals( array(), $GLOBALS['jr_delete_calls'], 'and no wp_delete_post ran' );
+        // The post is unchanged — the update op did not modify the live post.
+        $post = $GLOBALS['_agentshell_test_posts'][600];
+        Agentshell_Test::assert_equals( 'after', $post->post_title, 'the live post is unchanged' );
+        Agentshell_Test::assert_equals( 'after-content', $post->post_content, 'and the live content is unchanged' );
     }
 );
 
 Agentshell_Test::run(
-    'UR2: compensation of mixed create + update ops processes updates first, in reverse chronological, then the create',
+    'UR2: compensation of mixed create + update ops: updates are no-ops, the create op deletes the post once',
     function () {
-        // The compensation order is the load-bearing piece of mixed-journal
-        // recovery. Updates are mutually independent but must be applied
-        // BEFORE the create's inverse (wp_delete_post) runs, because once
-        // the post is gone the update inverses have nothing to act on. The
-        // ordering is enforced by order_ops_for_compensation(). This test
-        // drives the post through three ops (create, update A, update B),
-        // then recovers, and asserts the live update_post and delete_post
-        // calls happen in the right order: update_B (latest first), then
-        // update_A, then delete.
+        // Stage 2a (revised) — head-pointer model. The chain is rolled
+        // back by the create op's wp_delete_post, not by reverting each
+        // update. Two updates plus a create: settle each update as
+        // compensated (no destructive action), then settle the create op
+        // by verifying the live post against the head (the most recent
+        // update's after) and deleting once. The post is gone, no
+        // wp_update_post is ever called.
         jr_reset();
         jr_as_administrator();
         $marker = 'op_create_root';
-        // The wp_update_post mock bumps post_modified_gmt to the frozen time
-        // (gmdate of JR_T0), so every after.post_modified_gmt below must
-        // match what the mock will produce when the inverse of *that* op
-        // is applied. Update B (the most recent) is the first to run; the
-        // live post starts at the value the mock's first apply would have
-        // produced, so subsequent ops see gmdate(JR_T0) too.
+        // The live post is in the most recent update's after-state, which
+        // is what the create op's compensation will compare against the
+        // head.
         $frozen_modified = gmdate( 'Y-m-d H:i:s', JR_T0 );
         jr_post( 700, array(
             'post_title'        => 'after-B',
@@ -3699,13 +3713,10 @@ Agentshell_Test::run(
         );
         $upd_b['recorded_at'] = JR_T0 - 10;
 
-        // Sanity: the after-image of each update is what the *next* op's
-        // before-image sees, so the chain composes.
         jr_seed( jr_row( array( $create, $upd_a, $upd_b ) ) );
-        // Update inverses re-apply the before-image via wp_update_post, so the
-        // recovery engine re-checks `edit_post` at the moment of the update.
-        // The create inverse re-checks `delete_post`. Grant both.
-        jr_with_post_cap( 700, 'edit_post' );
+        // The create inverse re-checks `delete_post` under the advisory
+        // lock. No `edit_post` is required for the update ops under the
+        // head-pointer model — they have no destructive inverse.
         jr_with_post_cap( 700, 'delete_post' );
 
         $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
@@ -3717,65 +3728,33 @@ Agentshell_Test::run(
         Agentshell_Test::assert_equals(
             array( 'compensated', 'compensated', 'compensated' ),
             $outcomes,
-            'all three ops are compensated'
+            'all three ops are compensated (two updates as no-ops, the create via wp_delete_post)'
         );
-
-        // The wp_delete_post call (for the create op) must be the LAST
-        // destructive call, after both wp_update_post calls (for the
-        // updates). The exact order of the updates is "most recent first"
-        // (op_upd_b, op_upd_a), per the order_ops_for_compensation helper.
-        // The two log arrays are independent (their keys both start at 0), so
-        // we cannot compare raw indices across them; instead, count the
-        // total destructive calls and confirm that every wp_update_post
-        // appears before every wp_delete_post in the interleaved log.
-        $delete_indices = array_keys( $GLOBALS['jr_delete_calls'] );
-        $update_indices = array_keys( $GLOBALS['jr_update_calls'] );
-        Agentshell_Test::assert_true( ! empty( $delete_indices ), 'the create op did call wp_delete_post' );
-        Agentshell_Test::assert_true( count( $GLOBALS['jr_update_calls'] ) >= 2, 'at least two wp_update_post calls ran' );
-        // The recovery engine must process updates first, then delete the
-        // post last. Both update inverses apply Update B (latest) before
-        // Update A; verify the post_content trace in the order they were
-        // applied.
         Agentshell_Test::assert_equals(
-            array( 'after-A-content', 'after-create-content' ),
-            array_map( function ( $c ) { return $c['post_content'] ?? '?'; }, $GLOBALS['jr_update_calls'] ),
-            'updates are applied most-recent first: Update B inverse then Update A inverse'
+            array(),
+            $GLOBALS['jr_update_calls'],
+            'no wp_update_post ran (the head-pointer model does not revert updates)'
         );
-        // The last update must precede the delete in the global call order.
-        // The recovery engine's settlement loop runs updates before the
-        // create, so a single shared counter would show updates at 0,1 and
-        // delete at 2; the test stub uses two arrays whose keys both start
-        // at 0, so we reconstruct the relative order by total call count.
-        $total_update_count = count( $GLOBALS['jr_update_calls'] );
-        $total_delete_count = count( $GLOBALS['jr_delete_calls'] );
-        Agentshell_Test::assert_true(
-            $total_update_count >= 2 && $total_delete_count >= 1,
-            'the destructive stack is balanced: ' . $total_update_count . ' updates, '
-                . $total_delete_count . ' delete'
-        );
-        // The interleaved destructive log is what proves the order. The
-        // shared `_agentshell_test_destructive_log` is appended by both
-        // wp_delete_post and wp_update_post mocks in the order they are
-        // called. The expected order is: update_B_inverse, update_A_inverse,
-        // delete.
-        $expected = array( 'update:700', 'update:700', 'delete:700' );
         Agentshell_Test::assert_equals(
-            $expected,
-            $GLOBALS['_agentshell_test_destructive_log'],
-            'destructive calls are interleaved: updates first, then delete'
+            array( 700 ),
+            $GLOBALS['jr_delete_calls'],
+            'wp_delete_post ran exactly once for the create op'
         );
-        // The post is gone.
         Agentshell_Test::assert_true( ! jr_post_exists( 700 ), 'the post is deleted' );
     }
 );
 
 Agentshell_Test::run(
-    'UR3: a compensation conflict on an update preserves the post and refuses the op',
+    'UR3: an update op by itself has no destructive inverse; the post is preserved',
     function () {
-        // The post has been edited since the update was applied — the live
-        // post no longer matches the recorded after-image. The recovery
-        // engine must detect the divergence and refuse to apply the
-        // before-image; the post is preserved.
+        // Stage 2a (revised) — head-pointer model. The post has been
+        // edited since the update was applied; under the OLD model, the
+        // recovery engine would have detected the divergence and refused
+        // to revert. Under the NEW model, the update op has no
+        // destructive inverse: the chain is rolled back by the create
+        // op's compensation (not present here), so an isolated update op
+        // settles as compensated and the post is preserved. The
+        // divergence is irrelevant because no destructive action runs.
         jr_reset();
         jr_as_administrator();
         $marker = 'op_create_root';
@@ -3804,21 +3783,18 @@ Agentshell_Test::run(
             )
         );
         jr_seed( jr_row( array( $op ) ) );
-        jr_with_post_cap( 710, 'edit_post' );
+        // The OLD test granted `edit_post` here; under the new model it
+        // is not consulted. The op is a no-op regardless of caps.
 
         $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
 
         Agentshell_Test::assert_equals(
-            'conflict', $report['operations'][0]['outcome'] ?? '',
-            'a diverged post surfaces as conflict'
-        );
-        $detail = $report['operations'][0]['detail'] ?? '';
-        Agentshell_Test::assert_true(
-            false !== strpos( $detail, 'sha256' ) || false !== strpos( $detail, 'content' ) || false !== strpos( $detail, 'modified' ),
-            'the conflict names the divergent field: ' . $detail
+            'compensated', $report['operations'][0]['outcome'] ?? '',
+            'a sole update op has no destructive inverse and is settled as compensated'
         );
         Agentshell_Test::assert_true( jr_post_exists( 710 ), 'the post is preserved' );
         Agentshell_Test::assert_equals( array(), $GLOBALS['jr_update_calls'], 'no wp_update_post ran' );
+        Agentshell_Test::assert_equals( array(), $GLOBALS['jr_delete_calls'], 'and no wp_delete_post ran' );
     }
 );
 
@@ -3858,13 +3834,15 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
-    'UR5: a compensation update with no edit_post capability refuses; the post is preserved',
+    'UR5: an update op does not consult the edit_post capability; it is settled as compensated',
     function () {
-        // The actor lost edit_post since the update was applied. The op
-        // is destructive of the post's current content (it overwrites the
-        // live state), so the per-post cap is checked at the moment of
-        // the destructive call, not at recovery start. Without the cap,
-        // the recovery engine refuses and the post is preserved.
+        // Stage 2a (revised) — head-pointer model. The OLD model checked
+        // the per-post `edit_post` capability at the moment of the
+        // destructive `wp_update_post` call. Under the NEW model, the
+        // update op has no destructive inverse, so the cap is not
+        // consulted. The op settles as compensated regardless of cap
+        // state, and the post is preserved. The cap is a property of the
+        // create op's compensation, not the update op's.
         jr_reset();
         jr_as_administrator();
         $marker = 'op_create_root';
@@ -3893,69 +3871,115 @@ Agentshell_Test::run(
             )
         );
         jr_seed( jr_row( array( $op ) ) );
-        // Intentionally do NOT grant edit_post on 730.
+        // Intentionally do NOT grant edit_post on 730. Under the OLD
+        // model this caused `conflict`; under the NEW model the cap is
+        // not consulted for update ops.
 
         $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
 
         Agentshell_Test::assert_equals(
-            'conflict', $report['operations'][0]['outcome'] ?? '',
-            'without edit_post on the target, the op is refused'
-        );
-        $detail = $report['operations'][0]['detail'] ?? '';
-        Agentshell_Test::assert_true(
-            false !== strpos( $detail, 'edit_post' ),
-            'and the reason names the per-post cap: ' . $detail
+            'compensated', $report['operations'][0]['outcome'] ?? '',
+            'an update op settles as compensated regardless of edit_post'
         );
         Agentshell_Test::assert_true( jr_post_exists( 730 ), 'the post is preserved' );
+        Agentshell_Test::assert_equals( array(), $GLOBALS['jr_update_calls'], 'no wp_update_post ran' );
+        Agentshell_Test::assert_equals( array(), $GLOBALS['jr_delete_calls'], 'and no wp_delete_post ran' );
     }
 );
 
 Agentshell_Test::run(
-    'UR6: a wp_update_post failure during compensation leaves the post unchanged and the op is owed',
+    'UR6: a chain of two updates plus a create is settled: updates are no-ops, the create deletes the post once',
     function () {
-        // wp_update_post returns 0 when the underlying write fails (a
-        // plugin hook returning WP_Error, a stale cache, etc.). The
-        // guarded SQL transaction ROLLBACKs and the op remains owed. The
-        // post is preserved and the compensation is a no-op, so a
-        // subsequent recover() can settle the op (or a human can resolve).
+        // Stage 2a (revised) — head-pointer model. A wp_update_post
+        // failure was the load-bearing case in the OLD model (the
+        // recovery engine called wp_update_post to revert each update,
+        // and a failure was reported as `update_failed`). Under the
+        // NEW model, no wp_update_post runs at all. The chain is rolled
+        // back by the create op's compensation. This test pins that a
+        // chain of two updates plus a create settles cleanly: each
+        // update is a no-op, the create op's compensation verifies the
+        // live post against the head (the latest update's after-image)
+        // and deletes the post once. The previous UR6 failure mode is
+        // structurally impossible.
         jr_reset();
         jr_as_administrator();
         $marker = 'op_create_root';
+        $frozen_modified = gmdate( 'Y-m-d H:i:s', JR_T0 );
         jr_post( 740, array(
-            'post_title'        => 'after',
-            'post_content'      => 'after-content',
+            'post_title'        => 'after-B',
+            'post_content'      => 'after-B-content',
             'post_date_gmt'     => '2026-01-01 00:00:00',
-            'post_modified_gmt' => '2026-01-01 00:00:01',
+            'post_modified_gmt' => $frozen_modified,
         ), $marker );
-        $op = jr_update_op(
-            'op_upd_wp_fail', 740, $marker,
+
+        $create = jr_op( 'applied', 740 );
+        $create['after']['op_meta_value']       = $marker;
+        $create['after']['post_content_sha256'] = hash( 'sha256', 'after-create-content' );
+        $create['after']['post_content_length'] = strlen( 'after-create-content' );
+        $create['after']['post_date_gmt']       = '2026-01-01 00:00:00';
+        $create['after']['post_modified_gmt']   = $frozen_modified;
+        $create['recorded_at']                  = JR_T0 - 100;
+
+        $upd_a = jr_update_op(
+            'op_upd_a', 740, $marker,
             array(
-                'post_title'           => 'before',
-                'post_content'         => 'before-content',
+                'post_title'           => 'after-create',
+                'post_content'         => 'after-create-content',
                 'post_name'            => 'jr-draft',
-                'post_content_sha256'  => hash( 'sha256', 'before-content' ),
-                'post_content_length'  => strlen( 'before-content' ),
-                'post_modified_gmt'    => '2026-01-01 00:00:00',
+                'post_content_sha256'  => hash( 'sha256', 'after-create-content' ),
+                'post_content_length'  => strlen( 'after-create-content' ),
+                'post_modified_gmt'    => $frozen_modified,
                 'op_meta_value'        => $marker,
             ),
             array(
-                'post_content'         => 'after-content',
-                'post_content_sha256'  => hash( 'sha256', 'after-content' ),
-                'post_content_length'  => strlen( 'after-content' ),
-                'post_modified_gmt'    => '2026-01-01 00:00:01',
+                'post_content'         => 'after-A-content',
+                'post_content_sha256'  => hash( 'sha256', 'after-A-content' ),
+                'post_content_length'  => strlen( 'after-A-content' ),
+                'post_modified_gmt'    => $frozen_modified,
             )
         );
-        jr_seed( jr_row( array( $op ) ) );
-        jr_with_post_cap( 740, 'edit_post' );
-        $GLOBALS['jr_update_fails'] = true;
+        $upd_a['recorded_at'] = JR_T0 - 50;
+
+        $upd_b = jr_update_op(
+            'op_upd_b', 740, $marker,
+            array(
+                'post_title'           => 'after-A',
+                'post_content'         => 'after-A-content',
+                'post_name'            => 'jr-draft',
+                'post_content_sha256'  => hash( 'sha256', 'after-A-content' ),
+                'post_content_length'  => strlen( 'after-A-content' ),
+                'post_modified_gmt'    => $frozen_modified,
+                'op_meta_value'        => $marker,
+            ),
+            array(
+                'post_content'         => 'after-B-content',
+                'post_content_sha256'  => hash( 'sha256', 'after-B-content' ),
+                'post_content_length'  => strlen( 'after-B-content' ),
+                'post_modified_gmt'    => $frozen_modified,
+            )
+        );
+        $upd_b['recorded_at'] = JR_T0 - 10;
+
+        jr_seed( jr_row( array( $create, $upd_a, $upd_b ) ) );
+        jr_with_post_cap( 740, 'delete_post' );
+        // The OLD model set jr_update_fails = true to drive a failure
+        // path; under the NEW model, no wp_update_post is called, so
+        // the failure injection is irrelevant. The chain still settles
+        // cleanly.
 
         $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
 
+        $outcomes = array();
+        foreach ( $report['operations'] as $row ) {
+            $outcomes[] = $row['outcome'] ?? '';
+        }
         Agentshell_Test::assert_equals(
-            'update_failed', $report['operations'][0]['outcome'] ?? '',
-            'a wp_update_post failure surfaces as update_failed'
+            array( 'compensated', 'compensated', 'compensated' ),
+            $outcomes,
+            'a chain of two updates plus a create settles: updates as no-ops, the create via wp_delete_post'
         );
-        Agentshell_Test::assert_true( jr_post_exists( 740 ), 'the post is preserved' );
+        Agentshell_Test::assert_equals( array(), $GLOBALS['jr_update_calls'], 'no wp_update_post ran' );
+        Agentshell_Test::assert_true( ! jr_post_exists( 740 ), 'the post is deleted by the create op' );
     }
 );
 
@@ -4000,49 +4024,58 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
-    'UR8: an update op whose marker does not match the live post is refused; the post is preserved',
+    'UR8: a create op whose live post no longer matches the head surfaces as conflict; the post is preserved',
     function () {
-        // The post has been reassigned to a different operation (or
-        // somebody swapped the marker). The OCC + marker check refuses
-        // to apply the before-image to a post that is not the one this
-        // op recorded.
+        // Stage 2a (revised) — head-pointer model. The OLD test was
+        // "an update op whose marker does not match the live post is
+        // refused as conflict". Under the NEW model, the update op has
+        // no destructive inverse, so the marker check at the update
+        // level no longer exists. The marker check now lives at the
+        // create op's compensation: the recovery engine verifies the
+        // live post against the head (the latest applied after-image)
+        // and refuses to delete on divergence. This test pins that
+        // create-op divergence surfaces as conflict and the post is
+        // preserved.
         jr_reset();
         jr_as_administrator();
+        $marker = 'op_create_root';
+        $frozen_modified = gmdate( 'Y-m-d H:i:s', JR_T0 );
+        // The live post has been hand-edited after the chain was
+        // applied: title changed, content changed, post_modified_gmt
+        // moved. The head (recorded at the time of the last applied
+        // op) is the most recent after-image.
         jr_post( 750, array(
-            'post_title'        => 'after',
-            'post_content'      => 'after-content',
+            'post_title'        => 'hand-edited-title',
+            'post_content'      => 'hand-edited-content',
             'post_date_gmt'     => '2026-01-01 00:00:00',
-            'post_modified_gmt' => '2026-01-01 00:00:01',
-        ), 'op_someone_elses_marker' );
-        $op = jr_update_op(
-            'op_upd_marker_mismatch', 750, 'op_my_marker',
-            array(
-                'post_title'           => 'before',
-                'post_content'         => 'before-content',
-                'post_name'            => 'jr-draft',
-                'post_content_sha256'  => hash( 'sha256', 'before-content' ),
-                'post_content_length'  => strlen( 'before-content' ),
-                'post_modified_gmt'    => '2026-01-01 00:00:00',
-                'op_meta_value'        => 'op_my_marker',
-            ),
-            array(
-                'post_content'         => 'after-content',
-                'post_content_sha256'  => hash( 'sha256', 'after-content' ),
-                'post_content_length'  => strlen( 'after-content' ),
-                'post_modified_gmt'    => '2026-01-01 00:00:01',
-            )
-        );
-        jr_seed( jr_row( array( $op ) ) );
-        jr_with_post_cap( 750, 'edit_post' );
+            'post_modified_gmt' => '2026-01-01 00:00:05',
+        ), $marker );
+
+        $create = jr_op( 'applied', 750 );
+        $create['after']['op_meta_value']       = $marker;
+        $create['after']['post_content_sha256'] = hash( 'sha256', 'after-create-content' );
+        $create['after']['post_content_length'] = strlen( 'after-create-content' );
+        $create['after']['post_date_gmt']       = '2026-01-01 00:00:00';
+        $create['after']['post_modified_gmt']   = $frozen_modified;
+        $create['recorded_at']                  = JR_T0 - 100;
+
+        jr_seed( jr_row( array( $create ) ) );
+        jr_with_post_cap( 750, 'delete_post' );
 
         $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
 
         Agentshell_Test::assert_equals(
             'conflict', $report['operations'][0]['outcome'] ?? '',
-            'a marker-mismatched post is refused as conflict'
+            'a create-op divergence against the head surfaces as conflict'
+        );
+        $detail = $report['operations'][0]['detail'] ?? '';
+        Agentshell_Test::assert_true(
+            false !== strpos( $detail, 'sha256' ) || false !== strpos( $detail, 'content' ) || false !== strpos( $detail, 'modified' ),
+            'the conflict names the divergent field: ' . $detail
         );
         Agentshell_Test::assert_true( jr_post_exists( 750 ), 'the post is preserved' );
         Agentshell_Test::assert_equals( array(), $GLOBALS['jr_update_calls'], 'no wp_update_post ran' );
+        Agentshell_Test::assert_equals( array(), $GLOBALS['jr_delete_calls'], 'no wp_delete_post ran' );
     }
 );
 
