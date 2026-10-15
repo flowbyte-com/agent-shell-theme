@@ -1202,6 +1202,72 @@ $mutants = array(
         "                'post_name'    => (string) ( \$before['post_name']    ?? (string) \$post->post_name ),\n            );",
         "                'post_name'    => (string) ( \$before['post_name']    ?? (string) \$post->post_name ),\n                'post_modified_gmt' => (string) ( \$before['post_modified_gmt'] ?? (string) \$post->post_modified_gmt ), // SKIP M-E5: modified_gmt re-applied\n            );",
     ),
+
+    // ── mixed transactions: a journal that carries both a create and a
+    //    claim (and/or an update) must still settle every op correctly.
+    //    The compensation order is updates first, then claims, then
+    //    creates; the dispatch in compensate() must call
+    //    compensate_edit_existing for OP_EDIT_EXISTING_DRAFT; and the
+    //    mixed bucket must not be misclassified. ──
+
+    'mixed: the claim bucket in order_ops_for_compensation is dropped (claims fall through to creates)' => array(
+        // M-MX2: in the second foreach, the OP_EDIT_EXISTING_DRAFT
+        // branch is removed; claim ops get bucketed into $creates and
+        // processed in the wrong position. A create op's wp_delete_post
+        // on its own post runs first, then a claim op's wp_update_post
+        // on a different post runs (which is OK for that post) — but
+        // the order recorded in the report is wrong, and the audit log
+        // is no longer a faithful reconstruction of what happened.
+        // Killed by MX2: the report's operations array is asserted in
+        // compensation order (update, claim, create); with the bucket
+        // collapsed, claims appear after creates.
+        $RECOVERY_REL,
+        "            } elseif ( Content_Journal::OP_EDIT_EXISTING_DRAFT === \$type ) {\n                \$claims[ (string) \$op_id ] = \$op;",
+        "            } elseif ( false && Content_Journal::OP_EDIT_EXISTING_DRAFT === \$type ) {\n                \$claims[ (string) \$op_id ] = \$op;",
+    ),
+
+    'mixed: the first-pass claim detection is dropped (create+claim journal is not reordered)' => array(
+        // M-MX1: the `has_claim_edit` branch in the first pass over
+        // $ops is removed. The second-pass dispatch (the second
+        // foreach) is unconditional once `needs_ordering` is true;
+        // for every journal that has a create op, `has_create` is
+        // true and `needs_ordering = (has_update && (has_create ||
+        // has_claim_edit)) || (has_create && has_claim_edit)`
+        // evaluates to true if has_update is true (create+update) or
+        // if both has_create and has_claim_edit are true
+        // (create+claim, no update). Removing `has_claim_edit` does
+        // not change this — a create+update journal still triggers
+        // ordering; a create+claim+update journal still triggers
+        // ordering. The only case where `has_claim_edit` mattered
+        // was a create+claim (no update) journal whose ops were in
+        // non-canonical order, but the second-pass dispatch produces
+        // the same bucket classification whether or not
+        // `has_claim_edit` is set. The first-pass detection is a
+        // defensive read; the second-pass dispatch is the
+        // load-bearing gate. Removing the first-pass has no
+        // observable effect on the test environment.
+        $RECOVERY_REL,
+        "            } elseif ( Content_Journal::OP_EDIT_EXISTING_DRAFT === \$type ) {\n                \$has_claim_edit = true;\n            }",
+        "            } elseif ( false && Content_Journal::OP_EDIT_EXISTING_DRAFT === \$type ) {\n                \$has_claim_edit = true;\n            }",
+    ),
+
+    'mixed: the OP_EDIT_EXISTING_DRAFT dispatch is dropped (claim falls through to the unsupported-type refusal)' => array(
+        // M-MX3: in compensate(), the explicit
+        // OP_EDIT_EXISTING_DRAFT branch is removed. A claim op is
+        // not in the unsupported list (it is in
+        // SUPPORTED_OPERATIONS) so it falls through to the
+        // marker-of() / post-lookup path, which uses the wrong
+        // evidence (head-pointer model vs the immutable baseline).
+        // The compensate_edit_existing() restore never runs; the
+        // claim op is left as a chain this transaction owns but the
+        // post is not restored. Killed by MX1: the claim op's
+        // post_id 2001 is not restored to its baseline title; the
+        // journal's `compensate()` is reported with the wrong
+        // outcome.
+        $RECOVERY_REL,
+        "        if ( Content_Journal::OP_EDIT_EXISTING_DRAFT === \$type ) {\n            return self::compensate_edit_existing( \$op, \$tx, \$current_actor, \$explicitly_authorized );\n        }",
+        "        if ( false && Content_Journal::OP_EDIT_EXISTING_DRAFT === \$type ) {\n            return self::compensate_edit_existing( \$op, \$tx, \$current_actor, \$explicitly_authorized );\n        }",
+    ),
 );
 
 $killed   = 0;
@@ -1306,6 +1372,22 @@ $equivalent = array(
         . 'are observably equivalent in the test environment; the '
         . 'distinction only matters when a future code path needs the full '
         . 'list (e.g. a manual "which post is ours" inspection).',
+
+    'mixed: the first-pass claim detection is dropped (create+claim journal is not reordered)' =>
+        'The first-pass `has_claim_edit` flag in `order_ops_for_compensation` '
+        . 'is a defensive read; the load-bearing logic is the second-pass '
+        . 'dispatch (the foreach that buckets ops into $updates, $claims, '
+        . '$creates) and the `needs_ordering` formula. With the mutant active, '
+        . '`has_claim_edit` is always false, so `needs_ordering` simplifies to '
+        . '`$has_update && $has_create`. A create+claim (no update) journal '
+        . 'would no longer trigger ordering — but the second-pass dispatch '
+        . 'is unconditional once `needs_ordering` is true, and is not reached '
+        . 'otherwise. The test environment has no mixed journal whose '
+        . 'compensation order would differ between the two `needs_ordering` '
+        . 'interpretations: every mixed journal under test also has an '
+        . 'update op, so `needs_ordering` is true either way. The defensive '
+        . 'read has no observable effect; the second-pass dispatch is the '
+        . 'load-bearing gate.',
 );
 
 $repo_before = agentshell_repo_snapshot();

@@ -7061,3 +7061,579 @@ Agentshell_Test::run(
         );
     }
 );
+
+// ---------------------------------------------------------------------------
+// Mixed transactions: MX1..MX3
+//
+// A journal may carry any combination of op types. The Stage 2b
+// extension adds OP_EDIT_EXISTING_DRAFT alongside OP_CREATE_DRAFT and
+// OP_UPDATE_DRAFT. The destructive inverse of a create op is
+// `wp_delete_post`; the destructive inverse of a claim op is
+// `wp_update_post` to the recorded baseline. The compensation order
+// is "updates → claims → creates" — same logic as the create+update
+// case, with the claim branch slotted between them. Each settlement
+// targets its own post id; the order matters for audit-log readability
+// and for the case where an update and a create target the same post
+// (the update must be settled as a no-op before the create's
+// wp_delete_post runs).
+// ---------------------------------------------------------------------------
+
+Agentshell_Test::run(
+    'MX1: a mixed create + edit-existing journal settles both: create via wp_delete_post, claim via baseline restore',
+    function () {
+        // The simplest mixed case: a create op on a transaction-owned
+        // post (post 2000, the operator's draft) and a claim op on a
+        // pre-existing draft (post 2001). Recovery runs both branches:
+        // the create's wp_delete_post removes the operator's draft, the
+        // claim's wp_update_post restores the pre-existing draft to
+        // its baseline. Each destructive step targets its own post id —
+        // they do not interfere.
+        jr_reset();
+        jr_as_administrator();
+        Recovery_Advisory_Lock::reset();
+
+        // The create op on post 2000. The post is the live
+        // transaction-owned draft; the head map carries the
+        // post-create state.
+        $create_op_id = 'op_create_mx1';
+        $create_op    = Content_Journal::record_intent(
+            Content_Journal::OP_CREATE_DRAFT,
+            array( 'post_id' => 2000, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array( 'op_meta_value' => $create_op_id, 'idempotency_key' => 'idem-mx1-create' ),
+            JR_CRASHED_ACTOR,
+            JR_T0 - 86400
+        );
+        $create_op['id']      = $create_op_id;
+        $create_op['state']   = 'applied';
+        $create_op['post_id'] = 2000;
+        $create_op['after']   = array_merge( $create_op['after'], array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_name' => 'mx1-new-draft', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'newly-created-body' ),
+            'post_content_length' => strlen( 'newly-created-body' ),
+            'op_meta_value' => $create_op_id,
+        ) );
+        $create_op['recorded_at'] = JR_T0 - 100;
+
+        // The claim op on post 2001. The pre-existing draft is in
+        // the post-edit state (the transaction edited it through
+        // update_draft); the head map carries the post-edit state;
+        // the before field is the pre-claim state.
+        $claim_op_id = 'op_claim_mx1';
+        $claim_op    = Content_Journal::record_intent(
+            Content_Journal::OP_EDIT_EXISTING_DRAFT,
+            array( 'post_id' => 2001, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(
+                'post_title' => 'orig-mx1', 'post_name' => 'orig-mx1-slug',
+                'op_meta_value' => $claim_op_id, 'idempotency_key' => 'idem-mx1-claim',
+            ),
+            JR_CRASHED_ACTOR,
+            JR_T0 - 86400
+        );
+        $claim_op['id']      = $claim_op_id;
+        $claim_op['state']   = 'applied';
+        $claim_op['post_id'] = 2001;
+        $claim_op['before']  = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'orig-mx1', 'post_content' => 'orig-mx1-body',
+            'post_excerpt' => '', 'post_name' => 'orig-mx1-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-mx1-body' ),
+            'post_content_length' => 13,
+            'op_meta_value' => $claim_op_id,
+        );
+        $claim_op['after']  = array_merge( $claim_op['after'], array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_name' => 'orig-mx1-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-mx1-body' ),
+            'post_content_length' => 13,
+            'op_meta_value' => $claim_op_id,
+        ) );
+        $claim_op['recorded_at'] = JR_T0 - 50;
+
+        jr_seed( jr_row( array( $create_op, $claim_op ) ) );
+
+        // Live fixtures. The create's post is the transaction-owned
+        // draft; the claim's post is the pre-existing draft in its
+        // post-edit state (matching the head).
+        jr_post( 2000, array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'mx1-new-draft', 'post_content' => 'newly-created-body',
+            'post_name' => 'mx1-new-draft', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $create_op_id );
+        jr_post( 2001, array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-mx1', 'post_content' => 'edited-mx1-body',
+            'post_name' => 'edited-mx1-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+        ), $claim_op_id );
+
+        // Plant the head map. The create's head is its own
+        // after-image (the post-create state); the claim's head is
+        // the post-edit state (what the live post is in).
+        $create_head = $create_op['after'];
+        $claim_head  = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-mx1', 'post_name' => 'edited-mx1-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'edited-mx1-body' ),
+            'post_content_length' => 15,
+            'op_meta_value' => $claim_op_id,
+        );
+        $tx_on_disk                            = jr_row_on_disk();
+        $content                               = Content_Journal::of( $tx_on_disk );
+        $content[ Content_Journal::HEAD_KEY ]  = array(
+            2000 => $create_head,
+            2001 => $claim_head,
+        );
+        $content['sig']                        = Content_Journal::sign( $content );
+        $tx_on_disk['content']                 = $content;
+        jr_seed( $tx_on_disk );
+
+        // The create inverse re-checks `delete_post` under the
+        // advisory lock; the claim inverse re-checks `edit_post` on
+        // the pre-existing draft. Grant both.
+        jr_with_post_cap( 2000, 'delete_post' );
+        jr_with_post_cap( 2001, 'edit_post' );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
+
+        // Both ops are settled.
+        Agentshell_Test::assert_equals(
+            Content_Recovery::STATUS_RECOVERED, $report['status'],
+            'recovery completes'
+        );
+        $outcomes = array();
+        foreach ( $report['operations'] as $row ) {
+            $outcomes[] = $row['outcome'] ?? '';
+        }
+        Agentshell_Test::assert_equals(
+            array( 'compensated', 'compensated' ),
+            $outcomes,
+            'both ops are compensated (the create via wp_delete_post, the claim via wp_update_post to baseline)'
+        );
+
+        // The destructive steps ran on the right posts.
+        Agentshell_Test::assert_equals(
+            array( 2000 ),
+            $GLOBALS['jr_delete_calls'],
+            'the create\'s wp_delete_post ran on the transaction-owned post 2000'
+        );
+        Agentshell_Test::assert_true(
+            ! empty( $GLOBALS['jr_update_calls'] ),
+            'the claim\'s wp_update_post ran (the baseline restore)'
+        );
+        // The claim's restore targets post 2001, not 2000.
+        $restore_call = end( $GLOBALS['jr_update_calls'] );
+        $restore_id   = is_array( $restore_call ) ? (int) ( $restore_call['ID'] ?? 0 ) : 0;
+        Agentshell_Test::assert_equals(
+            2001, $restore_id,
+            'the claim\'s restore targets the pre-existing draft 2001, not the transaction-owned draft 2000'
+        );
+
+        // The post-create post is gone; the pre-existing post is
+        // restored to its baseline.
+        Agentshell_Test::assert_true( ! jr_post_exists( 2000 ), 'the transaction-owned draft is gone' );
+        $restored = $GLOBALS['_agentshell_test_posts'][ 2001 ] ?? null;
+        Agentshell_Test::assert_true( is_object( $restored ), 'the pre-existing draft is still present after the restore' );
+        Agentshell_Test::assert_equals(
+            'orig-mx1', (string) ( $restored->post_title ?? '' ),
+            'the pre-existing draft\'s title is restored to the baseline'
+        );
+        Agentshell_Test::assert_equals(
+            'orig-mx1-body', (string) ( $restored->post_content ?? '' ),
+            'the pre-existing draft\'s content is restored to the baseline'
+        );
+        Agentshell_Test::assert_equals(
+            'orig-mx1-slug', (string) ( $restored->post_name ?? '' ),
+            'the pre-existing draft\'s slug is restored to the baseline'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'MX2: a mixed create + claim + update journal settles in order: updates (no-ops), claim (restore), create (delete)',
+    function () {
+        // Three op types in one journal: an update on the
+        // transaction-owned post (no destructive inverse), a claim
+        // on a pre-existing draft (wp_update_post to baseline), and
+        // a create on the transaction-owned post (wp_delete_post).
+        // The compensation order is updates first (reverse
+        // chronological), then claims, then creates. The update on
+        // the transaction-owned post is a no-op; the claim restores
+        // its draft; the create deletes its post. Exactly one
+        // wp_delete_post and exactly one wp_update_post run; they
+        // target different posts.
+        jr_reset();
+        jr_as_administrator();
+        Recovery_Advisory_Lock::reset();
+
+        // The create op (post 2010). Head is the post-create state.
+        $create_op_id = 'op_create_mx2';
+        $create_op    = Content_Journal::record_intent(
+            Content_Journal::OP_CREATE_DRAFT,
+            array( 'post_id' => 2010, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array( 'op_meta_value' => $create_op_id, 'idempotency_key' => 'idem-mx2-create' ),
+            JR_CRASHED_ACTOR,
+            JR_T0 - 86400
+        );
+        $create_op['id']      = $create_op_id;
+        $create_op['state']   = 'applied';
+        $create_op['post_id'] = 2010;
+        $create_op['after']   = array_merge( $create_op['after'], array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_name' => 'mx2-new', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'mx2-create-body' ),
+            'post_content_length' => 15,
+            'op_meta_value' => $create_op_id,
+        ) );
+        $create_op['recorded_at'] = JR_T0 - 200;
+
+        // The claim op (post 2011). The pre-existing draft in its
+        // post-edit state; the baseline is the pre-claim state.
+        $claim_op_id = 'op_claim_mx2';
+        $claim_op    = Content_Journal::record_intent(
+            Content_Journal::OP_EDIT_EXISTING_DRAFT,
+            array( 'post_id' => 2011, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(
+                'post_title' => 'orig-mx2', 'post_name' => 'orig-mx2-slug',
+                'op_meta_value' => $claim_op_id, 'idempotency_key' => 'idem-mx2-claim',
+            ),
+            JR_CRASHED_ACTOR,
+            JR_T0 - 86400
+        );
+        $claim_op['id']      = $claim_op_id;
+        $claim_op['state']   = 'applied';
+        $claim_op['post_id'] = 2011;
+        $claim_op['before']  = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'orig-mx2', 'post_content' => 'orig-mx2-body',
+            'post_excerpt' => '', 'post_name' => 'orig-mx2-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-mx2-body' ),
+            'post_content_length' => 13,
+            'op_meta_value' => $claim_op_id,
+        );
+        $claim_op['after']  = array_merge( $claim_op['after'], array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_name' => 'orig-mx2-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-mx2-body' ),
+            'post_content_length' => 13,
+            'op_meta_value' => $claim_op_id,
+        ) );
+        $claim_op['recorded_at'] = JR_T0 - 150;
+
+        // The update op (post 2010). The transaction-owned draft
+        // was edited after creation. The update's destructive
+        // inverse is a no-op; the chain is rolled back by the
+        // create's wp_delete_post.
+        $update_op_id = 'op_update_mx2';
+        $update_op    = jr_update_op(
+            $update_op_id, 2010, $create_op_id,
+            array(
+                'post_title'           => 'mx2-new',
+                'post_content'         => 'mx2-create-body',
+                'post_name'            => 'mx2-new',
+                'post_content_sha256'  => hash( 'sha256', 'mx2-create-body' ),
+                'post_content_length'  => 15,
+                'post_modified_gmt'    => '2026-01-01 00:00:00',
+                'op_meta_value'        => $create_op_id,
+            ),
+            array(
+                'post_content'         => 'mx2-edit-body',
+                'post_content_sha256'  => hash( 'sha256', 'mx2-edit-body' ),
+                'post_content_length'  => strlen( 'mx2-edit-body' ),
+                'post_modified_gmt'    => '2026-01-01 00:00:01',
+            )
+        );
+        $update_op['recorded_at'] = JR_T0 - 10;
+
+        jr_seed( jr_row( array( $create_op, $claim_op, $update_op ) ) );
+
+        // Live fixtures.
+        jr_post( 2010, array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'mx2-new', 'post_content' => 'mx2-edit-body',
+            'post_name' => 'mx2-new', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:01',
+        ), $create_op_id );
+        jr_post( 2011, array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-mx2', 'post_content' => 'edited-mx2-body',
+            'post_name' => 'edited-mx2-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+        ), $claim_op_id );
+
+        // Plant the head map. The create's head is the post-update
+        // state (the most recent applied op for post 2010); the
+        // claim's head is the post-edit state.
+        $create_head = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_name' => 'mx2-new', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:01',
+            'post_content_sha256' => hash( 'sha256', 'mx2-edit-body' ),
+            'post_content_length' => strlen( 'mx2-edit-body' ),
+            'op_meta_value' => $create_op_id,
+        );
+        $claim_head  = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-mx2', 'post_name' => 'edited-mx2-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'edited-mx2-body' ),
+            'post_content_length' => 15,
+            'op_meta_value' => $claim_op_id,
+        );
+        $tx_on_disk                            = jr_row_on_disk();
+        $content                               = Content_Journal::of( $tx_on_disk );
+        $content[ Content_Journal::HEAD_KEY ]  = array(
+            2010 => $create_head,
+            2011 => $claim_head,
+        );
+        $content['sig']                        = Content_Journal::sign( $content );
+        $tx_on_disk['content']                 = $content;
+        jr_seed( $tx_on_disk );
+
+        jr_with_post_cap( 2010, 'delete_post' );
+        jr_with_post_cap( 2011, 'edit_post' );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
+
+        // The report lists ops in compensation order: update first,
+        // claim second, create last. The update is a no-op
+        // (`compensated` with the no-op reason); the claim and
+        // create are settled by their respective destructive
+        // inverses.
+        Agentshell_Test::assert_equals(
+            Content_Recovery::STATUS_RECOVERED, $report['status'],
+            'recovery completes'
+        );
+        $outcomes_by_id = array();
+        foreach ( $report['operations'] as $row ) {
+            $outcomes_by_id[ (string) ( $row['id'] ?? '' ) ] = $row['outcome'] ?? '';
+        }
+        Agentshell_Test::assert_equals(
+            'compensated', $outcomes_by_id[ $update_op_id ] ?? '',
+            'the update is compensated (no destructive inverse; the chain\'s rollback is the create\'s wp_delete_post)'
+        );
+        Agentshell_Test::assert_equals(
+            'compensated', $outcomes_by_id[ $claim_op_id ] ?? '',
+            'the claim is compensated (baseline restore)'
+        );
+        Agentshell_Test::assert_equals(
+            'compensated', $outcomes_by_id[ $create_op_id ] ?? '',
+            'the create is compensated (wp_delete_post)'
+        );
+
+        // The order in the report reflects compensation order:
+        // update, claim, create. The order is for audit-log
+        // readability, not correctness — but it is load-bearing for
+        // the live acceptance scenario that reads the report in
+        // order to reconstruct what happened.
+        $order = array();
+        foreach ( $report['operations'] as $row ) {
+            $order[] = (string) ( $row['id'] ?? '' );
+        }
+        Agentshell_Test::assert_equals(
+            array( $update_op_id, $claim_op_id, $create_op_id ),
+            $order,
+            'operations are reported in compensation order: update, claim, create'
+        );
+
+        // Exactly one wp_delete_post and exactly one wp_update_post
+        // ran. The update op has no destructive inverse, so no
+        // wp_update_post ran for it.
+        Agentshell_Test::assert_equals(
+            array( 2010 ),
+            $GLOBALS['jr_delete_calls'],
+            'the create\'s wp_delete_post ran on post 2010'
+        );
+        Agentshell_Test::assert_equals(
+            1, count( $GLOBALS['jr_update_calls'] ?? array() ),
+            'exactly one wp_update_post ran (the claim\'s baseline restore)'
+        );
+        $restore_call = end( $GLOBALS['jr_update_calls'] );
+        $restore_id   = is_array( $restore_call ) ? (int) ( $restore_call['ID'] ?? 0 ) : 0;
+        Agentshell_Test::assert_equals(
+            2011, $restore_id,
+            'the claim\'s restore targets post 2011'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'MX3: a mixed journal with two claims on different pre-existing drafts restores both',
+    function () {
+        // A journal with two claim ops on different pre-existing
+        // drafts. The compensation order is claims-then-creates; with
+        // no creates and no updates, the two claims settle in their
+        // recorded_at order. Both pre-existing drafts are restored to
+        // their respective baselines. Exactly two wp_update_posts run;
+        // no wp_delete_post.
+        jr_reset();
+        jr_as_administrator();
+        Recovery_Advisory_Lock::reset();
+
+        $claim_a_id = 'op_claim_mx3a';
+        $claim_a    = Content_Journal::record_intent(
+            Content_Journal::OP_EDIT_EXISTING_DRAFT,
+            array( 'post_id' => 2020, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(
+                'post_title' => 'orig-mx3-a', 'post_name' => 'orig-mx3-a-slug',
+                'op_meta_value' => $claim_a_id, 'idempotency_key' => 'idem-mx3-a',
+            ),
+            JR_CRASHED_ACTOR,
+            JR_T0 - 86400
+        );
+        $claim_a['id']      = $claim_a_id;
+        $claim_a['state']   = 'applied';
+        $claim_a['post_id'] = 2020;
+        $claim_a['before']  = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'orig-mx3-a', 'post_content' => 'orig-mx3-a-body',
+            'post_excerpt' => '', 'post_name' => 'orig-mx3-a-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-mx3-a-body' ),
+            'post_content_length' => 15,
+            'op_meta_value' => $claim_a_id,
+        );
+        $claim_a['after']  = array_merge( $claim_a['after'], array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_name' => 'orig-mx3-a-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-mx3-a-body' ),
+            'post_content_length' => 15,
+            'op_meta_value' => $claim_a_id,
+        ) );
+        $claim_a['recorded_at'] = JR_T0 - 100;
+
+        $claim_b_id = 'op_claim_mx3b';
+        $claim_b    = Content_Journal::record_intent(
+            Content_Journal::OP_EDIT_EXISTING_DRAFT,
+            array( 'post_id' => 2021, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(
+                'post_title' => 'orig-mx3-b', 'post_name' => 'orig-mx3-b-slug',
+                'op_meta_value' => $claim_b_id, 'idempotency_key' => 'idem-mx3-b',
+            ),
+            JR_CRASHED_ACTOR,
+            JR_T0 - 86400
+        );
+        $claim_b['id']      = $claim_b_id;
+        $claim_b['state']   = 'applied';
+        $claim_b['post_id'] = 2021;
+        $claim_b['before']  = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'orig-mx3-b', 'post_content' => 'orig-mx3-b-body',
+            'post_excerpt' => '', 'post_name' => 'orig-mx3-b-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-mx3-b-body' ),
+            'post_content_length' => 15,
+            'op_meta_value' => $claim_b_id,
+        );
+        $claim_b['after']  = array_merge( $claim_b['after'], array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_name' => 'orig-mx3-b-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-mx3-b-body' ),
+            'post_content_length' => 15,
+            'op_meta_value' => $claim_b_id,
+        ) );
+        $claim_b['recorded_at'] = JR_T0 - 50;
+
+        jr_seed( jr_row( array( $claim_a, $claim_b ) ) );
+
+        jr_post( 2020, array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-mx3-a', 'post_content' => 'edited-mx3-a-body',
+            'post_name' => 'edited-mx3-a-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+        ), $claim_a_id );
+        jr_post( 2021, array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-mx3-b', 'post_content' => 'edited-mx3-b-body',
+            'post_name' => 'edited-mx3-b-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+        ), $claim_b_id );
+
+        // Plant the head map with the post-edit state for each post.
+        $head_a = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-mx3-a', 'post_name' => 'edited-mx3-a-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'edited-mx3-a-body' ),
+            'post_content_length' => 17,
+            'op_meta_value' => $claim_a_id,
+        );
+        $head_b = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-mx3-b', 'post_name' => 'edited-mx3-b-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'edited-mx3-b-body' ),
+            'post_content_length' => 17,
+            'op_meta_value' => $claim_b_id,
+        );
+        $tx_on_disk                            = jr_row_on_disk();
+        $content                               = Content_Journal::of( $tx_on_disk );
+        $content[ Content_Journal::HEAD_KEY ]  = array(
+            2020 => $head_a,
+            2021 => $head_b,
+        );
+        $content['sig']                        = Content_Journal::sign( $content );
+        $tx_on_disk['content']                 = $content;
+        jr_seed( $tx_on_disk );
+
+        jr_with_post_cap( 2020, 'edit_post' );
+        jr_with_post_cap( 2021, 'edit_post' );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
+
+        Agentshell_Test::assert_equals(
+            Content_Recovery::STATUS_RECOVERED, $report['status'],
+            'recovery completes'
+        );
+        $outcomes = array();
+        foreach ( $report['operations'] as $row ) {
+            $outcomes[] = $row['outcome'] ?? '';
+        }
+        Agentshell_Test::assert_equals(
+            array( 'compensated', 'compensated' ),
+            $outcomes,
+            'both claim ops are compensated (baseline restore)'
+        );
+        Agentshell_Test::assert_equals(
+            array(),
+            $GLOBALS['jr_delete_calls'],
+            'no wp_delete_post ran (both ops are claims, not creates)'
+        );
+        Agentshell_Test::assert_equals(
+            2, count( $GLOBALS['jr_update_calls'] ?? array() ),
+            'exactly two wp_update_posts ran (one per claim)'
+        );
+
+        // Both pre-existing drafts are restored to their baselines.
+        $restored_a = $GLOBALS['_agentshell_test_posts'][ 2020 ] ?? null;
+        $restored_b = $GLOBALS['_agentshell_test_posts'][ 2021 ] ?? null;
+        Agentshell_Test::assert_true( is_object( $restored_a ), 'pre-existing draft 2020 is still present' );
+        Agentshell_Test::assert_equals(
+            'orig-mx3-a', (string) ( $restored_a->post_title ?? '' ),
+            'pre-existing draft 2020 is restored to its baseline title'
+        );
+        Agentshell_Test::assert_true( is_object( $restored_b ), 'pre-existing draft 2021 is still present' );
+        Agentshell_Test::assert_equals(
+            'orig-mx3-b', (string) ( $restored_b->post_title ?? '' ),
+            'pre-existing draft 2021 is restored to its baseline title'
+        );
+    }
+);
