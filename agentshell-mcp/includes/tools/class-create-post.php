@@ -23,6 +23,15 @@ class Create_Post extends Base_Tool {
     }
 
     public function execute( array $arguments ) {
+        if ( \AgentShell_MCP\Transaction_Manager::instance()->is_active() ) {
+            throw new \InvalidArgumentException(
+                'agentshell_create_post refuses inside a transaction. No journal-aware implementation exists '
+                . 'for this operation. The one content tool that may be called inside an open transaction is '
+                . 'agentshell_create_draft. Either close the transaction (commit or rollback) and call '
+                . 'agentshell_create_post outside, or call agentshell_create_draft if you want this change to be '
+                . 'journal-aware.'
+            );
+        }
         return \AgentShell_MCP\Content_Primitives::create(
             'post',
             $arguments['title'],

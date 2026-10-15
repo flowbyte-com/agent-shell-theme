@@ -119,6 +119,7 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-unpublish-content.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-search-content.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-get-content.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-create-draft.php';
 
     // Screenshot loop (v1.3)
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-screenshot.php';
@@ -194,6 +195,7 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     $tools[] = new AgentShell_MCP\Tools\Unpublish_Content();
     $tools[] = new AgentShell_MCP\Tools\Search_Content();
     $tools[] = new AgentShell_MCP\Tools\Get_Content();
+    $tools[] = new AgentShell_MCP\Tools\Create_Draft();
 
     // Screenshot loop (v1.3)
     $tools[] = new AgentShell_MCP\Tools\Screenshot();

@@ -18,6 +18,14 @@ class Update_Post_Content extends Base_Tool {
     }
 
     public function execute( array $arguments ) {
+        if ( \AgentShell_MCP\Transaction_Manager::instance()->is_active() ) {
+            throw new \InvalidArgumentException(
+                'agentshell_update_post_content refuses inside a transaction. No journal-aware update exists yet; '
+                . 'update is Stage 2. The one content tool that may be called inside an open transaction is '
+                . 'agentshell_create_draft. Either close the transaction (commit or rollback) and call '
+                . 'agentshell_update_post_content outside.'
+            );
+        }
         $this->validate_required( $arguments, array( 'post_id', 'html_content' ) );
 
         $post_id = absint( $arguments['post_id'] );

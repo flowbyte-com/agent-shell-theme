@@ -21,6 +21,14 @@ class Unpublish_Content extends Base_Tool {
     }
 
     public function execute( array $arguments ) {
+        if ( \AgentShell_MCP\Transaction_Manager::instance()->is_active() ) {
+            throw new \InvalidArgumentException(
+                'agentshell_unpublish refuses inside a transaction. No journal-aware status change exists yet; '
+                . 'unpublish is Stage 2. The one content tool that may be called inside an open transaction is '
+                . 'agentshell_create_draft. Either close the transaction (commit or rollback) and call '
+                . 'agentshell_unpublish outside.'
+            );
+        }
         return \AgentShell_MCP\Content_Primitives::set_status(
             (int) $arguments['id'],
             $arguments['type'] ?? 'page',

@@ -332,6 +332,15 @@ class Register_Navigation extends Base_Tool {
     }
 
     public function execute( array $arguments ) {
+        if ( \AgentShell_MCP\Transaction_Manager::instance()->is_active() ) {
+            throw new \InvalidArgumentException(
+                'agentshell_register_navigation refuses inside a transaction. Navigation writes take effect '
+                . 'immediately and are not transaction-staged; rollback will not undo them. The one content '
+                . 'tool that may be called inside an open transaction is agentshell_create_draft. Either close '
+                . 'the transaction (commit or rollback) and call agentshell_register_navigation outside, or '
+                . 'call agentshell_create_draft if you want a new journal-aware draft.'
+            );
+        }
         $this->validate_required( $arguments, array( 'name', 'items' ) );
 
         $name     = trim( (string) $arguments['name'] );
