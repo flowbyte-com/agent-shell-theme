@@ -189,6 +189,7 @@ class Create_Draft extends Base_Tool {
                 'post_type'           => (string) $post->post_type,
                 'post_status'         => (string) $post->post_status,
                 'post_name'           => (string) $post->post_name,
+                'post_title'          => (string) $post->post_title,
                 'post_date_gmt'       => (string) $post->post_date_gmt,
                 'post_modified_gmt'   => (string) $post->post_modified_gmt,
                 'post_content_sha256' => hash( 'sha256', (string) $post->post_content ),

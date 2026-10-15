@@ -1080,7 +1080,7 @@ class Content_Recovery {
                 . 'Nothing was deleted.';
         }
 
-        foreach ( array( 'post_type', 'post_status', 'post_name' ) as $field ) {
+        foreach ( array( 'post_type', 'post_status', 'post_name', 'post_title' ) as $field ) {
             if ( ! isset( $after[ $field ] ) || '' === $after[ $field ] ) { continue; }
             $have = isset( $post->$field ) ? (string) $post->$field : '';
             if ( $have !== (string) $after[ $field ] ) {

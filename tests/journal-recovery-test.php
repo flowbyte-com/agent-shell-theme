@@ -3410,6 +3410,7 @@ function jr_update_op( $op_id, $post_id, $marker, array $before, array $after_ex
             'post_type'           => 'page',
             'post_status'         => 'draft',
             'post_name'           => $before['post_name'],
+            'post_title'          => isset( $after_extras['post_title'] ) ? (string) $after_extras['post_title'] : 'after',
             'post_date_gmt'       => '2026-01-01 00:00:00',
             'post_modified_gmt'   => '2026-01-01 00:00:01',
             'post_content_sha256' => $after_extras['post_content_sha256'] ?? hash( 'sha256', (string) ( $after_extras['post_content'] ?? $before['post_content'] ) ),
@@ -3705,6 +3706,7 @@ Agentshell_Test::run(
                 'op_meta_value'        => $marker,
             ),
             array(
+                'post_title'           => 'after-B',
                 'post_content'         => 'after-B-content',
                 'post_content_sha256'  => hash( 'sha256', 'after-B-content' ),
                 'post_content_length'  => strlen( 'after-B-content' ),
@@ -3952,6 +3954,7 @@ Agentshell_Test::run(
                 'op_meta_value'        => $marker,
             ),
             array(
+                'post_title'           => 'after-B',
                 'post_content'         => 'after-B-content',
                 'post_content_sha256'  => hash( 'sha256', 'after-B-content' ),
                 'post_content_length'  => strlen( 'after-B-content' ),
@@ -4070,7 +4073,7 @@ Agentshell_Test::run(
         );
         $detail = $report['operations'][0]['detail'] ?? '';
         Agentshell_Test::assert_true(
-            false !== strpos( $detail, 'sha256' ) || false !== strpos( $detail, 'content' ) || false !== strpos( $detail, 'modified' ),
+            false !== strpos( $detail, 'sha256' ) || false !== strpos( $detail, 'content' ) || false !== strpos( $detail, 'modified' ) || false !== strpos( $detail, 'title' ),
             'the conflict names the divergent field: ' . $detail
         );
         Agentshell_Test::assert_true( jr_post_exists( 750 ), 'the post is preserved' );

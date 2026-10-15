@@ -148,6 +148,7 @@ function jr_after_image( $id, $op_id ) {
         'post_type'           => $p->post_type,
         'post_status'         => $p->post_status,
         'post_name'           => $p->post_name,
+        'post_title'          => $p->post_title,
         'post_date_gmt'       => $p->post_date_gmt,
         'post_modified_gmt'   => $p->post_modified_gmt,
         'post_content_sha256' => hash( 'sha256', $content ),
