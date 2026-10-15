@@ -406,6 +406,29 @@ class Screenshot {
      * by absolute path today, but rebuilding the environment must not quietly
      * strip it from the child's other lookups.
      *
+     * `LD_LIBRARY_PATH` and `LD_PRELOAD` are scrubbed. They are the dynamic
+     * linker's own configuration, not Chrome's: a parent process that sets
+     * them (a build host, a test harness, a PHP-FPM pool configured with a
+     * custom shared-libs directory) is configuring PHP's library resolution,
+     * not Chrome's, and the values must not leak across the proc_open
+     * boundary. Two observed failure modes:
+     *
+     *  1. A host that bundles a pre-2.34 `libglib-2.0.so.0` in
+     *     `LD_LIBRARY_PATH` (e.g. a build-time PHP drop-in) makes Chrome
+     *     load an older `libglib` than the system `libgobject-2.0.so.0` was
+     *     compiled against. Chrome then fails to resolve `g_dir_unref`
+     *     ("symbol lookup error ... undefined symbol: g_dir_unref") and
+     *     exits before the first frame. The system libraries are correct;
+     *     the inherited path is the wrong resolver for the browser.
+     *  2. `LD_PRELOAD` would let the parent force a shared library into
+     *     Chrome's address space — a property the capture should never
+     *     inherit.
+     *
+     * Stripping both before proc_open restores Chrome's default library
+     * resolution, which is what every other deployment (system Chrome, a
+     * docker container, a CI runner) already gives it. PATH stays; the
+     * resolved-binary path is independent of the dynamic loader's path.
+     *
      * @param string $profile Throwaway user-data directory for this capture.
      * @return array Environment for proc_open().
      */
@@ -420,6 +443,7 @@ class Screenshot {
         $env['XDG_DATA_HOME']    = $profile . '/xdg-data';
         $env['XDG_STATE_HOME']   = $profile . '/xdg-state';
         $env['TMPDIR']           = self::profile_tmp_dir( $profile );
+        unset( $env['LD_LIBRARY_PATH'], $env['LD_PRELOAD'] );
         return $env;
     }
 
