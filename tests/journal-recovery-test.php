@@ -6598,3 +6598,466 @@ Agentshell_Test::run(
         }
     }
 );
+
+// ---------------------------------------------------------------------------
+// Edit-existing compensation: HP10b, HP11b, HP12b, HP13b
+//
+// The destructive inverse of a claim op is a `wp_update_post` that
+// restores the post to the immutable baseline recorded at first
+// touch. The OCC discipline is layered: verify against the head
+// (or the claim's after, if no head), verify against the baseline
+// (a match means a previous recovery already restored — the op is
+// settled without a write), and after the write re-verify the
+// content fields (a filter or hook could have changed the post
+// in between; the post_modified_gmt is bumped by every
+// wp_update_post and is therefore not in the post-restore verify).
+// ---------------------------------------------------------------------------
+
+Agentshell_Test::run(
+    'HP10b: compensate_edit_existing() restores the post to the recorded baseline',
+    function () {
+        // The post was claimed, then edited through the transaction;
+        // a subsequent recovery restores the post to the pre-claim
+        // state and settles the op as `compensated`.
+        jr_reset();
+        jr_as_administrator();
+        Recovery_Advisory_Lock::reset();
+        $op_id = 'op_claim_hp10b';
+        $op = Content_Journal::record_intent(
+            Content_Journal::OP_EDIT_EXISTING_DRAFT,
+            array( 'post_id' => 1001, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(
+                'post_title' => 'orig-title', 'post_name' => 'orig-slug',
+                'op_meta_value' => $op_id, 'idempotency_key' => 'idem-hp10b',
+            ),
+            JR_CRASHED_ACTOR,
+            JR_T0 - 86400
+        );
+        $op['id']      = $op_id;
+        $op['state']   = 'applied';
+        $op['post_id'] = 1001;
+        $op['before']  = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'orig-title', 'post_content' => 'orig-content',
+            'post_excerpt' => '', 'post_name' => 'orig-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-content' ),
+            'post_content_length' => 12,
+            'op_meta_value' => $op_id,
+        );
+        // The op's `after` carries the post's pre-claim state (the
+        // state at first touch). The head map is the chain's
+        // expected current state — the post-edit state — which is
+        // what the OCC pre-check in step 1 verifies against.
+        $op['after']  = array_merge( $op['after'], array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_name' => 'orig-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-content' ),
+            'post_content_length' => 12,
+            'op_meta_value' => $op_id,
+        ) );
+        // Seed the row with a claim that owns the op (so the settle
+        // is uncontended), then plant the head map with the post-edit
+        // after-image. The head is what step 1 verifies against.
+        $tx = jr_row( array( $op ) );
+        $tx = jr_set_claim(
+            $tx,
+            $op_id,
+            Content_Journal::STATE_COMPENSATING,
+            array( 'actor' => JR_CRASHED_ACTOR, 'at' => JR_T0 - 86300 )
+        );
+        jr_seed( $tx );
+        // The post is in the post-edit state, which matches the
+        // head. Step 1's OCC pre-check passes; step 2's baseline
+        // check sees a divergence and proceeds to the write.
+        jr_post( 1001, array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-title', 'post_content' => 'edited-content',
+            'post_name' => 'edited-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+        ), $op_id );
+        // Plant the head manually: the chain's expected current
+        // state, matching the live post on disk. The recovery
+        // engine's OCC pre-check verifies the live post against
+        // this; a match means the post is the one the chain
+        // expected and a restore to the baseline is safe.
+        $post_edit_head = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-title', 'post_name' => 'edited-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'edited-content' ),
+            'post_content_length' => 14,
+            'op_meta_value' => $op_id,
+        );
+        $tx_on_disk                            = jr_row_on_disk();
+        $content                               = Content_Journal::of( $tx_on_disk );
+        $content[ Content_Journal::HEAD_KEY ]  = array( 1001 => $post_edit_head );
+        $content['sig']                        = Content_Journal::sign( $content );
+        $tx_on_disk['content']                 = $content;
+        jr_seed( $tx_on_disk );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), 'recovery-admin', true );
+
+        Agentshell_Test::assert_equals(
+            Content_Recovery::STATUS_RECOVERED, $report['status'],
+            'recovery completes'
+        );
+        Agentshell_Test::assert_equals(
+            'compensated', $report['operations'][0]['outcome'],
+            'the claim op is settled as compensated'
+        );
+        Agentshell_Test::assert_true(
+            false !== strpos( $report['operations'][0]['detail'], 'restored to its pre-claim baseline' ),
+            'the report names the baseline restore: ' . $report['operations'][0]['detail']
+        );
+        // The post on disk now matches the baseline.
+        $live = $GLOBALS['_agentshell_test_posts'][ 1001 ] ?? null;
+        Agentshell_Test::assert_true( is_object( $live ), 'the post is still present after the restore' );
+        Agentshell_Test::assert_equals(
+            'orig-title', (string) ( $live->post_title ?? '' ),
+            'the post title is restored to the baseline'
+        );
+        Agentshell_Test::assert_equals(
+            'orig-content', (string) ( $live->post_content ?? '' ),
+            'the post content is restored to the baseline'
+        );
+        Agentshell_Test::assert_equals(
+            'orig-slug', (string) ( $live->post_name ?? '' ),
+            'the post slug is restored to the baseline'
+        );
+        // Exactly one wp_update_post ran: the restore. The test
+        // fixture's wp_update_post bumps post_modified_gmt to now,
+        // which is what makes the post-restore verify_restore_landed
+        // a distinct code path (no modified_gmt check) from
+        // verify_against_after.
+        Agentshell_Test::assert_equals(
+            1, count( $GLOBALS['jr_update_calls'] ?? array() ),
+            'exactly one wp_update_post ran (the restore)'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'HP11b: compensate_edit_existing() preserves the post on a head divergence (conflict)',
+    function () {
+        // The head says the post is in state A; the live post is in
+        // state B (e.g., `post_status` was changed to `publish` by
+        // an outside actor). The recovery engine refuses to
+        // restore (it cannot prove the post was the one the chain
+        // expected); the op transitions to `conflict` and the
+        // post is preserved.
+        jr_reset();
+        jr_as_administrator();
+        Recovery_Advisory_Lock::reset();
+        $op_id = 'op_claim_hp11b';
+        $op = Content_Journal::record_intent(
+            Content_Journal::OP_EDIT_EXISTING_DRAFT,
+            array( 'post_id' => 1002, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(
+                'post_title' => 'orig-title', 'post_name' => 'orig-slug',
+                'op_meta_value' => $op_id, 'idempotency_key' => 'idem-hp11b',
+            ),
+            JR_CRASHED_ACTOR,
+            JR_T0 - 86400
+        );
+        $op['id']      = $op_id;
+        $op['state']   = 'applied';
+        $op['post_id'] = 1002;
+        $op['before']  = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'orig-title', 'post_content' => 'orig-content',
+            'post_excerpt' => '', 'post_name' => 'orig-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-content' ),
+            'post_content_length' => 12,
+            'op_meta_value' => $op_id,
+        );
+        $op['after']  = array_merge( $op['after'], array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_name' => 'orig-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-content' ),
+            'post_content_length' => 12,
+            'op_meta_value' => $op_id,
+        ) );
+        $tx = jr_row( array( $op ) );
+        $tx = jr_set_claim(
+            $tx,
+            $op_id,
+            Content_Journal::STATE_COMPENSATING,
+            array( 'actor' => JR_CRASHED_ACTOR, 'at' => JR_T0 - 86300 )
+        );
+        jr_seed( $tx );
+        // The live post is `publish` (an outside actor changed it).
+        // The head says `draft`; the post matches the head on
+        // title/content/slug but not on `post_status` — the head
+        // verify refuses.
+        jr_post( 1002, array(
+            'post_type' => 'page', 'post_status' => 'publish',
+            'post_title' => 'edited-title', 'post_content' => 'edited-content',
+            'post_name' => 'edited-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+        ), $op_id );
+        // The head is the post-edit state at the time the chain
+        // last touched the post — `post_status` was `draft` then.
+        // The live post now has `post_status=publish`; the OCC
+        // pre-check catches the divergence.
+        $post_edit_head = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-title', 'post_name' => 'edited-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'edited-content' ),
+            'post_content_length' => 14,
+            'op_meta_value' => $op_id,
+        );
+        $tx_on_disk                            = jr_row_on_disk();
+        $content                               = Content_Journal::of( $tx_on_disk );
+        $content[ Content_Journal::HEAD_KEY ]  = array( 1002 => $post_edit_head );
+        $content['sig']                        = Content_Journal::sign( $content );
+        $tx_on_disk['content']                 = $content;
+        jr_seed( $tx_on_disk );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), 'recovery-admin', true );
+
+        Agentshell_Test::assert_equals(
+            'conflict', $report['operations'][0]['outcome'],
+            'a head divergence on post_status is a conflict'
+        );
+        Agentshell_Test::assert_true(
+            false !== strpos( $report['operations'][0]['detail'], 'post_status' ),
+            'the report names the divergent field: ' . $report['operations'][0]['detail']
+        );
+        $live = $GLOBALS['_agentshell_test_posts'][ 1002 ] ?? null;
+        Agentshell_Test::assert_true( is_object( $live ), 'the post is preserved on a head divergence' );
+        Agentshell_Test::assert_equals(
+            'publish', (string) ( $live->post_status ?? '' ),
+            'the post_status is unchanged (the outside edit is preserved)'
+        );
+        Agentshell_Test::assert_equals(
+            'edited-title', (string) ( $live->post_title ?? '' ),
+            'the post title is unchanged'
+        );
+        Agentshell_Test::assert_equals(
+            'edited-content', (string) ( $live->post_content ?? '' ),
+            'the post content is unchanged'
+        );
+        Agentshell_Test::assert_equals(
+            array(), $GLOBALS['jr_update_calls'] ?? array(),
+            'no wp_update_post ran (the post is preserved)'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'HP12b: compensate_edit_existing() reports `compensated` without a write when the post is already in the baseline state',
+    function () {
+        // A previous recovery attempt has already restored the post
+        // to the baseline, OR the transaction closed without an
+        // edit and the post is in its pre-claim state. Either way,
+        // the live post matches the baseline; the op is settled as
+        // `compensated` without a second write.
+        jr_reset();
+        jr_as_administrator();
+        Recovery_Advisory_Lock::reset();
+        $op_id = 'op_claim_hp12b';
+        $op = Content_Journal::record_intent(
+            Content_Journal::OP_EDIT_EXISTING_DRAFT,
+            array( 'post_id' => 1003, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(
+                'post_title' => 'orig-title', 'post_name' => 'orig-slug',
+                'op_meta_value' => $op_id, 'idempotency_key' => 'idem-hp12b',
+            ),
+            JR_CRASHED_ACTOR,
+            JR_T0 - 86400
+        );
+        $op['id']      = $op_id;
+        $op['state']   = 'applied';
+        $op['post_id'] = 1003;
+        $op['before']  = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'orig-title', 'post_content' => 'orig-content',
+            'post_excerpt' => '', 'post_name' => 'orig-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-content' ),
+            'post_content_length' => 12,
+            'op_meta_value' => $op_id,
+        );
+        // The op's `after` is the pre-claim state (the post's
+        // identification at first touch). The post has not been
+        // edited through the chain — the chain's claim was recorded
+        // but the operator did not call Update_Draft. So the live
+        // post is still in its pre-claim state, which equals the
+        // baseline. The no-head branch verifies against this
+        // after-image; the baseline check then confirms the post
+        // is already at the recorded baseline; the op is settled
+        // as compensated without a write.
+        $op['after']  = array_merge( $op['after'], array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_name' => 'orig-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-content' ),
+            'post_content_length' => 12,
+            'op_meta_value' => $op_id,
+        ) );
+        $tx = jr_row( array( $op ) );
+        $tx = jr_set_claim(
+            $tx,
+            $op_id,
+            Content_Journal::STATE_COMPENSATING,
+            array( 'actor' => JR_CRASHED_ACTOR, 'at' => JR_T0 - 86300 )
+        );
+        jr_seed( $tx );
+        // The live post is at the baseline state. No head map
+        // exists (the claim op did not call compare_and_set_head;
+        // only update ops do). The code's no-head branch runs:
+        // the claim's after equals the baseline (the pre-claim
+        // state), and the live post matches it.
+        jr_post( 1003, array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'orig-title', 'post_content' => 'orig-content',
+            'post_name' => 'orig-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op_id );
+        // Clear the head map so the no-head branch is reached.
+        $tx_on_disk                            = jr_row_on_disk();
+        $content                               = Content_Journal::of( $tx_on_disk );
+        $content[ Content_Journal::HEAD_KEY ]  = array();
+        $content['sig']                        = Content_Journal::sign( $content );
+        $tx_on_disk['content']                 = $content;
+        jr_seed( $tx_on_disk );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), 'recovery-admin', true );
+
+        Agentshell_Test::assert_equals(
+            'compensated', $report['operations'][0]['outcome'],
+            'a baseline match (with no head) is settled as compensated without a write'
+        );
+        Agentshell_Test::assert_true(
+            false !== strpos( $report['operations'][0]['detail'], 'already in the recorded baseline state' ),
+            'the report explains the no-op: ' . $report['operations'][0]['detail']
+        );
+        Agentshell_Test::assert_equals(
+            array(), $GLOBALS['jr_update_calls'] ?? array(),
+            'no wp_update_post ran (the post is already at baseline)'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'HP13b: compensate_edit_existing() excludes post_modified_gmt from the restore write',
+    function () {
+        // The destructive inverse re-applies the supported baseline
+        // fields (post_title, post_content, post_name, post_excerpt
+        // when present). It does NOT re-apply post_modified_gmt:
+        // re-applying it would falsify the recorded after for any
+        // subsequent OCC check (a recovery writes a fresh
+        // post_modified_gmt on disk, but the journal's recorded
+        // after is the value the live post had at the moment of
+        // the last authorised update). The test captures the
+        // postarr sent to wp_update_post and asserts that no
+        // post_modified_gmt key is present.
+        jr_reset();
+        jr_as_administrator();
+        Recovery_Advisory_Lock::reset();
+        $op_id = 'op_claim_hp13b';
+        $op = Content_Journal::record_intent(
+            Content_Journal::OP_EDIT_EXISTING_DRAFT,
+            array( 'post_id' => 1004, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(
+                'post_title' => 'orig-title', 'post_name' => 'orig-slug',
+                'op_meta_value' => $op_id, 'idempotency_key' => 'idem-hp13b',
+            ),
+            JR_CRASHED_ACTOR,
+            JR_T0 - 86400
+        );
+        $op['id']      = $op_id;
+        $op['state']   = 'applied';
+        $op['post_id'] = 1004;
+        $op['before']  = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'orig-title', 'post_content' => 'orig-content',
+            'post_excerpt' => '', 'post_name' => 'orig-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-content' ),
+            'post_content_length' => 12,
+            'op_meta_value' => $op_id,
+        );
+        $op['after']  = array_merge( $op['after'], array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_name' => 'orig-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-content' ),
+            'post_content_length' => 12,
+            'op_meta_value' => $op_id,
+        ) );
+        $tx = jr_row( array( $op ) );
+        $tx = jr_set_claim(
+            $tx,
+            $op_id,
+            Content_Journal::STATE_COMPENSATING,
+            array( 'actor' => JR_CRASHED_ACTOR, 'at' => JR_T0 - 86300 )
+        );
+        jr_seed( $tx );
+        jr_post( 1004, array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-title', 'post_content' => 'edited-content',
+            'post_name' => 'edited-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+        ), $op_id );
+        $post_edit_head = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-title', 'post_name' => 'edited-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'edited-content' ),
+            'post_content_length' => 14,
+            'op_meta_value' => $op_id,
+        );
+        $tx_on_disk                            = jr_row_on_disk();
+        $content                               = Content_Journal::of( $tx_on_disk );
+        $content[ Content_Journal::HEAD_KEY ]  = array( 1004 => $post_edit_head );
+        $content['sig']                        = Content_Journal::sign( $content );
+        $tx_on_disk['content']                 = $content;
+        jr_seed( $tx_on_disk );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), 'recovery-admin', true );
+
+        Agentshell_Test::assert_equals(
+            'compensated', $report['operations'][0]['outcome'],
+            'recovery completes and the op is settled'
+        );
+        // The fixture records each wp_update_post call in
+        // $GLOBALS['jr_update_calls']. The last entry's postarr
+        // carries the fields the restore wrote. The assertion
+        // below looks for the absence of post_modified_gmt.
+        Agentshell_Test::assert_true(
+            ! empty( $GLOBALS['jr_update_calls'] ),
+            'a wp_update_post ran'
+        );
+        $last_call     = end( $GLOBALS['jr_update_calls'] );
+        $last_postarr  = is_array( $last_call ) ? $last_call : (array) $last_call;
+        Agentshell_Test::assert_true(
+            ! array_key_exists( 'post_modified_gmt', $last_postarr ),
+            'post_modified_gmt is NOT in the restore postarr (it would falsify the recorded after for OCC)'
+        );
+        Agentshell_Test::assert_equals(
+            'orig-title', (string) ( $last_postarr['post_title'] ?? '' ),
+            'the restore postarr carries the baseline title'
+        );
+        Agentshell_Test::assert_equals(
+            'orig-content', (string) ( $last_postarr['post_content'] ?? '' ),
+            'the restore postarr carries the baseline content'
+        );
+        Agentshell_Test::assert_equals(
+            'orig-slug', (string) ( $last_postarr['post_name'] ?? '' ),
+            'the restore postarr carries the baseline slug'
+        );
+    }
+);

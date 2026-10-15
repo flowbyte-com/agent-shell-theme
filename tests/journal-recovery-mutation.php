@@ -1113,6 +1113,95 @@ $mutants = array(
         "        \$claim_result = self::claim_or_refresh( \$content, \$op_id, \$actor, \$now );",
         "        \$claim_result = 'refreshed'; // SKIP M-HN9: claim refresh dropped",
     ),
+
+    // ── Stage 2b: edit-existing-draft compensation ─────────────────────
+    //
+    // The destructive inverse of a claim op is a `wp_update_post` that
+    // restores the post to the immutable baseline. Each of the five
+    // mutants below targets a load-bearing rule of that inverse; together
+    // they prove the layered OCC discipline and the destructive-write
+    // exclusion contract. Killed by HP10b, HP11b, HP12b, HP13b in
+    // journal-recovery-test.php.
+
+    'M-E1: claim_existing_draft compensation deletes the post instead of restoring it' => array(
+        // The claim's destructive inverse is `wp_update_post` (re-apply
+        // the baseline), not `wp_delete_post` (which would destroy a
+        // pre-existing post the operator owns). Replacing the call
+        // with `wp_delete_post` would mean a successful rollback
+        // *deletes* the pre-existing draft instead of restoring it —
+        // the exact silent data-loss the immutability baseline is
+        // meant to prevent. Killed by HP10b: the post must remain
+        // present after the restore, with the baseline fields applied.
+        $RECOVERY_REL,
+        "                    return wp_update_post( \$postarr, true );",
+        "                    return wp_delete_post( \$post_id, true ); // SKIP M-E1: destructive inverse mis-wired",
+    ),
+
+    'M-E2: claim_existing_draft compensation skips the per-post advisory lock' => array(
+        // The per-post advisory lock is what serialises two recoverers
+        // handling the same post. The edit-existing inverse is a
+        // destructive write (`wp_update_post` overwriting content), so
+        // the same lock discipline that protects `compensate()` applies
+        // here. A mutant that bypasses the acquire lets two recoverers
+        // race on the same post; the second one's `wp_update_post`
+        // either overwrites the first's restore or reads stale content.
+        // Killed by HP10b: the per-post lock is the load-bearing
+        // exclusion mechanism (paired with M-C16 for create ops).
+        $RECOVERY_REL,
+        "            \$acquired = Recovery_Advisory_Lock::acquire( \$post_id );",
+        "            \$acquired = true; // SKIP M-E2: per-post lock bypassed",
+    ),
+
+    'M-E3: claim_existing_draft compensation skips the head OCC pre-check' => array(
+        // Step 1 of the inverse verifies the live post against the
+        // head (the chain's expected current state). An external edit
+        // between the last applied op and the recovery call is a
+        // divergence; the post must be preserved as-is. Bypassing the
+        // verify means the engine would `wp_update_post` a post whose
+        // state is unknown to the chain — restoring it to a baseline
+        // that no longer matches what the live post was, and silently
+        // destroying the external edit. Killed by HP11b: a head
+        // divergence on `post_status` is preserved as `conflict`, not
+        // silently restored.
+        $RECOVERY_REL,
+        "            \$mismatch = self::verify_against_after( \$head, \$post, \$marker );",
+        "            \$mismatch = ''; // SKIP M-E3: head OCC pre-check bypassed",
+    ),
+
+    'M-E4: claim_existing_draft compensation restores from the per-op after instead of the baseline' => array(
+        // The op's `before` is the immutable baseline (the post's
+        // state at first touch). The op's `after` is the post's
+        // identification at first touch — which is the *same* as the
+        // baseline for a claim op, but the inverse path's contract is
+        // that it restores from `before`. A mutant that read
+        // `$op['after']` instead of `$op['before']` would re-apply
+        // the post's first-touch fields, which happens to equal the
+        // baseline for a no-op chain — but the structural rule is
+        // restore-from-before, and the chain semantics require it
+        // (the after may diverge in later chains that follow the
+        // claim with an update op). Killed by HP10b and HP12b: the
+        // restore applies the baseline fields exactly, including
+        // the no-op path that recognises a previous restore.
+        $RECOVERY_REL,
+        "                'post_title'   => (string) ( \$before['post_title']   ?? (string) \$post->post_title ),\n                'post_content' => (string) ( \$before['post_content'] ?? (string) \$post->post_content ),\n                'post_name'    => (string) ( \$before['post_name']    ?? (string) \$post->post_name ),",
+        "                'post_title'   => (string) ( \$op['after']['post_title']   ?? (string) \$post->post_title ),\n                'post_content' => (string) ( \$op['after']['post_content'] ?? (string) \$post->post_content ),\n                'post_name'    => (string) ( \$op['after']['post_name']    ?? (string) \$post->post_name ),",
+    ),
+
+    'M-E5: claim_existing_draft compensation writes post_modified_gmt to the restore postarr' => array(
+        // The restore's postarr intentionally omits `post_modified_gmt`.
+        // Re-applying it would falsify the recorded after for any
+        // subsequent OCC check: `wp_update_post` always bumps
+        // `post_modified_gmt` to the current write time, so a value
+        // written by the restore is the moment-of-restore, not the
+        // moment-of-last-edit. A subsequent OCC verify would then
+        // compare a stale `after.post_modified_gmt` against a freshly
+        // bumped live post and falsely report a divergence. Killed by
+        // HP13b: the postarr sent to `wp_update_post` must NOT carry
+        // a `post_modified_gmt` key.
+        $RECOVERY_REL,
+        "                'post_name'    => (string) ( \$before['post_name']    ?? (string) \$post->post_name ),\n            );",
+        "                'post_name'    => (string) ( \$before['post_name']    ?? (string) \$post->post_name ),\n                'post_modified_gmt' => (string) ( \$before['post_modified_gmt'] ?? (string) \$post->post_modified_gmt ), // SKIP M-E5: modified_gmt re-applied\n            );",
+    ),
 );
 
 $killed   = 0;

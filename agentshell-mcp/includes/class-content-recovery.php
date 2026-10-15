@@ -649,27 +649,47 @@ class Content_Recovery {
         if ( count( $ops ) <= 1 ) {
             return $ops;
         }
-        $has_update = false;
-        $has_create = false;
+        $has_update     = false;
+        $has_create     = false;
+        $has_claim_edit = false;
         foreach ( $ops as $op ) {
             $type = isset( $op['op'] ) ? (string) $op['op'] : '';
             if ( Content_Journal::OP_UPDATE_DRAFT === $type ) {
                 $has_update = true;
             } elseif ( Content_Journal::OP_CREATE_DRAFT === $type ) {
                 $has_create = true;
+            } elseif ( Content_Journal::OP_EDIT_EXISTING_DRAFT === $type ) {
+                $has_claim_edit = true;
             }
         }
-        if ( ! ( $has_update && $has_create ) ) {
-            // One op type only: original key order is fine.
+        $needs_ordering = ( $has_update && ( $has_create || $has_claim_edit ) )
+            || ( $has_create && $has_claim_edit );
+        if ( ! $needs_ordering ) {
+            // One op type only (or two update-bearing op types whose
+            // interactions do not need ordering): original key order
+            // is fine.
             return $ops;
         }
 
+        // Order: updates first (reverse chronological), then
+        // OP_EDIT_EXISTING_DRAFT ops, then OP_CREATE_DRAFT last.
+        // The destructive inverse of a create op is `wp_delete_post`;
+        // the destructive inverse of a claim-edit op is the
+        // `wp_update_post` baseline restore. Both must run after the
+        // update ops in the same chain are settled, because the
+        // update ops are no-ops (they're part of the chain the
+        // create or claim op owns) — but processing them first lets
+        // the post-destroy and post-restore states be seen
+        // consistently by the audit log.
         $updates = array();
+        $claims  = array();
         $creates = array();
         foreach ( $ops as $op_id => $op ) {
             $type = isset( $op['op'] ) ? (string) $op['op'] : '';
             if ( Content_Journal::OP_UPDATE_DRAFT === $type ) {
                 $updates[ (string) $op_id ] = $op;
+            } elseif ( Content_Journal::OP_EDIT_EXISTING_DRAFT === $type ) {
+                $claims[ (string) $op_id ] = $op;
             } else {
                 $creates[ (string) $op_id ] = $op;
             }
@@ -682,7 +702,7 @@ class Content_Recovery {
             $rb = isset( $b['recorded_at'] ) ? (int) $b['recorded_at'] : 0;
             return $rb <=> $ra;
         } );
-        return $updates + $creates;
+        return $updates + $claims + $creates;
     }
 
     /**
@@ -725,6 +745,10 @@ class Content_Recovery {
 
         if ( Content_Journal::OP_UPDATE_DRAFT === $type ) {
             return self::compensate_update( $op, $tx, $current_actor, $explicitly_authorized );
+        }
+
+        if ( Content_Journal::OP_EDIT_EXISTING_DRAFT === $type ) {
+            return self::compensate_edit_existing( $op, $tx, $current_actor, $explicitly_authorized );
         }
 
         if ( ! in_array( $type, Content_Journal::SUPPORTED_OPERATIONS, true ) ) {
@@ -1038,6 +1062,239 @@ class Content_Recovery {
         );
     }
 
+    /**
+     * Compensate an OP_EDIT_EXISTING_DRAFT op by restoring the post to
+     * the immutable baseline recorded at claim time.
+     *
+     * The destructive inverse is a `wp_update_post` that re-applies the
+     * `before` baseline fields. This is what the plan calls
+     * "approximate restoration is not byte-for-byte rollback" — the
+     * restore re-applies the supported fields (post_title, post_content,
+     * post_excerpt when present, post_name). post_modified_gmt is
+     * **excluded** for the same reason Stage 2a excludes it on create:
+     * re-applying a recorded modified_gmt would falsify the recorded
+     * after for any subsequent OCC check.
+     *
+     * The OCC discipline is layered:
+     *   1. The live post is re-read and verified against the head (the
+     *      most recently applied op's after-image). A divergence is
+     *      `conflict`; the post is preserved.
+     *   2. The live post is verified against the recorded `before`
+     *      baseline. A match means the post is already in its
+     *      pre-claim state (a previous recovery attempt restored it);
+     *      the op is settled as `compensated` without a write.
+     *   3. Otherwise, `wp_update_post` is called inside
+     *      `Content_Write_Guard::run()` with the supported baseline
+     *      fields. The post is re-read; another verify_against_after
+     *      confirms the write landed (a filter or hook could have
+     *      changed the post in between).
+     *
+     * The per-post advisory lock is acquired and released in `finally`,
+     * the same way the create-op compensation does. A NULL or
+     * contended `GET_LOCK` refuses as `conflict`; the post is
+     * preserved.
+     */
+    private static function compensate_edit_existing( array $op, array $tx, $current_actor = '', $explicitly_authorized = false ) {
+        $post_id = (int) ( $op['post_id'] ?? 0 );
+        $marker  = self::marker_of( $op );
+        $before  = is_array( $op['before'] ?? null ) ? $op['before'] : array();
+
+        if ( $post_id <= 0 ) {
+            // A claim op without a post id is an inconsistent record. The
+            // claim tool sets post_id at record_intent time and never
+            // clears it, so this is a journal-integrity issue. Refuse and
+            // keep the row.
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => 0,
+                'reason'  => 'OP_EDIT_EXISTING_DRAFT op ' . (string) ( $op['id'] ?? '' ) . ' has no post_id; the '
+                    . 'baseline cannot be applied to a post the journal does not name. The journal is kept '
+                    . 'so a recovery_administrator can resolve it.',
+            );
+        }
+        if ( empty( $before ) ) {
+            // A claim op without a baseline is an inconsistent record —
+            // the claim tool's invariant is that before is set on every
+            // claim op. Refuse and keep the row.
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $post_id,
+                'reason'  => 'OP_EDIT_EXISTING_DRAFT op ' . (string) ( $op['id'] ?? '' ) . ' has no `before` '
+                    . 'baseline recorded; compensation cannot restore the post to a state the journal never '
+                    . 'captured. The journal is kept so a recovery_administrator can resolve it.',
+            );
+        }
+
+        $post = get_post( $post_id );
+        if ( ! $post ) {
+            // Already gone. A pre-existing draft that has been deleted
+            // (by an outside actor) does not need a baseline restore;
+            // the chain is settled.
+            return array(
+                'outcome' => 'compensated',
+                'post_id' => $post_id,
+                'reason'  => 'post ' . $post_id . ' is already gone; the baseline restore has nothing to apply to',
+            );
+        }
+
+        // Step 1: verify the live post against the head. An external
+        // edit (publish, trash, slug change) between the last applied
+        // op and the recovery call is a conflict; the post is
+        // preserved as-is so a human can reconcile.
+        $head = Content_Journal::head_after( $tx, $post_id );
+        if ( is_array( $head ) && ! empty( $head ) ) {
+            $mismatch = self::verify_against_after( $head, $post, $marker );
+            if ( '' !== $mismatch ) {
+                return array(
+                    'outcome' => 'conflict',
+                    'post_id' => $post_id,
+                    'reason'  => $mismatch,
+                );
+            }
+        }
+        // No head (the claim op has not been followed by an applied
+        // update). In that case the live post is the post that was
+        // claimed; the head is the claim op's after, which equals the
+        // post's pre-claim state. Verify against that.
+        if ( ! is_array( $head ) || empty( $head ) ) {
+            $claim_after = is_array( $op['after'] ?? null ) ? $op['after'] : array();
+            $mismatch    = self::verify_against_after( $claim_after, $post, $marker );
+            if ( '' !== $mismatch ) {
+                return array(
+                    'outcome' => 'conflict',
+                    'post_id' => $post_id,
+                    'reason'  => 'post ' . $post_id . ' has been edited since the claim recorded its after-image: '
+                        . $mismatch,
+                );
+            }
+        }
+
+        // Step 2: verify the live post against the recorded baseline. A
+        // match means a previous recovery attempt already restored the
+        // post (or the transaction closed without an edit); the op is
+        // settled without a second write.
+        $baseline_mismatch = self::verify_against_after( $before, $post, $marker );
+        if ( '' === $baseline_mismatch ) {
+            return array(
+                'outcome' => 'compensated',
+                'post_id' => $post_id,
+                'reason'  => 'post ' . $post_id . ' is already in the recorded baseline state; no restore '
+                    . 'was needed (the post matches the pre-claim fields).',
+            );
+        }
+
+        // Step 3: re-check the per-post cap before destructive
+        // restoration. `wp_update_post` is not a deletion but it is a
+        // destructive write; the same per-post cap discipline applies.
+        $tx_proxy    = array( 'actor' => (string) $current_actor );
+        $destruction = self::authorize_destruction( $tx_proxy, $current_actor, $explicitly_authorized, $post_id );
+        if ( '' === $destruction ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $post_id,
+                'reason'  => 'post ' . $post_id . ' cannot be restored by the current actor: the per-post '
+                    . '`delete_post` capability is no longer held. The draft is preserved and the journal is '
+                    . 'kept so a recovery_administrator (manage_options + explicit opt-in) can resolve it.',
+            );
+        }
+
+        // Step 4: acquire the per-post advisory lock around the
+        // restore. The same lock that serialises destructive
+        // compensation on create ops; an `edit_existing_draft` op's
+        // restore is destructive too (it overwrites content), and two
+        // recovers must not race each other on the same post.
+        try {
+            $acquired = Recovery_Advisory_Lock::acquire( $post_id );
+        } catch ( \RuntimeException $e ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $post_id,
+                'reason'  => $e->getMessage() . ' The draft is preserved and the journal is kept so a '
+                    . 'recovery_administrator (manage_options + explicit opt-in) can resolve it on an '
+                    . 'engine that supports advisory locks.',
+            );
+        }
+        if ( ! $acquired ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $post_id,
+                'reason'  => 'another recovery holds the per-post advisory lock for post ' . $post_id
+                    . '. The draft is preserved; retry once the holder has finished.',
+            );
+        }
+
+        try {
+            // Build the postarr from the supported baseline fields only.
+            // post_modified_gmt is excluded so the recorded after for
+            // any subsequent OCC check is not falsified by a
+            // re-application. post_status, post_type, post_date_gmt,
+            // and the content hash are also not in the postarr — the
+            // restore is content-only.
+            $postarr = array(
+                'ID'           => $post_id,
+                'post_title'   => (string) ( $before['post_title']   ?? (string) $post->post_title ),
+                'post_content' => (string) ( $before['post_content'] ?? (string) $post->post_content ),
+                'post_name'    => (string) ( $before['post_name']    ?? (string) $post->post_name ),
+            );
+            if ( array_key_exists( 'post_excerpt', $before ) ) {
+                $postarr['post_excerpt'] = (string) ( $before['post_excerpt'] ?? '' );
+            }
+            $result = Content_Write_Guard::run(
+                function () use ( $postarr ) {
+                    return wp_update_post( $postarr, true );
+                }
+            );
+            if ( Content_Write_Guard::is_failure( $result ) ) {
+                return array(
+                    'outcome' => 'delete_failed',
+                    'post_id' => $post_id,
+                    'reason'  => 'wp_update_post for the baseline restore on post ' . $post_id . ' did not '
+                        . 'return a post id: ' . ( is_wp_error( $result ) ? $result->get_error_message() : 'unknown' )
+                        . '. The draft is preserved.',
+                );
+            }
+            // Step 5: re-read the post and verify the write landed.
+            // A filter or hook could have changed the post between
+            // our write and our read; a mismatch is a conflict. The
+            // verify here is the content-only check — it compares
+            // the live post's content fields and marker against
+            // the baseline, *not* the live post_modified_gmt,
+            // because wp_update_post always bumps post_modified_gmt
+            // to the current write time. The strong after-image
+            // (post_content_sha256, post_content_length) is the
+            // load-bearing evidence; the modified_gmt fast pre-check
+            // would always diverge after a write and is skipped.
+            $post_after = get_post( $post_id );
+            if ( ! $post_after ) {
+                return array(
+                    'outcome' => 'compensated',
+                    'post_id' => $post_id,
+                    'reason'  => 'post ' . $post_id . ' was deleted during the baseline restore; nothing left '
+                        . 'to verify. The op is settled.',
+                );
+            }
+            $post_restore_mismatch = self::verify_restore_landed( $before, $post_after, $marker );
+            if ( '' !== $post_restore_mismatch ) {
+                return array(
+                    'outcome' => 'conflict',
+                    'post_id' => $post_id,
+                    'reason'  => 'the baseline restore for post ' . $post_id . ' did not land as expected: '
+                        . $post_restore_mismatch . ' A filter or hook likely overwrote the write. The journal '
+                        . 'is kept so a recovery_administrator can resolve it.',
+                );
+            }
+            return array(
+                'outcome' => 'compensated',
+                'post_id' => $post_id,
+                'reason'  => 'post ' . $post_id . ' was restored to its pre-claim baseline (post_title, '
+                    . 'post_content, post_name, post_excerpt where present). post_modified_gmt was not '
+                    . 're-applied so the recorded after for any subsequent OCC check is not falsified.',
+            );
+        } finally {
+            Recovery_Advisory_Lock::release( $post_id );
+        }
+    }
+
     /** The marker value a post must carry for this operation to be recognised. */
     private static function marker_of( array $op ) {
         $from_after = (string) ( $op['after']['op_meta_value'] ?? '' );
@@ -1127,6 +1384,77 @@ class Content_Recovery {
                 return 'post ' . $id . ' has post_content length ' . $have_len
                     . ' where the journal recorded ' . $recorded_len . '. The post is not the one the journal '
                     . 'hashed. Nothing was deleted.';
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Verify that a baseline restore landed on the live post.
+     *
+     * Same content-field discipline as verify_against_after(), but skips
+     * the post_modified_gmt comparison. wp_update_post always bumps
+     * post_modified_gmt to the current write time, so a verify that
+     * included the timestamp would always diverge after a write; the
+     * strong content evidence (post_type, post_status, post_name,
+     * post_title, post_date_gmt, post_content_sha256,
+     * post_content_length) is what proves the write landed. The
+     * marker check is unchanged.
+     *
+     * Used by compensate_edit_existing() immediately after the
+     * destructive wp_update_post() to catch a filter or hook that
+     * overwrote the restore between the write and the re-read.
+     */
+    public static function verify_restore_landed( array $after, $post, $marker ) {
+        $id = (int) ( $post->ID ?? 0 );
+
+        $found_marker = get_post_meta( $id, Content_Journal::OP_META, true );
+        if ( (string) $found_marker !== (string) $marker ) {
+            return 'post ' . $id . ' does not carry this operation\'s marker (it carries "'
+                . (string) $found_marker . '"), so the baseline restore did not land. '
+                . 'A filter or hook likely overwrote the marker. The journal is kept '
+                . 'so a recovery_administrator can resolve it.';
+        }
+
+        foreach ( array( 'post_type', 'post_status', 'post_name', 'post_title' ) as $field ) {
+            if ( ! isset( $after[ $field ] ) || '' === $after[ $field ] ) { continue; }
+            $have = isset( $post->$field ) ? (string) $post->$field : '';
+            if ( $have !== (string) $after[ $field ] ) {
+                return 'post ' . $id . ' has ' . $field . ' "' . $have . '" where the baseline recorded "'
+                    . (string) $after[ $field ] . '". A filter or hook overwrote the restore. '
+                    . 'The journal is kept so a recovery_administrator can resolve it.';
+            }
+        }
+
+        $recorded_date = (string) ( $after['post_date_gmt'] ?? '' );
+        if ( '' !== $recorded_date ) {
+            $have = (string) ( $post->post_date_gmt ?? '' );
+            if ( $have !== $recorded_date ) {
+                return 'post ' . $id . ' has post_date_gmt "' . ( $have ?: '(unknown)' )
+                    . '" where the baseline recorded "' . $recorded_date . '". A filter or hook '
+                    . 'overwrote the restore. The journal is kept so a recovery_administrator can '
+                    . 'resolve it.';
+            }
+        }
+
+        $recorded_sha = (string) ( $after['post_content_sha256'] ?? '' );
+        if ( '' !== $recorded_sha ) {
+            $have_sha = hash( 'sha256', (string) ( $post->post_content ?? '' ) );
+            if ( $have_sha !== $recorded_sha ) {
+                return 'post ' . $id . ' has a post_content hash "' . $have_sha
+                    . '" that does not match the baseline\'s recorded "'
+                    . $recorded_sha . '". A filter or hook overwrote the restore. The journal is kept '
+                    . 'so a recovery_administrator can resolve it.';
+            }
+        }
+        $recorded_len = isset( $after['post_content_length'] ) ? (int) $after['post_content_length'] : -1;
+        if ( $recorded_len >= 0 ) {
+            $have_len = strlen( (string) ( $post->post_content ?? '' ) );
+            if ( $have_len !== $recorded_len ) {
+                return 'post ' . $id . ' has post_content length ' . $have_len
+                    . ' where the baseline recorded ' . $recorded_len . '. A filter or hook overwrote the '
+                    . 'restore. The journal is kept so a recovery_administrator can resolve it.';
             }
         }
 

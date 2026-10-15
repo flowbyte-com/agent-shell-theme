@@ -965,9 +965,27 @@ class Content_Journal {
                 $problems[] = $label . ' has no before.' . $needed . '; the inverse operation would be a guess.';
             }
         }
+        // The state check is intentionally broader than `claimed` or
+        // `applied`. The recovery engine drives the op through
+        // `compensating` (a transient state set during settlement) and
+        // may encounter the op in `compensated` or `conflict` from a
+        // prior settle. Those are all valid rows on disk: the engine's
+        // settle_operation() already short-circuits terminal states
+        // (`compensated`, `conflict`) and the claim_or_refresh() path
+        // handles the in-flight `compensating` case. The validator's
+        // job is to refuse structurally-broken records, not to enforce
+        // the settlement lifecycle.
         $state = (string) ( $op['state'] ?? '' );
-        if ( self::STATE_CLAIMED !== $state && self::STATE_APPLIED !== $state ) {
-            $problems[] = $label . ' has state "' . $state . '"; edit_existing_draft ops are only valid in `claimed` or `applied`.';
+        $lifecycle_states = array(
+            self::STATE_INTENDED,
+            self::STATE_CLAIMED,
+            self::STATE_APPLIED,
+            self::STATE_COMPENSATING,
+            self::STATE_COMPENSATED,
+            self::STATE_CONFLICT,
+        );
+        if ( '' === $state || ! in_array( $state, $lifecycle_states, true ) ) {
+            $problems[] = $label . ' has state "' . $state . '"; edit_existing_draft ops are only valid in the lifecycle states.';
         }
         return $problems;
     }
