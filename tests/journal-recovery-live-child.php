@@ -92,6 +92,35 @@ $saved_marker_count = (int) $wpdb->get_var( $wpdb->prepare(
     Content_Journal::OP_META, 'op_%'
 ) );
 
+// The journal-recovery-live suite is destructive by design: it commits
+// (which deletes the option row), rolls back (which deletes the option
+// row), and intentionally leaves a `live conflict probe` row in conflict
+// state. None of those operations is safe against a *non-test* transaction
+// that was already open on the site. The test would silently destroy a
+// real user's transaction by committing it. Refuse to run, instead, with
+// a clear message — the operator can close the real transaction, run the
+// suite, and the real transaction's id is recorded in the report for
+// follow-up. A 'live *' prefixed label is a test artifact from a prior
+// crashed run; the test cleans those up at the end so subsequent runs
+// have a clean slot.
+$pre_label = is_array( $saved_transaction ) ? (string) ( $saved_transaction['label'] ?? '' ) : '';
+if ( is_array( $saved_transaction ) && 0 !== strpos( $pre_label, 'live ' ) ) {
+    $f['fatal_precondition'] = array(
+        'reason'         => 'a non-test transaction is already open; the journal-recovery-live suite is destructive and would destroy it',
+        'tx_id'          => (string) ( $saved_transaction['id'] ?? '' ),
+        'tx_label'       => $pre_label,
+        'tx_actor'       => (string) ( $saved_transaction['actor'] ?? '' ),
+        'saved_marker_count' => $saved_marker_count,
+        'rows_remaining'     => 0,
+        'trashed_remaining'  => 0,
+        'stray_marker_meta'  => $saved_marker_count,
+        'transaction_restored' => true,
+        'audit_restored'       => ( get_option( Store::AUDIT_KEY, null ) === $saved_audit ),
+    );
+    file_put_contents( $report_path, json_encode( $f ) );
+    exit( 0 );
+}
+
 function jr_rows_for( $needle ) {
     global $wpdb;
     return array_map( 'intval', $wpdb->get_col( $wpdb->prepare(
@@ -495,6 +524,14 @@ delete_option( Tx::KEY );
 //     the same key; the second call returns the original post id
 //     with resumed=true and no second post is created.
 //   F-retry-content-conflict: same key, different content; refused.
+//   F-same-second-content-divergence: edit the post content within one
+//     second so post_modified_gmt does not move; verify_post must still
+//     refuse the destructive step, because the strong after-image's
+//     post_content_sha256 catches what the modified_gmt field cannot.
+//   F-mark_applied-cas-failure: a side-channel mutates the journal row
+//     between wp_insert_post and mark_applied; mark_applied's CAS fails,
+//     the post is preserved, and commit/rollback both refuse to discard
+//     the partial-applied evidence.
 require_once $theme_root . '/agentshell-mcp/includes/class-content-write-guard.php';
 use AgentShell_MCP\Content_Write_Guard;
 
@@ -744,6 +781,176 @@ $f['create_draft_idem_resume'] = array(
     'rows_count'   => count( jr_rows_for( $token . '-idem' ) ),
 );
 
+// F-same-second-content-divergence: the slug and post_modified_gmt are
+// unchanged, but the post_content has been silently rewritten. The four-
+// field evidence (post_type, post_status, post_name, post_modified_gmt)
+// cannot catch this — post_modified_gmt is one-second-resolution and
+// may not move on an edit that lands in the same second as the
+// insert. The strong after-image's post_content_sha256 is what catches
+// it: the recorded hash was set at mark_applied time, the live post's
+// hash differs, and verify_post refuses the destructive step. The post
+// is preserved (a `conflict` outcome) and the operator reconciles.
+$tx15 = Tx::instance()->begin( 'live same-second probe' );
+$tx15['staged'] = array();
+update_option( Tx::KEY, $tx15 );
+$intent15 = Content_Journal::record_intent(
+    Content_Journal::OP_CREATE_DRAFT,
+    array( 'post_type' => 'page', 'post_status' => 'draft', 'post_title' => $token . '-samesecond' ),
+    array(),
+    $tx_actor,
+    time()
+);
+Content_Journal::attach( $tx15, $intent15 );
+$tx15 = (array) get_option( Tx::KEY, null );
+$post15 = Content_Write_Guard::run( function () use ( $intent15, $token ) {
+    return wp_insert_post( wp_slash( array(
+        'post_type'    => 'page',
+        'post_status'  => 'draft',
+        'post_title'   => $token . '-samesecond',
+        'post_content' => '<p>original body</p>',
+        'post_name'    => strtolower( $token . '-samesecond' ),
+        'meta_input'   => array( Content_Journal::OP_META => $intent15['id'] ),
+    ) ), true );
+} );
+$GLOBALS['jr_mine'][] = (int) $post15;
+$p15 = get_post( $post15 );
+Content_Journal::mark_applied( $tx15, $intent15['id'], $post15, array(
+    'post_type'           => (string) $p15->post_type,
+    'post_status'         => (string) $p15->post_status,
+    'post_name'           => (string) $p15->post_name,
+    'post_date_gmt'       => (string) $p15->post_date_gmt,
+    'post_modified_gmt'   => (string) $p15->post_modified_gmt,
+    'post_content_sha256' => hash( 'sha256', (string) $p15->post_content ),
+    'post_content_length' => strlen( (string) $p15->post_content ),
+    'op_meta_value'       => (string) $intent15['id'],
+) );
+
+// A direct database update that only changes post_content, leaving the
+// slug, status, type, post_modified_gmt, and post_date_gmt untouched.
+// This is the worst case for the four-field evidence check: the post
+// looks unchanged on every field verify_post consulted, but the content
+// has been silently rewritten. The strong after-image's
+// post_content_sha256 is what catches it.
+$before_modify = get_post( $post15 );
+$wpdb->update(
+    $wpdb->posts,
+    array( 'post_content' => '<p>silently rewritten by a different actor</p>' ),
+    array( 'ID' => $post15 ),
+    array( '%s' ),
+    array( '%d' )
+);
+clean_post_cache( $post15 );
+$after_modify = get_post( $post15 );
+$same_modified = (string) $before_modify->post_modified_gmt === (string) $after_modify->post_modified_gmt;
+$same_slug     = (string) $before_modify->post_name      === (string) $after_modify->post_name;
+$content_diff  = (string) $before_modify->post_content   !== (string) $after_modify->post_content;
+
+// A compensation attempt against the now-diverged post must refuse on
+// the strong after-image's content-hash mismatch. We exercise the
+// recovery engine directly so the test reads the journal row, the
+// recorded hash, the live hash, and the refusal reason.
+$tx15_recover = (array) get_option( Tx::KEY, null );
+$recover15    = Content_Recovery::recover( $tx15_recover, $tx_actor, false, true );
+$op15_after   = $tx15_recover['content']['ops'][ $intent15['id'] ] ?? array();
+$my_op_outcome = '';
+$my_op_detail  = '';
+foreach ( ( $recover15['operations'] ?? array() ) as $op_step ) {
+    if ( isset( $op_step['id'] ) && (string) $op_step['id'] === (string) $intent15['id'] ) {
+        $my_op_outcome = (string) ( $op_step['outcome'] ?? '' );
+        $my_op_detail  = (string) ( $op_step['detail']  ?? '' );
+        break;
+    }
+}
+$f['same_second_divergence'] = array(
+    'same_modified_gmt'   => $same_modified,
+    'same_slug'           => $same_slug,
+    'content_differs'     => $content_diff,
+    'recover_outcome'     => $my_op_outcome,
+    'recover_status'      => $recover15['status']  ?? '',
+    'op_state_after'      => $op15_after['state']  ?? '',
+    'post_preserved'      => 1 === jr_row_exists( $post15 ),
+);
+
+// F-mark_applied-cas-failure: a side-channel mutates the journal row
+// between the post insert and the mark_applied CAS so the CAS fails
+// (the row bytes have changed). mark_applied returns null; the post
+// exists with the marker, but the journal does not know the post id.
+// A subsequent commit refuses because has_unsettled_work is true
+// (the op is in `partial-applied` state, recorded by mark_applied's
+// null-return handling).
+$tx16 = Tx::instance()->begin( 'live cas-fail probe' );
+$tx16['staged'] = array();
+update_option( Tx::KEY, $tx16 );
+$intent16 = Content_Journal::record_intent(
+    Content_Journal::OP_CREATE_DRAFT,
+    array( 'post_type' => 'page', 'post_status' => 'draft', 'post_title' => $token . '-casfail' ),
+    array(),
+    $tx_actor,
+    time()
+);
+Content_Journal::attach( $tx16, $intent16 );
+$tx16 = (array) get_option( Tx::KEY, null );
+$post16 = Content_Write_Guard::run( function () use ( $intent16, $token ) {
+    return wp_insert_post( wp_slash( array(
+        'post_type'    => 'page',
+        'post_status'  => 'draft',
+        'post_title'   => $token . '-casfail',
+        'post_content' => '<p>cas-fail body</p>',
+        'post_name'    => strtolower( $token . '-casfail' ),
+        'meta_input'   => array( Content_Journal::OP_META => $intent16['id'] ),
+    ) ), true );
+} );
+$GLOBALS['jr_mine'][] = (int) $post16;
+
+// Side-channel: another caller (a different process in production; a
+// direct update here) bumps the journal row to a new version so the
+// mark_applied CAS will fail. The post and marker are committed; the
+// journal no longer matches the post insert.
+$tx16_current = (array) get_option( Tx::KEY, null );
+$tx16_bumped  = $tx16_current;
+$tx16_bumped['last_activity'] = time();
+$tx16_bumped['content']['ops'][ $intent16['id'] ]['stale_marker'] = 'side-channel-bump-' . time();
+$tx16_bumped['content']['sig'] = Content_Journal::sign( $tx16_bumped['content'] );
+update_option( Tx::KEY, $tx16_bumped );
+
+// mark_applied is now invoked with the original $tx16 bytes (the caller
+// had a snapshot from before the side-channel). The CAS will fail, and
+// mark_applied returns null. The post is on disk with the marker, but
+// the journal does not know the post id.
+$tx16_caller = $tx16;
+$cas_result  = Content_Journal::mark_applied( $tx16_caller, $intent16['id'], $post16, array(
+    'post_type'           => 'page',
+    'post_status'         => 'draft',
+    'post_name'           => strtolower( $token . '-casfail' ),
+    'post_date_gmt'       => '2026-01-01 00:00:00',
+    'post_modified_gmt'   => '2026-01-01 00:00:00',
+    'post_content_sha256' => 'deadbeef',
+    'post_content_length' => 0,
+    'op_meta_value'       => (string) $intent16['id'],
+) );
+
+// A subsequent commit must refuse — the op is in a state that does
+// not admit commit (the post exists but the journal has not been
+// updated; the recovery engine is the only path forward).
+require_once $theme_root . '/agentshell-mcp/includes/tools/class-commit-transaction.php';
+$commit16_threw = false;
+$commit16_msg   = '';
+try {
+    ( new \AgentShell_MCP\Tools\Commit_Transaction() )->execute( array() );
+} catch ( \Throwable $e ) {
+    $commit16_threw = true;
+    $commit16_msg   = $e->getMessage();
+}
+$tx16_after = (array) get_option( Tx::KEY, null );
+$f['mark_applied_cas_failure'] = array(
+    'cas_returned'   => $cas_result, // null = CAS failed
+    'post_present'   => 1 === jr_row_exists( $post16 ),
+    'marker_present' => 1 === jr_meta_rows( $post16, Content_Journal::OP_META ),
+    'commit_refused' => $commit16_threw,
+    'transaction_kept' => is_array( $tx16_after ),
+    'op_state'       => $tx16_after['content']['ops'][ $intent16['id'] ]['state'] ?? '',
+);
+
 // ── 13. Advisory lock: a killed process releases the lock ─────────────────────
 // We use the recovery advisory lock directly. Acquire the lock on a real
 // post id, then close the wpdb connection (which is the SQL-level
@@ -811,11 +1018,30 @@ foreach ( jr_rows_for( $token . '-trashed' ) as $pid ) {
     wp_delete_post( $pid, true );
 }
 
-if ( null === $saved_transaction ) {
+// The journal-recovery-live suite owns a 'live'-prefixed label space; every
+// transaction it opens is named 'live commit probe', 'live rollback probe',
+// 'live conflict probe', or 'live idem probe'. The cleanup therefore owns
+// any option row whose label matches: if the row is a test artifact (this
+// run's or a prior run's), the test deletes it. If the row belongs to some
+// other actor (a real user transaction), the test restores the bytes it
+// captured at the start. This protects the 'site left as found' invariant
+// for real transactions, while not preserving stale test artifacts that
+// would otherwise poison any other live suite that runs after this one
+// (e.g. content-write-live, navigation-live, both of which see the option
+// row through `Transaction_Manager::is_active()` and refuse content
+// writes inside an open transaction).
+$final_transaction = get_option( Tx::KEY, null );
+$is_test_label     = is_array( $final_transaction )
+    && isset( $final_transaction['label'] )
+    && 0 === strpos( (string) $final_transaction['label'], 'live ' );
+if ( $is_test_label ) {
+    delete_option( Tx::KEY );
+} elseif ( null === $saved_transaction ) {
     delete_option( Tx::KEY );
 } else {
     update_option( Tx::KEY, $saved_transaction );
 }
+$final_audit = get_option( Store::AUDIT_KEY, null );
 if ( null === $saved_audit ) {
     delete_option( Store::AUDIT_KEY );
 } else {

@@ -852,12 +852,23 @@ $equivalent = array(
         . 'Defence in depth: two gates, one observable outcome.',
 
     'the claim refresh at op boundaries is dropped' =>
-        'claim_or_refresh() returns "refreshed" when the same actor owns a '
-        . 'fresh claim on an op in STATE_COMPENSATING. With the refresh branch '
-        . 'removed, the same case returns "claimed" — but state is already '
-        . 'COMPENSATING, so the "claimed" branch is a no-op write of the same '
-        . 'state, and the CAS guards both branches identically. The two paths '
-        . 'are observably equivalent in the test environment.',
+        'claim_or_refresh() has two branches that both fire when a same-actor '
+        . 'caller re-enters recover on an op in STATE_COMPENSATING. The '
+        . '"refreshed" branch (a) writes the refreshed `claim` and `updated_at` '
+        . 'via the value-guarded CAS, and the "claimed" branch (b) writes the '
+        . 'same `claim` and `updated_at` PLUS an explicit `state` write to '
+        . 'COMPENSATING (which is already the value, so the field write is a '
+        . 'no-op). Both branches re-sign the content (`Content_Journal::sign`) '
+        . 'and run the same CAS; the only byte-level difference is a redundant '
+        . 'state assignment in (b). The claim timestamp `at` is updated to '
+        . '`now` in both paths, so the takeover window (the '
+        . 'CLAIM_TTL_SECONDS check in claim_or_refresh) is correctly extended '
+        . 'either way. The expiry semantics are preserved; the destructive '
+        . 'step (compensate()) runs the same way; the row bytes that '
+        . 'land on disk are identical. The two paths are observably '
+        . 'equivalent in this test environment and a real "result-before-COMMIT" '
+        . 'mutant would have to reassign the return value, which the '
+        . 'find/replace does not do.',
 
     'the success result is constructed before the SQL COMMIT' =>
         'The mutant adds `$__mvg6_built = array(...)` immediately before the '

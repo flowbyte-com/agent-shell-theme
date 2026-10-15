@@ -68,6 +68,30 @@ function jr_live( $key, $default = null ) {
     return array_key_exists( $key, $f ) ? $f[ $key ] : $default;
 }
 
+// The child may refuse to run if the site is not in a state the suite can
+// run safely — specifically, if a real (non-test) transaction is already
+// open. The destructive commit / rollback paths would otherwise destroy
+// it. Surface the refusal here so the suite fails loudly with the
+// pre-existing transaction's id, rather than silently destroying the
+// row and reporting nonsense downstream.
+if ( isset( $f['fatal_precondition'] ) ) {
+    Agentshell_Test::run(
+        'live: precondition: a non-test transaction is open and would be destroyed',
+        function () use ( $f ) {
+            $p = $f['fatal_precondition'];
+            Agentshell_Test::assert_true(
+                false !== strpos( (string) ( $p['reason'] ?? '' ), 'non-test transaction' ),
+                'reason: ' . ( $p['reason'] ?? '' )
+            );
+            Agentshell_Test::assert_equals(
+                'tx_real_user_test', (string) ( $p['tx_id'] ?? '' ),
+                'the pre-existing transaction id is recorded so the operator can find and close it'
+            );
+        }
+    );
+    return;
+}
+
 // ── Why the compensation deletes rather than trashes ──────────────────────────
 // Asserted first, and about WordPress rather than about our code, because
 // every later assertion about deletion is only meaningful if this is true.
@@ -316,6 +340,33 @@ Agentshell_Test::run(
         Agentshell_Test::assert_equals( 1, (int) ( $i['matches'] ?? -1 ), 'one journal op carries the key' );
         Agentshell_Test::assert_equals( (int) ( $i['expected_id'] ?? 0 ), (int) ( $i['resumed_id'] ?? 0 ), 'and it points at the original post id' );
         Agentshell_Test::assert_equals( 1, (int) ( $i['rows_count'] ?? -1 ), 'no second post is on the site' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: a same-second content edit is caught by the strong after-image, not by post_modified_gmt',
+    function () {
+        $s = jr_live( 'same_second_divergence', array() );
+        Agentshell_Test::assert_true( $s['same_modified_gmt'] ?? false, 'the field-level evidence did not move — the edit landed in the same second' );
+        Agentshell_Test::assert_true( $s['same_slug']         ?? false, 'and the slug was preserved' );
+        Agentshell_Test::assert_true( $s['content_differs']   ?? false, 'but the post content was silently rewritten' );
+        Agentshell_Test::assert_equals( 'conflict', $s['recover_outcome'] ?? '', 'the recovery engine refuses on a content-hash mismatch with unchanged slug and modified_gmt' );
+        Agentshell_Test::assert_true( $s['post_preserved']    ?? false, 'and the post is preserved, not silently deleted' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: a mark_applied CAS failure leaves the post on disk and refuses the commit',
+    function () {
+        $c = jr_live( 'mark_applied_cas_failure', array() );
+        Agentshell_Test::assert_true(
+            array_key_exists( 'cas_returned', $c ) && null === $c['cas_returned'],
+            'mark_applied returns null on CAS failure'
+        );
+        Agentshell_Test::assert_equals( 1, (int) ( $c['post_present']   ?? -1 ), 'the post is on disk' );
+        Agentshell_Test::assert_equals( 1, (int) ( $c['marker_present'] ?? -1 ), 'and the marker is on it' );
+        Agentshell_Test::assert_true( $c['commit_refused']   ?? false, 'and a subsequent commit refuses, not discards' );
+        Agentshell_Test::assert_true( $c['transaction_kept'] ?? false, 'the option row is preserved' );
     }
 );
 
