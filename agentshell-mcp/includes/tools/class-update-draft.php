@@ -303,8 +303,36 @@ class Update_Draft extends Base_Tool {
             );
         }
 
-        // 6. Apply the update, capture the strong after-image, mark the op
-        //    applied — all inside one guarded SQL transaction.
+        // Re-read the row after attach() so the guard closure starts from the
+        // post-attach bytes. This is the only honest "row is at the version
+        // we just attached" baseline; the pre-attach $tx we have in scope has
+        // no `ops[$op_id]` for the subsequent mark_applied() / head CAS to
+        // find, and the closure must not pass an obsolete row to either.
+        $tx_post_attach = (array) get_option( \AgentShell_MCP\Transaction_Manager::KEY, null );
+        if ( empty( $tx_post_attach ) || empty( $tx_post_attach['content']['ops'][ $op['id'] ] ) ) {
+            throw new \InvalidArgumentException(
+                'Transaction ' . $tx_id . ' is no longer present after the update intent was attached; '
+                . 'the row was removed by a competing close. Read agentshell_get_transaction and retry.'
+            );
+        }
+
+        // 6. Apply the update, capture the strong after-image, advance the
+        //    head, mark the op applied — all inside one guarded SQL
+        //    transaction. The order is now:
+        //      (a) wp_update_post — content mutation
+        //      (b) compare_and_set_head — value-guarded CAS that records
+        //          the new head *with the post-attach row bytes*. A failed
+        //          head CAS throws to roll back the wp_update_post; the
+        //          op stays in `intended`.
+        //      (c) mark_applied — op-state transition from intended to
+        //          applied, using the *post-head-CAS* row bytes. A failed
+        //          mark_applied CAS throws to roll back both the head
+        //          advance and the wp_update_post.
+        //    This is the shared head-pointer protocol that
+        //    Stage 2b Commit 1 fixes: head advancement and op-state
+        //    transition share one SQL transaction, and the row that
+        //    mark_applied writes is the row that compare_and_set_head
+        //    produced, never the pre-attach bytes.
         $op_id = $op['id'];
         $postarr = array(
             'ID'           => $id,
@@ -317,7 +345,7 @@ class Update_Draft extends Base_Tool {
             $postarr['post_name'] = (string) $new_slug;
         }
 
-        $result = \AgentShell_MCP\Content_Write_Guard::run( function () use ( $postarr, $id, $tx, $op_id, $head ) {
+        $result = \AgentShell_MCP\Content_Write_Guard::run( function () use ( $postarr, $id, $tx_post_attach, $op_id, $head ) {
             $upd = wp_update_post( wp_slash( $postarr ), true );
             if ( is_wp_error( $upd ) ) {
                 throw new \InvalidArgumentException( 'Could not update post: ' . $upd->get_error_message() );
@@ -346,79 +374,75 @@ class Update_Draft extends Base_Tool {
                 // here preserves them; including them as '' would silently
                 // clear them and break the next retry.
             );
-            // mark_applied needs the *post-attach* $tx: the closure captured
-            // the pre-attach value, which has no `ops[$op_id]` for mark_applied
-            // to find. Re-read the row so the CAS can land and the op
-            // transitions from intended to applied. mark_applied() also
-            // writes the head pointer inside the same CAS — the head
-            // advance is atomic with the op-state transition.
-            $tx_fresh = (array) get_option( \AgentShell_MCP\Transaction_Manager::KEY, null );
-            $applied_tx = \AgentShell_MCP\Content_Journal::mark_applied( $tx_fresh, $op_id, $id, $after_image );
-            if ( ! is_array( $applied_tx ) ) {
-                // mark_applied returned null: the row moved between
-                // record_intent's attach and this guard. The journal will
-                // have an op in `intended` (or worse) for $op_id, and the
-                // post has been updated. The caller re-reads the row to
-                // report the actual state — see the journal_applied
-                // handling below. The head pointer is *not* advanced in
-                // this case: a CAS failure means the row is not ours to
-                // mutate, and compare_and_set_head() would refuse.
-                return array( 'post_id' => (int) $id, 'applied_tx' => null, 'head_advanced' => false );
-            }
-            // Atomic head advance. The CAS is `compare_and_set_head`:
-            // the head is updated only if the current head equals the one
-            // we verified the live post against (i.e. a concurrent caller
-            // has not already advanced it). A CAS failure here means a
-            // concurrent update won; the post on disk reflects whichever
-            // caller's write landed first, and the journal's head pointer
-            // is whichever caller's head won the CAS. Our op is recorded
-            // as applied, but the live post is not in the state our
-            // after-image captured. The tool surfaces this to the caller
-            // via `journal_note` so the operator knows to reconcile.
+            // Head CAS BEFORE mark_applied. For an update, expected_prev is
+            // the head we just verified the live post against ($head, which
+            // is null for the first update after a create, or the previous
+            // op's after-image for subsequent updates). A `false` return
+            // means a concurrent caller has already advanced the head
+            // since our OCC pre-check — that means the live post is no
+            // longer in the state we just verified. Throw to roll back
+            // the wp_update_post; the operator can reconcile.
             $head_after = is_array( $head ) ? $head : null;
-            $advanced   = \AgentShell_MCP\Content_Journal::compare_and_set_head(
-                $applied_tx,
-                (int) $id,
-                $head_after,
-                array_merge( $after_image, array(
-                    'idempotency_key'     => (string) ( $applied_tx['content']['ops'][ $op_id ]['after']['idempotency_key'] ?? '' ),
-                    'content_fingerprint' => (string) ( $applied_tx['content']['ops'][ $op_id ]['after']['content_fingerprint'] ?? '' ),
-                ) )
+            $head_tx    = \AgentShell_MCP\Content_Journal::compare_and_set_head(
+                $tx_post_attach, (int) $id, $head_after, $after_image
             );
+            if ( ! is_array( $head_tx ) ) {
+                throw new \InvalidArgumentException(
+                    'compare_and_set_head() refused to advance the head for post ' . (int) $id
+                    . ' on update: a concurrent update for the same post has already advanced the '
+                    . 'head pointer. The wp_update_post is rolled back. Reconcile by inspecting the '
+                    . 'post and re-running the update.'
+                );
+            }
+            // mark_applied now uses the post-head-CAS row bytes. Never pass
+            // the pre-attach $tx_post_attach (or the obsolete $tx) here —
+            // the value-guarded CAS compares on row bytes, and an obsolete
+            // row will always fail the CAS even if the underlying journal
+            // content is logically equivalent.
+            //
+            // A failed mark_applied() is a hard error: the head CAS landed
+            // (the head pointer was advanced), but the op-state transition
+            // did not. The journal is now in a state where the head is ahead
+            // of the op whose mark_applied refused to land — a state the
+            // OCC pre-check the next op runs would surface as
+            // "head does not match post", and the operator would see a
+            // chain-break error on the next call. Throwing rolls back the
+            // wp_update_post (in a real SQL transaction; the test stub does
+            // not roll back the in-memory mutation, but the journal row is
+            // not advanced either, so the post and the journal stay in the
+            // same state they were in before the closure ran). The
+            // post-CAS re-read below handles the case where the row moved
+            // for a *benign* reason (e.g. a recovery call that touched the
+            // row); the throw here is the *head-CAS-succeeded-but-mark_applied-failed*
+            // case, which is a genuine inconsistency the operator must see.
+            $applied_tx = \AgentShell_MCP\Content_Journal::mark_applied( $head_tx, $op_id, $id, $after_image );
+            if ( ! is_array( $applied_tx ) ) {
+                throw new \InvalidArgumentException(
+                    'mark_applied() CAS refused to land the op-state transition for '
+                    . 'op ' . $op_id . ' on post ' . (int) $id . ' on update. The head '
+                    . 'pointer was advanced (the compare_and_set_head call landed), but '
+                    . 'the op was not transitioned to `applied`. The wp_update_post is '
+                    . 'rolled back. Reconcile by inspecting the journal and re-running '
+                    . 'the update.'
+                );
+            }
             return array(
                 'post_id'        => (int) $id,
                 'applied_tx'     => $applied_tx,
-                'head_advanced'  => is_array( $advanced ),
+                'head_advanced'  => true,
             );
         } );
 
         $post_id_v     = (int) $result['post_id'];
         $applied_tx    = $result['applied_tx'];
-        $head_advanced = ! empty( $result['head_advanced'] );
 
-        // 7. CAS-failure re-read: if mark_applied returned null the row
-        //    moved; the actual state could be applied, partial-applied, or
-        //    intended. Re-read the journal to find out, and report the
-        //    truthful state. A failed head-advance after a successful
-        //    mark_applied is a different shape: the op is recorded as
-        //    applied but the head pointer did not move, which means a
-        //    concurrent caller won the head CAS — surface that to the
-        //    operator via journal_note.
-        $journal_applied = is_array( $applied_tx );
-        $journal_note    = null;
-        if ( ! $journal_applied ) {
-            $re_read    = get_option( \AgentShell_MCP\Transaction_Manager::KEY, null );
-            $re_content = is_array( $re_read ) ? \AgentShell_MCP\Content_Journal::of( $re_read ) : array();
-            $re_op      = isset( $re_content['ops'][ $op_id ] ) ? $re_content['ops'][ $op_id ] : null;
-            $re_state   = is_array( $re_op ) ? (string) ( $re_op['state'] ?? '' ) : '';
-            $journal_note = 'mark_applied() CAS did not land; the journal currently reports state="' . $re_state
-                . '". The post is updated; recovery can settle it.';
-        } elseif ( ! $head_advanced ) {
-            $journal_note = 'mark_applied() landed but compare_and_set_head() did not. A concurrent update '
-                . 'for the same post has already advanced the head pointer, which means the live post is no '
-                . 'longer in the state this op\'s after-image captured. The op is recorded as applied; '
-                . 'recovery or a manual reconciliation can settle the divergence.';
-        }
+        // 7. CAS-failure re-read: mark_applied() throwing is the only way the
+        //    closure can fail to return a row, and that throws to the caller;
+        //    a returned row is the success path. The post-CAS re-read path is
+        //    no longer needed: a failed head CAS throws and rolls back the
+        //    wp_update_post; a failed mark_applied() throws and rolls back
+        //    both the head advance and the wp_update_post. The throw carries
+        //    the reason to the operator.
 
         return array(
             'id'              => $post_id_v,
@@ -428,14 +452,13 @@ class Update_Draft extends Base_Tool {
             'status'          => 'draft',
             'slug'            => (string) $new_slug,
             'journaled'       => true,
-            'journal_applied' => $journal_applied,
+            'journal_applied' => true,
             'recoverable'     => true,
             'op_id'           => $op_id,
             'marker'          => $marker,
             'resumed'         => false,
             'idempotency_key' => $idem,
             'transaction'     => $tx_id,
-            'journal_note'    => $journal_note,
         );
     }
 

@@ -520,9 +520,25 @@ if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
             // compare_and_set_head() read and the cas_write_row() write. A
             // CAS-less mutant would not notice the failure and would return
             // $next as if the swap had landed.
+            //
+            // Two opt-in shapes:
+            //   - `_agentshell_test_cas_write_fail = true` → every cas_write_row
+            //     returns 0. The first CAS in a tool (attach) is the one that
+            //     fails, which is what the *attach* path is tested against.
+            //   - `_agentshell_test_cas_write_fail_after = N` → the first N
+            //     cas_write_row calls succeed, the (N+1)th and later return
+            //     0. The Nth is the boundary that lets a test exercise a CAS
+            //     that lives inside the closure (compare_and_set_head or
+            //     mark_applied) while the attach CAS still lands. The counter
+            //     is shared with `_agentshell_test_cas_write_calls` so the
+            //     test can assert *which* call failed.
             if ( $is_update && ! empty( $GLOBALS['_agentshell_test_cas_write_fail'] ) ) {
                 $GLOBALS['_agentshell_test_cas_write_calls'] = ( $GLOBALS['_agentshell_test_cas_write_calls'] ?? 0 ) + 1;
-                return 0;
+                $fail_after = isset( $GLOBALS['_agentshell_test_cas_write_fail_after'] )
+                    ? (int) $GLOBALS['_agentshell_test_cas_write_fail_after'] : -1;
+                if ( $fail_after < 0 || $GLOBALS['_agentshell_test_cas_write_calls'] > $fail_after ) {
+                    return 0;
+                }
             }
             $options = $GLOBALS['_agentshell_test_options'];
             $name    = isset( $where['option_name'] ) ? $where['option_name'] : null;
@@ -787,6 +803,7 @@ function agentshell_test_reset() {
     $GLOBALS['_agentshell_test_cas_delete_fail']  = false;
     $GLOBALS['_agentshell_test_cas_delete_calls'] = 0;
     $GLOBALS['_agentshell_test_cas_write_fail']   = false;
+    $GLOBALS['_agentshell_test_cas_write_fail_after'] = -1;
     $GLOBALS['_agentshell_test_cas_write_calls']  = 0;
     $GLOBALS['_agentshell_test_cas_snapshot']     = null;
 }

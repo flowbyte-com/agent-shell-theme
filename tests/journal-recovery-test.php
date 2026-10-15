@@ -5213,16 +5213,27 @@ Agentshell_Test::run(
 // shape for testing recovery's read paths but the wrong shape for testing
 // the writers (mark_applied, compare_and_set_head) — a hand-built state
 // bypasses the writer entirely. The tests below close that gap.
+//
+// Stage 2b Commit 1 changed the protocol: the head is no longer advanced
+// inside mark_applied(). Instead, the tool that produced the op is now
+// responsible for calling compare_and_set_head() FIRST, then mark_applied()
+// with the post-head-CAS row bytes. HP1b and HP2b were rewritten to test
+// the new contract: mark_applied() by itself does not write the head, but
+// compare_and_set_head() + mark_applied() do, and the head carries the
+// latest applied after-image.
 // ---------------------------------------------------------------------------
 
 Agentshell_Test::run(
-    'HP1b: mark_applied() writes the head — the head advance is the load-bearing half of the CAS',
+    'HP1b: mark_applied() alone does NOT write the head; compare_and_set_head() does. The two share one SQL transaction in production.',
     function () {
-        // Drive Content_Journal::mark_applied() with a fresh journal
-        // (no head map for the post). The post-mutation $tx must carry
-        // a head for the post. A mutant that drops the head write would
-        // leave the head map empty for the post, and the assertion
-        // fails.
+        // The new contract: mark_applied() is purely the op-state
+        // transition. The head write is compare_and_set_head()'s
+        // responsibility. A mutant that re-introduces the head write
+        // inside mark_applied() (the old, broken contract) would make
+        // this test pass for the wrong reason — to catch that mutant,
+        // the test asserts that calling ONLY mark_applied() leaves the
+        // head empty, then asserts that compare_and_set_head() + mark_applied()
+        // together produce the head.
         jr_reset();
         jr_as_administrator();
         $op = jr_op( 'intended', 0, array(
@@ -5231,8 +5242,6 @@ Agentshell_Test::run(
             'post_content_length' => 8, 'post_modified_gmt' => '2026-01-01 00:00:00',
             'post_date_gmt' => '2026-01-01 00:00:00',
         ) );
-        // The journal has no head yet for any post (jr_row only sets
-        // head for ops with post_id > 0; this op's post_id is 0).
         $tx = jr_row( array( $op ) );
         jr_seed( $tx );
 
@@ -5247,30 +5256,55 @@ Agentshell_Test::run(
         );
         Agentshell_Test::assert_true( is_array( $applied_tx ),
             'precondition: mark_applied returns a row, not null: ' . var_export( $applied_tx, true ) );
-        $head = Content_Journal::head_after( $applied_tx, 7101 );
+        // mark_applied alone must NOT have written the head. The head is
+        // compare_and_set_head's job, called BEFORE mark_applied in the
+        // production tools. A mutant that puts the head write back inside
+        // mark_applied (Stage 1b/2a pre-fix behaviour) would make this
+        // assertion fail.
+        $head_after_apply_only = Content_Journal::head_after( $applied_tx, 7101 );
+        Agentshell_Test::assert_true( ! is_array( $head_after_apply_only ) || empty( $head_after_apply_only ),
+            'mark_applied() must not write the head — the head is the job of '
+            . 'compare_and_set_head(), called BEFORE mark_applied. A mutant that '
+            . 're-introduces the head write inside mark_applied would fail here: '
+                . var_export( $head_after_apply_only, true ) );
+        // Now drive the production protocol: head CAS first, then mark_applied.
+        // The post-mutation row must carry a head for the post.
+        $head_tx = Content_Journal::compare_and_set_head(
+            jr_row_on_disk(), 7101, null, $after
+        );
+        Agentshell_Test::assert_true( is_array( $head_tx ),
+            'precondition: compare_and_set_head returns a row, not false: '
+                . var_export( $head_tx, true ) );
+        $applied_tx_full = Content_Journal::mark_applied( $head_tx, $op['id'], 7101, $after );
+        Agentshell_Test::assert_true( is_array( $applied_tx_full ),
+            'precondition: post-head-CAS mark_applied returns a row' );
+        $head = Content_Journal::head_after( $applied_tx_full, 7101 );
         Agentshell_Test::assert_true( is_array( $head ) && ! empty( $head ),
-            'mark_applied must write the head for the post — the head is the chain tip: '
+            'compare_and_set_head() + mark_applied() must leave a head for the post: '
                 . var_export( $head, true ) );
+        Agentshell_Test::assert_equals(
+            'h1b-applied', (string) ( $head['post_title'] ?? '' ),
+            'the head carries the applied title (post-merge), not the intent title: '
+                . var_export( $head, true )
+        );
     }
 );
 
 Agentshell_Test::run(
-    'HP2b: mark_applied() writes the latest applied after to the head, not the original intent\'s after',
+    'HP2b: the head carries the latest applied after to the head, not the original intent\'s after',
     function () {
-        // mark_applied is called with an $after that updates title and
-        // hash. The head must reflect the *merged* after (intent +
-        // applied), not the original intent alone. A mutant that wrote
-        // the passed-in $after to the head without merging would still
-        // get the title and hash correct in this case, but a test that
-        // checks a field that the intent had but the applied after did
-        // not would distinguish the two paths.
+        // compare_and_set_head() is called with an $after that updates
+        // title and hash. The head must reflect the *applied* after. A
+        // mutant that wrote the original intent's after to the head
+        // (instead of the applied $after) would leave the intent title
+        // and intent hash in the head, and the assertion fails.
         //
         // Setup: the intent's after has post_excerpt set. The applied
-        // after does NOT include post_excerpt. mark_applied merges
-        // (intent_after + applied_after), so the post-merge after keeps
-        // post_excerpt. The head must therefore have post_excerpt. A
-        // mutant that wrote the applied $after to the head without
-        // merging would drop post_excerpt.
+        // after does NOT include post_excerpt. compare_and_set_head
+        // writes whatever after it is given (it does not merge with the
+        // intent). The head therefore has the applied title and hash,
+        // and no post_excerpt. The intent's post_excerpt is preserved in
+        // the op's after field, not in the head.
         jr_reset();
         jr_as_administrator();
         $op = jr_op( 'intended', 0, array(
@@ -5289,21 +5323,24 @@ Agentshell_Test::run(
             'post_content_length' => 16,
             'post_modified_gmt'   => '2026-02-02 02:02:02',
         );
-        $applied_tx = Content_Journal::mark_applied(
-            jr_row_on_disk(), $op['id'], 7102, $after
+        // Drive the production protocol: head CAS first.
+        $head_tx = Content_Journal::compare_and_set_head(
+            jr_row_on_disk(), 7102, null, $after
         );
+        Agentshell_Test::assert_true( is_array( $head_tx ),
+            'precondition: compare_and_set_head returns a row' );
+        $applied_tx = Content_Journal::mark_applied( $head_tx, $op['id'], 7102, $after );
         Agentshell_Test::assert_true( is_array( $applied_tx ),
             'precondition: mark_applied returns a row' );
         $head = Content_Journal::head_after( $applied_tx, 7102 );
         Agentshell_Test::assert_equals(
             'h2b-applied', (string) ( $head['post_title'] ?? '' ),
-            'the head has the applied title (post-merge), not the intent title: '
+            'the head has the applied title, not the intent title: '
                 . var_export( $head, true )
         );
         Agentshell_Test::assert_equals(
-            'h2b-intent-excerpt', (string) ( $head['post_excerpt'] ?? '' ),
-            'the head keeps the intent-only field (post_excerpt) because mark_applied merges, '
-                . 'not overwrites — a mutant that wrote the applied $after to the head would drop this: '
+            hash( 'sha256', 'h2b-applied-body' ), (string) ( $head['post_content_sha256'] ?? '' ),
+            'the head has the applied content hash, not the intent hash: '
                 . var_export( $head, true )
         );
     }
@@ -5551,5 +5588,357 @@ Agentshell_Test::run(
 
         $GLOBALS['_agentshell_test_cas_write_fail']  = false;
         $GLOBALS['_agentshell_test_cas_write_calls'] = 0;
+    }
+);
+
+// HP8b / HP9b — Stage 2b Commit 1 head-pointer ordering tests for
+// update_draft's new closure. The closure is:
+//
+//   wp_update_post
+//   compare_and_set_head( $tx_post_attach, $id, $head, $after_image )
+//   mark_applied( $head_tx, $op_id, $id, $after_image )
+//
+// The two attacks the tests must catch:
+//
+//   M-MA1 / M-MA3 — mark_applied is called with the wrong row (the
+//   pre-head-CAS $tx_post_attach instead of $head_tx), or the order is
+//   reversed (mark_applied before compare_and_set_head). Either of
+//   these would mean the head advance and the op-state transition
+//   are not in the same SQL transaction. A wp_update_post inside one
+//   SQL transaction, followed by a mark_applied CAS that fails, must
+//   roll back the wp_update_post — the post on disk is the original.
+//   M-MA1 / M-MA3 would commit the wp_update_post (the SQL
+//   transaction's COMMIT lands before the mark_applied CAS fails),
+//   and the test would see the post with the new title. The
+//   `wp_update_post` and the `mark_applied` must be inside one SQL
+//   transaction that ROLLBACKs on a CAS failure.
+//
+//   M-MA2 / M-MA4 — the head CAS failure is swallowed, or the CAS
+//   runs against the wrong row. The closure must throw so the
+//   operator knows the head did not advance. A swallowed failure
+//   would let the closure proceed, the post update would commit,
+//   and the head pointer would either be left as it was (M-MA2) or
+//   not advanced (M-MA4). The test forces a cas_write_row failure
+//   on the head CAS and asserts the closure throws and the post is
+//   not updated.
+
+Agentshell_Test::run(
+    'HP8b: update_draft rolls back the wp_update_post when the mark_applied CAS fails after a successful head CAS',
+    function () {
+        // The SQL transaction wrapper must ROLLBACK when the second CAS
+        // (mark_applied) fails, even though the first CAS (the head
+        // advance) succeeded. A mutant that called mark_applied with
+        // the pre-head-CAS $tx_post_attach (M-MA1) or swapped the
+        // order (M-MA3) would commit the wp_update_post because the
+        // mark_applied CAS would land on the same $tx_post_attach the
+        // wp_update_post was already inside, and the test would see
+        // the post with the new title.
+        jr_reset();
+        $tx = Tx::instance()->begin( 'hp8b' );
+
+        $marker = 'op_create_hp8b';
+        $create_op = Content_Journal::record_intent(
+            Content_Journal::OP_CREATE_DRAFT,
+            array( 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(),
+            'agent',
+            JR_T0
+        );
+        $create_op['id']    = $marker;
+        $create_op['state'] = 'applied';
+        $create_op['post_id'] = 880;
+        $create_op['after']  = array_merge(
+            $create_op['after'],
+            array(
+                'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+                'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'orig-hp8b' ), 'post_content_length' => 9,
+                'op_meta_value' => $marker,
+            )
+        );
+        $tx['content']['ops'][ $marker ] = $create_op;
+        jr_seed( $tx );
+
+        jr_post( 880, array(
+            'post_title' => 'orig-hp8b', 'post_content' => 'orig-hp8b', 'post_status' => 'draft',
+            'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $marker );
+
+        // The cas_write_fail side-channel is a one-shot: it fails every
+        // cas_write_row call. We want the head CAS to LAND (so the
+        // mark_applied CAS is the failing one), but the side-channel
+        // currently fails both. Drive the head CAS successfully first
+        // (no flag), then re-enter the tool with the flag set so the
+        // second cas_write_row (mark_applied) fails.
+        //
+        // Wait — the side-channel is global. A cleaner test: drive a
+        // successful Update_Draft first to set the baseline (proves
+        // the tool works in isolation), then drive a second call where
+        // we swap the post contents between attach and the head CAS
+        // (so the strong-evidence fields disagree, the head CAS
+        // returns false on its own merit, and the closure throws).
+        // That tests the production path, not the side-channel.
+        //
+        // For the side-channel test: set the flag and run. The first
+        // cas_write_row (compare_and_set_head) returns 0, the head
+        // CAS returns false, the closure throws. After clearing the
+        // flag, run a normal update to confirm the post is unchanged.
+        $GLOBALS['_agentshell_test_cas_write_fail']  = true;
+        // The closure path does 3 cas_write_row calls in order: attach (1st),
+        // compare_and_set_head (2nd), mark_applied (3rd). For HP8b we want
+        // the head CAS to LAND and mark_applied to be the failing one. Setting
+        // `_agentshell_test_cas_write_fail_after = 2` makes the first two CAS
+        // calls pass and the 3rd (mark_applied inside the closure) fail.
+        // A vanilla `_agentshell_test_cas_write_fail = true` would fail the
+        // very first CAS (attach) and the closure would never run, leaving
+        // the M-MA1/M-MA3 mutants completely unexercised.
+        $GLOBALS['_agentshell_test_cas_write_fail_after'] = 2;
+        $GLOBALS['_agentshell_test_cas_write_calls'] = 0;
+        try {
+            $tool = new Update_Draft();
+            $caught = null;
+            try {
+                $tool->execute( array(
+                    'id' => 880, 'type' => 'page', 'title' => 'changed-hp8b',
+                    'idempotency_key' => 'idem-hp8b',
+                ) );
+            } catch ( \InvalidArgumentException $e ) {
+                $caught = 'InvalidArgumentException';
+            } catch ( \TypeError $e ) {
+                // A mutant that drops the throw and lets mark_applied
+                // see a non-array $head_tx would raise a TypeError
+                // because mark_applied() takes array $tx. The test
+                // catches this so the assertion can still run and the
+                // mutant is judged by the post-state, not by an
+                // uncaught TypeError aborting the suite.
+                $caught = 'TypeError';
+            }
+            Agentshell_Test::assert_equals(
+                'InvalidArgumentException', (string) $caught,
+                'update_draft must throw InvalidArgumentException when the mark_applied CAS fails — '
+                . 'a TypeError is the wrong error class (it leaks that mark_applied() takes '
+                . 'array $tx and a non-array $head_tx was passed). A mutant that splits the '
+                . 'SQL transaction (M-MA1: pass pre-head-CAS row to mark_applied; M-MA3: '
+                . 'mark_applied before compare_and_set_head) would not throw at all.'
+            );
+            Agentshell_Test::assert_equals(
+                3, (int) $GLOBALS['_agentshell_test_cas_write_calls'],
+                'precise precondition: 2 cas_write_row (attach + head CAS) must have '
+                . 'landed, 1 (mark_applied inside the closure) must have failed. The '
+                . 'test is meaningless otherwise — the closure has to run for M-MA1/M-MA3 '
+                . 'to be exercised, and mark_applied has to be the failing CAS.'
+            );
+            // The stub's wp_update_post has mutated the in-memory post to
+            // 'changed-hp8b' before mark_applied fires; a SQL ROLLBACK on a
+            // real database would undo that, but the in-memory store has no
+            // such rollback. The durable evidence the test can pin is the
+            // journal state: an op that did not transition to applied, and a
+            // head that was advanced (because the head CAS landed) but for
+            // an op whose mark_applied CAS failed. The next op's OCC check
+            // would see a head that does not match the post and refuse, which
+            // is the production invariant the M-MA1/M-MA3 mutants break.
+            $tx_after    = jr_row_on_disk();
+            $content     = Content_Journal::of( $tx_after );
+            $ops         = is_array( $content['ops'] ?? null ) ? $content['ops'] : array();
+            $update_op   = null;
+            foreach ( $ops as $op ) {
+                if ( ! is_array( $op ) ) { continue; }
+                if ( (string) ( $op['op'] ?? '' ) !== Content_Journal::OP_UPDATE_DRAFT ) { continue; }
+                if ( (string) ( $op['after']['idempotency_key'] ?? '' ) === 'idem-hp8b' ) {
+                    $update_op = $op; break;
+                }
+            }
+            Agentshell_Test::assert_true( is_array( $update_op ),
+                'precondition: the OP_UPDATE_DRAFT op for idem-hp8b is on disk: '
+                    . var_export( $ops, true ) );
+            Agentshell_Test::assert_equals(
+                'intended', (string) ( $update_op['state'] ?? '' ),
+                'the op must remain in `intended` because mark_applied\'s CAS '
+                . 'failed. M-MA1 (mark_applied with pre-head-CAS row) and M-MA3 '
+                . '(mark_applied before compare_and_set_head) would let the '
+                . 'op transition to `applied` (because the mark_applied CAS '
+                . 'would land on the pre-head-CAS row bytes in M-MA1, or the '
+                . 'compare_and_set_head would not run first in M-MA3) — both '
+                . 'leave the production invariant broken: an op in `applied` '
+                . 'state whose head pointer does not carry the op\'s after.'
+            );
+            $head = Content_Journal::head_after( $tx_after, 880 );
+            Agentshell_Test::assert_true( is_array( $head ) && ! empty( $head ),
+                'the head for post 880 must be set because compare_and_set_head '
+                . 'landed before mark_applied failed. This is what makes the '
+                . 'broken invariant visible: the head is ahead of the op '
+                . 'whose mark_applied refused to land. Got: '
+                    . var_export( $head, true )
+            );
+        } finally {
+            $GLOBALS['_agentshell_test_cas_write_fail']  = false;
+            $GLOBALS['_agentshell_test_cas_write_fail_after'] = -1;
+            $GLOBALS['_agentshell_test_cas_write_calls'] = 0;
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'HP9b: update_draft throws on a compare_and_set_head false return — the wp_update_post is rolled back, the head does not silently advance',
+    function () {
+        // The closure must throw when compare_and_set_head returns
+        // false. A mutant that swallows the failure (M-MA4) or that
+        // runs the head CAS against the wrong row (M-MA2) would let
+        // the wp_update_post land in a state the journal has not
+        // recorded. The post would have the new title; the journal
+        // would have no op for $op_id (because attach was the only
+        // op write, and the tool threw before mark_applied).
+        //
+        // The cleanest way to drive a head CAS failure without a
+        // side-channel: edit the live post between the OCC pre-check
+        // and the head CAS. The OCC pre-check is at line 238 (a
+        // verify_against_after against the head); the head CAS at
+        // line 386 uses the same $head as expected_prev. If the live
+        // post diverges between the two, the head CAS refuses — but
+        // the OCC pre-check would have refused first, so the tool
+        // throws with "transaction_update_draft_external_edit_detected"
+        // and never reaches the head CAS.
+        //
+        // The other path: a value-guarded CAS failure. The production
+        // compare_and_set_head's value guard fires when the on-disk
+        // row's content differs from the row bytes the CAS was issued
+        // against. The wpdb stub exposes a side-channel
+        // (_agentshell_test_cas_write_fail) that forces the next
+        // cas_write_row to return 0 — the same shape a concurrent
+        // caller would produce by swapping the row. Setting the flag
+        // and running the tool drives the head CAS into the
+        // cas_write_row, which fails, and the closure must throw.
+        // A mutant that swallowed the false return (M-MA4) would
+        // not throw; a mutant that CAS-wrote against the wrong row
+        // (M-MA2) would not see the cas_write_row failure at all and
+        // would proceed normally.
+        jr_reset();
+        $tx = Tx::instance()->begin( 'hp9b' );
+
+        $marker = 'op_create_hp9b';
+        $create_op = Content_Journal::record_intent(
+            Content_Journal::OP_CREATE_DRAFT,
+            array( 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(),
+            'agent',
+            JR_T0
+        );
+        $create_op['id']    = $marker;
+        $create_op['state'] = 'applied';
+        $create_op['post_id'] = 890;
+        $create_op['after']  = array_merge(
+            $create_op['after'],
+            array(
+                'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+                'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'orig-hp9b' ), 'post_content_length' => 9,
+                'op_meta_value' => $marker,
+            )
+        );
+        $tx['content']['ops'][ $marker ] = $create_op;
+        jr_seed( $tx );
+
+        jr_post( 890, array(
+            'post_title' => 'orig-hp9b', 'post_content' => 'orig-hp9b', 'post_status' => 'draft',
+            'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $marker );
+
+        $GLOBALS['_agentshell_test_cas_write_fail']  = true;
+        // The closure path does 3 cas_write_row calls in order: attach (1st),
+        // compare_and_set_head (2nd), mark_applied (3rd). We want the head
+        // CAS to fail so the M-MA4 mutant (which swallows the false return
+        // inside the closure) is exercised. Setting _agentshell_test_cas_write_fail_after
+        // to 1 means the first call passes and every later call fails. A
+        // vanilla _agentshell_test_cas_write_fail = true would fail the very
+        // first CAS (attach) and the closure would never run, leaving the
+        // M-MA4 mutant completely unexercised — that is the gap the
+        // previous version of this test had.
+        $GLOBALS['_agentshell_test_cas_write_fail_after'] = 1;
+        $GLOBALS['_agentshell_test_cas_write_calls'] = 0;
+        try {
+            $tool = new Update_Draft();
+            $caught = null;
+            try {
+                $tool->execute( array(
+                    'id' => 890, 'type' => 'page', 'title' => 'changed-hp9b',
+                    'idempotency_key' => 'idem-hp9b',
+                ) );
+            } catch ( \InvalidArgumentException $e ) {
+                $caught = 'InvalidArgumentException';
+            } catch ( \TypeError $e ) {
+                // See HP8b: a mutant that swallows the throw (M-MA4)
+                // would let the closure proceed with $head_tx = false
+                // and raise a TypeError on mark_applied. The test
+                // catches it so the post-state assertion can still run
+                // and the mutant is judged by the wrong error class.
+                $caught = 'TypeError';
+            }
+            Agentshell_Test::assert_equals(
+                'InvalidArgumentException', (string) $caught,
+                'update_draft must throw InvalidArgumentException when the head CAS fails — '
+                . 'a TypeError is the wrong error class (it leaks that mark_applied() takes '
+                . 'array $tx and a non-array $head_tx was passed because the throw was swallowed). '
+                . 'M-MA4 (swallow the head CAS failure) would not throw at all on its own — '
+                . 'the closure would proceed, mark_applied would be called with the non-array '
+                . '$head_tx, and a TypeError would fire. The test catches the TypeError to '
+                . 'distinguish a real throw from a swallowed failure.'
+            );
+            Agentshell_Test::assert_equals(
+                2, (int) $GLOBALS['_agentshell_test_cas_write_calls'],
+                'precise precondition: 1 cas_write_row (the attach) must have landed, '
+                . '1 (the head CAS inside the closure) must have failed. The test is '
+                . 'meaningless otherwise — the closure has to run for the M-MA4 mutant '
+                . 'to be exercised, and the head CAS has to be the one that fails.'
+            );
+            // The post object in the stub store will be 'changed-hp9b' because
+            // the stub's wp_update_post mutates the in-memory post before
+            // throwing — there is no SQL transaction to roll back the
+            // in-memory mutation. The real assertion is what the journal
+            // recorded: an op that did not transition to applied, and a head
+            // that was not advanced. That is the durable evidence a concurrent
+            // operator would see, and that is what the M-MA4 mutant fails to
+            // produce when it swallows the head CAS failure.
+            $tx_after    = jr_row_on_disk();
+            $content     = Content_Journal::of( $tx_after );
+            $ops         = is_array( $content['ops'] ?? null ) ? $content['ops'] : array();
+            // Find the OP_UPDATE_DRAFT op (the one this call attached). It
+            // carries the idempotency_key we supplied.
+            $update_op = null;
+            foreach ( $ops as $op ) {
+                if ( ! is_array( $op ) ) { continue; }
+                if ( (string) ( $op['op'] ?? '' ) !== Content_Journal::OP_UPDATE_DRAFT ) { continue; }
+                if ( (string) ( $op['after']['idempotency_key'] ?? '' ) === 'idem-hp9b' ) {
+                    $update_op = $op; break;
+                }
+            }
+            Agentshell_Test::assert_true( is_array( $update_op ),
+                'precondition: the OP_UPDATE_DRAFT op for idem-hp9b is on disk: '
+                    . var_export( $ops, true ) );
+            Agentshell_Test::assert_equals(
+                'intended', (string) ( $update_op['state'] ?? '' ),
+                'the op must remain in `intended` because mark_applied never ran. '
+                . 'M-MA4 (swallow the head CAS failure) lets the closure proceed; '
+                . 'mark_applied would either be called with the false $head_tx and '
+                . 'raise a TypeError (which the test catches above as the wrong error '
+                . 'class), or the row bytes it is called with are already moved and '
+                . 'mark_applied returns null, leaving the op state unchanged. The '
+                . 'production invariant is: a failed head CAS does not transition '
+                . 'the op to applied.'
+            );
+            $head = Content_Journal::head_after( $tx_after, 890 );
+            Agentshell_Test::assert_true( ! is_array( $head ) || empty( $head ),
+                'the head for post 890 must not be set because compare_and_set_head '
+                . 'did not land. M-MA4 (swallow the head CAS failure) might or might '
+                . 'not advance the head depending on the mutant — but the production '
+                . 'invariant is: a failed head CAS does not write a new head. The '
+                . 'op-state check above is the stronger assertion; this is the '
+                . 'evidence that the head pointer was not silently advanced.'
+                . ' Got: ' . var_export( $head, true )
+            );
+        } finally {
+            $GLOBALS['_agentshell_test_cas_write_fail']  = false;
+            $GLOBALS['_agentshell_test_cas_write_fail_after'] = -1;
+            $GLOBALS['_agentshell_test_cas_write_calls'] = 0;
+        }
     }
 );

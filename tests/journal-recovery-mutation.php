@@ -921,25 +921,125 @@ $mutants = array(
         "        // SKIP M-UR-order\n        return \$ops;",
     ),
 
-    // ── head-pointer model (Stage 2a) ───────────────────────────────────
+    // ── head-pointer model (Stage 2a → Stage 2b Commit 1) ──────────────
+    //
+    // M-HN1 and M-HN2 (Stage 2a) targeted the old contract where
+    // mark_applied() advanced the head. The Stage 2b Commit 1 protocol
+    // moved head advancement to compare_and_set_head(), which the tools
+    // call BEFORE mark_applied(). The "drop the head advance inside
+    // mark_applied" attack (M-HN1) is no longer meaningful — the head
+    // advance is no longer inside mark_applied. The "write the per-op
+    // after to the head" attack (M-HN2) is also no longer meaningful —
+    // the head is set by compare_and_set_head, not by mark_applied.
+    //
+    // The new attacks against the new protocol are M-MA1..M-MA4 below.
+    // M-HN1/M-HN2 are retired; HP1b and HP2b were rewritten to pin the
+    // new contract.
 
-    'M-HN1: mark_applied drops the head advance — the op-state transition lands but the head map is not written' => array(
+    'M-HN1 (retired by Stage 2b Commit 1): mark_applied drops the head advance — the op-state transition lands but the head map is not written' => array(
         // The head map is the chain's expected current state. Without it,
         // compensation has no reference and the verify_against_after
         // branch at class-content-recovery.php:820-844 refuses every
         // applied op. Killed by HP1.
+        //
+        // Retired: the head advance is no longer inside mark_applied().
+        // The mutant target text is no longer in the source, so this
+        // entry skips cleanly. The replacement attack is now M-MA1
+        // (mark_applied called with the pre-attach $tx instead of the
+        // post-head-CAS $tx — see below).
         $JOURNAL_REL,
-        "        \$head[ (int) \$post_id ] = \$content['ops'][ \$op_id ]['after'];\n        \$content[ self::HEAD_KEY ] = \$head;",
-        "        // SKIP M-HN1: head advance dropped\n        \$content[ self::HEAD_KEY ] = \$head;",
+        '',
+        '',
     ),
 
-    'M-HN2: mark_applied writes the per-op after to the head, not the latest applied after' => array(
+    'M-HN2 (retired by Stage 2b Commit 1): mark_applied writes the per-op after to the head, not the latest applied after' => array(
         // A mutant that always wrote $after instead of
         // $content['ops'][ $op_id ]['after'] would let a stale after-image
         // leak into the head when $after is empty. Killed by HP2.
+        //
+        // Retired: the head is no longer written by mark_applied(). The
+        // mutant target text is no longer in the source. The replacement
+        // attack is now M-MA2 (compare_and_set_head writes the wrong
+        // $expected_prev so the head advance is silently accepted for
+        // a divergent post — see below).
         $JOURNAL_REL,
-        "        \$head[ (int) \$post_id ] = \$content['ops'][ \$op_id ]['after'];",
-        "        \$head[ (int) \$post_id ] = \$after; // SKIP M-HN2: wrong source",
+        '',
+        '',
+    ),
+
+    // ── M-MA1..M-MA4: Stage 2b Commit 1 head-pointer ordering ─────────
+    //
+    // The new protocol is: tool calls compare_and_set_head() FIRST, then
+    // mark_applied() with the post-head-CAS row bytes. The four attacks:
+    //
+    //   M-MA1: tool passes the pre-head-CAS $tx_post_attach to mark_applied
+    //          instead of the post-head-CAS $head_tx. The value-guarded CAS
+    //          in mark_applied compares on row bytes, so this would either
+    //          fail (CAS refusal → op stays in `intended`) or, if the
+    //          row happened to match, the op-state transition is recorded
+    //          but the head advance and the op-state transition are no
+    //          longer in one CAS. Killed by HP8b.
+    //
+    //   M-MA2: tool passes the post-attach $tx (not the post-head-CAS
+    //          $head_tx) to compare_and_set_head. A failed head CAS would
+    //          not be detected because the CAS would still see the same
+    //          row bytes and CAS-write the (unchanged) head. Killed by
+    //          HP9b.
+    //
+    //   M-MA3: tool calls mark_applied BEFORE compare_and_set_head
+    //          (the old, broken order from Stage 1b/2a). The head advance
+    //          happens against the post-mark-applied row, which already
+    //          has the new op state, but the value-guarded CAS in
+    //          compare_and_set_head would see a different row than the
+    //          one in $tx_post_attach, and would refuse (the strong
+    //          evidence differs). Killed by HP8b.
+    //
+    //   M-MA4: tool swallows the compare_and_set_head false return, lets
+    //          the wp_update_post land, and proceeds to mark_applied
+    //          against the pre-head-CAS $tx_post_attach. The head pointer
+    //          is never advanced, and the live post is committed in a
+    //          state the journal has not recorded. Killed by HP9b.
+
+    'M-MA1: update_draft passes the pre-head-CAS $tx_post_attach to mark_applied, not the post-head-CAS $head_tx' => array(
+        $UPDATE_DRAFT_REL,
+        "            \$applied_tx = \\AgentShell_MCP\\Content_Journal::mark_applied( \$head_tx, \$op_id, \$id, \$after_image );",
+        "            // SKIP M-MA1: pre-head-CAS row passed to mark_applied\n            \$applied_tx = \\AgentShell_MCP\\Content_Journal::mark_applied( \$tx_post_attach, \$op_id, \$id, \$after_image );",
+    ),
+
+    'M-MA2: update_draft passes the pre-attach $tx_post_attach to compare_and_set_head, not the post-attach $tx' => array(
+        // The Stage 2b Commit 1 closure uses $tx_post_attach (re-read
+        // after attach()) as the head CAS baseline. A mutant that
+        // substitutes the original $tx from the outer scope would
+        // either see the pre-attach bytes (CAS refusal if the attach
+        // actually landed) or, more insidiously, would CAS-write against
+        // an obsolete row, losing the post-attach intent and leaving
+        // a window where the head pointer and the journal op are
+        // out of sync.
+        $UPDATE_DRAFT_REL,
+        "            \$head_tx    = \\AgentShell_MCP\\Content_Journal::compare_and_set_head(\n                \$tx_post_attach, (int) \$id, \$head_after, \$after_image\n            );",
+        "            // SKIP M-MA2: pre-attach row passed to head CAS\n            \$head_tx    = \\AgentShell_MCP\\Content_Journal::compare_and_set_head(\n                \$tx, (int) \$id, \$head_after, \$after_image\n            );",
+    ),
+
+    'M-MA3: update_draft calls mark_applied before compare_and_set_head (the old broken order)' => array(
+        $UPDATE_DRAFT_REL,
+        "            \$head_tx    = \\AgentShell_MCP\\Content_Journal::compare_and_set_head(\n                \$tx_post_attach, (int) \$id, \$head_after, \$after_image\n            );\n            if ( ! is_array( \$head_tx ) ) {\n                throw new \\InvalidArgumentException(\n                    'compare_and_set_head() refused to advance the head for post ' . (int) \$id",
+        "            // SKIP M-MA3: mark_applied before compare_and_set_head\n            \$head_tx = \\AgentShell_MCP\\Content_Journal::compare_and_set_head(\n                \$tx_post_attach, (int) \$id, null, array()\n            );\n            \$applied_tx = \\AgentShell_MCP\\Content_Journal::mark_applied( \$tx_post_attach, \$op_id, \$id, \$after_image );\n            if ( ! is_array( \$head_tx ) ) {\n                \$head_tx = \$applied_tx;\n                throw new \\InvalidArgumentException(\n                    'compare_and_set_head() refused to advance the head for post ' . (int) \$id",
+    ),
+
+    'M-MA4: update_draft swallows the compare_and_set_head false return, lets the wp_update_post land' => array(
+        // The current code throws on `! is_array( $head_tx )`. A mutant
+        // that drops the throw and proceeds to mark_applied with the
+        // pre-head-CAS row would commit the wp_update_post without
+        // advancing the head — the live post is in a state the journal
+        // does not know about, and the next OCC check would see a
+        // head that does not match the post, surfacing a "broken
+        // chain" or "external edit detected" error to the operator
+        // when the next op runs. To make the mutant parse, the
+        // replacement gates the throw inside `if (false)` so the
+        // body remains syntactically complete.
+        $UPDATE_DRAFT_REL,
+        "            if ( ! is_array( \$head_tx ) ) {\n                throw new \\InvalidArgumentException(\n                    'compare_and_set_head() refused to advance the head for post ' . (int) \$id",
+        "            // SKIP M-MA4: head CAS failure swallowed\n            if ( ! is_array( \$head_tx ) && false ) {\n                throw new \\InvalidArgumentException(\n                    'compare_and_set_head() refused to advance the head for post ' . (int) \$id",
     ),
 
     'M-HN3: compare_and_set_head skips the strong-evidence field comparison' => array(

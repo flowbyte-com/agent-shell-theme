@@ -574,11 +574,30 @@ class Content_Journal {
      * `intended` with nothing to go on. Recovery handles that state; this is
      * the fast path that avoids it.
      *
-     * @return array The updated transaction row, so the caller can keep
-     *         building on it. Null when the guard refused the write, which the
-     *         caller must treat as a failure to record — the post exists and
-     *         the journal does not know it, which is the exact state recovery
-     *         is built for.
+     * The head map is NOT advanced here. Head advancement is the exclusive
+     * responsibility of compare_and_set_head(), which the tool calls BEFORE
+     * mark_applied() (sharing one Content_Write_Guard::run() closure with the
+     * wp_update_post / wp_insert_post call). That ordering means the head CAS
+     * is the load-bearing step that catches a concurrent update winning the
+     * race: when compare_and_set_head() returns false, the closure throws
+     * and Content_Write_Guard rolls back the post write. mark_applied()
+     * only runs on a successful head CAS, so it never advances the head for
+     * an op whose post write has been rolled back. It also means the
+     * "expected_prev === null" branch of compare_and_set_head() is reachable
+     * for the first edit of a pre-existing draft (the Stage 2b path) and the
+     * head pointer is updated atomically with the post write, not after.
+     *
+     * @param array $tx     The post-CAS transaction row returned by
+     *                      compare_and_set_head() (or, for a create where
+     *                      there is no prior head, the row from attach()).
+     *                      The caller is responsible for using the latest
+     *                      row bytes; passing an obsolete row will fail
+     *                      the CAS and return null.
+     * @return array|null   The updated transaction row, or null when the
+     *                      guard refused the write. The caller treats null
+     *                      as a failure to record — the post exists and
+     *                      the journal does not know it, which is the state
+     *                      recovery is built for.
      */
     public static function mark_applied( array $tx, $op_id, $post_id, array $after = array(), $now = null ) {
         $content = self::of( $tx );
@@ -596,16 +615,12 @@ class Content_Journal {
                 $after
             );
         }
-        // The head map is the expected current state of each post this
-        // transaction owns. mark_applied() is the only writer — every
-        // applied op advances the head for its post, regardless of op
-        // type. Compensation verifies the live post against the head
-        // and (on success) deletes the post once. The head update is
-        // inside the same value-guarded CAS as the op-state transition;
-        // either both land on disk at COMMIT, or both are rolled back.
-        $head = is_array( $content[ self::HEAD_KEY ] ?? null ) ? $content[ self::HEAD_KEY ] : array();
-        $head[ (int) $post_id ] = $content['ops'][ $op_id ]['after'];
-        $content[ self::HEAD_KEY ] = $head;
+        // NOTE: the head map is no longer written here. The tool that
+        // produced this op is responsible for advancing the head via
+        // compare_and_set_head() before calling mark_applied(); the two
+        // CAS writes share one Content_Write_Guard::run() SQL transaction
+        // with the post mutation. See the class docstring and the
+        // mark_applied() rationale above for the full contract.
 
         $content['sig'] = self::sign( $content );
 

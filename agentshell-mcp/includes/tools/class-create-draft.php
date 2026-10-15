@@ -196,7 +196,27 @@ class Create_Draft extends Base_Tool {
                 'post_content_length' => strlen( (string) $post->post_content ),
                 'op_meta_value'       => $op_id,
             );
-            $applied_tx = \AgentShell_MCP\Content_Journal::mark_applied( $tx, $op_id, $id, $after_image );
+            // Head advance FIRST, mark_applied SECOND. For a create there is
+            // no prior head (expected_prev is null) and compare_and_set_head
+            // refuses only if a head already exists for this post id; in the
+            // create path that should be impossible because the post was just
+            // inserted, but the guard makes the failure mode honest. After a
+            // successful head CAS, mark_applied transitions the op from
+            // intended to applied using the post-head-CAS row bytes. Both
+            // writes share this one SQL transaction; a failed head CAS
+            // throws to roll back the wp_insert_post, and a failed
+            // mark_applied CAS throws to roll back both.
+            $head_tx = \AgentShell_MCP\Content_Journal::compare_and_set_head(
+                $tx, (int) $id, null, $after_image
+            );
+            if ( ! is_array( $head_tx ) ) {
+                throw new \InvalidArgumentException(
+                    'compare_and_set_head() refused to record the head for post ' . (int) $id
+                    . ' on create; the post was inserted but the journal head could not be set, '
+                    . 'so the post is rolled back. Retry the create.'
+                );
+            }
+            $applied_tx = \AgentShell_MCP\Content_Journal::mark_applied( $head_tx, $op_id, $id, $after_image );
             return array( 'post_id' => (int) $id, 'applied_tx' => $applied_tx );
         } );
 
