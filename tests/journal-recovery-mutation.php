@@ -715,14 +715,20 @@ $mutants = array(
         "        if ( '1' === (string) \$r || '0' === (string) \$r || \$r === null ) {\n            return true;\n        }\n        throw new \\RuntimeException(\n            'unreachable'",
     ),
 
-    'release() does not run from the finally block' => array(
-        // M-LK7: the orderly release is what lets the next recoverer run.
-        // Drop it and a long-running PHP-FPM worker keeps the lock until
-        // connection close. Killed indirectly by the contention test; the
-        // second acquire hits a lock still held by the same connection.
+    'release() does not run the actual RELEASE_LOCK SQL' => array(
+        // M-LK7: the orderly release is what lets the next recoverer run
+        // on the same connection. Drop the actual get_var(RELEASE_LOCK)
+        // call and the lock is held until the connection closes — not
+        // when compensate() returns, but when PHP-FPM recycles the
+        // worker, which is the load-bearing bug. The implicit release
+        // on connection close is the KILL -9 safety net; this method is
+        // the orderly path for a happy termination, and dropping it is
+        // observably distinct from "unreachable conditional". Killed by
+        // CL3, which counts actual RELEASE_LOCK invocations on the
+        // per-post lock name.
         $LOCK_REL,
-        "    public static function release( \$post_id ) {\n        if ( ! self::available() ) {\n            return;\n        }",
-        "    public static function release( \$post_id ) {\n        if ( false && ! self::available() ) {\n            return;\n        }",
+        "        \$wpdb->get_var( \$wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', \$name ) );",
+        "        // SKIP M-LK7: actual RELEASE_LOCK call removed",
     ),
 
     'the lock name is not namespaced per post' => array(
@@ -868,16 +874,6 @@ $equivalent = array(
         . '$available is still set to false. The destructive step is still '
         . 'refused. The only observable side effect is one extra '
         . 'RELEASE_LOCK probe call, which is harmless.',
-
-    'release() does not run from the finally block' =>
-        'The mutant removes the `if ( ! self::available() ) { return; }` '
-        . 'guard at the top of release() by replacing it with '
-        . '`if ( false && ! self::available() ) { return; }`. The function '
-        . 'body is unchanged: get_var(RELEASE_LOCK) is still called. In the '
-        . 'test environment, available() is true (the probe cached it), so '
-        . 'the guard never fires either way. The implicit release on '
-        . 'connection close is the production safety net, not the early '
-        . 'return.',
 
     'an unrecorded post id is read as nothing having been created' =>
         'The mutant makes `posts_carrying_marker()` return an empty array. '

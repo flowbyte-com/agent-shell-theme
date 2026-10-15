@@ -3043,6 +3043,124 @@ Agentshell_Test::run(
     }
 );
 
+Agentshell_Test::run(
+    'CR1: settle_operation refreshes the same-actor claim\'s `at` timestamp on the refresh path',
+    function () {
+        // Direct evidence for the "the claim refresh at op boundaries is
+        // dropped" mutant's equivalence claim. The production code takes
+        // the 'refreshed' branch when state=COMPENSATING, claim actor
+        // matches, and the claim is not stale. The 'refreshed' branch
+        // writes claim = {actor, at: $now}. With the mutant (the
+        // 'refreshed' branch removed), the same call falls through to
+        // the 'claimed' branch — which also writes claim = {actor, at:
+        // $now}. The on-disk state is identical, including the `at`
+        // timestamp. This test pins that contract directly: the
+        // recovery's settled timestamp (the `at` recorded when the op
+        // transitions to compensated) is greater than the planted
+        // claim `at`, proving the recovery ran with a fresh timestamp,
+        // not a stale one. The takeover-after-TTL invariant is
+        // preserved by both paths. We use $skip_row_delete = true so
+        // the row remains on disk after the call and we can read
+        // comp.at directly.
+        jr_reset();
+        $op = jr_op( 'compensating', 450 );
+        // Plant a claim at the frozen start, owned by JR_CRASHED_ACTOR.
+        $op['claim'] = array( 'actor' => JR_CRASHED_ACTOR, 'at' => JR_T0 - 10 );
+        $op['after']['post_content_sha256'] = hash( 'sha256', '<p>body</p>' );
+        $op['after']['post_content_length'] = strlen( '<p>body</p>' );
+        $op['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 450, array(
+            'post_content'      => '<p>body</p>',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op['id'] );
+        jr_with_post_cap( 450 );
+
+        // Advance time by 30 seconds; the claim is still fresh (TTL is
+        // 120s).
+        jr_advance( 30 );
+
+        $at_before = JR_T0 - 10;
+        Agentshell_Test::assert_equals( $at_before, jr_op_on_disk()['claim']['at'], 'sanity: claim at is the planted value' );
+
+        // $skip_row_delete = true keeps the row on disk so we can
+        // inspect comp.at afterwards.
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true, false, true );
+        Agentshell_Test::assert_equals(
+            'compensated', $report['operations'][0]['outcome'] ?? '',
+            'a same-actor claim with a fresh `at` is the refresh path: settlement continues'
+        );
+
+        // The op transitioned to STATE_COMPENSATED and the claim was
+        // nulled, with the final timestamp recorded in `comp.at`. The
+        // proof the refresh path updated the timestamp is that
+        // `comp.at` is greater than the planted claim `at`.
+        $settled = jr_op_on_disk();
+        Agentshell_Test::assert_equals(
+            Content_Journal::STATE_COMPENSATED, $settled['state'] ?? '',
+            'sanity: the op transitioned to compensated'
+        );
+        $comp_at = isset( $settled['comp']['at'] ) ? (int) $settled['comp']['at'] : 0;
+        Agentshell_Test::assert_true(
+            $comp_at > $at_before,
+            "the comp.at timestamp is greater than the planted claim at (planted: {$at_before}, comp.at: {$comp_at})"
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'CR2: takeover after TTL is not blocked by a stale claim; a different actor can resume compensation',
+    function () {
+        // Pins the takeover-after-TTL invariant directly. With the
+        // 'refreshed' branch present or absent, the claim is updated to
+        // $now and a subsequent recover() by the same actor continues.
+        // A recover() by a *different* actor must still be refused
+        // until the TTL expires. Once the TTL expires, the second
+        // actor can take over. This test sets up a fresh claim, has
+        // actor B attempt a take-over (refused), advances past the
+        // TTL, and has actor B take over (allowed).
+        jr_reset();
+        jr_as_administrator(); // so the second caller is allowed to recover another actor's transaction
+        $op = jr_op( 'compensating', 451 );
+        $op['claim'] = array( 'actor' => 'actor-a', 'at' => JR_T0 - 60 );
+        $op['after']['post_content_sha256'] = hash( 'sha256', '<p>body</p>' );
+        $op['after']['post_content_length'] = strlen( '<p>body</p>' );
+        $op['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 451, array(
+            'post_content'      => '<p>body</p>',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op['id'] );
+        jr_with_post_cap( 451 );
+
+        // Inside the claim window (60s < 120s TTL): actor B is told
+        // another caller is mid-recovery and is refused. This is the
+        // existing "a live claim blocks" behaviour, which both the
+        // production code and the mutant honour — the contention is at
+        // the '! mine && ! stale' check that the mutant does not touch.
+        $blocked = Content_Recovery::recover( jr_row_on_disk(), 'actor-b', true );
+        Agentshell_Test::assert_equals(
+            'another_recovery_in_progress', $blocked['operations'][0]['outcome'] ?? '',
+            'a fresh claim from another actor blocks a second recoverer'
+        );
+        Agentshell_Test::assert_true( jr_post_exists( 451 ), 'and the post is preserved while the claim is fresh' );
+
+        // After the claim expires: actor B takes over.
+        jr_advance( Content_Recovery::CLAIM_TTL_SECONDS + 1 );
+        $resumed = Content_Recovery::recover( jr_row_on_disk(), 'actor-b', true );
+        Agentshell_Test::assert_equals(
+            'compensated', $resumed['operations'][0]['outcome'] ?? '',
+            'after TTL expiry, a different actor can take over and complete the compensation'
+        );
+        Agentshell_Test::assert_equals( 451, (int) ( $resumed['operations'][0]['deleted_post_id'] ?? 0 ), 'the post is deleted on take-over' );
+        Agentshell_Test::assert_true( ! jr_post_exists( 451 ), 'and the post is gone from the test post table' );
+    }
+);
+
 /**
  * The audit log entries the test suite inspects. The store keeps the log
  * under agentshell_audit_log, and the suite reads it directly. Filtering
