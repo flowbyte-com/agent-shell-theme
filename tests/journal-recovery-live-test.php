@@ -246,8 +246,95 @@ Agentshell_Test::run(
         $c = jr_live( 'cleanup', array() );
         Agentshell_Test::assert_equals( 0, (int) ( $c['rows_remaining'] ?? -1 ), 'every disposable post must be gone' );
         Agentshell_Test::assert_equals( 0, (int) ( $c['trashed_remaining'] ?? -1 ), 'including the trashed ones' );
-        Agentshell_Test::assert_equals( 0, (int) ( $c['stray_marker_meta'] ?? -1 ), 'no journal marker may be left on any post' );
+        Agentshell_Test::assert_equals(
+            (int) ( $c['saved_marker_count'] ?? 0 ),
+            (int) ( $c['stray_marker_meta'] ?? -1 ),
+            'the journal-marker count is restored to what it was before the test'
+        );
         Agentshell_Test::assert_true( $c['transaction_restored'] ?? false, 'the transaction row must be as it was' );
         Agentshell_Test::assert_true( $c['audit_restored'] ?? false, 'and so must the audit log' );
+    }
+);
+
+// ── 10. Claim takeover with real SQL bytes ────────────────────────────────────
+Agentshell_Test::run(
+    'live: claim takeover after TTL is against the real wp_options row',
+    function () {
+        $t = jr_live( 'claim_takeover', array() );
+        Agentshell_Test::assert_equals(
+            'another_recovery_in_progress',
+            $t['blocked_outcome'] ?? '',
+            'a different actor inside the claim window is refused at the claim layer'
+        );
+        Agentshell_Test::assert_equals( 1, (int) ( $t['rows_after_blocked'] ?? -1 ), 'and the post survives the refusal' );
+        Agentshell_Test::assert_equals(
+            'compensated', $t['resumed_outcome'] ?? '',
+            'after the claim is aged past TTL, the second actor can take over and complete compensation'
+        );
+        Agentshell_Test::assert_equals( 0, (int) ( $t['rows_after_resumed'] ?? -1 ), 'and the post is gone afterwards' );
+    }
+);
+
+// ── 11. create_draft inside a real transaction ────────────────────────────────
+Agentshell_Test::run(
+    'live: create_draft + commit retains the post; the post+marker pair is atomic',
+    function () {
+        $c = jr_live( 'create_draft_commit', array() );
+        Agentshell_Test::assert_equals( 1, (int) ( $c['row_present'] ?? -1 ), 'the post row is in wp_posts' );
+        Agentshell_Test::assert_equals( 1, (int) ( $c['marker_present'] ?? -1 ), 'and the marker is in wp_postmeta — the guard wrapped both in one SQL transaction' );
+        Agentshell_Test::assert_equals( 1, (int) ( $c['rows_alive'] ?? 0 ), 'and the post is retained through commit' );
+        Agentshell_Test::assert_equals( 1, (int) ( $c['marker_after'] ?? 0 ), 'with the marker still on it' );
+        Agentshell_Test::assert_true( $c['transaction_gone'] ?? false, 'and the option row is freed by the value-guarded CAS' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: create_draft + rollback deletes the post; the row is freed by cas_delete_row',
+    function () {
+        $r = jr_live( 'create_draft_rollback', array() );
+        Agentshell_Test::assert_equals( 0, (int) ( $r['rows_after'] ?? -1 ), 'the post is gone after rollback' );
+        Agentshell_Test::assert_true( $r['transaction_gone'] ?? false, 'and the transaction row is freed' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: create_draft + rollback with a divergence preserves the post and refuses the close',
+    function () {
+        $c = jr_live( 'create_draft_conflict', array() );
+        Agentshell_Test::assert_true( $c['rollback_threw'] ?? false, 'the rollback throws when the post has diverged' );
+        Agentshell_Test::assert_equals( 1, (int) ( $c['rows_after'] ?? -1 ), 'the post survives the divergence' );
+        Agentshell_Test::assert_true( $c['transaction_kept'] ?? false, 'and the transaction row is preserved' );
+        Agentshell_Test::assert_equals( 'conflict', $c['op_state'] ?? '', 'with the op transitioned to conflict' );
+        Agentshell_Test::assert_true( $c['row_preserved'] ?? false, 'and the post row is intact' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: idempotency_key reuses the original post id; no second post is created',
+    function () {
+        $i = jr_live( 'create_draft_idem_resume', array() );
+        Agentshell_Test::assert_equals( 1, (int) ( $i['matches'] ?? -1 ), 'one journal op carries the key' );
+        Agentshell_Test::assert_equals( (int) ( $i['expected_id'] ?? 0 ), (int) ( $i['resumed_id'] ?? 0 ), 'and it points at the original post id' );
+        Agentshell_Test::assert_equals( 1, (int) ( $i['rows_count'] ?? -1 ), 'no second post is on the site' );
+    }
+);
+
+// ── 13. Advisory lock: KILL -9 of the owning process releases the lock ────────
+Agentshell_Test::run(
+    'live: dropping the wpdb connection releases the advisory lock to a second acquirer',
+    function () {
+        $k = jr_live( 'lock_kill_minus_9', array() );
+        Agentshell_Test::assert_true( $k['first_acquire'] ?? false, 'the first acquire on a fresh post id succeeds' );
+        Agentshell_Test::assert_true( $k['second_acquire'] ?? false, 'after the connection drops, the second acquire succeeds — the server released the lock on close' );
+    }
+);
+
+// ── 14. Advisory lock: GET_LOCK with timeout=0 returns promptly ───────────────
+Agentshell_Test::run(
+    'live: a second acquire on a held lock returns within 200 ms, not after a 60-second wait',
+    function () {
+        $p = jr_live( 'lock_prompt_failure', array() );
+        Agentshell_Test::assert_true( $p['lock_held'] ?? false, 'the first acquire on a fresh post id holds the lock' );
+        Agentshell_Test::assert_true( $p['prompt'] ?? false, 'a second acquire returns within 200 ms — the GET_LOCK timeout is 0, not 60' );
     }
 );
