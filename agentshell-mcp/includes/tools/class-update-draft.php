@@ -312,10 +312,19 @@ class Update_Draft extends Base_Tool {
                 'post_content_sha256' => hash( 'sha256', (string) $post->post_content ),
                 'post_content_length' => strlen( (string) $post->post_content ),
                 'op_meta_value'       => (string) get_post_meta( $id, \AgentShell_MCP\Content_Journal::OP_META, true ),
-                'idempotency_key'     => '',
-                'content_fingerprint' => '',
+                // Do NOT clobber the idempotency_key / content_fingerprint
+                // that record_intent() already wrote: those are the load-
+                // bearing pieces for retry-resume. mark_applied() merges
+                // $after on top of the existing after, so omitting them
+                // here preserves them; including them as '' would silently
+                // clear them and break the next retry.
             );
-            $applied_tx = \AgentShell_MCP\Content_Journal::mark_applied( $tx, $op_id, $id, $after_image );
+            // mark_applied needs the *post-attach* $tx: the closure captured
+            // the pre-attach value, which has no `ops[$op_id]` for mark_applied
+            // to find. Re-read the row so the CAS can land and the op
+            // transitions from intended to applied.
+            $tx_fresh = (array) get_option( \AgentShell_MCP\Transaction_Manager::KEY, null );
+            $applied_tx = \AgentShell_MCP\Content_Journal::mark_applied( $tx_fresh, $op_id, $id, $after_image );
             return array( 'post_id' => (int) $id, 'applied_tx' => $applied_tx );
         } );
 
