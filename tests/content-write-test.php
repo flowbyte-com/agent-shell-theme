@@ -46,15 +46,33 @@ if ( ! function_exists( 'wp_cache_flush' ) ) {
 /** Scripted result for the next wp_insert_post()/wp_update_post() call. */
 $GLOBALS['cw_write_result'] = 1;
 
+/**
+ * When a higher-fidelity wp_insert_post/wp_update_post is installed (e.g. by
+ * `tests/journal-recovery-test.php`, which mutates the fixture store so that
+ * compensate_update and the OP_UPDATE_DRAFT path have a real post to read
+ * back), the dispatcher closure is consulted and its return value is what
+ * the caller sees. Without it, this suite's stubs honour the scripted
+ * `cw_write_result` so the suite's own assertions on the return id are
+ * preserved.
+ */
+$GLOBALS['cw_wp_insert_dispatcher'] = null;
+$GLOBALS['cw_wp_update_dispatcher'] = null;
+
 if ( ! function_exists( 'wp_insert_post' ) ) {
     function wp_insert_post( $postarr, $wp_error = false ) {
         $GLOBALS['cw_insert_calls'][] = $postarr;
+        if ( is_callable( $GLOBALS['cw_wp_insert_dispatcher'] ) ) {
+            return ( $GLOBALS['cw_wp_insert_dispatcher'] )( $postarr, $GLOBALS['cw_write_result'] );
+        }
         return $GLOBALS['cw_write_result'];
     }
 }
 if ( ! function_exists( 'wp_update_post' ) ) {
     function wp_update_post( $postarr, $wp_error = false ) {
         $GLOBALS['cw_update_calls'][] = $postarr;
+        if ( is_callable( $GLOBALS['cw_wp_update_dispatcher'] ) ) {
+            return ( $GLOBALS['cw_wp_update_dispatcher'] )( $postarr, $GLOBALS['cw_write_result'] );
+        }
         return $GLOBALS['cw_write_result'];
     }
 }

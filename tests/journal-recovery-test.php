@@ -147,15 +147,18 @@ if ( ! function_exists( 'wp_delete_post' ) ) {
     }
 }
 
-if ( ! function_exists( 'wp_insert_post' ) ) {
+if ( ! function_exists( '_agentshell_test_apply_wp_insert' ) ) {
     /**
-     * Inserts a new post in the fixture store, stamps the OP_META marker if
-     * one is supplied via meta_input, and bumps post_modified_gmt to "now"
-     * (the frozen transaction clock) so OCC has a fresh timestamp to compare
-     * against.
+     * The fixture-mutating core of wp_insert_post. Extracted so the
+     * content-write-test.php stub can call it when both suites run in the
+     * same process (the dispatcher installed below makes the call): the
+     * journal's compensation path needs the fixture store to be authoritative
+     * so that compensate_update and the OP_UPDATE_DRAFT path can read the
+     * post back, while content-write's tests still want their own stub to
+     * honour the scripted `cw_write_result` return value. Splitting the
+     * mutation out lets each stub keep its own return-value contract.
      */
-    function wp_insert_post( $postarr, $wp_error = false ) {
-        $GLOBALS['jr_insert_calls'][] = $postarr;
+    function _agentshell_test_apply_wp_insert( $postarr ) {
         $existing_ids = array_keys( $GLOBALS['_agentshell_test_posts'] );
         $new_id = $existing_ids ? max( $existing_ids ) + 1 : 1;
         $now    = Tx::lease_now();
@@ -184,15 +187,15 @@ if ( ! function_exists( 'wp_insert_post' ) ) {
     }
 }
 
-if ( ! function_exists( 'wp_update_post' ) ) {
+if ( ! function_exists( '_agentshell_test_apply_wp_update' ) ) {
     /**
-     * Updates an existing post in the fixture store, bumps post_modified_gmt
-     * to "now" (the frozen transaction clock) so OCC has a fresh timestamp,
-     * and returns the post id on success. The call shape is recorded for
-     * tests that pin the before-image restoration.
+     * The fixture-mutating core of wp_update_post. Returns the post id on
+     * success, 0 on a missing post, and 0 when `$GLOBALS['jr_update_fails']`
+     * is set so the UR6 failure path is reachable. `post_modified_gmt` is
+     * bumped to "now" (the frozen transaction clock) so OCC has a fresh
+     * timestamp to compare against.
      */
-    function wp_update_post( $postarr, $wp_error = false ) {
-        $GLOBALS['jr_update_calls'][] = $postarr;
+    function _agentshell_test_apply_wp_update( $postarr ) {
         $post_id_log = (int) ( $postarr['ID'] ?? 0 );
         $GLOBALS['_agentshell_test_destructive_log'][] = 'update:' . $post_id_log;
         if ( ! empty( $GLOBALS['jr_update_fails'] ) ) {
@@ -222,6 +225,55 @@ if ( ! function_exists( 'wp_update_post' ) ) {
         return $post_id;
     }
 }
+
+if ( ! function_exists( 'wp_insert_post' ) ) {
+    /**
+     * Inserts a new post in the fixture store. Direct-run path: when
+     * `tests/content-write-test.php` has not been loaded first, this stub
+     * is the active one and the mutation is performed in-line. Records the
+     * call shape in `$GLOBALS['jr_insert_calls']` for tests that pin the
+     * insert arguments.
+     */
+    function wp_insert_post( $postarr, $wp_error = false ) {
+        $GLOBALS['jr_insert_calls'][] = $postarr;
+        return _agentshell_test_apply_wp_insert( $postarr );
+    }
+}
+
+if ( ! function_exists( 'wp_update_post' ) ) {
+    /**
+     * Updates an existing post in the fixture store. Direct-run path: when
+     * `tests/content-write-test.php` has not been loaded first, this stub
+     * is the active one and the mutation is performed in-line. The
+     * `destructive_log` is appended in `_agentshell_test_apply_wp_update`.
+     */
+    function wp_update_post( $postarr, $wp_error = false ) {
+        $GLOBALS['jr_update_calls'][] = $postarr;
+        return _agentshell_test_apply_wp_update( $postarr );
+    }
+}
+
+/**
+ * Install dispatchers into the content-write-test.php stubs. When both
+ * suites run in the same process (via `tests/run-all.php`), content-write
+ * loads first and its stubs become the active `wp_insert_post` /
+ * `wp_update_post`. The dispatchers mutate the fixture store (which is
+ * what the journal's compensation path and the OP_UPDATE_DRAFT after-image
+ * capture need) and return the *scripted* value (`$scripted_result`) so
+ * content-write's own tests still observe the return id they pre-seeded;
+ * the production code only uses the return value as a truthiness check
+ * (a WP_Error or 0 is a failure, anything else is a success), so passing
+ * through the scripted value is enough to keep both contracts honest.
+ */
+$GLOBALS['cw_wp_insert_dispatcher'] = function ( $postarr, $scripted_result ) {
+    $GLOBALS['jr_insert_calls'][] = $postarr;
+    _agentshell_test_apply_wp_insert( $postarr );
+    return $scripted_result;
+};
+$GLOBALS['cw_wp_update_dispatcher'] = function ( $postarr, $scripted_result ) {
+    $GLOBALS['jr_update_calls'][] = $postarr;
+    return _agentshell_test_apply_wp_update( $postarr );
+};
 
 /**
  * A wpdb for this suite: the CAS from bootstrap, plus the two evidence
