@@ -30,7 +30,13 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
  *
  * Only meaningful for somebody who is not the transaction's owner. Owner needs
  * nothing; anyone else needs `manage_options` *and* this flag. See
- * Content_Recovery::authorize().
+ * `Content_Recovery::authorize_destruction()`. The owner path on that method
+ * is the lenient check (actor match; no per-post cap), because the
+ * per-post `delete_post` capability is consulted at the moment of
+ * destruction inside `compensate()`, not at the tool entry. A user whose
+ * `delete_post` cap on the target post was revoked since the transaction
+ * opened can therefore still call this tool — the gate they will hit is
+ * the per-op gate, named in the per-op result.
  */
 class Recover_Transaction extends Base_Tool {
     public function get_name() { return 'agentshell_recover_transaction'; }
@@ -38,8 +44,9 @@ class Recover_Transaction extends Base_Tool {
         return 'Resolve an expired transaction that holds durable content work: settle each journalled operation — '
             . 'deleting the drafts this transaction created once each has been verified against its journal record — '
             . 'and only then release the transaction slot. Refuses rather than guesses when a post has diverged '
-            . 'from what the journal recorded. This build compensates drafts only; updates, navigation, taxonomy '
-            . 'and permanent deletion are refused by name.';
+            . 'from what the journal recorded. The destructive step is gated on the per-post `delete_post` '
+            . 'capability at the moment of `wp_delete_post`, not at tool entry. This build compensates drafts only; '
+            . 'updates, navigation, taxonomy and permanent deletion are refused by name.';
     }
     public function get_input_schema() {
         return array(
@@ -87,10 +94,57 @@ class Recover_Transaction extends Base_Tool {
             );
         }
 
+        // ── Tool-boundary authority check ─────────────────────────────────
+        // Distinct from the per-op check inside `compensate()`: this is the
+        // lenient form (actor match for owner; manage_options + opt-in for
+        // recovery-administrator). The per-post `delete_post` capability is
+        // checked inside `compensate()` immediately before each
+        // `wp_delete_post()`, so a role revocation between now and then
+        // still refuses the destructive step — just at the per-op gate,
+        // not here.
+        $actor                 = \AgentShell_MCP\Store::actor();
+        $explicitly_authorized = ! empty( $arguments['authorize_recovery'] );
+        $role                  = \AgentShell_MCP\Content_Recovery::authorize_destruction(
+            $tx,
+            $actor,
+            $explicitly_authorized,
+            null
+        );
+
+        if ( '' === $role ) {
+            // Same refusal shape `Content_Recovery::recover()` produces when
+            // its own `self::authorize()` check fires, so a caller cannot
+            // distinguish "refused at the tool entry" from "refused inside
+            // recover()". The plan's symmetry rule for inspection is matched
+            // here for destruction: the existence of another actor's row is
+            // not disclosed beyond what the message already names.
+            $tx_id    = isset( $tx['id'] ) ? (string) $tx['id'] : '';
+            $tx_owner = isset( $tx['actor'] ) ? (string) $tx['actor'] : '';
+            return array(
+                'transaction_id'          => $tx_id,
+                'transaction_owner'       => $tx_owner,
+                'actor'                   => $actor,
+                'authorized_as'           => '',
+                'actor_capable'           => false,
+                'status'                  => \AgentShell_MCP\Content_Recovery::STATUS_REFUSED,
+                'reason'                  => 'Transaction ' . $tx_id . ' belongs to '
+                    . ( '' === $tx_owner ? '(nobody recorded)' : $tx_owner )
+                    . ' and you are ' . $actor . '. Recovery of another actor\'s transaction requires '
+                    . 'manage_options and an explicit authorisation.',
+                'operations'              => array(),
+                'deleted_transactions'    => array(),
+                'conflicts'               => array(),
+                'transaction_row_deleted' => false,
+                'integrity'               => 'unverified',
+                'integrity_note'          => '',
+                'supported_operations'    => \AgentShell_MCP\Content_Journal::SUPPORTED_OPERATIONS,
+            );
+        }
+
         return \AgentShell_MCP\Content_Recovery::recover(
             $tx,
-            null,
-            ! empty( $arguments['authorize_recovery'] )
+            $actor,
+            $explicitly_authorized
         );
     }
 }

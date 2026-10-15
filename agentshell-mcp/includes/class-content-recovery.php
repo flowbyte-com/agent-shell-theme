@@ -85,7 +85,11 @@ class Content_Recovery {
      *
      *   - `owner` — the transaction row's own `actor`. Unchanged from commit
      *     and rollback: an owner who lost their session mid-write can clean up
-     *     their own mess without asking anyone.
+     *     their own mess without asking anyone. The capability is intentionally
+     *     NOT checked here: a session-revoked owner still needs a path to
+     *     settle their own transaction, and the destructive re-check below
+     *     (`authorize_destruction`) is the moment the per-post cap is
+     *     consulted, not here.
      *   - `recovery_administrator` — somebody else, and only with two things
      *     true at once: the capability, and an explicit opt-in argument on the
      *     call. The capability is the same `manage_options` every MCP tool
@@ -95,11 +99,62 @@ class Content_Recovery {
      *     side effect of a session that happened to hold the right cookie.
      *
      * Inspection is not here, and deliberately so: reading the journal is free
-     * of consequences, so it is not gated on being allowed to act.
+     * of consequences, so it is not gated on being allowed to act. The
+     * read-side gate is `Content_Journal::authorize_inspection()`.
      */
     public static function authorize( array $tx, $actor, $explicitly_authorized = false ) {
         $owner = isset( $tx['actor'] ) ? (string) $tx['actor'] : '';
         if ( '' !== $owner && $owner === (string) $actor ) {
+            return 'owner';
+        }
+        if ( $explicitly_authorized
+            && function_exists( 'current_user_can' )
+            && current_user_can( 'manage_options' ) ) {
+            return 'recovery_administrator';
+        }
+        return '';
+    }
+
+    /**
+     * May this actor *destroy* the post this op names? Returns a role, or ''.
+     *
+     * Distinct from `authorize()` because destruction is gated on the
+     * per-post `delete_post` capability at the moment of the destructive
+     * call — not on stored actor identity, and not on the lease-time check
+     * the tool boundary did. A user whose role was revoked since the
+     * transaction opened can still own the row (and call rollback to
+     * discard their own draft) but cannot destroy a post whose
+     * `delete_post` cap they no longer hold.
+     *
+     * Two ways to be allowed:
+     *
+     *   - `owner` — the transaction row's own `actor` *and* the per-post
+     *     `current_user_can( 'delete_post', $post_id )`. The per-post check
+     *     is the load-bearing one: it is what stops a demoted actor from
+     *     deleting content they used to be able to delete.
+     *   - `recovery_administrator` — the existing rule, preserved: an
+     *     explicit opt-in *and* `manage_options`. The point of this path
+     *     is exactly to compensate when the owner no longer can, so no
+     *     per-post cap is required.
+     *
+     * Called at the tool boundary *and* re-called inside `compensate()`
+     * immediately before each `wp_delete_post()`. The first call gates the
+     * operation; the second is the one that destroys.
+     *
+     * @param array      $tx                     The stored row.
+     * @param string     $actor                  The acting actor.
+     * @param bool       $explicitly_authorized  Opt-in for a non-owner.
+     * @param int|null   $post_id                The post the cap is checked on.
+     *                                           Null for the tool-boundary
+     *                                           call (no specific post yet).
+     */
+    public static function authorize_destruction( array $tx, $actor, $explicitly_authorized = false, $post_id = null ) {
+        $owner = isset( $tx['actor'] ) ? (string) $tx['actor'] : '';
+        if ( '' !== $owner
+            && $owner === (string) $actor
+            && ( null === $post_id
+                || ( function_exists( 'current_user_can' )
+                    && current_user_can( 'delete_post', (int) $post_id ) ) ) ) {
             return 'owner';
         }
         if ( $explicitly_authorized
@@ -130,6 +185,7 @@ class Content_Recovery {
             'transaction_owner'       => isset( $tx['actor'] ) ? (string) $tx['actor'] : '',
             'actor'                   => $actor,
             'authorized_as'           => '',
+            'actor_capable'           => false,
             'status'                  => self::STATUS_REFUSED,
             'reason'                  => '',
             'operations'              => array(),
@@ -199,7 +255,7 @@ class Content_Recovery {
         $owed    = 0;
 
         foreach ( $content['ops'] as $op_id => $op ) {
-            $step = self::settle_operation( $working, (string) $op_id, $actor, $report );
+            $step = self::settle_operation( $working, (string) $op_id, $actor, $explicitly_authorized, $report );
             if ( self::STATUS_CONTENDED === $step['status'] ) {
                 // Somebody else moved the row while we held a decision about
                 // it. Stop rather than re-read and continue: the winner is
@@ -218,6 +274,11 @@ class Content_Recovery {
             $report['operations'][]         = $step['report'];
             if ( ! empty( $step['report']['deleted_post_id'] ) ) {
                 $report['deleted_transactions'][] = (int) $step['report']['deleted_post_id'];
+                // A deletion that actually ran means the per-post cap was held
+                // at the moment of destruction (the gate inside compensate()
+                // would have refused otherwise). Mark the report so audit can
+                // record the gate held.
+                $report['actor_capable'] = true;
             }
             if ( 'compensated' === $step['report']['outcome'] || 'already_settled' === $step['report']['outcome'] ) {
                 $settled++;
@@ -276,7 +337,7 @@ class Content_Recovery {
      *
      * @return array {tx, report, conflict, status}
      */
-    private static function settle_operation( array $tx, $op_id, $actor, array $report ) {
+    private static function settle_operation( array $tx, $op_id, $actor, $explicitly_authorized, array $report ) {
         $content = Content_Journal::of( $tx );
         $op      = $content['ops'][ $op_id ] ?? null;
         if ( ! is_array( $op ) ) {
@@ -366,7 +427,7 @@ class Content_Recovery {
 
         // ── the compensation itself ──────────────────────────────────────
         $claimed_op      = $claimed_content['ops'][ $op_id ];
-        $result          = self::compensate( $claimed_op );
+        $result          = self::compensate( $claimed_op, $actor, $explicitly_authorized );
         $base['outcome'] = $result['outcome'];
         $base['detail']  = $result['reason'];
 
@@ -442,8 +503,27 @@ class Content_Recovery {
      * The return shape is fixed — `outcome`, `post_id`, `reason` — because
      * every outcome has to be recordable, and a reason is the only thing that
      * makes a refusal actionable by a human later.
+     *
+     * @param array    $op             The journalled operation.
+     * @param string   $current_actor  The actor who triggered this
+     *                                 compensation. Used to re-check the
+     *                                 per-post `delete_post` capability
+     *                                 against the original op's `actor`
+     *                                 field via authorize_destruction().
+     * @param bool     $explicitly_authorized  Pass-through of the
+     *                                 tool-boundary opt-in. The owner
+     *                                 path of `authorize_destruction()`
+     *                                 gates on the per-post cap; the
+     *                                 recovery_administrator path gates
+     *                                 on `manage_options` plus this flag,
+     *                                 and the per-op re-check must use
+     *                                 the same authority the caller held
+     *                                 at tool entry. Without the
+     *                                 pass-through a recovery_administrator
+     *                                 would be refused per-op even though
+     *                                 they were accepted at the boundary.
      */
-    private static function compensate( array $op ) {
+    private static function compensate( array $op, $current_actor = '', $explicitly_authorized = false ) {
         $type = (string) $op['op'];
 
         if ( ! in_array( $type, Content_Journal::SUPPORTED_OPERATIONS, true ) ) {
@@ -529,6 +609,37 @@ class Content_Recovery {
                 'outcome' => 'conflict',
                 'post_id' => $post_id,
                 'reason'  => $mismatch,
+            );
+        }
+
+        // Per-post `delete_post` re-check, immediately before destruction.
+        //
+        // The tool boundary already called authorize_destruction() (or, for
+        // older callers, the equivalent authorize() check), but that was
+        // before the post id was necessarily known — and a role revoked
+        // between tool entry and this point must not result in a delete.
+        // Re-checking here makes the per-post cap a property of the
+        // destruction, not a property of the call.
+        //
+        // An actor who passed the tool-boundary check as recovery_administrator
+        // and still holds manage_options at the moment of destruction is
+        // unchanged. An owner who lost the per-post cap since the row was
+        // written is refused here, and the post is preserved.
+        //
+        // Deliberately not inside the SQL transaction: a session that
+        // has lost the cap should not have to wait for the database to
+        // agree. The current_user_can() check is the gate; the
+        // transaction is atomicity, not authority.
+        $actor_proxy = isset( $op['actor'] ) ? (string) $op['actor'] : '';
+        $tx_proxy    = array( 'actor' => $actor_proxy );
+        $destruction = self::authorize_destruction( $tx_proxy, $current_actor, $explicitly_authorized, $post_id );
+        if ( '' === $destruction ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $post_id,
+                'reason'  => 'post ' . $post_id . ' cannot be destroyed by the current actor: the per-post '
+                    . '`delete_post` capability is no longer held. The draft is preserved and the journal '
+                    . 'is kept so a recovery_administrator (manage_options + explicit opt-in) can resolve it.',
             );
         }
 
@@ -700,6 +811,12 @@ class Content_Recovery {
      * is only answerable if the refusal is on the record too. The event names
      * the actor and the role they acted under, so a stranger resolving another
      * actor's transaction is distinguishable in the log from its owner doing so.
+     *
+     * `actor_capable` records whether the per-post `delete_post` capability
+     * was held *at the moment of the destructive call* (i.e. when
+     * `authorize_destruction` was re-evaluated inside `compensate()`). A
+     * row deleted with `actor_capable: false` would mean the gate was
+     * bypassed; the field makes that observable in the audit log.
      */
     private static function audit( array $report ) {
         $operation = ( 'refused' === $report['status'] ) ? 'transaction_recovery_refused' : 'transaction_recovery';
@@ -711,6 +828,7 @@ class Content_Recovery {
                 'transaction_id'          => $report['transaction_id'],
                 'transaction_owner'       => $report['transaction_owner'],
                 'authorized_as'           => $report['authorized_as'],
+                'actor_capable'           => ! empty( $report['actor_capable'] ),
                 'status'                  => $report['status'],
                 'reason'                  => $report['reason'],
                 'integrity'               => $report['integrity'],

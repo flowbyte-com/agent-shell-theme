@@ -594,9 +594,26 @@ class Content_Journal {
      * who could not resolve anything, because the whole point of being able to
      * look is that looking is free of consequences.
      *
-     * @param array|null $tx Null to read the stored row.
+     * Authority is checked by the caller (the MCP tool), and the result
+     * passed in via `$allowed_to_see`. The function itself does not know
+     * who is asking: that decoupling lets the audit log record one row per
+     * successful inspection (a write the journal does not make) and lets
+     * an unauthorised inspection return the same shape a missing row would
+     * — the existence of somebody else's transaction is not disclosed.
+     *
+     * @param array|null $tx             Null to read the stored row.
+     * @param bool       $allowed_to_see False returns the no-row shape,
+     *                                   regardless of whether a row exists.
      */
-    public static function inspect( $tx = null ) {
+    public static function inspect( $tx = null, $allowed_to_see = true ) {
+        if ( ! $allowed_to_see ) {
+            return array(
+                'transaction'    => null,
+                'journal'        => null,
+                'recoverable'    => false,
+                'reason'         => 'No transaction is open.',
+            );
+        }
         if ( null === $tx ) {
             $tx = Transaction_Manager::instance()->payload();
         }
@@ -647,6 +664,46 @@ class Content_Journal {
             'recoverable'    => ( $outstanding && empty( $problems ) && 'tampered' !== $integrity['status'] ),
             'reason'         => self::recoverability_reason( $tx, $content, $problems, $integrity, $outstanding ),
         );
+    }
+
+    /**
+     * May this actor inspect this transaction's journal? Returns a role, or ''.
+     *
+     * Two ways to be allowed, and they are not the same:
+     *
+     *   - `owner` — the transaction row's own `actor`, *and* a current
+     *     `manage_options` capability. The capability is what re-checks
+     *     `brief B`: an actor whose role was revoked since the transaction
+     *     opened can no longer read the row, even though the actor field
+     *     still matches. A read is a write to the audit log, and the audit
+     *     log names who read what.
+     *   - `recovery_administrator` — somebody else, with `manage_options`
+     *     *and* an explicit opt-in argument on the call. The opt-in is what
+     *     makes the act deliberate rather than a side effect of a session
+     *     that happened to hold the right cookie.
+     *
+     * A refusal returns '' and is indistinguishable from "no row" in the
+     * tool's response: the existence of another actor's row is not disclosed.
+     */
+    public static function authorize_inspection( $tx, $actor, $explicitly_authorized = false ) {
+        if ( ! is_array( $tx ) ) {
+            // No row: nothing to authorise. Returning '' rather than a role
+            // tells the caller to short-circuit to the no-row shape.
+            return '';
+        }
+        $owner = isset( $tx['actor'] ) ? (string) $tx['actor'] : '';
+        if ( '' !== $owner
+            && $owner === (string) $actor
+            && function_exists( 'current_user_can' )
+            && current_user_can( 'manage_options' ) ) {
+            return 'owner';
+        }
+        if ( $explicitly_authorized
+            && function_exists( 'current_user_can' )
+            && current_user_can( 'manage_options' ) ) {
+            return 'recovery_administrator';
+        }
+        return '';
     }
 
     private static function recoverability_reason( array $tx, array $content, array $problems, array $integrity, $outstanding ) {

@@ -68,6 +68,16 @@ $token = 'ASjr' . substr( md5( (string) ( time() . getmypid() . random_int( 1, 1
 $f     = array();
 $mine  = array();
 
+// The per-post `delete_post` capability is checked at the moment of
+// destruction inside `compensate()`. The CLI context has no logged-in
+// user, so `current_user_can()` returns false for everything. Switch
+// to the install's admin (user 1, created by every WordPress setup
+// with the administrator role) so the per-post gate is held for the
+// drafts this child creates. The actor recorded in the journal is
+// still `$ACTOR` — the gate is on the real WordPress user, not the
+// actor string.
+wp_set_current_user( 1 );
+
 $ACTOR = 'live-recovery-probe';
 
 /** Exactly what was there before this child ran, so it can put it back. */
@@ -355,10 +365,16 @@ $f['final'] = array(
 );
 
 // ── 8. Authorisation, against the real capability check ───────────────────────
+// A non-owner without the recovery-administrator opt-in is refused even
+// though the WordPress current user is the admin. The gate is two
+// factors: actor match (for the owner path) or manage_options + opt-in
+// (for the recovery-administrator path). Pass `false` for the opt-in
+// and the second factor is unmet, so the call is refused at the tool
+// boundary.
 list( $id6, $op6 ) = jr_real_draft( $token, '-unauthorised' );
 $tx6 = jr_expired_row( $op6 );
 update_option( Tx::KEY, $tx6 );
-$refused = Content_Recovery::recover( $tx6, 'somebody-else', true );
+$refused = Content_Recovery::recover( $tx6, 'somebody-else', false );
 $f['authorisation'] = array(
     'status'      => $refused['status'],
     'reason'      => $refused['reason'],

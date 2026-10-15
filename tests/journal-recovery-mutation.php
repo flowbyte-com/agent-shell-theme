@@ -48,6 +48,7 @@ $RECOVERY_REL = 'agentshell-mcp/includes/class-content-recovery.php';
 $JOURNAL_REL  = 'agentshell-mcp/includes/class-content-journal.php';
 $TX_REL       = 'agentshell-mcp/includes/class-transactions.php';
 $TOOL_REL     = 'agentshell-mcp/includes/tools/class-recover-transaction.php';
+$GETJOURNAL_REL = 'agentshell-mcp/includes/tools/class-get-journal.php';
 
 $mutants = array(
 
@@ -253,6 +254,58 @@ $mutants = array(
         $RECOVERY_REL,
         "                'authorized_as'           => \$report['authorized_as'],",
         "                'authorized_as'           => '',",
+    ),
+
+    // ── authority: read vs destructive (Stage 1b, brief A + round-1 issues 5, 6) ─
+
+    'the manage_options re-check on the inspection owner path is dropped' => array(
+        // M-A1: the owner path of `authorize_inspection()` is what stops a
+        // session-revoked owner from reading after their role was demoted.
+        // Drop the `manage_options` line and the demoted owner is read as
+        // still authorised. Killed by A1b ("an owner without manage_options
+        // is refused inspection identically to a missing row").
+        $JOURNAL_REL,
+        "        if ( '' !== \$owner\n            && \$owner === (string) \$actor\n            && function_exists( 'current_user_can' )\n            && current_user_can( 'manage_options' ) ) {\n            return 'owner';\n        }",
+        "        if ( '' !== \$owner\n            && \$owner === (string) \$actor ) {\n            return 'owner';\n        }",
+    ),
+
+    'the authorize_inspection opt-in is silently ignored' => array(
+        // M-A2: the tool layer's `execute()` consults `authorize_inspection`
+        // with the opt-in argument. Drop the argument and an unrelated
+        // non-administrator can read somebody else's journal. Killed by
+        // A2 / A3.
+        $GETJOURNAL_REL,
+        "        \$role = \\AgentShell_MCP\\Content_Journal::authorize_inspection(\n            \$tx,\n            \$actor,\n            \$explicitly_authorized\n        );",
+        "        \$role = \\AgentShell_MCP\\Content_Journal::authorize_inspection(\n            \$tx,\n            \$actor,\n            false\n        );",
+    ),
+
+    'an inspection refusal reveals the row exists' => array(
+        // M-A3: a refused inspection must return the no-row shape so the
+        // existence of another actor's row is not disclosed. Bypass the
+        // short-circuit and the tool returns the full payload. Killed by A5.
+        $GETJOURNAL_REL,
+        "        if ( '' === \$role ) {\n            // Refused: indistinguishable from a missing row. No audit row,\n            // because an unauthorised read must leave the audit log\n            // untouched — a refused inspection is not a record of intent.\n            return \\AgentShell_MCP\\Content_Journal::inspect( null, false );\n        }",
+        "        if ( '' === \$role ) {\n            return \\AgentShell_MCP\\Content_Journal::inspect( is_array( \$tx ) ? \$tx : null, true );\n        }",
+    ),
+
+    'the per-post delete_post cap is not re-checked at compensation time' => array(
+        // M-A4: the per-op re-check inside `compensate()` is what stops a
+        // session-revoked owner from deleting after their role was demoted.
+        // Skip the re-check and a role-revoked owner is read as still
+        // capable. Killed by B2 / B3.
+        $RECOVERY_REL,
+        "        \$actor_proxy = isset( \$op['actor'] ) ? (string) \$op['actor'] : '';\n        \$tx_proxy    = array( 'actor' => \$actor_proxy );\n        \$destruction = self::authorize_destruction( \$tx_proxy, \$current_actor, \$explicitly_authorized, \$post_id );",
+        "        \$destruction = 'owner';",
+    ),
+
+    'a successful inspection writes no audit row' => array(
+        // M-A5: the audit-on-success path is what makes inspection
+        // observable. Rename the operation so the audit log never sees a
+        // `transaction_journal_inspected` row, and the read becomes
+        // indistinguishable from a refused read. Killed by A4 / A6.
+        $GETJOURNAL_REL,
+        "        \\AgentShell_MCP\\Store::record_event( \$actor, 'transaction_journal_inspected', array(",
+        "        \\AgentShell_MCP\\Store::record_event( \$actor, 'transaction_journal_inspected_MUTATED', array(",
     ),
 );
 

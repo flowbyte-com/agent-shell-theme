@@ -278,6 +278,25 @@ function jr_as_administrator() {
     $GLOBALS['_agentshell_test_user_caps'] = array( 'manage_options' => true );
 }
 
+/**
+ * Grant a per-post capability (default `delete_post`) for a specific post id.
+ *
+ * The owner path of `Content_Recovery::authorize_destruction()` re-checks
+ * `current_user_can($cap, $post_id)` at the moment of destruction. Tests
+ * that drive `Content_Recovery::recover()` as the owner need this granted
+ * to satisfy that gate; without it the per-op check refuses and the op
+ * transitions to `conflict` instead of being deleted.
+ */
+function jr_with_post_cap( $post_id, $cap = 'delete_post' ) {
+    $existing = isset( $GLOBALS['_agentshell_test_user_caps'][ $cap ] )
+        ? $GLOBALS['_agentshell_test_user_caps'][ $cap ] : array();
+    if ( ! is_array( $existing ) ) {
+        $existing = array();
+    }
+    $existing[] = (int) $post_id;
+    $GLOBALS['_agentshell_test_user_caps'][ $cap ] = array_values( array_unique( $existing ) );
+}
+
 function jr_advance( $seconds ) {
     Tx::freeze_time( JR_T0 + $seconds );
 }
@@ -520,6 +539,11 @@ Agentshell_Test::run(
         $op = jr_op( 'applied', 404 );
         jr_seed( jr_row( array( $op ) ) );
         jr_post( 404, array(), $op['id'] );
+        // The owner path of `authorize_destruction()` re-checks
+        // `current_user_can('delete_post', $post_id)` at the moment of
+        // destruction. Grant the cap on the recorded id so the per-op
+        // gate agrees with the tool-boundary owner check.
+        jr_with_post_cap( 404 );
 
         $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR );
 
@@ -546,6 +570,7 @@ Agentshell_Test::run(
         $op = jr_op( 'applied', 405 );
         jr_seed( jr_row( array( $op ) ) );
         jr_post( 405, array(), $op['id'] );
+        jr_with_post_cap( 405 );
 
         $first = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR );
         Agentshell_Test::assert_equals( Content_Recovery::STATUS_RECOVERED, $first['status'], 'the first run recovers' );
@@ -623,6 +648,7 @@ Agentshell_Test::run(
 
         // After the claim expires: taken over and finished.
         jr_advance( Content_Recovery::CLAIM_TTL_SECONDS + 1 );
+        jr_with_post_cap( 407 );
         $resumed = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR );
         Agentshell_Test::assert_equals( Content_Recovery::STATUS_RECOVERED, $resumed['status'], 'the resumption completes' );
         Agentshell_Test::assert_equals( 407, (int) $resumed['operations'][0]['deleted_post_id'], 'the draft is deleted on resumption' );
@@ -637,6 +663,7 @@ Agentshell_Test::run(
         $op = jr_op( 'applied', 408 );
         jr_seed( jr_row( array( $op ) ) );
         jr_post( 408, array(), $op['id'] );
+        jr_with_post_cap( 408 );
 
         global $wpdb;
         $GLOBALS['jr_delete_fails'] = true;
@@ -904,33 +931,270 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
-    'inspection is open, and it renews, reclaims and resolves nothing',
+    'inspection by the owner shows the post id and the after-image',
     function () {
+        // A1: the owner path is not short-circuited by the new authority gate.
+        // A real owner with manage_options reads the full journal; the
+        // per-post cap is the destructive-recovery gate, not the read gate.
         jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'applied', 418 );
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 418, array(), $op['id'] );
+        jr_actor( JR_CRASHED_ACTOR );
+
+        $view = ( new Get_Journal() )->execute( array() );
+        Agentshell_Test::assert_equals( 1, (int) $view['operation_count'], 'the owner sees the journal' );
+        Agentshell_Test::assert_equals( 418, (int) $view['operations'][0]['post_id'], 'and the post id' );
+        Agentshell_Test::assert_true( $view['recoverable'], 'and recoverability is reported' );
+        Agentshell_Test::assert_equals( 1, count( jr_audit( 'transaction_journal_inspected' ) ), 'and the read is audited' );
+    }
+);
+
+Agentshell_Test::run(
+    'inspection by an unrelated authenticated user is refused identically to a missing row',
+    function () {
+        // A2: replaces the previous "inspection is open" test. Inspection is
+        // no longer open — the response to an unrelated authenticated caller
+        // is the no-row shape, indistinguishable from a missing transaction.
+        // The existence of another actor's row is not disclosed.
+        jr_reset();
+        jr_as_administrator();
         $op = jr_op( 'applied', 419 );
         jr_seed( jr_row( array( $op ) ) );
         jr_post( 419, array(), $op['id'] );
         jr_actor( 'curious-peer' );
 
         $before = jr_row_on_disk();
-        $tool   = new Get_Journal();
-        $view   = $tool->execute( array() );
+        $view   = ( new Get_Journal() )->execute( array() );
 
-        Agentshell_Test::assert_true( $view['read_only'], 'inspection declares itself read-only' );
-        Agentshell_Test::assert_true( $view['recoverable'], 'and reports that recovery is possible' );
-        Agentshell_Test::assert_equals( 419, $view['operations'][0]['post_id'], 'including which post is at stake' );
-        Agentshell_Test::assert_equals( 1, (int) $view['operation_count'], 'and how much is at stake' );
+        Agentshell_Test::assert_equals( null, $view['transaction'], 'a peer cannot see whose transaction this is' );
+        Agentshell_Test::assert_equals( null, $view['journal'], 'and cannot see the journal' );
+        Agentshell_Test::assert_false( $view['recoverable'], 'and the recoverable flag is false' );
+        Agentshell_Test::assert_equals(
+            'No transaction is open.', $view['reason'],
+            'and the reason matches the missing-row message'
+        );
 
-        // Reading must not have moved anything: no renewal of the dead lease,
-        // no reclaim, no deletion, no journal advance.
         $after = jr_row_on_disk();
         Agentshell_Test::assert_equals( $before, $after, 'inspection must leave the transaction row byte-identical' );
         Agentshell_Test::assert_true( jr_post_exists( 419 ), 'and no content may be touched' );
+        Agentshell_Test::assert_equals(
+            array(), jr_audit( 'transaction_journal_inspected' ),
+            'and an unauthorised read writes no audit row'
+        );
+    }
+);
 
-        // And the same peer still cannot resolve it.
-        $refused = Content_Recovery::recover( $after, 'curious-peer', false );
-        Agentshell_Test::assert_equals( Content_Recovery::STATUS_REFUSED, $refused['status'], 'a peer cannot resolve it' );
-        Agentshell_Test::assert_true( jr_post_exists( 419 ), 'the draft survives the refusal' );
+Agentshell_Test::run(
+    'inspection with authorize_inspection but no manage_options is refused identically',
+    function () {
+        // A3: the capability check is the gate. The opt-in argument on its
+        // own does not authorise; an unauthenticated peer must be refused
+        // the same way a missing row is refused.
+        jr_reset();
+        $op = jr_op( 'applied', 450 );
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 450, array(), $op['id'] );
+        jr_actor( 'curious-peer' );
+
+        $view = ( new Get_Journal() )->execute( array( 'authorize_inspection' => true ) );
+        Agentshell_Test::assert_equals( null, $view['transaction'], 'no row is disclosed' );
+        Agentshell_Test::assert_equals( 'No transaction is open.', $view['reason'], 'and the same missing-row reason' );
+        Agentshell_Test::assert_equals(
+            array(), jr_audit( 'transaction_journal_inspected' ),
+            'and the refused read writes no audit row'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'inspection by an administrator with authorize_inspection returns the full payload',
+    function () {
+        // A4: a non-owner with manage_options + the opt-in gets the same
+        // view the owner would, and the audit row records the
+        // recovery_administrator role.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'applied', 451 );
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 451, array(), $op['id'] );
+        jr_actor( 'recovery-admin' );
+
+        $view = ( new Get_Journal() )->execute( array( 'authorize_inspection' => true ) );
+        Agentshell_Test::assert_equals( 1, (int) $view['operation_count'], 'the journal is visible to a recovery administrator' );
+        Agentshell_Test::assert_equals( 451, (int) $view['operations'][0]['post_id'], 'with the post id' );
+
+        $rows = jr_audit( 'transaction_journal_inspected' );
+        Agentshell_Test::assert_equals( 1, count( $rows ), 'and the read is audited' );
+        Agentshell_Test::assert_equals( 'recovery-admin', $rows[0]['actor'], 'naming the actor who read' );
+        Agentshell_Test::assert_equals(
+            'recovery_administrator', $rows[0]['changed']['authorized_as'],
+            'and the role they were authorised as'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'an unauthorised read returns a refusal that does not name the row',
+    function () {
+        // A5: the message is "No transaction is open.", not "belongs to X
+        // and you are Y". The two refusal branches (no caps, no opt-in;
+        // no caps even with opt-in) must produce identical responses for
+        // any caller that is not the owner and not authorised.
+        jr_reset();
+        $op = jr_op( 'applied', 452 );
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 452, array(), $op['id'] );
+        jr_actor( 'stranger' );
+
+        $view = ( new Get_Journal() )->execute( array( 'authorize_inspection' => true ) );
+        Agentshell_Test::assert_equals( 'No transaction is open.', $view['reason'], 'the refusal is the no-row message' );
+        Agentshell_Test::assert_equals( null, $view['transaction'], 'and the transaction field is null' );
+        Agentshell_Test::assert_equals( null, $view['journal'], 'and the journal field is null' );
+    }
+);
+
+Agentshell_Test::run(
+    'a successful inspection writes one audit row; an unauthorised one writes none',
+    function () {
+        // A6: the read-only guarantee is now expressed as "writes zero audit
+        // rows on a refusal, exactly one on a success". An unauthorised
+        // inspection is not a record of intent — the audit log is
+        // untouched, so an attacker cannot tell from the log whether a
+        // row exists that they were refused.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'applied', 453 );
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 453, array(), $op['id'] );
+
+        // Refused read: the actor is not the owner and has no opt-in.
+        jr_actor( 'stranger' );
+        ( new Get_Journal() )->execute( array() );
+        Agentshell_Test::assert_equals(
+            array(), jr_audit( 'transaction_journal_inspected' ),
+            'an unauthorised read leaves the audit log untouched'
+        );
+
+        // Authorised read: the owner.
+        jr_actor( JR_CRASHED_ACTOR );
+        ( new Get_Journal() )->execute( array() );
+        $rows = jr_audit( 'transaction_journal_inspected' );
+        Agentshell_Test::assert_equals( 1, count( $rows ), 'and the authorised read writes one row' );
+        Agentshell_Test::assert_equals( 'owner', $rows[0]['changed']['authorized_as'], 'naming the role' );
+    }
+);
+
+Agentshell_Test::run(
+    'an owner without manage_options is refused inspection identically to a missing row',
+    function () {
+        // A1b (a corollary of A1): the owner path of `authorize_inspection`
+        // is not "actor match" alone — the `manage_options` re-check is
+        // what stops a session-revoked owner from reading after their
+        // role was demoted. Drop the re-check (M-A1) and this test fails
+        // because the owner is accepted.
+        jr_reset();
+        $op = jr_op( 'applied', 454 );
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 454, array(), $op['id'] );
+        jr_actor( JR_CRASHED_ACTOR );
+        // No `manage_options`: the actor was demoted.
+
+        $view = ( new Get_Journal() )->execute( array() );
+        Agentshell_Test::assert_equals( null, $view['transaction'], 'a demoted owner cannot read the row' );
+        Agentshell_Test::assert_equals( 'No transaction is open.', $view['reason'], 'and the response is the no-row shape' );
+        Agentshell_Test::assert_equals(
+            array(), jr_audit( 'transaction_journal_inspected' ),
+            'and the refused read writes no audit row'
+        );
+    }
+);
+
+// ---------------------------------------------------------------------------
+// 11b. Distinct authorities: read vs destructive.
+//      The destructive path (compensation) checks the per-post `delete_post`
+//      capability at the moment of destruction. The read path does not.
+// ---------------------------------------------------------------------------
+
+Agentshell_Test::run(
+    'a recovery administrator with the per-post cap can resolve; the cap is checked at compensation time',
+    function () {
+        // B1: a non-owner recovery administrator can compensate when they
+        // hold both `manage_options` and the per-post `delete_post` cap. The
+        // plan is explicit: the per-post cap is checked at *compensation
+        // time*, not at the tool entry. This test drives a non-owner caller
+        // through the tool entry (where the recovery_administrator path
+        // accepts them on manage_options + opt-in) and into compensate()
+        // (where the per-op check uses the same authority).
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'applied', 460 );
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 460, array(), $op['id'] );
+        jr_with_post_cap( 460 );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), 'recovery-admin', true );
+
+        Agentshell_Test::assert_equals( Content_Recovery::STATUS_RECOVERED, $report['status'], 'recovery completes' );
+        Agentshell_Test::assert_equals( 'recovery_administrator', $report['authorized_as'], 'via the recovery-administrator path' );
+        Agentshell_Test::assert_equals( array( 460 ), $GLOBALS['jr_delete_calls'], 'the post is deleted exactly once' );
+    }
+);
+
+Agentshell_Test::run(
+    'the owner with manage_options but no per-post cap is refused for compensation, not for inspection',
+    function () {
+        // B2: distinguishes the two authorities. Inspection is open to the
+        // owner (the owner path of authorize_inspection accepts them on
+        // manage_options). Compensation requires the per-post cap, which the
+        // owner here does not hold. The op transitions to `conflict` and the
+        // post is preserved.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'applied', 461 );
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 461, array(), $op['id'] );
+        jr_actor( JR_CRASHED_ACTOR );
+        // No jr_with_post_cap: the per-post cap is missing.
+
+        // Inspection is open to the owner: the read is not refused.
+        $view = ( new Get_Journal() )->execute( array() );
+        Agentshell_Test::assert_equals( 1, (int) $view['operation_count'], 'inspection sees the journal' );
+
+        // Compensation is refused at the per-op gate.
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR );
+        Agentshell_Test::assert_equals( Content_Recovery::STATUS_PARTIAL, $report['status'], 'the refusal leaves the transaction partial' );
+        Agentshell_Test::assert_equals( 'conflict', $report['operations'][0]['outcome'], 'the op is conflict, not compensated' );
+        Agentshell_Test::assert_true( jr_post_exists( 461 ), 'the post is preserved' );
+        Agentshell_Test::assert_true( false !== strpos( $report['operations'][0]['detail'], 'per-post' ),
+            'and the reason names the missing per-post cap' );
+    }
+);
+
+Agentshell_Test::run(
+    'an owner who lost the per-post cap between tool entry and destruction is refused at the per-op gate',
+    function () {
+        // B3: the per-post cap is a property of the destruction, not a
+        // property of the call. The tool entry accepts the owner; the
+        // per-op re-check refuses when the cap is gone. This test
+        // simulates the role-revocation case by setting the cap
+        // differently on each path: an empty `_agentshell_test_user_caps`
+        // at the moment compensate() runs.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'applied', 462 );
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 462, array(), $op['id'] );
+        jr_actor( JR_CRASHED_ACTOR );
+        // The owner holds manage_options but NOT the per-post cap: this is
+        // what "the role was revoked" looks like in the stub.
+        $GLOBALS['_agentshell_test_user_caps'] = array( 'manage_options' => true );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR );
+        Agentshell_Test::assert_equals( Content_Recovery::STATUS_PARTIAL, $report['status'], 'the role revocation refuses the close' );
+        Agentshell_Test::assert_equals( 'conflict', $report['operations'][0]['outcome'], 'and the op is conflict' );
+        Agentshell_Test::assert_true( jr_post_exists( 462 ), 'and the post is preserved' );
     }
 );
 
@@ -951,6 +1215,7 @@ Agentshell_Test::run(
         jr_post( 422, array( 'post_title' => 'Home', 'post_name' => 'home' ), null );
         $before_421 = $GLOBALS['_agentshell_test_posts'][421];
         $before_422 = $GLOBALS['_agentshell_test_posts'][422];
+        jr_with_post_cap( 420 );
 
         Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR );
 
@@ -1076,6 +1341,7 @@ Agentshell_Test::run(
         jr_seed( jr_row( array( $ok, $bad ) ) );
         jr_post( 429, array(), $ok['id'] );
         jr_post( 430, array( 'post_status' => 'publish' ), $bad['id'] );
+        jr_with_post_cap( 429 );
 
         $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR );
         Agentshell_Test::assert_equals( Content_Recovery::STATUS_PARTIAL, $report['status'], 'one conflict means partial' );
@@ -1222,6 +1488,7 @@ Agentshell_Test::run(
         $tx['content']['sig'] = '';
         jr_seed( $tx );
         jr_post( 436, array(), $op['id'] );
+        jr_with_post_cap( 436 );
 
         $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR );
         Agentshell_Test::assert_equals( 'unverified', $report['integrity'], 'recovery reports the gap' );
@@ -1237,6 +1504,7 @@ Agentshell_Test::run(
         $op = jr_op( 'applied', 437 );
         jr_seed( jr_row( array( $op ) ) );
         jr_post( 437, array(), $op['id'] );
+        jr_with_post_cap( 437 );
 
         global $wpdb;
         $racing          = new JR_Racing_wpdb();
