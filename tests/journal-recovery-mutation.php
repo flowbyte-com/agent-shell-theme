@@ -50,6 +50,7 @@ $TX_REL       = 'agentshell-mcp/includes/class-transactions.php';
 $LOCK_REL     = 'agentshell-mcp/includes/class-recovery-advisory-lock.php';
 $TOOL_REL     = 'agentshell-mcp/includes/tools/class-recover-transaction.php';
 $GETJOURNAL_REL = 'agentshell-mcp/includes/tools/class-get-journal.php';
+$UPDATE_DRAFT_REL = 'agentshell-mcp/includes/tools/class-update-draft.php';
 
 $mutants = array(
 
@@ -810,6 +811,115 @@ $mutants = array(
         "                return array(\n                    'outcome' => 'conflict',\n                    'post_id' => 0,\n                    'reason'  => count( \$found ) . ' posts (' . implode( ', ', \$found )\n                        . ') carry this operation\\'s marker, so which one this transaction created cannot be told.',\n                );",
         "                // SKIP M-SA6\n                return array(\n                    'outcome' => 'compensated',\n                    'post_id' => (int) \$found[0],\n                    'reason'  => 'silently chose first',\n                );",
     ),
+
+    // ── Stage 2a: agentshell_update_draft ────────────────────────────────
+
+    'the in-transaction gate is dropped' => array(
+        // M-UD-act: Update_Draft's `if ( ! $tx_mgr->is_active() )` gate is
+        // the only thing that stops a non-journalled edit from going
+        // through. Without it, the tool records a transaction-less
+        // update with no rollback path. Killed by UD1.
+        $UPDATE_DRAFT_REL,
+        "        if ( ! \$tx_mgr->is_active() ) {",
+        "        if ( false ) {",
+    ),
+
+    'the "at least one field" gate is dropped' => array(
+        // M-UD-no-field: the schema-level check that at least one of
+        // title/content/slug is supplied. Without it, a no-op call
+        // would be journalled and survive a rollback as "an op with
+        // nothing in it". Killed by UD2 and UD15.
+        $UPDATE_DRAFT_REL,
+        "        if ( ! \$has_title && ! \$has_content && ! \$has_slug ) {",
+        "        if ( false ) {",
+    ),
+
+    'the title-and-content-both-empty gate is dropped' => array(
+        // M-UD-empty: the second schema-level check, applied to
+        // arguments that *did* supply both fields. An empty-title +
+        // empty-content update is a no-op masquerading as a real edit.
+        // Killed by UD12.
+        $UPDATE_DRAFT_REL,
+        "        if ( null !== \$title && null !== \$body && '' === trim( \$title ) && '' === trim( \$body ) ) {",
+        "        if ( false ) {",
+    ),
+
+    'the "post is not a draft" gate is dropped' => array(
+        // M-UD-status: the post_status check is the only thing that
+        // keeps Update_Draft from editing published content, where
+        // status transitions are not journalled. Killed by UD4.
+        $UPDATE_DRAFT_REL,
+        "        if ( 'draft' !== (string) \$post->post_status ) {",
+        "        if ( false ) {",
+    ),
+
+    'the marker ownership gate is dropped' => array(
+        // M-UD-marker: the get_post_meta( OP_META ) check + the
+        // find_owning_create_op() lookup together are what
+        // proves the post is one this transaction created. Without
+        // them, any draft the current actor can see is editable,
+        // which is the "editing somebody else's draft through this
+        // transaction" failure mode. Killed by UD5 and UD6.
+        $UPDATE_DRAFT_REL,
+        "        \$marker = (string) get_post_meta( \$id, \\AgentShell_MCP\\Content_Journal::OP_META, true );\n        if ( '' === \$marker ) {",
+        "        \$marker = (string) get_post_meta( \$id, \\AgentShell_MCP\\Content_Journal::OP_META, true );\n        if ( false ) {",
+    ),
+
+    'the owning-create-state gate is dropped' => array(
+        // M-UD-create-state: the check that the create op owning this
+        // post is in `applied` (or `partial-applied`). Without it, an
+        // update is recordable against a post whose create op is
+        // still in `intended` — a window where the create never
+        // committed but the update is treated as live. Killed by UD14.
+        $UPDATE_DRAFT_REL,
+        "        if ( 'applied' !== (string) ( \$owning_create['state'] ?? '' )\n            && 'partial-applied' !== (string) ( \$owning_create['state'] ?? '' ) ) {",
+        "        if ( false ) {",
+    ),
+
+    'compensate_update drops the before-image restoration' => array(
+        // M-UR-restore: the wp_update_post call inside the guarded
+        // transaction is what re-applies the recorded before-image.
+        // Without it, the post stays at the "after" state and the op
+        // is reported compensated anyway. Killed by UR1.
+        $RECOVERY_REL,
+        "            \$restore = array(\n                'ID'           => \$post_id,\n                'post_title'   => (string) ( \$before['post_title'] ?? \$post->post_title ),\n                'post_content' => (string) ( \$before['post_content'] ?? \$post->post_content ),\n                'post_name'    => (string) ( \$before['post_name'] ?? \$post->post_name ),\n            );\n            \$updated = Content_Write_Guard::run(\n                function () use ( \$restore ) {\n                    return wp_update_post( wp_slash( \$restore ), true );\n                }\n            );",
+        "            // SKIP M-UR-restore\n            \$updated = \$post_id;",
+    ),
+
+    'compensate_update drops the verify_post mismatch check' => array(
+        // M-UR-conflict: the verify_post() call before the cap check
+        // is the only thing that catches a post edited since the
+        // update was applied. Without it, a divergent post is
+        // silently restored to its before-image, overwriting the
+        // external edit. Killed by UR3 and UR8.
+        $RECOVERY_REL,
+        "        \$mismatch = self::verify_post( \$op, \$post, \$marker );\n        if ( '' !== \$mismatch ) {",
+        "        \$mismatch = '';\n        if ( false ) {",
+    ),
+
+    'compensate_update drops the edit_post cap check' => array(
+        // M-UR-cap: the per-post edit_post re-check is what stops an
+        // actor who lost the cap since the update was applied from
+        // restoring the before-image. Without it, a revoked editor
+        // can still mutate the post through the recovery path.
+        // Killed by UR5.
+        $RECOVERY_REL,
+        "        if ( function_exists( 'current_user_can' )\n            && ! current_user_can( 'edit_post', \$post_id ) ) {",
+        "        if ( false ) {",
+    ),
+
+    'order_ops_for_compensation is bypassed for mixed journals' => array(
+        // M-UR-order: the update-first / create-last split is the
+        // load-bearing piece for mixed journals: an update's inverse
+        // applies a before-image, and a create's inverse deletes the
+        // post. If they run in the wrong order (or interleaved), the
+        // update's before-image is applied to a post the create then
+        // deletes — wasted work and a misleading audit log. Killed
+        // by UR2.
+        $RECOVERY_REL,
+        "        return \$updates + \$creates;",
+        "        // SKIP M-UR-order\n        return \$ops;",
+    ),
 );
 
 $killed   = 0;
@@ -843,6 +953,18 @@ $equivalent = array(
         . 'immediately after `get_post( $post_id )`. The `false` short-circuits '
         . 'the condition; no call ever returns the placeholder `compensated` '
         . 'array. The original code path is unchanged.',
+
+    'the marker ownership gate is dropped' =>
+        'The marker-emptiness check at the top of the marker-ownership block '
+        . '(`if ( \'\' === $marker )`) is a fast-path refusal. With it removed, '
+        . 'an empty marker falls through to `find_owning_create_op($content, '
+        . '\'\')` which itself returns null for an empty marker (line 405: '
+        . '`if ( \'\' === $marker || empty( $content[\'ops\'] ) ) { return null; }`) '
+        . 'and triggers the second `transaction_update_draft_not_transaction_owned` '
+        . 'refusal on the following `if ( null === $owning_create )` line. UD5 and '
+        . 'UD6 both assert that error code; the inner helper is the load-bearing '
+        . 'gate and the empty-marker check is a defence-in-depth fast path. '
+        . 'Removing it changes no observable outcome.',
 
     'rollback does not preserve the journal on compensation conflict' =>
         'The first `if ( ! empty( $conflicts ) )` refusal in rollback() is a '
