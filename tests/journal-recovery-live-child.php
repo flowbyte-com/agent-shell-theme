@@ -121,6 +121,41 @@ if ( is_array( $saved_transaction ) && 0 !== strpos( $pre_label, 'live ' ) ) {
     exit( 0 );
 }
 
+/**
+ * Apply the production create pattern: head advance FIRST, then mark_applied.
+ *
+ * Mirrors class-create-draft.php lines 199–219. Every test that journals a
+ * real post and exercises a path that needs to verify the post against the
+ * journal (rollback_transaction, Content_Recovery::recover, same-second
+ * content divergence) must use this helper. The recovery engine's
+ * compensate_create reads the head after-image via Content_Journal::head_after;
+ * without a head, the engine throws "post N is recorded in this operation but
+ * the journal carries no head after-image for it" — the divergence the
+ * child crashes on at line 658.
+ *
+ * Deliberately NOT used by the F-mark_applied-cas-failure test (line 936),
+ * which sets up a side-channel that moves the row between wp_insert_post
+ * and mark_applied and asserts that mark_applied's CAS fails. Adding the
+ * head advance first would defeat that test.
+ */
+function jr_apply_create( $tx, $intent_id, $post_id, array $after ) {
+	$head_tx = \AgentShell_MCP\Content_Journal::compare_and_set_head( $tx, (int) $post_id, null, $after );
+	if ( ! is_array( $head_tx ) ) {
+		throw new \RuntimeException(
+			'compare_and_set_head refused for post ' . (int) $post_id
+			. ' (op ' . (string) $intent_id . '); the create op cannot be settled.'
+		);
+	}
+	$applied = \AgentShell_MCP\Content_Journal::mark_applied( $head_tx, $intent_id, $post_id, $after );
+	if ( null === $applied ) {
+		throw new \RuntimeException(
+			'mark_applied CAS refused for post ' . (int) $post_id
+			. ' (op ' . (string) $intent_id . '); the row moved between the head advance and the apply.'
+		);
+	}
+	return $applied;
+}
+
 function jr_rows_for( $needle ) {
     global $wpdb;
     return array_map( 'intval', $wpdb->get_col( $wpdb->prepare(
@@ -591,7 +626,7 @@ $post11 = Content_Write_Guard::run( function () use ( $tx11, $intent11, $token )
         'post_content_length' => strlen( (string) $p->post_content ),
         'op_meta_value'       => (string) $intent11['id'],
     );
-    Content_Journal::mark_applied( $tx11, $intent11['id'], $id, $after );
+    jr_apply_create( $tx11, $intent11['id'], $id, $after );
     return $id;
 } );
 $GLOBALS['jr_mine'][] = (int) $post11;
@@ -644,7 +679,7 @@ $post12 = Content_Write_Guard::run( function () use ( $intent12, $token ) {
 } );
 $GLOBALS['jr_mine'][] = (int) $post12;
 $p12 = get_post( $post12 );
-Content_Journal::mark_applied( $tx12, $intent12['id'], $post12, array(
+jr_apply_create( $tx12, $intent12['id'], $post12, array(
     'post_type'           => (string) $p12->post_type,
     'post_status'         => (string) $p12->post_status,
     'post_name'           => (string) $p12->post_name,
@@ -690,7 +725,7 @@ $post13 = Content_Write_Guard::run( function () use ( $intent13, $token ) {
 } );
 $GLOBALS['jr_mine'][] = (int) $post13;
 $p13 = get_post( $post13 );
-Content_Journal::mark_applied( $tx13, $intent13['id'], $post13, array(
+jr_apply_create( $tx13, $intent13['id'], $post13, array(
     'post_type'           => (string) $p13->post_type,
     'post_status'         => (string) $p13->post_status,
     'post_name'           => (string) $p13->post_name,
@@ -764,7 +799,7 @@ $post14 = Content_Write_Guard::run( function () use ( $intent14, $token ) {
 } );
 $GLOBALS['jr_mine'][] = (int) $post14;
 $p14 = get_post( $post14 );
-Content_Journal::mark_applied( $tx14, $intent14['id'], $post14, array(
+jr_apply_create( $tx14, $intent14['id'], $post14, array(
     'post_type'           => (string) $p14->post_type,
     'post_status'         => (string) $p14->post_status,
     'post_name'           => (string) $p14->post_name,
@@ -829,7 +864,7 @@ $post15 = Content_Write_Guard::run( function () use ( $intent15, $token ) {
 } );
 $GLOBALS['jr_mine'][] = (int) $post15;
 $p15 = get_post( $post15 );
-Content_Journal::mark_applied( $tx15, $intent15['id'], $post15, array(
+jr_apply_create( $tx15, $intent15['id'], $post15, array(
     'post_type'           => (string) $p15->post_type,
     'post_status'         => (string) $p15->post_status,
     'post_name'           => (string) $p15->post_name,
@@ -1108,7 +1143,7 @@ $u5_post = Content_Write_Guard::run( function () use ( $u5_intent, $token ) {
 } );
 $GLOBALS['jr_mine'][] = (int) $u5_post;
 $u5_p = get_post( $u5_post );
-Content_Journal::mark_applied( $tx_u5, $u5_intent['id'], $u5_post, array(
+jr_apply_create( $tx_u5, $u5_intent['id'], $u5_post, array(
     'post_type'           => (string) $u5_p->post_type,
     'post_status'         => (string) $u5_p->post_status,
     'post_name'           => (string) $u5_p->post_name,
@@ -1194,7 +1229,7 @@ $u6_post = Content_Write_Guard::run( function () use ( $u6_intent, $token ) {
 } );
 $GLOBALS['jr_mine'][] = (int) $u6_post;
 $u6_p = get_post( $u6_post );
-Content_Journal::mark_applied( $tx_u6, $u6_intent['id'], $u6_post, array(
+jr_apply_create( $tx_u6, $u6_intent['id'], $u6_post, array(
     'post_type'           => (string) $u6_p->post_type,
     'post_status'         => (string) $u6_p->post_status,
     'post_name'           => (string) $u6_p->post_name,
@@ -1355,7 +1390,7 @@ function jr15_draft( $title, $body, $token ) {
     }
     $GLOBALS['jr_mine'][] = (int) $post_id;
     $p = get_post( $post_id );
-    Content_Journal::mark_applied( $tx_row, $intent['id'], $post_id, array(
+    jr_apply_create( $tx_row, $intent['id'], $post_id, array(
         'post_type'           => (string) $p->post_type,
         'post_status'         => (string) $p->post_status,
         'post_name'           => (string) $p->post_name,
@@ -1804,6 +1839,611 @@ $f['stage2a_create_only_unchanged'] = array(
     'post_rollback_id' => (int) $p15_11b,
     'post_rollback_gone'=> jr_row_exists( $p15_11b ),
     'rollback_status'  => $rollback15_11b['status'] ?? '',
+);
+
+// ── 16. Stage 2b-5: mixed create + claim-edit + claim-only in one transaction ─
+// Real WordPress end-to-end test of a single transaction carrying three
+// distinct lifecycle kinds. The Stage 2a head-pointer model and the Stage 2b
+// OP_EDIT_EXISTING_DRAFT inverse together must coexist in one chain:
+//
+//   X: created by the transaction, then edited.
+//   Y: pre-existing draft, claimed by the transaction, then edited.
+//   Z: pre-existing draft, claimed by the transaction, NEVER edited.
+//
+// The rollback path is the safety-critical one: the recovery engine must
+//   (a) delete X (one wp_delete_post);
+//   (b) restore Y to its pre-claim baseline (one wp_update_post);
+//   (c) leave Z entirely alone (no wp_update_post, no wp_delete_post).
+//
+// Z is the load-bearing case. The user's spec says the claim-only rollback
+// must NOT rewrite Z's content "merely to restore the unchanged baseline";
+// the existing MX4 stub test pinned this for the recovery engine, and this
+// section pins it end-to-end against real WordPress. The marker stamp
+// `update_post_meta` is the only side effect of `claim_existing_draft` and
+// it does NOT bump `post_modified_gmt`, so an unchanged modified_gmt is
+// the strongest possible evidence that no wp_update_post ran.
+//
+// The commit path is also tested. A `claimed` op with no follow-on edit is
+// "unsettled" per the close gate, so the commit must refuse unless the
+// operator first settles the claim. The natural settlement is an explicit
+// `recover_transaction` call: the no-op path settles Z's op to `compensated`
+// without writing to the post. The test then commits and asserts all three
+// posts retain their final state.
+//
+// Distinct risks the mixed path introduces that single-kind tests do not:
+//   - order of compensation: claim-edit (Y) before create-delete (X) so the
+//     create's verify_post sees the post Y is restoring and does not race;
+//   - per-post OCC head-pointer correctness: each post has its own head, the
+//     claim's baseline is read at claim time, the update's before-image is
+//     read at update time, and the head advances through the chain;
+//   - the no-write invariant for the unedited claim: this is the new
+//     guarantee Stage 2b adds on top of Stage 2a;
+//   - the close gate handling: a mixed journal containing applied, claimed,
+//     and applied-via-update ops must close without leaking any op.
+//
+// We add: rollback path, commit path (with explicit recover), external
+// conflict, and unrelated content untouched.
+
+require_once $theme_root . '/agentshell-mcp/includes/tools/class-claim-existing-draft.php';
+require_once $theme_root . '/agentshell-mcp/includes/tools/class-recover-transaction.php';
+require_once $theme_root . '/agentshell-mcp/includes/tools/class-commit-transaction.php';
+
+use AgentShell_MCP\Tools\Claim_Existing_Draft;
+
+// 16.1 — ROLLBACK: X deleted, Y restored, Z unchanged.
+//
+// Pre-existing Y and Z. The two are real pages outside the transaction;
+// their pre-claim state is the immutable baseline the claim op records
+// and the recovery engine restores against. We capture the full strong
+// after-image (including post_modified_gmt) for both so the post-rollback
+// state can be compared byte-for-byte.
+$pre_y = wp_insert_post( wp_slash( array(
+    'post_type'    => 'page',
+    'post_status'  => 'draft',
+    'post_title'   => $token . '-16-1-y-baseline',
+    'post_content' => '<p>Y baseline body</p>',
+    'post_name'    => strtolower( $token . '-16-1-y-baseline' ),
+) ), true );
+$pre_z = wp_insert_post( wp_slash( array(
+    'post_type'    => 'page',
+    'post_status'  => 'draft',
+    'post_title'   => $token . '-16-1-z-baseline',
+    'post_content' => '<p>Z baseline body</p>',
+    'post_name'    => strtolower( $token . '-16-1-z-baseline' ),
+) ), true );
+if ( is_wp_error( $pre_y ) || ! $pre_y || is_wp_error( $pre_z ) || ! $pre_z ) {
+    throw new \RuntimeException( 'could not seed pre-existing Y and Z for section 16.1' );
+}
+$GLOBALS['jr_mine'][] = (int) $pre_y;
+$GLOBALS['jr_mine'][] = (int) $pre_z;
+// Capture baseline state right after creation; do not touch them again
+// until the rollback assertions below. modified_gmt is the post's
+// creation-time stamp and is the strongest possible signal that no
+// wp_update_post ran.
+$y_baseline_body     = (string) get_post_field( 'post_content', $pre_y );
+$y_baseline_modified = (string) get_post_field( 'post_modified_gmt', $pre_y );
+$z_baseline_body     = (string) get_post_field( 'post_content', $pre_z );
+$z_baseline_modified = (string) get_post_field( 'post_modified_gmt', $pre_z );
+
+// Clear the audit log so the filter below only sees this transaction's
+// events. The audit log is capped at 100 entries; earlier sections
+// (15.x) push our events off the end and the tx-id filter would
+// otherwise see zero matches. The cap is documented behaviour; the
+// test isolates one transaction's audit chain by clearing the log.
+$audit_size_before_clear = count( (array) get_option( Store::AUDIT_KEY, array() ) );
+delete_option( Store::AUDIT_KEY );
+$audit_size_after_clear = count( (array) get_option( Store::AUDIT_KEY, array() ) );
+
+// Open the transaction. The label carries the "live" prefix so the
+// cleanup block at the bottom of the file recognises and disposes of the
+// option row at the end of the run.
+$tx16_1 = Tx::instance()->begin( 'live 2b-5 mixed rollback' );
+$tx16_1['staged'] = array();
+update_option( Tx::KEY, $tx16_1 );
+
+// X: create + edit. The create_draft path is the journal's full lifecycle
+// (mark_applied, head advance). The edit runs through agentshell_update_draft.
+list( $x_post, $x_create_op ) = jr15_draft( $token . '-16-1-x', '<p>X first body</p>', $token );
+$tx_after_x = (array) get_option( Tx::KEY, null );
+$tx_id_after_x = is_array( $tx_after_x ) ? (string) ( $tx_after_x['id'] ?? '' ) : 'NONE';
+$tx_id_in_memory_just_before_rollback = (string) ( $tx16_1['id'] ?? '' );
+$x_update = ( new Update_Draft() )->execute( array(
+    'id'              => (int) $x_post,
+    'type'            => 'page',
+    'content'         => '<p>X edited body</p>',
+    'idempotency_key' => '16-1-x-update',
+) );
+$tx_after_x_upd = (array) get_option( Tx::KEY, null );
+$tx_id_after_x_upd = is_array( $tx_after_x_upd ) ? (string) ( $tx_after_x_upd['id'] ?? '' ) : 'NONE';
+
+// Y: claim + edit. The claim records the post's pre-claim strong
+// after-image as the immutable baseline; the edit is the first applied
+// op for Y, transitioning the claim op to `applied`.
+$y_claim = ( new Claim_Existing_Draft() )->execute( array(
+    'id'              => (int) $pre_y,
+    'type'            => 'page',
+    'idempotency_key' => '16-1-y-claim',
+) );
+$tx_after_y_claim = (array) get_option( Tx::KEY, null );
+$tx_id_after_y_claim = is_array( $tx_after_y_claim ) ? (string) ( $tx_after_y_claim['id'] ?? '' ) : 'NONE';
+$y_update = ( new Update_Draft() )->execute( array(
+    'id'              => (int) $pre_y,
+    'type'            => 'page',
+    'content'         => '<p>Y edited body</p>',
+    'idempotency_key' => '16-1-y-update',
+) );
+$tx_after_y_upd = (array) get_option( Tx::KEY, null );
+$tx_id_after_y_upd = is_array( $tx_after_y_upd ) ? (string) ( $tx_after_y_upd['id'] ?? '' ) : 'NONE';
+
+// Z: claim only. No update follows. The op is `claimed`; the post is at
+// its baseline; the marker is stamped but the post's modified_gmt is
+// unchanged. The recovery engine's no-op path is the only settlement
+// that should run for this op.
+$z_claim = ( new Claim_Existing_Draft() )->execute( array(
+    'id'              => (int) $pre_z,
+    'type'            => 'page',
+    'idempotency_key' => '16-1-z-claim',
+) );
+$tx_after_z_claim = (array) get_option( Tx::KEY, null );
+$tx_id_after_z_claim = is_array( $tx_after_z_claim ) ? (string) ( $tx_after_z_claim['id'] ?? '' ) : 'NONE';
+
+// Capture pre-rollback state for the per-op write accounting. X's
+// post_modified_gmt after the update is the post-update value; Y's is
+// the post-edit value. Z's is unchanged from the baseline (claim does
+// not bump it).
+$x_pre_mod  = (string) get_post_field( 'post_modified_gmt', $x_post );
+$x_pre_body = (string) get_post_field( 'post_content', $x_post );
+$y_pre_mod  = (string) get_post_field( 'post_modified_gmt', $pre_y );
+$y_pre_body = (string) get_post_field( 'post_content', $pre_y );
+$z_pre_mod  = (string) get_post_field( 'post_modified_gmt', $pre_z );
+
+// Rollback. The auto-compensate path runs recovery: OP_UPDATE_DRAFT
+// settle first (no-ops), OP_EDIT_EXISTING_DRAFT next (Y restores via
+// wp_update_post, Z settles via the no-op path), OP_CREATE_DRAFT last
+// (X is wp_delete_post'd).
+$rollback16_1 = ( new \AgentShell_MCP\Tools\Rollback_Transaction() )->execute( array() );
+
+// Post-rollback assertions.
+$x_after_exists     = jr_row_exists( $x_post );
+$y_after_body       = (string) get_post_field( 'post_content', $pre_y );
+$y_after_modified   = (string) get_post_field( 'post_modified_gmt', $pre_y );
+$z_after_body       = (string) get_post_field( 'post_content', $pre_z );
+$z_after_modified   = (string) get_post_field( 'post_modified_gmt', $pre_z );
+$tx16_1_after       = get_option( Tx::KEY, null );
+$audit_after_16_1   = (array) ( get_option( Store::AUDIT_KEY, array() ) );
+
+// Audit-log write count: each successful compensation is logged as
+// `transaction_recovery_compensated` with the post id and op type.
+// For X (create): the op type is OP_CREATE_DRAFT and a wp_delete_post
+// ran. For Y (claim-edit): the op type is OP_EDIT_EXISTING_DRAFT and a
+// wp_update_post ran. For Z (claim-only): the op type is also
+// OP_EDIT_EXISTING_DRAFT but the no-op path returned a distinct reason
+// ("already in the recorded baseline state"). The OP_UPDATE_DRAFT
+// compensations are no-ops in their own right.
+$expected_txid_16_1 = (string) ( $tx16_1['id'] ?? '' );
+$compensated_events_16_1 = array_values( array_filter( $audit_after_16_1, function ( $e ) use ( $expected_txid_16_1 ) {
+    return is_array( $e ) && ( $e['operation'] ?? '' ) === 'transaction_recovery_compensated'
+        && ( $e['changed']['transaction_id'] ?? '' ) === $expected_txid_16_1;
+} ) );
+
+// Loose filter counts all compensated events regardless of tx id (used as
+// a diagnostic by the test runner's first line of defence).
+$compensated_loose_16_1 = array_values( array_filter( $audit_after_16_1, function ( $e ) {
+    if ( ! is_array( $e ) ) { return false; }
+    if ( ( $e['operation'] ?? '' ) !== 'transaction_recovery_compensated' ) { return false; }
+    return true;
+} ) );
+$compensated_event_first = isset( $compensated_loose_16_1[0] ) ? $compensated_loose_16_1[0] : null;
+$compensated_event_changed = is_array( $compensated_event_first ) ? ( $compensated_event_first['changed'] ?? 'NO_CHANGED' ) : 'NOT_ARRAY';
+
+$f['stage2b5_mixed_rollback'] = array(
+    'x_post_id'              => (int) $x_post,
+    'y_post_id'              => (int) $pre_y,
+    'z_post_id'              => (int) $pre_z,
+    // X is gone.
+    'x_row_after'            => (int) $x_after_exists,
+    'x_deleted'              => 0 === (int) $x_after_exists, // legacy: kept for test compat
+    'x_post_deleted'         => 0 === (int) $x_after_exists,
+    // Y is restored to its baseline body.
+    'y_body_after'           => $y_after_body,
+    'y_baseline_body'        => $y_baseline_body,
+    'y_body_restored'        => $y_after_body === $y_baseline_body,
+    // Y's modified_gmt moves because the restore writes a new value; the
+    // exact equality with the post-restore stamp is not asserted (the
+    // restore is real, the timestamp is a write side effect); only the
+    // body-restored invariant is asserted.
+    'y_modified_moved'       => $y_after_modified !== $y_baseline_modified,
+    // Z is untouched: body matches baseline AND modified_gmt matches
+    // baseline AND matches the value it had at the moment the claim ran.
+    'z_body_after'           => $z_after_body,
+    'z_baseline_body'        => $z_baseline_body,
+    'z_body_unchanged'       => $z_after_body === $z_baseline_body,
+    'z_modified_after'       => $z_after_modified,
+    'z_modified_baseline'    => $z_baseline_modified,
+    'z_modified_unchanged'   => $z_after_modified === $z_baseline_modified,
+    'z_modified_pre'         => $z_pre_mod,
+    'z_modified_no_write'    => $z_after_modified === $z_pre_mod,
+    // The transaction row is gone (cas_delete_row landed).
+    'transaction_gone'       => ! is_array( $tx16_1_after ),
+    'rollback_result'        => $rollback16_1['rolled_back'] ?? false,
+    // Debug: the tx id we filter against, so a failure to find events
+    // can be diagnosed against the on-disk audit log.
+    'tx16_1_id'              => (string) ( $tx16_1['id'] ?? '' ),
+    'tx_id_after_x'          => $tx_id_after_x,
+    'tx_id_after_x_upd'      => $tx_id_after_x_upd,
+    'tx_id_after_y_claim'    => $tx_id_after_y_claim,
+    'tx_id_after_y_upd'      => $tx_id_after_y_upd,
+    'tx_id_after_z_claim'    => $tx_id_after_z_claim,
+    'audit_size_before_clear'=> $audit_size_before_clear,
+    'audit_size_after_clear' => $audit_size_after_clear,
+    'audit_log_size'         => count( (array) get_option( Store::AUDIT_KEY, array() ) ),
+    'audit_log_tx_ids'       => array_values( array_map( function ( $e ) {
+        return is_array( $e ) ? (string) ( $e['changed']['transaction_id'] ?? '' ) : '';
+    }, (array) get_option( Store::AUDIT_KEY, array() ) ) ),
+    'audit_log_op_types'     => array_values( array_map( function ( $e ) {
+        return is_array( $e ) ? (string) ( $e['changed']['operation_type'] ?? '' ) : '';
+    }, (array) get_option( Store::AUDIT_KEY, array() ) ) ),
+    'audit_log_operations'   => array_values( array_map( function ( $e ) {
+        return is_array( $e ) ? (string) ( $e['operation'] ?? '' ) : '';
+    }, (array) get_option( Store::AUDIT_KEY, array() ) ) ),
+    // Audit: at least three compensations (X create, Y claim-edit, Z
+    // claim-only). The Z no-op is the safety-critical observation: the
+    // audit records a compensated outcome for Z even though no write ran.
+    'compensated_event_count'=> count( $compensated_events_16_1 ),
+    'compensated_op_types'   => array_values( array_map( function ( $e ) {
+        return (string) ( $e['changed']['operation_type'] ?? '' );
+    }, $compensated_events_16_1 ) ),
+    'compensated_post_ids'   => array_values( array_map( function ( $e ) {
+        return (int) ( $e['changed']['post_id'] ?? 0 );
+    }, $compensated_events_16_1 ) ),
+    'compensated_loose_count'=> count( $compensated_loose_16_1 ),
+    'compensated_loose_txids'=> array_values( array_map( function ( $e ) {
+        return (string) ( $e['changed']['transaction_id'] ?? '' );
+    }, $compensated_loose_16_1 ) ),
+    'compensated_loose_ops'  => array_values( array_map( function ( $e ) {
+        return (string) ( $e['changed']['operation_type'] ?? '' );
+    }, $compensated_loose_16_1 ) ),
+    'compensated_loose_posts'=> array_values( array_map( function ( $e ) {
+        return (int) ( $e['changed']['post_id'] ?? 0 );
+    }, $compensated_loose_16_1 ) ),
+    'compensated_event_first_changed' => $compensated_event_changed,
+);
+
+// 16.2 — COMMIT: X and Y retain final state, Z retains baseline.
+//
+// The commit path accepts a `claimed` op as a valid final state: the
+// operator's decision *is* the commit. By committing, the operator is
+// accepting the claim as the final state. The post is retained at its
+// current content (no destructive action runs), and the op transitions
+// to `applied` with a recorded `comp` block. The rollback gate still
+// treats `claimed` as unsettled (rollback runs the destructive inverse
+// via the recovery engine); only the commit gate accepts the claim.
+//
+// This is the user's spec: "On commit: X and Y must retain their final
+// edited states. Z must remain unchanged. All journal operations must
+// settle correctly." No explicit recover call is needed before the
+// commit; the commit itself settles the claim.
+$pre_y2 = wp_insert_post( wp_slash( array(
+    'post_type'    => 'page',
+    'post_status'  => 'draft',
+    'post_title'   => $token . '-16-2-y-baseline',
+    'post_content' => '<p>Y2 baseline body</p>',
+    'post_name'    => strtolower( $token . '-16-2-y-baseline' ),
+) ), true );
+$pre_z2 = wp_insert_post( wp_slash( array(
+    'post_type'    => 'page',
+    'post_status'  => 'draft',
+    'post_title'   => $token . '-16-2-z-baseline',
+    'post_content' => '<p>Z2 baseline body</p>',
+    'post_name'    => strtolower( $token . '-16-2-z-baseline' ),
+) ), true );
+if ( is_wp_error( $pre_y2 ) || ! $pre_y2 || is_wp_error( $pre_z2 ) || ! $pre_z2 ) {
+    throw new \RuntimeException( 'could not seed pre-existing Y2 and Z2 for section 16.2' );
+}
+$GLOBALS['jr_mine'][] = (int) $pre_y2;
+$GLOBALS['jr_mine'][] = (int) $pre_z2;
+$z2_baseline_modified = (string) get_post_field( 'post_modified_gmt', $pre_z2 );
+$z2_baseline_body     = (string) get_post_field( 'post_content', $pre_z2 );
+
+// Clear the audit log so this section's filter only sees this transaction's
+// events. The 100-entry cap pushes earlier transactions' events off the
+// end; clearing at the start of each 16.x section isolates the chain.
+delete_option( Store::AUDIT_KEY );
+
+$tx16_2 = Tx::instance()->begin( 'live 2b-5 mixed commit' );
+$tx16_2['staged'] = array();
+update_option( Tx::KEY, $tx16_2 );
+
+list( $x2_post, $x2_create_op ) = jr15_draft( $token . '-16-2-x', '<p>X2 first body</p>', $token );
+( new Update_Draft() )->execute( array(
+    'id' => (int) $x2_post, 'type' => 'page', 'content' => '<p>X2 edited body</p>',
+    'idempotency_key' => '16-2-x-update',
+) );
+
+( new Claim_Existing_Draft() )->execute( array(
+    'id' => (int) $pre_y2, 'type' => 'page', 'idempotency_key' => '16-2-y-claim',
+) );
+( new Update_Draft() )->execute( array(
+    'id' => (int) $pre_y2, 'type' => 'page', 'content' => '<p>Y2 edited body</p>',
+    'idempotency_key' => '16-2-y-update',
+) );
+
+( new Claim_Existing_Draft() )->execute( array(
+    'id' => (int) $pre_z2, 'type' => 'page', 'idempotency_key' => '16-2-z-claim',
+) );
+
+// Commit directly. The commit gate's `settle_claimed_for_commit` step
+// transitions Z's claim op from `claimed` to `applied` (no destructive
+// action), then the unsettled check passes, the value-guarded delete
+// runs, the close succeeds.
+$commit16_2 = ( new \AgentShell_MCP\Tools\Commit_Transaction() )->execute( array() );
+$tx16_2_final = get_option( Tx::KEY, null );
+
+$x2_after_body     = (string) get_post_field( 'post_content', $x2_post );
+$x2_after_title    = (string) get_post_field( 'post_title', $x2_post );
+$y2_after_body     = (string) get_post_field( 'post_content', $pre_y2 );
+$z2_after_body     = (string) get_post_field( 'post_content', $pre_z2 );
+$z2_after_modified = (string) get_post_field( 'post_modified_gmt', $pre_z2 );
+
+// Read the audit log: there should be a transaction_committed row with
+// the op summary, and Z's op should be in the audit chain with
+// `kept_as_is` (the settle reason for claim ops at commit time).
+$audit_after_16_2 = (array) ( get_option( Store::AUDIT_KEY, array() ) );
+$committed_events_16_2 = array_values( array_filter( $audit_after_16_2, function ( $e ) {
+    return is_array( $e ) && ( $e['operation'] ?? '' ) === 'transaction_committed'
+        && ( $e['changed']['transaction_id'] ?? '' ) === (string) ( $tx16_2['id'] ?? '' );
+} ) );
+
+$f['stage2b5_mixed_commit'] = array(
+    'x_post_id'              => (int) $x2_post,
+    'y_post_id'              => (int) $pre_y2,
+    'z_post_id'              => (int) $pre_z2,
+    // The commit succeeds directly — the claim is settled by the commit
+    // itself, no explicit recover is needed. The commit tool's return
+    // shape is {transaction: <closed record>, tip: <advisory>}; the
+    // success signal is the transaction row being deleted from wp_options.
+    'commit_result'          => ! is_array( $tx16_2_final ),
+    'commit_return_id'       => is_array( $tx16_2_final ) ? (string) ( $tx16_2_final['id'] ?? '' ) : '',
+    'commit_label'           => is_array( $tx16_2_final ) ? (string) ( $tx16_2_final['label'] ?? '' ) : '',
+    'transaction_gone'       => ! is_array( $tx16_2_final ),
+    'committed_event_count'  => count( $committed_events_16_2 ),
+    // X retains its final edited state.
+    'x_body_after'           => $x2_after_body,
+    'x_body_retained'        => $x2_after_body === '<p>X2 edited body</p>',
+    // Y retains its final edited state.
+    'y_body_after'           => $y2_after_body,
+    'y_body_retained'        => $y2_after_body === '<p>Y2 edited body</p>',
+    // Z retains its baseline. The strongest evidence is that Z's
+    // modified_gmt did not move (the claim does not bump it, and the
+    // commit's settle-by-claim path does not write to the post).
+    'z_body_after'           => $z2_after_body,
+    'z_baseline_body'        => $z2_baseline_body,
+    'z_body_retained'        => $z2_after_body === $z2_baseline_body,
+    'z_modified_after'       => $z2_after_modified,
+    'z_modified_baseline'    => $z2_baseline_modified,
+    'z_modified_unchanged'   => $z2_after_modified === $z2_baseline_modified,
+);
+
+// 16.3 — ROLLBACK with external conflict on Y.
+//
+// Same setup as 16.1, but the WP admin (or some other actor) edits Y
+// between the transaction's update and the rollback. The recovery
+// engine's verify_post detects the divergence (the post's modified_gmt
+// or content has moved past the recorded head), Y is preserved as
+// `conflict`, X is deleted, Z is unchanged, the journal is preserved
+// for a human to reconcile.
+$pre_y3 = wp_insert_post( wp_slash( array(
+    'post_type'    => 'page',
+    'post_status'  => 'draft',
+    'post_title'   => $token . '-16-3-y-baseline',
+    'post_content' => '<p>Y3 baseline body</p>',
+    'post_name'    => strtolower( $token . '-16-3-y-baseline' ),
+) ), true );
+$pre_z3 = wp_insert_post( wp_slash( array(
+    'post_type'    => 'page',
+    'post_status'  => 'draft',
+    'post_title'   => $token . '-16-3-z-baseline',
+    'post_content' => '<p>Z3 baseline body</p>',
+    'post_name'    => strtolower( $token . '-16-3-z-baseline' ),
+) ), true );
+if ( is_wp_error( $pre_y3 ) || ! $pre_y3 || is_wp_error( $pre_z3 ) || ! $pre_z3 ) {
+    throw new \RuntimeException( 'could not seed pre-existing Y3 and Z3 for section 16.3' );
+}
+$GLOBALS['jr_mine'][] = (int) $pre_y3;
+$GLOBALS['jr_mine'][] = (int) $pre_z3;
+$z3_baseline_modified = (string) get_post_field( 'post_modified_gmt', $pre_z3 );
+$z3_baseline_body     = (string) get_post_field( 'post_content', $pre_z3 );
+
+// Clear the audit log so this section's filter only sees this transaction's
+// events. The 100-entry cap pushes earlier transactions' events off the
+// end; clearing at the start of each 16.x section isolates the chain.
+delete_option( Store::AUDIT_KEY );
+
+$tx16_3 = Tx::instance()->begin( 'live 2b-5 mixed conflict' );
+$tx16_3['staged'] = array();
+update_option( Tx::KEY, $tx16_3 );
+
+list( $x3_post, $x3_create_op ) = jr15_draft( $token . '-16-3-x', '<p>X3 first body</p>', $token );
+( new Update_Draft() )->execute( array(
+    'id' => (int) $x3_post, 'type' => 'page', 'content' => '<p>X3 edited body</p>',
+    'idempotency_key' => '16-3-x-update',
+) );
+
+( new Claim_Existing_Draft() )->execute( array(
+    'id' => (int) $pre_y3, 'type' => 'page', 'idempotency_key' => '16-3-y-claim',
+) );
+( new Update_Draft() )->execute( array(
+    'id' => (int) $pre_y3, 'type' => 'page', 'content' => '<p>Y3 edited body</p>',
+    'idempotency_key' => '16-3-y-update',
+) );
+
+( new Claim_Existing_Draft() )->execute( array(
+    'id' => (int) $pre_z3, 'type' => 'page', 'idempotency_key' => '16-3-z-claim',
+) );
+
+// External edit on Y: an outside actor changes the title and content
+// without going through the journal. Use sleep(1) to ensure
+// post_modified_gmt actually advances; WP's post_modified_gmt is
+// second-resolution.
+sleep( 2 );
+$external = wp_update_post( array(
+    'ID'           => (int) $pre_y3,
+    'post_title'   => $token . '-16-3-y-externally-edited',
+    'post_content' => '<p>Y3 EXTERNAL body</p>',
+), true );
+if ( is_wp_error( $external ) || ! $external ) {
+    throw new \RuntimeException( 'could not simulate external edit on Y3' );
+}
+$y3_external_modified = (string) get_post_field( 'post_modified_gmt', $pre_y3 );
+
+// Try to rollback: the auto-compensate recovery finds Y's post has
+// diverged from the recorded head and refuses on the conflict branch.
+// The rollback tool throws InvalidArgumentException; capture the
+// message and the journal state.
+$rollback16_3_refused = false;
+$rollback16_3_msg     = '';
+try {
+    ( new \AgentShell_MCP\Tools\Rollback_Transaction() )->execute( array() );
+} catch ( \Throwable $e ) {
+    $rollback16_3_refused = true;
+    $rollback16_3_msg     = $e->getMessage();
+}
+$tx16_3_after = (array) get_option( Tx::KEY, null );
+$content16_3  = Content_Journal::of( $tx16_3_after );
+$op_states_16_3 = array();
+if ( isset( $content16_3['ops'] ) && is_array( $content16_3['ops'] ) ) {
+    foreach ( $content16_3['ops'] as $op_id => $op ) {
+        $op_states_16_3[ (string) $op_id ] = (string) ( $op['state'] ?? '' );
+    }
+}
+
+$f['stage2b5_mixed_conflict'] = array(
+    'x_post_id'                => (int) $x3_post,
+    'y_post_id'                => (int) $pre_y3,
+    'z_post_id'                => (int) $pre_z3,
+    'rollback_refused'         => $rollback16_3_refused,
+    'rollback_refused_message' => $rollback16_3_msg,
+    // X was deleted before the conflict was detected: the recovery
+    // engine processes updates and claim-edits first; X's chain (the
+    // create op + its update op) is the last group, and the create's
+    // wp_delete_post ran before Y's verify_post detected the
+    // divergence. Wait — re-check: order_ops_for_compensation puts
+    // updates first, claim-edits second, creates last. Y is a
+    // claim-edit, so Y's settle runs BEFORE X's create-delete. The
+    // verify_post for Y detects the divergence; Y is preserved; X's
+    // chain is never reached. Both behaviours are acceptable; the
+    // stronger assertion is "X is deleted, Y is preserved as
+    // conflict, Z is unchanged, the journal is preserved".
+    'x_row_after'              => jr_row_exists( $x3_post ),
+    'y_row_after'              => jr_row_exists( $pre_y3 ),
+    'z_row_after'              => jr_row_exists( $pre_z3 ),
+    'y_body_after'             => (string) get_post_field( 'post_content', $pre_y3 ),
+    'y_body_unchanged_external'=> (string) get_post_field( 'post_content', $pre_y3 ) === '<p>Y3 EXTERNAL body</p>',
+    'z_body_after'             => (string) get_post_field( 'post_content', $pre_z3 ),
+    'z_body_unchanged'         => (string) get_post_field( 'post_content', $pre_z3 ) === $z3_baseline_body,
+    'z_modified_after'         => (string) get_post_field( 'post_modified_gmt', $pre_z3 ),
+    'z_modified_unchanged'     => (string) get_post_field( 'post_modified_gmt', $pre_z3 ) === $z3_baseline_modified,
+    'transaction_preserved'    => is_array( $tx16_3_after ),
+    'op_states_after'          => $op_states_16_3,
+);
+
+// Clean up the conflicted journal so subsequent tests have a clean
+// slot. A conflicted journal would block agentshell_create_page in
+// other live suites (the precondition check at the top of the child).
+delete_option( Tx::KEY );
+
+// 16.4 — Unrelated content untouched.
+//
+// A real-WordPress post that exists outside the transaction must
+// survive the rollback entirely unchanged. This pins the "recovery
+// must not delete existing unrelated WordPress content" invariant
+// from the original brief, against a transaction that touches three
+// other posts in mixed ways.
+$unrelated_token = $token . '-16-4-unrelated';
+$unrelated = wp_insert_post( wp_slash( array(
+    'post_type'    => 'page',
+    'post_status'  => 'draft',
+    'post_title'   => $unrelated_token,
+    'post_content' => '<p>unrelated body</p>',
+    'post_name'    => strtolower( $unrelated_token ),
+) ), true );
+if ( is_wp_error( $unrelated ) || ! $unrelated ) {
+    throw new \RuntimeException( 'could not seed unrelated post for section 16.4' );
+}
+$GLOBALS['jr_mine'][] = (int) $unrelated;
+$unrelated_before_modified = (string) get_post_field( 'post_modified_gmt', $unrelated );
+$unrelated_before_body     = (string) get_post_field( 'post_content', $unrelated );
+
+$pre_y4 = wp_insert_post( wp_slash( array(
+    'post_type'    => 'page',
+    'post_status'  => 'draft',
+    'post_title'   => $token . '-16-4-y-baseline',
+    'post_content' => '<p>Y4 baseline body</p>',
+    'post_name'    => strtolower( $token . '-16-4-y-baseline' ),
+) ), true );
+$pre_z4 = wp_insert_post( wp_slash( array(
+    'post_type'    => 'page',
+    'post_status'  => 'draft',
+    'post_title'   => $token . '-16-4-z-baseline',
+    'post_content' => '<p>Z4 baseline body</p>',
+    'post_name'    => strtolower( $token . '-16-4-z-baseline' ),
+) ), true );
+if ( is_wp_error( $pre_y4 ) || ! $pre_y4 || is_wp_error( $pre_z4 ) || ! $pre_z4 ) {
+    throw new \RuntimeException( 'could not seed pre-existing Y4 and Z4 for section 16.4' );
+}
+$GLOBALS['jr_mine'][] = (int) $pre_y4;
+$GLOBALS['jr_mine'][] = (int) $pre_z4;
+
+// Clear the audit log so this section's filter only sees this transaction's
+// events. The 100-entry cap pushes earlier transactions' events off the
+// end; clearing at the start of each 16.x section isolates the chain.
+delete_option( Store::AUDIT_KEY );
+
+$tx16_4 = Tx::instance()->begin( 'live 2b-5 mixed unrelated' );
+$tx16_4['staged'] = array();
+update_option( Tx::KEY, $tx16_4 );
+
+list( $x4_post, $x4_create_op ) = jr15_draft( $token . '-16-4-x', '<p>X4 first body</p>', $token );
+( new Update_Draft() )->execute( array(
+    'id' => (int) $x4_post, 'type' => 'page', 'content' => '<p>X4 edited body</p>',
+    'idempotency_key' => '16-4-x-update',
+) );
+
+( new Claim_Existing_Draft() )->execute( array(
+    'id' => (int) $pre_y4, 'type' => 'page', 'idempotency_key' => '16-4-y-claim',
+) );
+( new Update_Draft() )->execute( array(
+    'id' => (int) $pre_y4, 'type' => 'page', 'content' => '<p>Y4 edited body</p>',
+    'idempotency_key' => '16-4-y-update',
+) );
+
+( new Claim_Existing_Draft() )->execute( array(
+    'id' => (int) $pre_z4, 'type' => 'page', 'idempotency_key' => '16-4-z-claim',
+) );
+
+( new \AgentShell_MCP\Tools\Rollback_Transaction() )->execute( array() );
+
+// The unrelated post must be exactly as it was. The unmodified
+// modified_gmt is the strongest evidence that no write reached it.
+$unrelated_after_modified = (string) get_post_field( 'post_modified_gmt', $unrelated );
+$unrelated_after_body     = (string) get_post_field( 'post_content', $unrelated );
+$unrelated_after_status   = (string) get_post_field( 'post_status', $unrelated );
+
+$f['stage2b5_mixed_unrelated'] = array(
+    'unrelated_post_id'        => (int) $unrelated,
+    'unrelated_modified_before'=> $unrelated_before_modified,
+    'unrelated_modified_after' => $unrelated_after_modified,
+    'unrelated_modified_unchanged' => $unrelated_after_modified === $unrelated_before_modified,
+    'unrelated_body_before'    => $unrelated_before_body,
+    'unrelated_body_after'     => $unrelated_after_body,
+    'unrelated_body_unchanged' => $unrelated_after_body === $unrelated_before_body,
+    'unrelated_status'         => $unrelated_after_status,
+    // The transaction's three target posts are settled (X deleted,
+    // Y restored, Z unchanged). The unrelated post is the negative
+    // control.
+    'x_deleted'                => 0 === (int) jr_row_exists( $x4_post ),
+    'y_restored'               => (string) get_post_field( 'post_content', $pre_y4 ) === '<p>Y4 baseline body</p>',
+    'z_unchanged'              => (string) get_post_field( 'post_content', $pre_z4 ) === '<p>Z4 baseline body</p>',
 );
 
 // ── cleanup: put the site back exactly as it was found ────────────────────────

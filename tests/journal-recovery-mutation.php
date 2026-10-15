@@ -1203,6 +1203,27 @@ $mutants = array(
         "                'post_name'    => (string) ( \$before['post_name']    ?? (string) \$post->post_name ),\n                'post_modified_gmt' => (string) ( \$before['post_modified_gmt'] ?? (string) \$post->post_modified_gmt ), // SKIP M-E5: modified_gmt re-applied\n            );",
     ),
 
+    'M-E6: claim_existing_draft compensation always writes, even when the post is already at the baseline' => array(
+        // Step 2 of the inverse compares the live post against the
+        // recorded baseline; a match means the chain is settled
+        // without a write. The user's instruction is explicit: an
+        // unedited claim must not rewrite the post's content merely
+        // to restore the unchanged baseline, and must not bump
+        // `post_modified_gmt` or execute `wp_update_post` hooks.
+        // Dropping the early return means every unedited claim
+        // produces a redundant `wp_update_post` that bumps the
+        // modification timestamp and runs every registered
+        // `wp_update_post` filter, even though nothing changed.
+        // Killed by MX4: a journal with one edited and one unedited
+        // claim settles both as `compensated`, but exactly one
+        // `wp_update_post` runs — the unedited claim's postarr is
+        // never sent. The unedited claim's `post_modified_gmt` is
+        // unchanged.
+        $RECOVERY_REL,
+        "        if ( '' === \$baseline_mismatch ) {\n            return array(\n                'outcome' => 'compensated',",
+        "        if ( false && '' === \$baseline_mismatch ) {\n            return array(\n                'outcome' => 'compensated',",
+    ),
+
     // ── mixed transactions: a journal that carries both a create and a
     //    claim (and/or an update) must still settle every op correctly.
     //    The compensation order is updates first, then claims, then

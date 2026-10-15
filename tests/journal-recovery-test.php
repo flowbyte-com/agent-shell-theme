@@ -7637,3 +7637,211 @@ Agentshell_Test::run(
         );
     }
 );
+
+Agentshell_Test::run(
+    'MX4: a mixed journal with one edited and one unedited claim only writes for the edited one',
+    function () {
+        // A claim that the operator never edited through the chain
+        // is settled as `compensated` without a wp_update_post — the
+        // live post is already in the recorded baseline state and
+        // there is nothing to restore. A claim that *was* edited
+        // is settled by a real baseline restore. Exactly one
+        // wp_update_post runs; the unedited claim's post_modified_gmt
+        // is unchanged, and no `wp_update_post` postarr is sent for
+        // it. The audit log distinguishes "no-op" from "restored"
+        // by reason.
+        jr_reset();
+        jr_as_administrator();
+        Recovery_Advisory_Lock::reset();
+
+        // Claim A: claimed, then edited through the chain. The live
+        // post is in the post-edit state; the baseline is the
+        // pre-claim state. This claim must produce a wp_update_post.
+        $claim_a_id = 'op_claim_mx4a';
+        $claim_a    = Content_Journal::record_intent(
+            Content_Journal::OP_EDIT_EXISTING_DRAFT,
+            array( 'post_id' => 2030, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(
+                'post_title' => 'orig-mx4-a', 'post_name' => 'orig-mx4-a-slug',
+                'op_meta_value' => $claim_a_id, 'idempotency_key' => 'idem-mx4-a',
+            ),
+            JR_CRASHED_ACTOR,
+            JR_T0 - 86400
+        );
+        $claim_a['id']      = $claim_a_id;
+        $claim_a['state']   = 'applied';
+        $claim_a['post_id'] = 2030;
+        $claim_a['before']  = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'orig-mx4-a', 'post_content' => 'orig-mx4-a-body',
+            'post_excerpt' => '', 'post_name' => 'orig-mx4-a-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-mx4-a-body' ),
+            'post_content_length' => 15,
+            'op_meta_value' => $claim_a_id,
+        );
+        $claim_a['after']  = array_merge( $claim_a['after'], array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_name' => 'orig-mx4-a-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-mx4-a-body' ),
+            'post_content_length' => 15,
+            'op_meta_value' => $claim_a_id,
+        ) );
+        $claim_a['recorded_at'] = JR_T0 - 100;
+
+        // Claim B: claimed but never edited. The live post is in
+        // the pre-claim state. The chain's "after" is the same as
+        // the baseline (no updates followed the claim). The no-op
+        // path at the start of compensate_edit_existing() — verify
+        // against the recorded baseline — should settle this op
+        // without a wp_update_post.
+        $claim_b_id = 'op_claim_mx4b';
+        $claim_b    = Content_Journal::record_intent(
+            Content_Journal::OP_EDIT_EXISTING_DRAFT,
+            array( 'post_id' => 2031, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(
+                'post_title' => 'orig-mx4-b', 'post_name' => 'orig-mx4-b-slug',
+                'op_meta_value' => $claim_b_id, 'idempotency_key' => 'idem-mx4-b',
+            ),
+            JR_CRASHED_ACTOR,
+            JR_T0 - 86400
+        );
+        $claim_b['id']      = $claim_b_id;
+        $claim_b['state']   = 'applied';
+        $claim_b['post_id'] = 2031;
+        $claim_b['before']  = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'orig-mx4-b', 'post_content' => 'orig-mx4-b-body',
+            'post_excerpt' => '', 'post_name' => 'orig-mx4-b-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-mx4-b-body' ),
+            'post_content_length' => 15,
+            'op_meta_value' => $claim_b_id,
+        );
+        $claim_b['after']  = array_merge( $claim_b['after'], array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_name' => 'orig-mx4-b-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'orig-mx4-b-body' ),
+            'post_content_length' => 15,
+            'op_meta_value' => $claim_b_id,
+        ) );
+        $claim_b['recorded_at'] = JR_T0 - 50;
+
+        jr_seed( jr_row( array( $claim_a, $claim_b ) ) );
+
+        // Live fixtures. A is post-edit; B is at baseline (unchanged
+        // from the pre-claim state, except for the post_modified_gmt
+        // we set explicitly so we can assert it stays put).
+        jr_post( 2030, array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-mx4-a', 'post_content' => 'edited-mx4-a-body',
+            'post_name' => 'edited-mx4-a-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+        ), $claim_a_id );
+        // B is at the baseline state — the live post matches the
+        // recorded after exactly, including post_modified_gmt. The
+        // claim tool reads the live post's post_modified_gmt at
+        // claim time and stores it in the recorded after, so for an
+        // unedited claim the post's modified_gmt has not moved.
+        jr_post( 2031, array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'orig-mx4-b', 'post_content' => 'orig-mx4-b-body',
+            'post_name' => 'orig-mx4-b-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $claim_b_id );
+
+        // Plant the head map. A's head is the post-edit state; B has
+        // no head (no update op followed the claim, so the head
+        // pointer was never advanced for post 2031).
+        $head_a = array(
+            'post_type' => 'page', 'post_status' => 'draft',
+            'post_title' => 'edited-mx4-a', 'post_name' => 'edited-mx4-a-slug',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'edited-mx4-a-body' ),
+            'post_content_length' => 17,
+            'op_meta_value' => $claim_a_id,
+        );
+        $tx_on_disk                            = jr_row_on_disk();
+        $content                               = Content_Journal::of( $tx_on_disk );
+        $content[ Content_Journal::HEAD_KEY ]  = array(
+            2030 => $head_a,
+        );
+        $content['sig']                        = Content_Journal::sign( $content );
+        $tx_on_disk['content']                 = $content;
+        jr_seed( $tx_on_disk );
+
+        jr_with_post_cap( 2030, 'edit_post' );
+        jr_with_post_cap( 2031, 'edit_post' );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
+
+        // Both claims are compensated; the report distinguishes
+        // the no-op reason from the real restore reason.
+        Agentshell_Test::assert_equals(
+            Content_Recovery::STATUS_RECOVERED, $report['status'],
+            'recovery completes'
+        );
+        $outcomes_by_id = array();
+        $details_by_id  = array();
+        foreach ( $report['operations'] as $row ) {
+            $outcomes_by_id[ (string) ( $row['id'] ?? '' ) ] = (string) ( $row['outcome'] ?? '' );
+            $details_by_id[ (string) ( $row['id'] ?? '' ) ]  = (string) ( $row['detail'] ?? '' );
+        }
+        Agentshell_Test::assert_equals(
+            'compensated', $outcomes_by_id[ $claim_a_id ] ?? '',
+            'the edited claim is compensated (real baseline restore)'
+        );
+        Agentshell_Test::assert_equals(
+            'compensated', $outcomes_by_id[ $claim_b_id ] ?? '',
+            'the unedited claim is compensated (no-op)'
+        );
+        Agentshell_Test::assert_true(
+            false !== strpos( $details_by_id[ $claim_b_id ], 'already in the recorded baseline state' ),
+            'the unedited claim\'s reason is the no-op: ' . $details_by_id[ $claim_b_id ]
+        );
+        Agentshell_Test::assert_true(
+            false !== strpos( $details_by_id[ $claim_a_id ], 'restored to its pre-claim baseline' ),
+            'the edited claim\'s reason is the restore: ' . $details_by_id[ $claim_a_id ]
+        );
+
+        // Exactly one wp_update_post ran (the edited claim's
+        // restore). The unedited claim must NOT have produced a
+        // wp_update_post — its live post was already at baseline.
+        Agentshell_Test::assert_equals(
+            1, count( $GLOBALS['jr_update_calls'] ?? array() ),
+            'exactly one wp_update_post ran (only the edited claim needed a restore)'
+        );
+        $restore_call = end( $GLOBALS['jr_update_calls'] );
+        $restore_id   = is_array( $restore_call ) ? (int) ( $restore_call['ID'] ?? 0 ) : 0;
+        Agentshell_Test::assert_equals(
+            2030, $restore_id,
+            'the only wp_update_post targets the edited claim\'s post'
+        );
+
+        // The unedited claim's post_modified_gmt is unchanged from
+        // the value we set, which equals the recorded after's
+        // post_modified_gmt (the post was not edited through the
+        // chain). A wp_update_post would have bumped it; the no-op
+        // path never called wp_update_post so the field is exactly
+        // what we set.
+        $b_after = $GLOBALS['_agentshell_test_posts'][ 2031 ] ?? null;
+        Agentshell_Test::assert_true( is_object( $b_after ), 'unedited claim\'s post 2031 is still present' );
+        Agentshell_Test::assert_equals(
+            '2026-01-01 00:00:00', (string) ( $b_after->post_modified_gmt ?? '' ),
+            'the unedited claim\'s post_modified_gmt is unchanged: no write happened'
+        );
+
+        // The edited claim's post is restored to its baseline title.
+        $a_after = $GLOBALS['_agentshell_test_posts'][ 2030 ] ?? null;
+        Agentshell_Test::assert_true( is_object( $a_after ), 'edited claim\'s post 2030 is still present' );
+        Agentshell_Test::assert_equals(
+            'orig-mx4-a', (string) ( $a_after->post_title ?? '' ),
+            'the edited claim\'s post is restored to its baseline title'
+        );
+    }
+);

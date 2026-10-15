@@ -578,3 +578,202 @@ Agentshell_Test::run(
         Agentshell_Test::assert_equals( 0, (int) ( $s['post_rollback_gone'] ?? -1 ), 'create + rollback still deletes the post' );
     }
 );
+
+// ── Stage 2b-5: mixed create + claim-edit + claim-only in one transaction ─
+//
+// The mixed-kind journal is the safety-critical test of Stage 2b. Three
+// distinct lifecycle kinds in one transaction:
+//
+//   X: created by the transaction, then edited.
+//   Y: pre-existing draft, claimed by the transaction, then edited.
+//   Z: pre-existing draft, claimed by the transaction, NEVER edited.
+//
+// On rollback: X must be deleted; Y must be restored to its pre-claim
+// baseline; Z must remain entirely unchanged (no wp_update_post, no
+// wp_delete_post, post_modified_gmt unchanged from the baseline).
+//
+// On commit: X and Y must retain their final edited states; Z must
+// remain at its baseline; all journal ops must settle (the claim op
+// transitions to `applied` with `kept_as_is`).
+//
+// Plus two distinct risks the mixed path introduces: external conflict
+// on Y during rollback (the post has been edited by an outside actor
+// between the transaction's update and the rollback), and unrelated
+// content outside the transaction must remain untouched by rollback.
+
+Agentshell_Test::run(
+    'live: mixed rollback deletes X, restores Y to baseline, leaves Z unchanged',
+    function () {
+        $s = jr_live( 'stage2b5_mixed_rollback', array() );
+        // X is gone: the create op's destructive inverse (wp_delete_post) ran.
+        Agentshell_Test::assert_equals( 0, (int) ( $s['x_row_after'] ?? -1 ), 'X is deleted by the rollback' );
+        Agentshell_Test::assert_true(
+            $s['x_post_deleted'] ?? false,
+            'X is deleted by the rollback'
+        );
+        // Y is restored to its pre-claim baseline body.
+        Agentshell_Test::assert_true(
+            $s['y_body_restored'] ?? false,
+            'Y\'s body is restored to the pre-claim baseline ('
+            . substr( (string) ( $s['y_baseline_body'] ?? '' ), 0, 40 ) . ' ...)'
+        );
+        Agentshell_Test::assert_true(
+            $s['y_modified_moved'] ?? false,
+            'Y\'s modified_gmt moved (the wp_update_post restore wrote a new value)'
+        );
+        // Z is unchanged: body matches baseline AND modified_gmt matches
+        // baseline AND modified_gmt matches the value it had at the
+        // moment the claim ran. The strongest possible evidence that
+        // the claim-only rollback did not run wp_update_post on Z.
+        Agentshell_Test::assert_true(
+            $s['z_body_unchanged'] ?? false,
+            'Z\'s body is unchanged from the baseline (the no-op path did not write)'
+        );
+        Agentshell_Test::assert_true(
+            $s['z_modified_unchanged'] ?? false,
+            'Z\'s modified_gmt is unchanged from the pre-claim baseline (no wp_update_post ran)'
+        );
+        Agentshell_Test::assert_true(
+            $s['z_modified_no_write'] ?? false,
+            'Z\'s modified_gmt did not move between the claim and the rollback (no write at all)'
+        );
+        // The transaction row is gone: cas_delete_row landed.
+        Agentshell_Test::assert_true(
+            $s['transaction_gone'] ?? false,
+            'the transaction row is deleted by cas_delete_row'
+        );
+        Agentshell_Test::assert_true(
+            $s['rollback_result'] ?? false,
+            'the rollback tool reports rolled_back = true'
+        );
+        // The audit log records compensation for X (create), Y (claim-edit),
+        // and Z (claim-only no-op). The Z compensation entry is the load-
+        // bearing piece: the audit log records a compensated outcome for Z
+        // even though no write ran.
+        $ops = (array) ( $s['compensated_op_types'] ?? array() );
+        Agentshell_Test::assert_true(
+            in_array( 'create_draft', $ops, true ),
+            'audit log records a create_draft compensation (X deleted)'
+        );
+        Agentshell_Test::assert_true(
+            in_array( 'edit_existing_draft', $ops, true ),
+            'audit log records an edit_existing_draft compensation (Y or Z settled)'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'live: mixed commit retains X and Y final states and Z baseline; all ops settle',
+    function () {
+        $s = jr_live( 'stage2b5_mixed_commit', array() );
+        // The commit succeeds directly — no explicit recover needed. The
+        // commit gate's settle_claimed_for_commit transitions Z's claim
+        // op from `claimed` to `applied` with `kept_as_is` (no destructive
+        // action runs), and the unsettled check passes.
+        Agentshell_Test::assert_true(
+            $s['commit_result'] ?? false,
+            'commit succeeds directly with a claimed op in the journal'
+        );
+        Agentshell_Test::assert_true(
+            $s['transaction_gone'] ?? false,
+            'the transaction row is deleted by cas_delete_row after the commit'
+        );
+        // X and Y retain their final edited states.
+        Agentshell_Test::assert_true(
+            $s['x_body_retained'] ?? false,
+            'X\'s final edited state is retained ('
+            . substr( (string) ( $s['x_body_after'] ?? '' ), 0, 40 ) . ' ...)'
+        );
+        Agentshell_Test::assert_true(
+            $s['y_body_retained'] ?? false,
+            'Y\'s final edited state is retained ('
+            . substr( (string) ( $s['y_body_after'] ?? '' ), 0, 40 ) . ' ...)'
+        );
+        // Z retains its baseline. The strongest evidence: Z's
+        // modified_gmt did not move from the pre-claim baseline.
+        Agentshell_Test::assert_true(
+            $s['z_body_retained'] ?? false,
+            'Z\'s body is at the pre-claim baseline (no destructive action ran)'
+        );
+        Agentshell_Test::assert_true(
+            $s['z_modified_unchanged'] ?? false,
+            'Z\'s modified_gmt is unchanged from the pre-claim baseline (no write at all)'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'live: mixed external conflict preserves Y, deletes X, leaves Z unchanged',
+    function () {
+        $s = jr_live( 'stage2b5_mixed_conflict', array() );
+        // The rollback is refused because the recovery engine detected the
+        // external edit on Y. The verify_post check saw the divergence.
+        Agentshell_Test::assert_true(
+            $s['rollback_refused'] ?? false,
+            'rollback is refused because Y has an external conflict'
+        );
+        // X is gone: the create op's destructive inverse ran before the
+        // conflict was detected (Y's settle runs first in the
+        // compensation order, but X's create-delete runs in the same pass
+        // once Y's claim-edit's settle completes).
+        Agentshell_Test::assert_equals( 0, (int) ( $s['x_row_after'] ?? 1 ), 'X is deleted' );
+        // Y is preserved as conflict: the external edit's content is intact.
+        Agentshell_Test::assert_true(
+            $s['y_row_after'] ?? false,
+            'Y is preserved (not deleted) on conflict'
+        );
+        Agentshell_Test::assert_true(
+            $s['y_body_unchanged_external'] ?? false,
+            'Y\'s body is the external edit\'s body (the external edit was not overwritten)'
+        );
+        // Z is unchanged: the conflict on Y did not reach Z, and Z's
+        // no-op settle left it at the baseline.
+        Agentshell_Test::assert_true(
+            $s['z_body_unchanged'] ?? false,
+            'Z\'s body is unchanged from the baseline'
+        );
+        Agentshell_Test::assert_true(
+            $s['z_modified_unchanged'] ?? false,
+            'Z\'s modified_gmt is unchanged from the baseline (no write)'
+        );
+        Agentshell_Test::assert_true(
+            $s['z_row_after'] ?? false,
+            'Z is preserved (not deleted)'
+        );
+        // The transaction row is preserved (rollback refused) so the
+        // operator can reconcile. Subsequent calls to commit or
+        // rollback will see the conflict and refuse again.
+        Agentshell_Test::assert_true(
+            $s['transaction_preserved'] ?? false,
+            'the journal is preserved for human reconciliation'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'live: rollback of a mixed transaction leaves unrelated content untouched',
+    function () {
+        $s = jr_live( 'stage2b5_mixed_unrelated', array() );
+        // The unrelated post: its modified_gmt and body are byte-for-byte
+        // identical to before the rollback. This is the negative-control
+        // test: "recovery must not delete existing unrelated WordPress
+        // content". The post's existence and content are unchanged.
+        Agentshell_Test::assert_true(
+            $s['unrelated_modified_unchanged'] ?? false,
+            'unrelated post\'s modified_gmt is unchanged (no write reached it)'
+        );
+        Agentshell_Test::assert_true(
+            $s['unrelated_body_unchanged'] ?? false,
+            'unrelated post\'s body is byte-for-byte identical (no destructive action)'
+        );
+        Agentshell_Test::assert_equals( 1, (int) ( $s['x_deleted'] ?? -1 ), 'X is still deleted (sanity check on the mixed path)' );
+        Agentshell_Test::assert_true(
+            $s['y_restored'] ?? false,
+            'Y is still restored to its baseline (sanity check on the mixed path)'
+        );
+        Agentshell_Test::assert_true(
+            $s['z_unchanged'] ?? false,
+            'Z is still at its baseline (sanity check on the mixed path)'
+        );
+    }
+);

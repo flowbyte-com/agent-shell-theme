@@ -814,7 +814,12 @@ class Transaction_Manager {
         // config-only commit; the existing single-row path runs. A journal
         // holding unsettled work (intended / compensating / conflict /
         // partial-applied) refuses with a clear reason; the operator must
-        // resolve the op before the commit may proceed.
+        // resolve the op before the commit may proceed. A `claimed` op is
+        // settled by the commit itself: by committing, the operator accepts
+        // the claim as the final state, the post is retained at its current
+        // content, and the op transitions to `applied` with a recorded note.
+        // The rollback gate still treats `claimed` as unsettled (rollback
+        // runs the destructive inverse via the recovery engine).
         $content = Content_Journal::of( $tx );
         if ( ! empty( $content['ops'] ) ) {
             $next_content = self::revalidate_journal_for_commit( $content, $tx );
@@ -833,6 +838,19 @@ class Transaction_Manager {
                 }
                 $tx = $next;
                 $content = $next_content;
+            }
+            $settled_content = self::settle_claimed_for_commit( $content, $tx );
+            if ( is_array( $settled_content ) ) {
+                $next                  = $tx;
+                $next['content']       = $settled_content;
+                if ( ! self::cas( $tx, $next ) ) {
+                    throw new \InvalidArgumentException(
+                        'Transaction ' . $tx['id'] . ' changed while its claimed operations were being '
+                        . 'settled for commit. Read agentshell_get_journal and retry.'
+                    );
+                }
+                $tx = $next;
+                $content = $settled_content;
             }
             if ( Content_Journal::has_unsettled_work( $content ) ) {
                 $unsettled = self::summarise_unsettled( $content );
@@ -1040,11 +1058,24 @@ class Transaction_Manager {
         // Re-read the live post state for each compensated op: a settlement
         // that ran to compensated but the post is still present is a lost
         // race or a different post entirely, and the rollback refuses rather
-        // than reporting a phantom success.
+        // than reporting a phantom success. The check is scoped to the op
+        // types whose destructive inverse is a `wp_delete_post`: for those,
+        // "compensated" must mean the post is gone. For other op types, the
+        // meaning of "compensated" is different and the post-presence check
+        // does not apply:
+        //   - OP_EDIT_EXISTING_DRAFT: the destructive inverse is a
+        //     `wp_update_post` that *restores* the recorded `before`
+        //     baseline. The post is expected to be present and at baseline.
+        //   - OP_UPDATE_DRAFT: the chain is rolled back by the create op's
+        //     `wp_delete_post`; this op is `compensated` because the chain
+        //     is settled, but the post's presence is the create op's
+        //     responsibility, not this op's.
         if ( ! empty( $content['ops'] ) ) {
             foreach ( $content['ops'] as $op_id => $op ) {
                 if ( ! is_array( $op ) ) { continue; }
                 if ( Content_Journal::STATE_COMPENSATED !== ( $op['state'] ?? '' ) ) { continue; }
+                $op_type = (string) ( $op['op'] ?? '' );
+                if ( Content_Journal::OP_CREATE_DRAFT !== $op_type ) { continue; }
                 $post_id = (int) ( $op['post_id'] ?? 0 );
                 if ( $post_id > 0 && get_post( $post_id ) ) {
                     Store::record_event(
@@ -1145,6 +1176,53 @@ class Transaction_Manager {
                 $changed  = true;
                 $diverged = true;
             }
+        }
+        if ( $changed ) {
+            $next['sig'] = Content_Journal::sign( $next );
+        }
+        return $changed ? $next : null;
+    }
+
+    /**
+     * Settle `claimed` ops at commit time.
+     *
+     * A `claimed` op represents "I claimed this post and have not yet edited
+     * it; the operator's decision is pending". For the commit gate, the
+     * operator's decision *is* the commit: by committing, the operator is
+     * accepting the claim as the final state. The post stays at its current
+     * content (which may equal the pre-claim baseline, or differ if some
+     * other actor edited it after the claim was recorded; the latter is a
+     * `verify_post` check the commit revalidation already ran).
+     *
+     * The transition is `claimed → applied`, with a recorded `comp` block
+     * explaining the reason. The post's destructive inverse on rollback
+     * (the baseline restore) is unchanged; the commit gate just does not
+     * treat `claimed` as a refused state.
+     *
+     * The rollback gate keeps `claimed` in its unsettled set, because the
+     * rollback's auto-compensate path is what actually settles a claim (via
+     * the no-op path in `compensate_edit_existing`). The two gates have
+     * different purposes: commit accepts the claim, rollback performs the
+     * destructive inverse.
+     */
+    private static function settle_claimed_for_commit( array $content, array $tx ) {
+        $changed = false;
+        $next    = $content;
+        $now     = self::now();
+        foreach ( $next['ops'] as $op_id => $op ) {
+            if ( ! is_array( $op ) ) { continue; }
+            if ( Content_Journal::STATE_CLAIMED !== ( $op['state'] ?? '' ) ) { continue; }
+            $next['ops'][ $op_id ]['state']       = Content_Journal::STATE_APPLIED;
+            $next['ops'][ $op_id ]['updated_at']  = $now;
+            $next['ops'][ $op_id ]['comp']        = array(
+                'outcome' => 'kept_as_is',
+                'post_id' => (int) ( $op['post_id'] ?? 0 ),
+                'actor'   => (string) ( $tx['actor'] ?? '' ),
+                'at'      => $now,
+                'reason'  => 'claim was accepted by the commit as the final state; the post is retained at '
+                    . 'its current content with no destructive inverse',
+            );
+            $changed = true;
         }
         if ( $changed ) {
             $next['sig'] = Content_Journal::sign( $next );
