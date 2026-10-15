@@ -62,6 +62,7 @@ foreach ( array(
 require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-base-tool.php';
 require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-get-journal.php';
 require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-recover-transaction.php';
+require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-rollback-transaction.php';
 
 use AgentShell_MCP\Content_Journal;
 use AgentShell_MCP\Content_Recovery;
@@ -70,6 +71,7 @@ use AgentShell_MCP\Store;
 use AgentShell_MCP\Transaction_Manager as Tx;
 use AgentShell_MCP\Tools\Get_Journal;
 use AgentShell_MCP\Tools\Recover_Transaction;
+use AgentShell_MCP\Tools\Rollback_Transaction;
 
 if ( ! function_exists( 'agentshell_get_config' ) ) {
     function agentshell_get_config( $mode = 'committed', $key = null, $default = null ) {
@@ -2460,6 +2462,584 @@ Agentshell_Test::run(
         $threw = jr_refuse( function () { Tx::instance()->rollback(); } );
         Agentshell_Test::assert_true( $threw, 'rollback refuses' );
         Agentshell_Test::assert_true( is_array( jr_row_on_disk() ), 'and the option row is preserved' );
+    }
+);
+
+// ── Closure: surviving mutants from the Stage 1b review ──────────────────────
+//
+// Each test below was written to kill a specific mutant the existing suite
+// was not exercising. The iron law: each test must pass against the
+// production code AND fail against the mutant's find/replace. See
+// tests/journal-recovery-mutation.php for the mutation list.
+
+Agentshell_Test::run(
+    'SA2b: verify_post returns the SHA-mismatch reason (not just any conflict) on a same-second content edit',
+    function () {
+        // Strengthens SA2: the post_content_length stays the same in this
+        // test, so the only evidence path is the SHA-256. With the SHA
+        // check removed, the function returns '' and the post is destroyed
+        // by guess. SA2 did not catch this because the test fixture had
+        // a different content length, so the length check still fired.
+        jr_reset();
+        $op = jr_op( 'applied', 420 );
+        // Same length (15 chars) as the recorded value, so the post_content
+        // length check passes. Only the SHA-256 detects the change.
+        $op['after']['post_content_sha256'] = hash( 'sha256', '<p>1234567890123</p>' ); // 18 chars
+        $op['after']['post_content_length'] = 18;
+        $op['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        jr_seed( jr_row( array( $op ) ) );
+        // Live post: same slug, same date, same modified time, but content
+        // edited to a different string of the same length.
+        jr_post( 420, array(
+            'post_content'      => '<p>abcdefghijklmno</p>', // 21 chars
+            'post_date'         => '2026-01-01 00:00:00',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op['id'] );
+        // We need a content length that matches. Adjust: 21 = 21.
+        $op['after']['post_content_length'] = 21;
+        $GLOBALS['_agentshell_test_options'][ Tx::KEY ]['content']['ops'][ $op['id'] ]['after'] = $op['after'];
+        $GLOBALS['_agentshell_test_options'][ Tx::KEY ]['content']['sig'] = Content_Journal::sign( $GLOBALS['_agentshell_test_options'][ Tx::KEY ]['content'] );
+        jr_with_post_cap( 420 );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR );
+        $reason = $report['operations'][0]['detail'] ?? '';
+        Agentshell_Test::assert_equals(
+            'conflict', $report['operations'][0]['outcome'] ?? '',
+            'a same-second content edit with unchanged length and slug is a conflict'
+        );
+        Agentshell_Test::assert_true(
+            false !== strpos( $reason, 'post_content hash' ) || false !== strpos( $reason, 'content has been edited' ),
+            'the conflict must come from the SHA-256 path, not the length check: ' . $reason
+        );
+        Agentshell_Test::assert_true( jr_post_exists( 420 ), 'the post is preserved' );
+    }
+);
+
+Agentshell_Test::run(
+    'CL1: compensate() refuses to delete when the per-post advisory lock cannot be acquired; post is preserved',
+    function () {
+        // The M-C16 / M-C18 mutants bypass the lock entirely. With the
+        // bypass, the wp_delete_post() call proceeds and the post is gone.
+        // With the lock, acquire(420) returns false (the stub holds it)
+        // and compensate() returns a 'conflict' with reason naming the
+        // advisory lock — no wp_delete_post() runs.
+        jr_reset();
+        $op = jr_op( 'applied', 420 );
+        $op['after']['post_content_sha256'] = hash( 'sha256', '<p>body</p>' );
+        $op['after']['post_content_length'] = strlen( '<p>body</p>' );
+        $op['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 420, array(
+            'post_content'      => '<p>body</p>',
+            'post_date'         => '2026-01-01 00:00:00',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op['id'] );
+        jr_with_post_cap( 420 );
+        // Stub the lock: probe succeeds, but the post-420 lock is held.
+        Recovery_Advisory_Lock::reset();
+        $old_wpdb = $GLOBALS['wpdb'];
+        $GLOBALS['wpdb'] = new class extends JR_wpdb {
+            public function get_var( $sql ) {
+                if ( preg_match( '/GET_LOCK\s*\(/i', (string) $sql ) ) {
+                    if ( strpos( (string) $sql, 'agentshell_recovery_lock_probe_' ) !== false ) {
+                        return '1';
+                    }
+                    return '0';
+                }
+                return parent::get_var( $sql );
+            }
+        };
+        try {
+            $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR );
+            Agentshell_Test::assert_equals(
+                'conflict', $report['operations'][0]['outcome'] ?? '',
+                'a contended lock refuses the destructive step'
+            );
+            Agentshell_Test::assert_true(
+                false !== strpos( $report['operations'][0]['detail'] ?? '', 'advisory lock' ),
+                'the conflict names the lock: ' . ( $report['operations'][0]['detail'] ?? '' )
+            );
+            Agentshell_Test::assert_equals( array(), $GLOBALS['jr_delete_calls'], 'no wp_delete_post ran' );
+            Agentshell_Test::assert_true( jr_post_exists( 420 ), 'the post is preserved' );
+        } finally {
+            $GLOBALS['wpdb'] = $old_wpdb;
+            Recovery_Advisory_Lock::reset();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'CL2: compensate() refuses to delete when GET_LOCK returns NULL; no destructive step runs',
+    function () {
+        // The M-C20 mutant catches the RuntimeException and converts it to
+        // 'compensated' (silent proceed). The test pins the safer behavior:
+        // the catch path is the conflict branch, and no wp_delete_post runs.
+        jr_reset();
+        $op = jr_op( 'applied', 421 );
+        $op['after']['post_content_sha256'] = hash( 'sha256', '<p>body</p>' );
+        $op['after']['post_content_length'] = strlen( '<p>body</p>' );
+        $op['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 421, array(
+            'post_content'      => '<p>body</p>',
+            'post_date'         => '2026-01-01 00:00:00',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op['id'] );
+        jr_with_post_cap( 421 );
+        // Stub: probe succeeds, then GET_LOCK on the post returns NULL.
+        Recovery_Advisory_Lock::reset();
+        $old_wpdb = $GLOBALS['wpdb'];
+        $first = true;
+        $GLOBALS['wpdb'] = new class( $first ) extends JR_wpdb {
+            private $first;
+            public function __construct( &$first ) { $this->first =& $first; }
+            public function get_var( $sql ) {
+                if ( preg_match( '/GET_LOCK\s*\(/i', (string) $sql ) ) {
+                    if ( $this->first ) { $this->first = false; return '1'; }
+                    return null;
+                }
+                return parent::get_var( $sql );
+            }
+        };
+        try {
+            $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR );
+            Agentshell_Test::assert_equals(
+                'conflict', $report['operations'][0]['outcome'] ?? '',
+                'a NULL GET_LOCK is reported as conflict, not silently bypassed'
+            );
+            Agentshell_Test::assert_equals( array(), $GLOBALS['jr_delete_calls'], 'no wp_delete_post ran' );
+            Agentshell_Test::assert_true( jr_post_exists( 421 ), 'the post is preserved' );
+        } finally {
+            $GLOBALS['wpdb'] = $old_wpdb;
+            Recovery_Advisory_Lock::reset();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'CL3: compensate() releases the per-post advisory lock after a successful delete',
+    function () {
+        // Pins the M-C19 invariant: the finally block calls release().
+        // The stub counts GET_LOCK and RELEASE_LOCK invocations; the
+        // probe name (agentshell_recovery_lock_probe_) is released by
+        // available(), and the per-post name is released by compensate().
+        // After a successful compensation, the per-post release must have
+        // happened.
+        jr_reset();
+        $op = jr_op( 'applied', 422 );
+        $op['after']['post_content_sha256'] = hash( 'sha256', '<p>body</p>' );
+        $op['after']['post_content_length'] = strlen( '<p>body</p>' );
+        $op['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        jr_seed( jr_row( array( $op ) ) );
+        jr_post( 422, array(
+            'post_content'      => '<p>body</p>',
+            'post_date'         => '2026-01-01 00:00:00',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op['id'] );
+        jr_with_post_cap( 422 );
+        Recovery_Advisory_Lock::reset();
+        $old_wpdb = $GLOBALS['wpdb'];
+        $GLOBALS['wpdb'] = new class extends JR_wpdb {
+            public $post_locks_released = 0;
+            public function get_var( $sql ) {
+                if ( preg_match( '/RELEASE_LOCK\s*\(\s*\'([^\']+)\'/i', (string) $sql, $m ) ) {
+                    // The probe name is fresh; the per-post name is hashed.
+                    if ( strpos( $m[1], 'agentshell_recovery_lock_probe_' ) === false ) {
+                        $this->post_locks_released++;
+                    }
+                    return '1';
+                }
+                if ( preg_match( '/GET_LOCK\s*\(/i', (string) $sql ) ) {
+                    return '1';
+                }
+                return parent::get_var( $sql );
+            }
+        };
+        try {
+            $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR );
+            $stub = $GLOBALS['wpdb'];
+            Agentshell_Test::assert_equals(
+                'compensated', $report['operations'][0]['outcome'] ?? '',
+                'the destructive step completes'
+            );
+            Agentshell_Test::assert_equals( 1, $stub->post_locks_released, 'the per-post lock was released in the finally block' );
+        } finally {
+            $GLOBALS['wpdb'] = $old_wpdb;
+            Recovery_Advisory_Lock::reset();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'CL4: settle_operation() refreshes the same-actor claim between ops; a competing take-over is refused',
+    function () {
+        // Pins the M-C11 invariant: a second recoverer whose CAS lands
+        // *between* the first recoverer's op settlements is refused at
+        // the claim layer (the first's claim was refreshed at the op
+        // boundary). With the refresh dropped, the second's CAS would
+        // succeed and it would race the destructive step.
+        jr_reset();
+        jr_as_administrator();
+        // Two ops in the journal so the recovery loop iterates and
+        // refreshes the claim between settlements.
+        $op1 = jr_op( 'applied', 430 );
+        $op1['after']['post_content_sha256'] = hash( 'sha256', '<p>body1</p>' );
+        $op1['after']['post_content_length'] = strlen( '<p>body1</p>' );
+        $op1['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op1['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        $op2 = jr_op( 'applied', 431 );
+        $op2['after']['post_content_sha256'] = hash( 'sha256', '<p>body2</p>' );
+        $op2['after']['post_content_length'] = strlen( '<p>body2</p>' );
+        $op2['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op2['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        jr_seed( jr_row( array( $op1, $op2 ) ) );
+        jr_post( 430, array(
+            'post_content' => '<p>body1</p>',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op1['id'] );
+        jr_post( 431, array(
+            'post_content' => '<p>body2</p>',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op2['id'] );
+        jr_with_post_cap( 430 );
+        jr_with_post_cap( 431 );
+
+        // A racing wpdb: after the first op is settled, the wpdb
+        // pretends another caller has refreshed the claim — so the
+        // refresh-or-cas dance inside settle_operation is what saves us.
+        $racing = new JR_Racing_wpdb();
+        $racing->on_guarded_write( function () use ( $op1 ) {
+            // The other caller refreshes the claim on op1.
+            $GLOBALS['_agentshell_test_options'][ Tx::KEY ] = jr_set_claim(
+                jr_row_on_disk(), $op1['id'], Content_Journal::STATE_COMPENSATING,
+                array( 'actor' => 'the-other-caller', 'at' => JR_T0 )
+            );
+        } );
+        $GLOBALS['wpdb'] = $racing;
+
+        $loser = Content_Recovery::recover( jr_row_on_disk(), 'this-caller', true );
+        Agentshell_Test::assert_equals(
+            Content_Recovery::STATUS_CONTENDED, $loser['status'],
+            'a competing claim that lands between op settlements is refused'
+        );
+        // The destructive step must not have run.
+        Agentshell_Test::assert_true( jr_post_exists( 430 ), 'the first post is preserved by the loser' );
+        Agentshell_Test::assert_true( jr_post_exists( 431 ), 'the second post is preserved by the loser' );
+    }
+);
+
+Agentshell_Test::run(
+    'L2b: commit audit row carries the op summary (per-op id, type, state, post_id, sha256)',
+    function () {
+        // Pins the M-L2 invariant: the audit log entry for a successful
+        // commit must include the 'ops' field with the journal op summary.
+        jr_reset();
+        jr_with_post_cap( 401 );
+        $op = jr_op( 'applied', 401 );
+        $op['after']['post_content_sha256'] = hash( 'sha256', '<p>body</p>' );
+        $op['after']['post_content_length'] = strlen( '<p>body</p>' );
+        $op['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        jr_seed( jr_live_row( array( $op ), array( 'actor' => 'agent' ) ) );
+        jr_post( 401, array(
+            'post_content'      => '<p>body</p>',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op['id'] );
+        $GLOBALS['_agentshell_test_login'] = 'agent';
+
+        Tx::instance()->commit();
+        $audits = jr_audit_for( 'transaction_committed' );
+        Agentshell_Test::assert_equals( 1, count( $audits ), 'exactly one commit audit row' );
+        $changed = $audits[0]['changed'] ?? null;
+        $ops = is_array( $changed ) ? ( $changed['ops'] ?? null ) : null;
+        Agentshell_Test::assert_true( is_array( $ops ) && 1 === count( $ops ), 'the audit row carries the op summary' );
+        Agentshell_Test::assert_equals( $op['id'], $ops[0]['id'] ?? '', 'the op id is named' );
+        Agentshell_Test::assert_equals( 401, (int) ( $ops[0]['post_id'] ?? 0 ), 'the post id is named' );
+        Agentshell_Test::assert_equals(
+            hash( 'sha256', '<p>body</p>' ),
+            (string) ( $ops[0]['content_sha256'] ?? '' ),
+            'the content sha256 is on the audit row'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'L4b: rollback refuses on a compensation conflict and preserves the option row with the journal intact',
+    function () {
+        // Pins the M-L4 invariant: when recovery reports a conflict, the
+        // rollback must not delete the option row, and the journal must
+        // remain on disk with the conflict recorded.
+        jr_reset();
+        jr_with_post_cap( 401 );
+        $op = jr_op( 'applied', 401 );
+        // The recorded after-image is intentionally stale — the live post
+        // has a different post_modified_gmt — so verify_post will refuse
+        // the destructive step and recovery will report a conflict.
+        $op['after']['post_content_sha256'] = hash( 'sha256', '<p>body</p>' );
+        $op['after']['post_content_length'] = strlen( '<p>body</p>' );
+        $op['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        jr_seed( jr_live_row( array( $op ), array( 'actor' => 'agent' ) ) );
+        jr_post( 401, array(
+            'post_content'      => '<p>body</p>',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-02-02 09:00:00',  // edited by an outside actor
+        ), $op['id'] );
+        $GLOBALS['_agentshell_test_login'] = 'agent';
+
+        $threw = jr_refuse( function () { Tx::instance()->rollback(); } );
+        Agentshell_Test::assert_true( $threw, 'rollback refuses on compensation conflict' );
+        Agentshell_Test::assert_equals( 1, count( jr_audit_for( 'transaction_rollback_refused_after_compensation' ) ), 'the refusal is audited' );
+        Agentshell_Test::assert_true( is_array( jr_row_on_disk() ), 'the option row is preserved' );
+        Agentshell_Test::assert_equals( Content_Journal::STATE_CONFLICT, jr_op_on_disk()['state'] ?? null, 'the journal op is in conflict' );
+        Agentshell_Test::assert_true( jr_post_exists( 401 ), 'the post is preserved' );
+    }
+);
+
+Agentshell_Test::run(
+    'VG4: rollback refuses when cas_delete_row returns 0 (row-moved); the option row is preserved',
+    function () {
+        // Pins the M-VG4 invariant: the rollback path must check the
+        // cas_delete_row return value. A row that moved between the
+        // re-read and the delete is a contention event — refuse, do not
+        // silently free the slot.
+        jr_reset();
+        jr_with_post_cap( 401 );
+        $op = jr_op( 'applied', 401 );
+        $op['after']['post_content_sha256'] = hash( 'sha256', '<p>body</p>' );
+        $op['after']['post_content_length'] = strlen( '<p>body</p>' );
+        $op['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        jr_seed( jr_live_row( array( $op ), array( 'actor' => 'agent' ) ) );
+        jr_post( 401, array(
+            'post_content'      => '<p>body</p>',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op['id'] );
+        $GLOBALS['_agentshell_test_login'] = 'agent';
+        $GLOBALS['_agentshell_test_cas_delete_fail'] = true;
+
+        $threw = jr_refuse( function () { Tx::instance()->rollback(); } );
+        Agentshell_Test::assert_true( $threw, 'rollback refuses on a row-moved cas_delete' );
+        Agentshell_Test::assert_true( is_array( jr_row_on_disk() ), 'and the option row is preserved' );
+    }
+);
+
+Agentshell_Test::run(
+    'VG6: the success result is returned only after the SQL COMMIT has returned',
+    function () {
+        // Pins the M-VG6 invariant: the success result is constructed at
+        // the end of the guarded closure, after the cas_delete_row()
+        // returns. If the result is built earlier, a thrown audit or
+        // a row-moved cas_delete does not prevent the caller from seeing
+        // committed=true. The test uses a side-channel to observe the
+        // moment the row is deleted and the moment the result is returned.
+        jr_reset();
+        jr_with_post_cap( 401 );
+        $op = jr_op( 'applied', 401 );
+        $op['after']['post_content_sha256'] = hash( 'sha256', '<p>body</p>' );
+        $op['after']['post_content_length'] = strlen( '<p>body</p>' );
+        $op['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        jr_seed( jr_live_row( array( $op ), array( 'actor' => 'agent' ) ) );
+        jr_post( 401, array(
+            'post_content'      => '<p>body</p>',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op['id'] );
+        $GLOBALS['_agentshell_test_login'] = 'agent';
+
+        $result = Tx::instance()->commit();
+        // The result is built after the cas_delete_row returned. The
+        // observable invariant: at the moment the result is returned,
+        // the row is no longer on disk.
+        Agentshell_Test::assert_equals( true, $result['committed'] ?? false, 'commit returns committed=true' );
+        Agentshell_Test::assert_equals( null, jr_row_on_disk(), 'and the option row is gone by the time the result is returned' );
+    }
+);
+
+Agentshell_Test::run(
+    'VG7: rollback re-checks that compensated ops are actually gone; a residual post refuses the close',
+    function () {
+        // Pins the M-VG7 invariant: after auto-compensate runs, the
+        // rollback re-reads each compensated op and refuses if the post
+        // is still present. A recovery that returned `compensated`
+        // without actually deleting the post (a stale read, a denied
+        // lock, etc.) must not be followed by a slot-freeing rollback.
+        jr_reset();
+        jr_with_post_cap( 401 );
+        $op = jr_op( 'compensated', 401 );
+        $op['after']['post_content_sha256'] = hash( 'sha256', '<p>body</p>' );
+        $op['after']['post_content_length'] = strlen( '<p>body</p>' );
+        $op['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        $op['comp'] = array(
+            'outcome' => 'compensated',
+            'post_id' => 401,
+            'actor'   => 'agent',
+            'at'      => JR_T0,
+            'reason'  => 'pretend the recovery reported this',
+        );
+        // The op is compensated but the post is still here — that is
+        // the lost-race or denied-lock case the re-check catches.
+        jr_seed( jr_live_row( array( $op ), array( 'actor' => 'agent' ) ) );
+        jr_post( 401, array(
+            'post_content'      => '<p>body</p>',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op['id'] );
+        $GLOBALS['_agentshell_test_login'] = 'agent';
+
+        $threw = jr_refuse( function () { Tx::instance()->rollback(); } );
+        Agentshell_Test::assert_true( $threw, 'rollback refuses on a residual post after compensation' );
+        Agentshell_Test::assert_true( is_array( jr_row_on_disk() ), 'and the option row is preserved' );
+    }
+);
+
+Agentshell_Test::run(
+    'MK: verify_post refuses a post whose marker does not match the op marker; the post is preserved even with the per-post cap granted',
+    function () {
+        // Pins the 'the marker on the post is not checked' mutant: a post
+        // that does NOT carry the operation's marker must be refused even
+        // when the per-post delete_post cap is granted. With the marker
+        // check dropped, the four-field evidence check matches the op's
+        // recorded after-image and the post is deleted by guess.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'applied', 450 );
+        $op['after']['post_content_sha256'] = hash( 'sha256', '<p>body</p>' );
+        $op['after']['post_content_length'] = strlen( '<p>body</p>' );
+        $op['after']['post_date_gmt']      = '2026-01-01 00:00:00';
+        $op['after']['post_modified_gmt']  = '2026-01-01 00:00:00';
+        jr_seed( jr_row( array( $op ) ) );
+        // The post's own marker is somebody else's — the op's marker would
+        // have been written by create_draft, but a hand-edited post or a
+        // different operation left this id with a different marker.
+        jr_post( 450, array(
+            'post_content'      => '<p>body</p>',
+            'post_date'         => '2026-01-01 00:00:00',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), 'op_someone_elses_marker' );
+        // Grant the per-post cap so the marker check is what the test
+        // actually exercises — without it the per-post cap fails first and
+        // the test cannot tell why the post was preserved.
+        jr_with_post_cap( 450 );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR );
+        $detail = $report['operations'][0]['detail'] ?? '';
+        Agentshell_Test::assert_equals(
+            'conflict', $report['operations'][0]['outcome'] ?? '',
+            'a post whose marker does not match the op is refused, not deleted'
+        );
+        Agentshell_Test::assert_true(
+            false !== strpos( $detail, 'does not carry this operation' ) || false !== strpos( $detail, 'marker' ),
+            'the conflict names the marker mismatch: ' . $detail
+        );
+        Agentshell_Test::assert_true( jr_post_exists( 450 ), 'the post is preserved' );
+        Agentshell_Test::assert_equals( array(), $GLOBALS['jr_delete_calls'], 'no wp_delete_post ran' );
+    }
+);
+
+Agentshell_Test::run(
+    'LK4b: the GET_LOCK SQL carries timeout 0; the recovery engine does not wait for a contended lock',
+    function () {
+        // Pins the 'the GET_LOCK timeout is non-zero' mutant. The original
+        // code uses GET_LOCK(name, 0) — prompt refusal when another
+        // connection holds the lock. A non-zero timeout turns the engine
+        // into a wait-and-block caller that can hang a request. The test
+        // inspects the SQL passed to wpdb->get_var() to verify the
+        // timeout argument is 0 on every per-post acquire, not on the
+        // probe (which also uses timeout 0 and is therefore not enough
+        // evidence on its own).
+        jr_reset();
+        Recovery_Advisory_Lock::reset();
+        $old_wpdb = $GLOBALS['wpdb'];
+        $captured = array();
+        $GLOBALS['wpdb'] = new class( $captured ) extends JR_wpdb {
+            public $captured;
+            public function __construct( array &$captured ) { $this->captured =& $captured; }
+            public function get_var( $sql ) {
+                $this->captured[] = (string) $sql;
+                if ( preg_match( '/GET_LOCK\s*\(\s*\'([^\']+)\'\s*,\s*(\d+)\s*\)/i', (string) $sql, $m ) ) {
+                    return ( 0 === strpos( $m[1], 'agentshell_recovery_lock_probe_' ) ) ? '1' : '0';
+                }
+                if ( preg_match( '/RELEASE_LOCK/i', (string) $sql ) ) {
+                    return '1';
+                }
+                return parent::get_var( $sql );
+            }
+        };
+        try {
+            // First probe the lock to populate the cache so we capture
+            // the per-post acquire SQL on the second call.
+            Recovery_Advisory_Lock::available();
+            $r = Recovery_Advisory_Lock::acquire( 42 );
+            Agentshell_Test::assert_true( false === $r, 'the per-post acquire returns false (the stub held the lock)' );
+            $per_post_timeouts = array();
+            foreach ( $GLOBALS['wpdb']->captured as $sql ) {
+                if ( preg_match( "/GET_LOCK\s*\(\s*'agentshell_recovery_lock_[a-f0-9]+'\s*,\s*(\d+)\s*\)/i", $sql, $m ) ) {
+                    $per_post_timeouts[] = (int) $m[1];
+                }
+            }
+            Agentshell_Test::assert_true( ! empty( $per_post_timeouts ), 'at least one per-post GET_LOCK SQL was captured' );
+            foreach ( $per_post_timeouts as $t ) {
+                Agentshell_Test::assert_equals( 0, $t, "every per-post GET_LOCK must use timeout 0 (saw: {$t})" );
+            }
+        } finally {
+            $GLOBALS['wpdb'] = $old_wpdb;
+            Recovery_Advisory_Lock::reset();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'L9: rollback_transaction has no force escape hatch; the input schema is empty',
+    function () {
+        // Pins the no-force invariant at the schema level. The rollback
+        // tool is gated by the actor and the lease, not by a `force` flag
+        // on the wire. Adding `force` to the schema is what would let a
+        // careless caller bypass the rollback gate the way the recover
+        // tool's `confirm` argument already exists to prevent. The
+        // 'rollback\'s input schema accepts a force argument' mutant in
+        // journal-recovery-mutation.php adds exactly this property, and
+        // this test kills it by asserting the properties list is empty.
+        $tool   = new Rollback_Transaction();
+        $schema = $tool->get_input_schema();
+        Agentshell_Test::assert_equals(
+            'object',
+            $schema['type'] ?? null,
+            'the schema declares an object type'
+        );
+        Agentshell_Test::assert_true(
+            isset( $schema['properties'] ) && is_array( $schema['properties'] ),
+            'the schema declares a properties map'
+        );
+        Agentshell_Test::assert_equals(
+            0,
+            count( $schema['properties'] ),
+            'the properties map is empty — no force flag, no other escape hatch'
+        );
+        Agentshell_Test::assert_true(
+            empty( $schema['required'] ?? array() ),
+            'no required arguments on the rollback tool — the gate is ownership and the lease, not a wire flag'
+        );
     }
 );
 

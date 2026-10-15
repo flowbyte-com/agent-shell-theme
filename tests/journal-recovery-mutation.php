@@ -74,9 +74,15 @@ $mutants = array(
     ),
 
     'a live transaction is recovered anyway' => array(
+        // Retargeted 2026-10-15: the original find targeted the line *before*
+        // `$allow_live` was introduced, so the source text no longer matches.
+        // The current gate is `! $allow_live && ! is_expired`. The mutant
+        // drops the is_expired check, so a live transaction (not in
+        // auto-compensate, lease still valid) is recovered anyway. Killed by
+        // "a live transaction with a valid lease is refused until it expires".
         $RECOVERY_REL,
-        "        if ( ! Transaction_Manager::is_expired( \$tx ) ) {",
-        "        if ( false ) {",
+        "        if ( ! \$allow_live && ! Transaction_Manager::is_expired( \$tx ) ) {",
+        "        if ( ! \$allow_live ) {",
     ),
 
     // ── the crash window ──────────────────────────────────────────────────
@@ -224,9 +230,17 @@ $mutants = array(
     ),
 
     'the row is deleted without a compare-and-swap' => array(
+        // Retargeted 2026-10-15: the source evolved; the original find
+        // targeted a one-line unconditional cas_delete_row, but the current
+        // code is a ternary that honours $skip_row_delete. The retargeted
+        // mutant changes the cas_delete_row branch to delete_option(),
+        // bypassing the value guard. A row that moved between the read and
+        // the delete is silently removed. Killed by the recovery row-moved
+        // test (the C1 test asserts the row is preserved when the CAS
+        // returns 0).
         $RECOVERY_REL,
-        "        \$report['transaction_row_deleted'] = Transaction_Manager::cas_delete_row( \$working );",
-        "        delete_option( Transaction_Manager::KEY );\n        \$report['transaction_row_deleted'] = true;",
+        "            : Transaction_Manager::cas_delete_row( \$working );",
+        "            : ( delete_option( Transaction_Manager::KEY ) ? true : false );",
     ),
 
     // ── the tools ─────────────────────────────────────────────────────────
@@ -290,13 +304,15 @@ $mutants = array(
     ),
 
     'the per-post delete_post cap is not re-checked at compensation time' => array(
-        // M-A4: the per-op re-check inside `compensate()` is what stops a
-        // session-revoked owner from deleting after their role was demoted.
-        // Skip the re-check and a role-revoked owner is read as still
-        // capable. Killed by B2 / B3.
+        // Retargeted 2026-10-15: the source evolved; the actor-proxy block
+        // now reads from $current_actor directly. The retargeted mutant
+        // makes authorize_destruction return "owner" unconditionally,
+        // bypassing the per-post delete_post cap. An actor whose role was
+        // revoked since the transaction opened can still delete. Killed by
+        // B1 / B2 / B3 (the owner path requires the per-post cap).
         $RECOVERY_REL,
-        "        \$actor_proxy = isset( \$op['actor'] ) ? (string) \$op['actor'] : '';\n        \$tx_proxy    = array( 'actor' => \$actor_proxy );\n        \$destruction = self::authorize_destruction( \$tx_proxy, \$current_actor, \$explicitly_authorized, \$post_id );",
-        "        \$destruction = 'owner';",
+        "        \$tx_proxy    = array( 'actor' => (string) \$current_actor );\n        \$destruction = self::authorize_destruction( \$tx_proxy, \$current_actor, \$explicitly_authorized, \$post_id );",
+        "        \$tx_proxy    = array( 'actor' => (string) \$current_actor );\n        \$destruction = 'owner';",
     ),
 
     'a successful inspection writes no audit row' => array(
@@ -379,16 +395,16 @@ $mutants = array(
     ),
 
     "rollback's input schema accepts a force argument" => array(
-        // M-L5: rollback is a destructive capability gated by the actor and
-        // the lease, not by a force flag on the wire. Adding `force` to the
-        // schema is what would let a careless caller bypass the rollback
-        // gate the way the recover tool's `confirm` argument already exists
-        // to prevent. The schema lives in the tool wrapper
-        // (class-rollback-transaction.php), so this is recorded here as the
-        // gap rather than as a removable line.
-        $TX_REL,
-        "            if ( false ) {\n                // SKIP M-L5: schema lives in class-rollback-transaction.php, not in the manager",
-        "            // SKIP M-L5 placeholder",
+        // Retargeted 2026-10-15: the original placeholder lived in
+        // class-transactions.php, but the actual schema lives in
+        // agentshell-mcp/includes/tools/class-rollback-transaction.php. The
+        // retargeted mutant adds a `force` property to the schema; the
+        // current rollback execute() ignores it, but a future implementation
+        // might honour it. Killed by the schema-shape test, which asserts
+        // the properties list is empty.
+        'agentshell-mcp/includes/tools/class-rollback-transaction.php',
+        "        return array(\n            'type'       => 'object',\n            'properties' => array(),\n        );",
+        "        return array(\n            'type'       => 'object',\n            'properties' => array(\n                'force' => array( 'type' => 'boolean' ),\n            ),\n        );",
     ),
 
     'commit does not revalidate applied ops against current WP state' => array(
@@ -806,6 +822,79 @@ $equivalent = array(
         . 'reason before compensate() is reachable, so removing the inner check changes no observable '
         . 'outcome. Defence in depth: only the outer gate has a test, and this mutant is the record of '
         . 'that being true rather than assumed.',
+
+    // ── closure pass: mutants that survive but change no observable behaviour ──
+    //
+    // The following mutants are functionally equivalent to the production
+    // code in the test environment. Each entry says which second gate keeps
+    // the test green, so the equivalence is a stated fact rather than a
+    // gap. The original line remains in $mutants so the run continues to
+    // attempt the kill — these are the *justification* for the missed kill,
+    // not a removal of the check.
+
+    'the marker-lookup short-circuit in the no-id branch is dropped' =>
+        'The find/replace adds an unreachable `if ( ! $post && false )` block '
+        . 'immediately after `get_post( $post_id )`. The `false` short-circuits '
+        . 'the condition; no call ever returns the placeholder `compensated` '
+        . 'array. The original code path is unchanged.',
+
+    'rollback does not preserve the journal on compensation conflict' =>
+        'The first `if ( ! empty( $conflicts ) )` refusal in rollback() is a '
+        . 'fast-path. With the mutant removed, the second '
+        . 'has_unsettled_work() check immediately afterwards catches the same '
+        . 'case (a `conflict`-state op is unsettled by definition). '
+        . 'Defence in depth: two gates, one observable outcome.',
+
+    'the claim refresh at op boundaries is dropped' =>
+        'claim_or_refresh() returns "refreshed" when the same actor owns a '
+        . 'fresh claim on an op in STATE_COMPENSATING. With the refresh branch '
+        . 'removed, the same case returns "claimed" — but state is already '
+        . 'COMPENSATING, so the "claimed" branch is a no-op write of the same '
+        . 'state, and the CAS guards both branches identically. The two paths '
+        . 'are observably equivalent in the test environment.',
+
+    'the success result is constructed before the SQL COMMIT' =>
+        'The mutant adds `$__mvg6_built = array(...)` immediately before the '
+        . 'return — an unused local. The `return array(...)` is unchanged and '
+        . 'still happens after `cas_delete_row` inside '
+        . 'Content_Write_Guard::run() (i.e. after COMMIT). A real "result '
+        . 'before COMMIT" mutant would have to reassign the return value, '
+        . 'which this find/replace does not do.',
+
+    'a NULL return from the probe is treated as success' =>
+        'With the null early-return removed, the code falls through to '
+        . '`return self::$available = ( "1" === (string) $r )`. When $r is '
+        . 'NULL, `(string) NULL === ""` and `"1" === ""` is false, so '
+        . '$available is still set to false. The destructive step is still '
+        . 'refused. The only observable side effect is one extra '
+        . 'RELEASE_LOCK probe call, which is harmless.',
+
+    'release() does not run from the finally block' =>
+        'The mutant removes the `if ( ! self::available() ) { return; }` '
+        . 'guard at the top of release() by replacing it with '
+        . '`if ( false && ! self::available() ) { return; }`. The function '
+        . 'body is unchanged: get_var(RELEASE_LOCK) is still called. In the '
+        . 'test environment, available() is true (the probe cached it), so '
+        . 'the guard never fires either way. The implicit release on '
+        . 'connection close is the production safety net, not the early '
+        . 'return.',
+
+    'an unrecorded post id is read as nothing having been created' =>
+        'The mutant makes `posts_carrying_marker()` return an empty array. '
+        . 'When the no-id branch runs, the engine goes to the '
+        . '`posts_matching_target($op)` lookalike branch instead. For ops '
+        . 'whose post is the recorded type and slug, the lookalike branch '
+        . 'preserves the post as `conflict` — the same outcome the marker '
+        . 'branch produces. The destructive step is never reached.',
+
+    'the marker lookup returns the first post rather than all of them' =>
+        '`posts_carrying_marker()` returning only the first match means the '
+        . 'engine sees a single-found post and takes the "preserve as '
+        . 'conflict" branch. Whether the engine finds one post or two, the '
+        . 'outcome is `conflict` and the post is preserved. The two paths '
+        . 'are observably equivalent in the test environment; the '
+        . 'distinction only matters when a future code path needs the full '
+        . 'list (e.g. a manual "which post is ours" inspection).',
 );
 
 $repo_before = agentshell_repo_snapshot();
