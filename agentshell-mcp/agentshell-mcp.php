@@ -196,6 +196,7 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     $tools[] = new AgentShell_MCP\Tools\Search_Content();
     $tools[] = new AgentShell_MCP\Tools\Get_Content();
     $tools[] = new AgentShell_MCP\Tools\Create_Draft();
+    $tools[] = new AgentShell_MCP\Tools\Update_Draft();
 
     // Screenshot loop (v1.3)
     $tools[] = new AgentShell_MCP\Tools\Screenshot();
