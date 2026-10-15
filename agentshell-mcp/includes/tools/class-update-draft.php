@@ -33,11 +33,16 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
  *   - **The post is not transaction-owned.** The post must carry the
  *     journal's `_agentshell_journal_op` marker, and that marker must
  *     match an OP_CREATE_DRAFT op in the *current* transaction's journal
- *     in `applied` (or `partial-applied`) state. A draft created outside
- *     any transaction, or by a different transaction, is refused — the
+ *     in `applied` (or `partial-applied`) state, OR an
+ *     OP_EDIT_EXISTING_DRAFT op in `claimed` (or `applied`) state with
+ *     `target.post_id` matching the post. A draft created outside any
+ *     transaction, or by a different transaction, is refused — the
  *     journal would otherwise be claiming ownership of a post it cannot
  *     prove it owns, which is the failure mode the marker check exists
- *     to prevent.
+ *     to prevent. The two ownership paths are the create path
+ *     (`agentshell_create_draft` -> `OP_CREATE_DRAFT`) and the
+ *     pre-existing-draft path (`agentshell_claim_existing_draft` ->
+ *     `OP_EDIT_EXISTING_DRAFT`).
  *   - **No actual field to update.** The schema requires at least one
  *     of `title`, `content`, `slug`; an empty call refuses at the schema
  *     level.
@@ -75,12 +80,14 @@ class Update_Draft extends Base_Tool {
     public function get_name() { return 'agentshell_update_draft'; }
 
     public function get_description() {
-        return 'Update the title, content, or slug of a draft that the current transaction created. '
+        return 'Update the title, content, or slug of a draft that the current transaction owns. '
             . 'The one journal-aware update tool; it may only be called inside an open transaction, '
-            . 'and only for drafts created by `agentshell_create_draft` in the same transaction. '
-            . 'Each call records an OP_UPDATE_DRAFT op whose before-image is the post\'s prior '
-            . 'state, so a rollback can unwind the chain and then delete the post, and a commit '
-            . 'can keep the final state. An `idempotency_key` is required for retry safety.';
+            . 'and only for drafts that the current transaction either created (via '
+            . '`agentshell_create_draft`) or claimed (via `agentshell_claim_existing_draft`). Each '
+            . 'call records an OP_UPDATE_DRAFT op whose before-image is the post\'s prior state, so a '
+            . 'rollback can unwind the chain and then either delete the post (create path) or '
+            . 'restore the recorded baseline (claim path), and a commit can keep the final state. '
+            . 'An `idempotency_key` is required for retry safety.';
     }
 
     public function get_input_schema() {
@@ -204,27 +211,52 @@ class Update_Draft extends Base_Tool {
             throw new \InvalidArgumentException(
                 "transaction_update_draft_not_transaction_owned: post #{$id} does not carry the journal's "
                 . '`_agentshell_journal_op` marker, so it cannot be shown to be a draft this transaction '
-                . 'created. agentshell_update_draft only edits drafts that the current transaction created '
-                . 'via agentshell_create_draft. To edit an unrelated draft, commit or rollback the current '
-                . 'transaction and use agentshell_update_content outside it.'
+                . 'created or claimed. agentshell_update_draft only edits drafts that the current transaction '
+                . 'owns — either via agentshell_create_draft (the create path) or via '
+                . 'agentshell_claim_existing_draft (the pre-existing-draft path). To edit an unrelated draft, '
+                . 'commit or rollback the current transaction and use agentshell_update_content outside it.'
             );
         }
         $owning_create = self::find_owning_create_op( $content, $marker );
-        if ( null === $owning_create ) {
-            throw new \InvalidArgumentException(
-                "transaction_update_draft_not_transaction_owned: post #{$id} carries the journal marker "
-                . "'{$marker}', but no OP_CREATE_DRAFT op in the current transaction's journal matches it. "
-                . 'The post was not created by this transaction; agentshell_update_draft will not edit it.'
-            );
-        }
-        if ( 'applied' !== (string) ( $owning_create['state'] ?? '' )
-            && 'partial-applied' !== (string) ( $owning_create['state'] ?? '' ) ) {
-            throw new \InvalidArgumentException(
-                "transaction_update_draft_create_state_refused: the OP_CREATE_DRAFT op that owns post #{$id} "
-                . 'is in state "' . (string) ( $owning_create['state'] ?? '' ) . '", not applied. The owning '
-                . 'create op must be in `applied` (or `partial-applied`) for an update to be recorded; '
-                . 'reconcile via agentshell_recover_transaction or rollback first.'
-            );
+        if ( null !== $owning_create ) {
+            if ( 'applied' !== (string) ( $owning_create['state'] ?? '' )
+                && 'partial-applied' !== (string) ( $owning_create['state'] ?? '' ) ) {
+                throw new \InvalidArgumentException(
+                    "transaction_update_draft_create_state_refused: the OP_CREATE_DRAFT op that owns post #{$id} "
+                    . 'is in state "' . (string) ( $owning_create['state'] ?? '' ) . '", not applied. The owning '
+                    . 'create op must be in `applied` (or `partial-applied`) for an update to be recorded; '
+                    . 'reconcile via agentshell_recover_transaction or rollback first.'
+                );
+            }
+        } else {
+            // Stage 2b: the marker may also come from an
+            // OP_EDIT_EXISTING_DRAFT op that recorded a claim on this
+            // pre-existing post. The op may be in `claimed` (no edit
+            // has run yet) or `applied` (the first edit's
+            // mark_applied transitioned it). A non-`claimed`/`applied`
+            // state means the op is unsettled in a way that blocks the
+            // next edit; the same refusal code as the create path
+            // preserves the diagnostic shape the operator is trained on.
+            $owning_claim = self::find_owning_claim_op( $content, $marker, $id );
+            if ( null === $owning_claim ) {
+                throw new \InvalidArgumentException(
+                    "transaction_update_draft_not_transaction_owned: post #{$id} carries the journal marker "
+                    . "'{$marker}', but no OP_CREATE_DRAFT or OP_EDIT_EXISTING_DRAFT op in the current "
+                    . "transaction's journal matches it. The post was not created or claimed by this "
+                    . 'transaction; agentshell_update_draft will not edit it.'
+                );
+            }
+            $claim_state = (string) ( $owning_claim['state'] ?? '' );
+            if ( \AgentShell_MCP\Content_Journal::STATE_CLAIMED !== $claim_state
+                && \AgentShell_MCP\Content_Journal::STATE_APPLIED !== $claim_state ) {
+                throw new \InvalidArgumentException(
+                    "transaction_update_draft_claim_state_refused: the OP_EDIT_EXISTING_DRAFT op that owns "
+                    . "post #{$id} is in state \"{$claim_state}\", not `claimed` or `applied`. The owning "
+                    . 'claim op must be in `claimed` (no edit has run) or `applied` (the first edit has '
+                    . 'transitioned it) for an update to be recorded; reconcile via '
+                    . 'agentshell_recover_transaction or rollback first.'
+                );
+            }
         }
 
         // OCC pre-check against the head (the most recently applied op's
@@ -512,6 +544,41 @@ class Update_Draft extends Base_Tool {
             }
             // Older records may carry the marker on `after.op_meta_value`
             // but the create tool's record_intent() stamps them on both.
+            if ( (string) ( $op['after']['op_meta_value'] ?? '' ) === $marker ) {
+                return $op;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Find the OP_EDIT_EXISTING_DRAFT op whose id equals the post's
+     * marker AND whose `target.post_id` matches the post being
+     * updated. Returns the op array, or null if no claim op in the
+     * journal owns the post.
+     *
+     * The `target.post_id` check is the second leg of the marker
+     * match: a claim op's id is a random 16-byte value, and the
+     * marker on the post is that same value, so the id match alone
+     * would be sufficient. The `target.post_id` match is a defence
+     * in depth that catches a journal that survived a partial claim
+     * — a row whose target.post_id is a different number than the
+     * post being updated is not the owning op.
+     */
+    private static function find_owning_claim_op( array $content, $marker, $post_id ) {
+        if ( '' === $marker || empty( $content['ops'] ) ) { return null; }
+        $post_id = (int) $post_id;
+        foreach ( $content['ops'] as $op ) {
+            if ( ! is_array( $op ) ) { continue; }
+            if ( \AgentShell_MCP\Content_Journal::OP_EDIT_EXISTING_DRAFT !== (string) ( $op['op'] ?? '' ) ) {
+                continue;
+            }
+            if ( (int) ( $op['target']['post_id'] ?? 0 ) !== $post_id ) {
+                continue;
+            }
+            if ( (string) ( $op['id'] ?? '' ) === $marker ) {
+                return $op;
+            }
             if ( (string) ( $op['after']['op_meta_value'] ?? '' ) === $marker ) {
                 return $op;
             }

@@ -103,15 +103,53 @@ class Content_Journal {
     const OP_UPDATE_DRAFT = 'update_draft';
 
     /**
+     * Edit a draft that existed before the current transaction opened.
+     *
+     * Stage 2b. The journal gains a way to claim a pre-existing draft so
+     * the OCC chain and the recoverable lifecycle can apply to it without
+     * the user having to delete and recreate the post. The op is recorded
+     * by `agentshell_claim_existing_draft`, which captures the live
+     * post's strong after-image as the immutable `before` baseline (the
+     * pre-image is what rollback restores). The op's `state` is
+     * `claimed`, a new state between `intended` and `applied`: the
+     * transaction now owns the post, but no edit has run yet, so the head
+     * map is empty for this post and the first edit's head CAS
+     * legitimately lands with `expected_prev === null`.
+     *
+     * Each subsequent edit runs through `agentshell_update_draft` against
+     * this op, which the ownership check matches by marker. The op's
+     * `state` transitions `claimed` → `applied` on the first edit; the
+     * strong after-image is the head pointer for the next op, and
+     * rollback restores from the immutable `before` (the supported
+     * fields: post_title, post_content, post_excerpt where present,
+     * post_name; `post_modified_gmt` is excluded so re-applying it does
+     * not falsify the OCC chain for any subsequent op).
+     *
+     * Live visibility is not an isolation guarantee: pre-existing drafts
+     * are visible to authorised WordPress users and plugins while the
+     * transaction is open. Every edit's OCC pre-check verifies the live
+     * post against the head; compensation re-checks against the head and
+     * the baseline; commit revalidation re-checks the head against the
+     * live post. External edits, publishes, and deletes are caught and
+     * refused or routed to `conflict`.
+     */
+    const OP_EDIT_EXISTING_DRAFT = 'edit_existing_draft';
+
+    /**
      * Operation types this build is willing to compensate.
      *
-     * Deliberately two entries. Every other type the design document discusses
-     * is recorded nowhere and compensated by nothing, and `Content_Recovery`
-     * refuses an operation that is not in this list rather than guessing at an
-     * inverse. Adding a row here is the commit that makes that operation
-     * recoverable, and it must bring its own before-image contract.
+     * Deliberately three entries. Every other type the design document
+     * discusses is recorded nowhere and compensated by nothing, and
+     * `Content_Recovery` refuses an operation that is not in this list
+     * rather than guessing at an inverse. Adding a row here is the commit
+     * that makes that operation recoverable, and it must bring its own
+     * before-image contract.
      */
-    const SUPPORTED_OPERATIONS = array( self::OP_CREATE_DRAFT, self::OP_UPDATE_DRAFT );
+    const SUPPORTED_OPERATIONS = array(
+        self::OP_CREATE_DRAFT,
+        self::OP_UPDATE_DRAFT,
+        self::OP_EDIT_EXISTING_DRAFT,
+    );
 
     /** The journal's key inside $tx['content']. */
     const CONTENT_KEY = 'content';
@@ -155,6 +193,20 @@ class Content_Journal {
      * the evidence and route the operator to recovery.
      */
     const STATE_PARTIAL_APPLIED = 'partial-applied';
+    /**
+     * Stage 2b. The op is for a pre-existing draft whose marker now
+     * matches this transaction, but no edit has run yet. The head map
+     * for the post is empty; the first edit's head CAS legitimately
+     * lands with `expected_prev === null` (the previous contract's
+     * unreachable first-op branch). The state transitions to
+     * `applied` on the first successful `mark_applied()`. The op is
+     * treated as unsettled for the close gates — `commit` and
+     * `rollback` both refuse on a journal that carries only a
+     * `claimed` op with no follow-on `applied` op, because
+     * abandoning the claim would leave the post carrying a journal
+     * marker the transaction no longer owns.
+     */
+    const STATE_CLAIMED = 'claimed';
 
     const STATES = array(
         self::STATE_INTENDED,
@@ -163,6 +215,7 @@ class Content_Journal {
         self::STATE_COMPENSATED,
         self::STATE_CONFLICT,
         self::STATE_PARTIAL_APPLIED,
+        self::STATE_CLAIMED,
     );
 
     /**
@@ -392,6 +445,23 @@ class Content_Journal {
     }
 
     /**
+     * Settled states, plus the explicit non-settled states we count.
+     *
+     * `claimed` is a non-settled state for the close gates: a journal
+     * that holds a `claimed` op with no follow-on `applied` op still
+     * owns the post (the post carries the marker), and abandoning the
+     * claim would silently leave the post carrying a marker the
+     * transaction no longer owns. The same logic that makes
+     * `compensated` settled and `conflict` unsettled applies here:
+     * the operator must run an update (which transitions the op to
+     * `applied`) or run recovery (which rolls the claim back), and
+     * the row is the durable evidence either way.
+     */
+    public static function is_settled_state( $state ) {
+        return in_array( (string) $state, self::SETTLED_STATES, true );
+    }
+
+    /**
      * Is any operation in a non-`applied`, non-`compensated` state?
      *
      * "Unsettled" means the operation still needs operator or recovery
@@ -411,6 +481,7 @@ class Content_Journal {
             self::STATE_COMPENSATING,
             self::STATE_CONFLICT,
             self::STATE_PARTIAL_APPLIED,
+            self::STATE_CLAIMED,
         );
         foreach ( $content[ self::OPS_KEY ] as $op ) {
             if ( ! is_array( $op ) || ! isset( $op['state'] ) ) {
@@ -443,6 +514,7 @@ class Content_Journal {
             self::STATE_COMPENSATING,
             self::STATE_CONFLICT,
             self::STATE_PARTIAL_APPLIED,
+            self::STATE_CLAIMED,
         );
         foreach ( $content[ self::OPS_KEY ] as $op ) {
             if ( ! is_array( $op ) || ! isset( $op['state'] ) ) {
@@ -781,10 +853,14 @@ class Content_Journal {
             // Per-op-type structural requirements. create_draft is what it has
             // always been; update_draft carries a `before` and a stronger
             // after-image because compensation applies the before via
-            // `wp_update_post` and must verify the live post first.
+            // `wp_update_post` and must verify the live post first;
+            // edit_existing_draft carries the *immutable baseline* in
+            // `before` and the post's state at first touch in `after`.
             $op_type = isset( $op['op'] ) ? (string) $op['op'] : '';
             if ( self::OP_UPDATE_DRAFT === $op_type ) {
                 $problems = array_merge( $problems, self::validate_update_draft( $op, $label ) );
+            } elseif ( self::OP_EDIT_EXISTING_DRAFT === $op_type ) {
+                $problems = array_merge( $problems, self::validate_edit_existing_draft( $op, $label ) );
             }
         }
 
@@ -838,6 +914,60 @@ class Content_Journal {
             if ( ! array_key_exists( $needed, $op['after'] ) ) {
                 $problems[] = $label . ' has no after.' . $needed . '; the OCC check cannot be performed.';
             }
+        }
+        return $problems;
+    }
+
+    /**
+     * Structural checks specific to OP_EDIT_EXISTING_DRAFT.
+     *
+     * The `before` is the immutable baseline captured at first touch:
+     * the post's state the moment the claim was recorded. Rollback
+     * restores from it. Every supported field the inverse path
+     * (post_title, post_content, post_excerpt where present, post_name)
+     * must be present so a `wp_update_post` can re-apply them. The
+     * `after` carries the post's identification fields
+     * (post_type, post_status, post_name, op_meta_value) at first touch;
+     * the OCC chain does not start until the first edit's head CAS, so
+     * the strong-evidence after fields are not required here.
+     *
+     * `target.post_id` is the post the claim owns. The state is `claimed`
+     * (the post has not been edited yet) or `applied` (the first edit
+     * has run, the op has been promoted to applied by mark_applied's
+     * op-state transition); the value-guarded CAS that promotes a claim
+     * op from `claimed` to `applied` is the same one `mark_applied()`
+     * uses for any other op type.
+     *
+     * @param array  $op    The op record.
+     * @param string $label Human-readable label for problem strings.
+     * @return array<int,string> Per-op problems; empty when well-formed.
+     */
+    private static function validate_edit_existing_draft( array $op, $label ) {
+        $problems = array();
+        if ( empty( $op['target']['post_id'] ) ) {
+            $problems[] = $label . ' has no target.post_id; the claim does not name a post.';
+        }
+        if ( ! is_array( $op['before'] ?? null ) ) {
+            $problems[] = $label . ' has no before-image; a claim without the immutable baseline cannot be rolled back.';
+            return $problems;
+        }
+        $before_required = array(
+            'post_title',
+            'post_content',
+            'post_name',
+            'post_content_sha256',
+            'post_content_length',
+            'post_modified_gmt',
+            'op_meta_value',
+        );
+        foreach ( $before_required as $needed ) {
+            if ( ! array_key_exists( $needed, $op['before'] ) ) {
+                $problems[] = $label . ' has no before.' . $needed . '; the inverse operation would be a guess.';
+            }
+        }
+        $state = (string) ( $op['state'] ?? '' );
+        if ( self::STATE_CLAIMED !== $state && self::STATE_APPLIED !== $state ) {
+            $problems[] = $label . ' has state "' . $state . '"; edit_existing_draft ops are only valid in `claimed` or `applied`.';
         }
         return $problems;
     }

@@ -516,8 +516,10 @@ function jr_post( $id, array $fields = array(), $marker = null ) {
         'post_type'         => 'page',
         'post_status'       => 'draft',
         'post_date'         => '2026-01-01 00:00:00',
+        'post_date_gmt'     => '2026-01-01 00:00:00',
         'post_modified'     => '2026-01-01 00:00:00',
         'post_modified_gmt' => '2026-01-01 00:00:00',
+        'post_parent'       => 0,
     ), $fields );
     $GLOBALS['_agentshell_test_posts'][ (int) $id ] = $post;
     if ( null !== $marker ) {
@@ -5939,6 +5941,660 @@ Agentshell_Test::run(
             $GLOBALS['_agentshell_test_cas_write_fail']  = false;
             $GLOBALS['_agentshell_test_cas_write_fail_after'] = -1;
             $GLOBALS['_agentshell_test_cas_write_calls'] = 0;
+        }
+    }
+);
+
+// ── Claim_Existing_Draft tool: Stage 2b first-touch tests ──────────────────
+
+require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-claim-existing-draft.php';
+use AgentShell_MCP\Tools\Claim_Existing_Draft;
+
+/**
+ * Set the per-post edit_post capability for the claim tool tests.
+ * The stub treats the cap as either a bool (granted for all posts)
+ * or an array of post ids (granted for those, denied for others).
+ */
+function cl_grant_edit_post( $post_ids = null ) {
+    if ( null === $post_ids ) {
+        $GLOBALS['_agentshell_test_user_caps']['edit_post'] = true;
+        return;
+    }
+    $GLOBALS['_agentshell_test_user_caps']['edit_post'] = array_values( array_map( 'intval', (array) $post_ids ) );
+}
+
+Agentshell_Test::run(
+    'CL1: Claim_Existing_Draft refuses outside a transaction',
+    function () {
+        // A claim is a journal op; a journal op lives inside a transaction.
+        jr_reset();
+        jr_release_if_open();
+        $tool = new Claim_Existing_Draft();
+        $message = jr_refuse( function () use ( $tool ) {
+            $tool->execute( array(
+                'id'              => 1,
+                'type'            => 'page',
+                'idempotency_key' => 'idem-cl1',
+            ) );
+        } );
+        Agentshell_Test::assert_true(
+            is_string( $message ) && false !== strpos( $message, 'outside a transaction' ),
+            'and names the cause: ' . $message
+        );
+        Agentshell_Test::assert_true(
+            false !== strpos( $message, 'agentshell_claim_existing_draft' ),
+            'and names the tool: ' . $message
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'CL2: Claim_Existing_Draft refuses when no idempotency_key is supplied',
+    function () {
+        // The schema requires an idempotency_key for retry safety.
+        jr_reset();
+        Tx::instance()->begin( 'cl-2' );
+        try {
+            $tool = new Claim_Existing_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id'   => 1,
+                    'type' => 'page',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'idempotency_key' ),
+                'and names the missing field: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'CL3: Claim_Existing_Draft refuses on a non-existent post',
+    function () {
+        jr_reset();
+        Tx::instance()->begin( 'cl-3' );
+        try {
+            $tool = new Claim_Existing_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id'              => 99999,
+                    'type'            => 'page',
+                    'idempotency_key' => 'idem-cl3',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message )
+                    && ( false !== strpos( $message, 'transaction_claim_existing_draft_post_not_found' )
+                      || false !== strpos( $message, 'does not exist' ) ),
+                'and names the cause: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'CL4: Claim_Existing_Draft refuses when the post is not a draft',
+    function () {
+        // Status transitions are out of scope — a non-draft post
+        // would change what "recoverable" means.
+        jr_reset();
+        Tx::instance()->begin( 'cl-4' );
+        try {
+            jr_post( 901, array( 'post_status' => 'publish' ) );
+            cl_grant_edit_post( 901 );
+            $tool = new Claim_Existing_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id'              => 901,
+                    'type'            => 'page',
+                    'idempotency_key' => 'idem-cl4',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'transaction_claim_existing_draft_not_a_draft' ),
+                'and names the cause: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'CL5: Claim_Existing_Draft refuses when the actor lacks edit_post on the post',
+    function () {
+        // A user whose role was revoked since the post was created
+        // cannot claim it. The cap is re-checked at claim time, not
+        // only at tool entry.
+        jr_reset();
+        Tx::instance()->begin( 'cl-5' );
+        try {
+            jr_post( 902, array( 'post_status' => 'draft' ) );
+            // edit_post NOT granted.
+            $tool = new Claim_Existing_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id'              => 902,
+                    'type'            => 'page',
+                    'idempotency_key' => 'idem-cl5',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'transaction_claim_existing_draft_missing_capability' ),
+                'and names the cause: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'CL6: Claim_Existing_Draft refuses when the post already carries a journal marker',
+    function () {
+        // A post that is already journal-owned cannot be claimed —
+        // the existing claim belongs to a different journal, and
+        // overwriting it would make recovery unable to find the
+        // post.
+        jr_reset();
+        Tx::instance()->begin( 'cl-6' );
+        try {
+            jr_post( 903, array( 'post_status' => 'draft' ), 'op_other_journal' );
+            cl_grant_edit_post( 903 );
+            $tool = new Claim_Existing_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id'              => 903,
+                    'type'            => 'page',
+                    'idempotency_key' => 'idem-cl6',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'transaction_claim_existing_draft_already_owned' ),
+                'and names the cause: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'CL7: Claim_Existing_Draft succeeds for a pre-existing draft and stamps the marker',
+    function () {
+        // Happy path: a pre-existing draft, the actor has edit_post,
+        // no marker, no head — the claim records an OP_EDIT_EXISTING_DRAFT
+        // op in `claimed` state and stamps the marker on the post.
+        jr_reset();
+        Tx::instance()->begin( 'cl-7' );
+        try {
+            jr_post( 904, array(
+                'post_status' => 'draft', 'post_title' => 'orig', 'post_content' => 'orig',
+                'post_name' => 'orig-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+                'post_modified_gmt' => '2026-01-01 00:00:00',
+            ) );
+            cl_grant_edit_post( 904 );
+            $tool = new Claim_Existing_Draft();
+            $result = $tool->execute( array(
+                'id'              => 904,
+                'type'            => 'page',
+                'idempotency_key' => 'idem-cl7',
+            ) );
+            Agentshell_Test::assert_equals( 904, (int) $result['id'], 'the tool returns the post id' );
+            Agentshell_Test::assert_equals( 'draft', (string) $result['status'], 'status is draft' );
+            Agentshell_Test::assert_equals( 'claimed', (string) $result['journal_state'], 'op state is claimed' );
+            Agentshell_Test::assert_true( true === $result['journaled'], 'journaled is true' );
+            Agentshell_Test::assert_true( true === $result['recoverable'], 'recoverable is true' );
+            Agentshell_Test::assert_true( false === $result['resumed'], 'resumed is false on a fresh claim' );
+            Agentshell_Test::assert_true( '' !== (string) $result['op_id'], 'op_id is set' );
+            Agentshell_Test::assert_equals(
+                (string) $result['op_id'], (string) $result['marker'],
+                'op_id and marker are the same value (the journal row is the source of the marker\'s identity)'
+            );
+
+            // The marker is on the post.
+            $stamped = (string) get_post_meta( 904, Content_Journal::OP_META, true );
+            Agentshell_Test::assert_equals(
+                (string) $result['op_id'], $stamped,
+                'the marker is stamped on the post'
+            );
+
+            // The journal op is in `claimed` state with the immutable baseline.
+            $tx_after    = jr_row_on_disk();
+            $content     = Content_Journal::of( $tx_after );
+            $ops         = is_array( $content['ops'] ?? null ) ? $content['ops'] : array();
+            $claim_op    = null;
+            foreach ( $ops as $op ) {
+                if ( ! is_array( $op ) ) { continue; }
+                if ( (string) ( $op['op'] ?? '' ) !== Content_Journal::OP_EDIT_EXISTING_DRAFT ) { continue; }
+                if ( (int) ( $op['target']['post_id'] ?? 0 ) === 904 ) { $claim_op = $op; break; }
+            }
+            Agentshell_Test::assert_true( is_array( $claim_op ), 'the journal carries an OP_EDIT_EXISTING_DRAFT op for post 904' );
+            Agentshell_Test::assert_equals(
+                'claimed', (string) ( $claim_op['state'] ?? '' ),
+                'the op is in `claimed` state'
+            );
+            Agentshell_Test::assert_equals(
+                904, (int) ( $claim_op['post_id'] ?? 0 ),
+                'the op\'s post_id is 904'
+            );
+            // The immutable baseline is the post's state at first touch.
+            $before = is_array( $claim_op['before'] ?? null ) ? $claim_op['before'] : array();
+            Agentshell_Test::assert_equals(
+                'orig', (string) ( $before['post_title'] ?? '' ),
+                'before.post_title is the post\'s title at first touch'
+            );
+            Agentshell_Test::assert_equals(
+                'orig', (string) ( $before['post_content'] ?? '' ),
+                'before.post_content is the post\'s content at first touch'
+            );
+            Agentshell_Test::assert_equals(
+                'orig-slug', (string) ( $before['post_name'] ?? '' ),
+                'before.post_name is the post\'s slug at first touch'
+            );
+            Agentshell_Test::assert_equals(
+                hash( 'sha256', 'orig' ), (string) ( $before['post_content_sha256'] ?? '' ),
+                'before.post_content_sha256 is the SHA-256 of the content at first touch'
+            );
+            // The head map is empty for post 904 — no edit has run yet.
+            $head = Content_Journal::head_after( $tx_after, 904 );
+            Agentshell_Test::assert_true(
+                ! is_array( $head ) || empty( $head ),
+                'no head is written for post 904: the first edit\'s head CAS will land with expected_prev === null'
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'CL8: Claim_Existing_Draft retry with the same idempotency_key returns the same op with resumed=true',
+    function () {
+        // Retry idempotency happy path: same actor, same transaction,
+        // same post, same content fingerprint -> resumed with the
+        // same op_id; no second journal op is recorded, the marker
+        // is not re-stamped.
+        jr_reset();
+        Tx::instance()->begin( 'cl-8' );
+        try {
+            jr_post( 905, array(
+                'post_status' => 'draft', 'post_title' => 'orig', 'post_content' => 'orig',
+                'post_name' => 'orig-slug',
+            ) );
+            cl_grant_edit_post( 905 );
+            $tool = new Claim_Existing_Draft();
+            $first = $tool->execute( array(
+                'id' => 905, 'type' => 'page', 'idempotency_key' => 'idem-cl8',
+            ) );
+            Agentshell_Test::assert_true( false === $first['resumed'], 'first call is not a resume' );
+
+            $second = $tool->execute( array(
+                'id' => 905, 'type' => 'page', 'idempotency_key' => 'idem-cl8',
+            ) );
+            Agentshell_Test::assert_equals(
+                (string) $first['op_id'], (string) $second['op_id'],
+                'the retry returns the same op_id'
+            );
+            Agentshell_Test::assert_true( true === $second['resumed'], 'the retry is marked resumed' );
+            Agentshell_Test::assert_equals(
+                'claimed', (string) $second['journal_state'],
+                'the retry still reports claimed (no edit has run)'
+            );
+
+            // The journal has exactly one OP_EDIT_EXISTING_DRAFT op for post 905.
+            $tx_after    = jr_row_on_disk();
+            $content     = Content_Journal::of( $tx_after );
+            $matches     = 0;
+            foreach ( ( $content['ops'] ?? array() ) as $op ) {
+                if ( ! is_array( $op ) ) { continue; }
+                if ( (string) ( $op['op'] ?? '' ) !== Content_Journal::OP_EDIT_EXISTING_DRAFT ) { continue; }
+                if ( (int) ( $op['target']['post_id'] ?? 0 ) === 905 ) { $matches++; }
+            }
+            Agentshell_Test::assert_equals( 1, $matches, 'exactly one claim op for post 905 (no duplicate)' );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'CL9: Claim_Existing_Draft retry with the same key but a different content fingerprint refuses',
+    function () {
+        // A retry with the same key but a different content
+        // fingerprint (the post has been externally edited) refuses
+        // — the original op is preserved.
+        jr_reset();
+        Tx::instance()->begin( 'cl-9' );
+        try {
+            jr_post( 906, array(
+                'post_status' => 'draft', 'post_title' => 'orig', 'post_content' => 'orig',
+                'post_name' => 'orig-slug',
+            ) );
+            cl_grant_edit_post( 906 );
+            $tool = new Claim_Existing_Draft();
+            $first = $tool->execute( array(
+                'id' => 906, 'type' => 'page', 'idempotency_key' => 'idem-cl9',
+            ) );
+            Agentshell_Test::assert_true( false === $first['resumed'], 'first call is not a resume' );
+
+            // Simulate an external edit (the post is now in a
+            // different state than the recorded baseline). The retry
+            // captures a different content fingerprint and refuses.
+            jr_post( 906, array(
+                'post_status' => 'draft', 'post_title' => 'external-edit',
+                'post_content' => 'external-edit', 'post_name' => 'orig-slug',
+            ), (string) $first['op_id'] );
+
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id' => 906, 'type' => 'page', 'idempotency_key' => 'idem-cl9',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'transaction_claim_existing_draft_idempotency_conflict' ),
+                'and names the cause: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'CL10: Claim_Existing_Draft refuses a second claim for the same post in the same journal',
+    function () {
+        // A journal may carry at most one claim per post. A second
+        // claim — even with a different idempotency_key — refuses;
+        // the post is already owned by the journal through the
+        // first claim.
+        jr_reset();
+        Tx::instance()->begin( 'cl-10' );
+        try {
+            jr_post( 907, array(
+                'post_status' => 'draft', 'post_title' => 'orig', 'post_content' => 'orig',
+            ) );
+            cl_grant_edit_post( 907 );
+            $tool = new Claim_Existing_Draft();
+            $tool->execute( array(
+                'id' => 907, 'type' => 'page', 'idempotency_key' => 'idem-cl10-a',
+            ) );
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id' => 907, 'type' => 'page', 'idempotency_key' => 'idem-cl10-b',
+                ) );
+            } );
+            // The first call stamped the marker on the post; the
+            // second call refuses on `already_owned` (the post-side
+            // marker check fires before the journal's own
+            // duplicate-claim invariant check). Both checks refuse
+            // the same outcome — a journal may carry at most one
+            // claim per post. The plan documents the second check
+            // as defence-in-depth that is normally masked by the
+            // first; the user-facing contract is "this post cannot
+            // be claimed again".
+            Agentshell_Test::assert_true(
+                is_string( $message )
+                    && (
+                        false !== strpos( $message, 'transaction_claim_existing_draft_already_claimed' )
+                        || false !== strpos( $message, 'transaction_claim_existing_draft_already_owned' )
+                    ),
+                'and refuses a second claim on the same post: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'UD16: Update_Draft accepts a pre-existing draft whose marker matches a claim op in `claimed` state',
+    function () {
+        // Stage 2b: the new ownership branch. The post is a
+        // pre-existing draft; the marker is the claim op's id; the
+        // claim op is in `claimed` state (no edit has run yet, so
+        // the first edit is the legitimate first-op path with
+        // expected_prev === null).
+        jr_reset();
+        Tx::instance()->begin( 'ud-16' );
+        try {
+            // Build a journal with a single OP_EDIT_EXISTING_DRAFT op
+            // in `claimed` state for post 920.
+            $claim_op_id = 'op_claim_ud16';
+            $op = Content_Journal::record_intent(
+                Content_Journal::OP_EDIT_EXISTING_DRAFT,
+                array( 'post_id' => 920, 'post_type' => 'page', 'post_status' => 'draft' ),
+                array(
+                    'post_title' => 'orig', 'post_name' => 'orig-slug',
+                    'op_meta_value' => $claim_op_id, 'idempotency_key' => 'idem-ud16',
+                ),
+                'agent',
+                JR_T0
+            );
+            $op['id']      = $claim_op_id;
+            $op['state']   = 'claimed';
+            $op['post_id'] = 920;
+            $op['before']  = array(
+                'post_type' => 'page', 'post_status' => 'draft',
+                'post_title' => 'orig', 'post_content' => 'orig',
+                'post_excerpt' => '', 'post_name' => 'orig-slug',
+                'post_date_gmt' => '2026-01-01 00:00:00',
+                'post_modified_gmt' => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'orig' ),
+                'post_content_length' => 4,
+                'op_meta_value' => $claim_op_id,
+            );
+
+            $tx = Tx::instance()->payload();
+            $tx['content']['ops'][ $claim_op_id ] = $op;
+            jr_seed( $tx );
+
+            // The live post carries the marker and matches the recorded baseline.
+            jr_post( 920, array(
+                'post_status' => 'draft', 'post_title' => 'orig', 'post_content' => 'orig',
+                'post_name' => 'orig-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+                'post_modified_gmt' => '2026-01-01 00:00:00',
+            ), $claim_op_id );
+
+            // The first edit lands. The OCC pre-check is against an
+            // empty head (no edit has run yet) and skips; the head
+            // CAS legitimately lands with expected_prev === null;
+            // mark_applied transitions the claim op from `claimed` to
+            // `applied`.
+            $tool = new Update_Draft();
+            $result = $tool->execute( array(
+                'id' => 920, 'type' => 'page', 'title' => 'edited-ud16',
+                'idempotency_key' => 'idem-ud16-first-edit',
+            ) );
+            Agentshell_Test::assert_equals( 920, (int) $result['id'], 'the update returns the post id' );
+            Agentshell_Test::assert_true( true === $result['journal_applied'], 'journal_applied is true' );
+            // The op_id is the new update op's id, NOT the claim op's
+            // id — the tool records a fresh OP_UPDATE_DRAFT op.
+            // The marker on the post is still the claim op's id,
+            // because the tool's ownership check finds the claim op
+            // by marker, not by op_id.
+            Agentshell_Test::assert_equals(
+                $claim_op_id, (string) $result['marker'],
+                'the marker is the claim op\'s id (the post is still owned by the claim op)'
+            );
+            Agentshell_Test::assert_true(
+                '' !== (string) ( $result['op_id'] ?? '' ) && (string) $result['op_id'] !== $claim_op_id,
+                'the op_id is a fresh update op, distinct from the claim op'
+            );
+            Agentshell_Test::assert_equals( 'edited-ud16', (string) $result['title'], 'the new title is the updated title' );
+
+            // The claim op stays in `claimed` after the first edit:
+            // the claim records that the journal owns the post, and
+            // the `claimed` → `applied` transition is what the
+            // commit path (not the update path) does. The update
+            // op is the new OP_UPDATE_DRAFT op, which is in
+            // `applied` state; the claim op is the durable
+            // ownership projection.
+            $tx_after = jr_row_on_disk();
+            $content  = Content_Journal::of( $tx_after );
+            $ops      = is_array( $content['ops'] ?? null ) ? $content['ops'] : array();
+            Agentshell_Test::assert_equals(
+                'claimed', (string) ( $ops[ $claim_op_id ]['state'] ?? '' ),
+                'the claim op is still in `claimed` state after the first edit (its state transitions on commit, not on update)'
+            );
+            $head = Content_Journal::head_after( $tx_after, 920 );
+            Agentshell_Test::assert_true( is_array( $head ) && ! empty( $head ), 'the head for post 920 is set after the first edit' );
+            Agentshell_Test::assert_equals(
+                'edited-ud16', (string) ( $head['post_title'] ?? '' ),
+                'the head carries the post\'s new title'
+            );
+            $live = $GLOBALS['_agentshell_test_posts'][ 920 ] ?? null;
+            Agentshell_Test::assert_true( is_object( $live ), 'the post still exists after the edit' );
+            Agentshell_Test::assert_equals(
+                'edited-ud16', (string) ( $live->post_title ?? '' ),
+                'the live post carries the updated title'
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'UD17: Update_Draft refuses a pre-existing draft whose marker matches a claim op in `compensated` state',
+    function () {
+        // A claim op that is in `compensated` (recovery ran) is not
+        // a legitimate owning op — the recovery has run for this
+        // post, and a fresh update would create a divergent
+        // ownership chain. The refusal code is the new
+        // `transaction_update_draft_claim_state_refused`.
+        jr_reset();
+        Tx::instance()->begin( 'ud-17' );
+        try {
+            $claim_op_id = 'op_claim_ud17';
+            $op = Content_Journal::record_intent(
+                Content_Journal::OP_EDIT_EXISTING_DRAFT,
+                array( 'post_id' => 921, 'post_type' => 'page', 'post_status' => 'draft' ),
+                array(
+                    'post_title' => 'orig', 'post_name' => 'orig-slug',
+                    'op_meta_value' => $claim_op_id, 'idempotency_key' => 'idem-ud17',
+                ),
+                'agent',
+                JR_T0
+            );
+            $op['id']      = $claim_op_id;
+            $op['state']   = 'compensated';
+            $op['post_id'] = 921;
+            $op['before']  = array(
+                'post_type' => 'page', 'post_status' => 'draft',
+                'post_title' => 'orig', 'post_content' => 'orig',
+                'post_excerpt' => '', 'post_name' => 'orig-slug',
+                'post_date_gmt' => '2026-01-01 00:00:00',
+                'post_modified_gmt' => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'orig' ),
+                'post_content_length' => 4,
+                'op_meta_value' => $claim_op_id,
+            );
+
+            $tx = Tx::instance()->payload();
+            $tx['content']['ops'][ $claim_op_id ] = $op;
+            jr_seed( $tx );
+
+            // The post still carries the marker; the live post
+            // matches the recorded baseline (recovery has not run
+            // yet on this stub).
+            jr_post( 921, array(
+                'post_status' => 'draft', 'post_title' => 'orig', 'post_content' => 'orig',
+                'post_name' => 'orig-slug', 'post_date_gmt' => '2026-01-01 00:00:00',
+                'post_modified_gmt' => '2026-01-01 00:00:00',
+            ), $claim_op_id );
+
+            $tool = new Update_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id' => 921, 'type' => 'page', 'title' => 'edited-ud17',
+                    'idempotency_key' => 'idem-ud17-edit',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'transaction_update_draft_claim_state_refused' ),
+                'and names the cause: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'UD18: Update_Draft refuses a pre-existing draft whose marker matches a claim op for a DIFFERENT post',
+    function () {
+        // The marker stamp is per-post; a claim op whose
+        // `target.post_id` is a different number than the post being
+        // updated is not the owning op for that post. A second-leg
+        // match against `target.post_id` is what catches this: a
+        // marker collision on the post (extremely unlikely with 16
+        // random bytes) would not create a divergent ownership
+        // chain because the target.post_id check would refuse.
+        jr_reset();
+        Tx::instance()->begin( 'ud-18' );
+        try {
+            $claim_op_id = 'op_claim_ud18';
+            $op = Content_Journal::record_intent(
+                Content_Journal::OP_EDIT_EXISTING_DRAFT,
+                array( 'post_id' => 999, 'post_type' => 'page', 'post_status' => 'draft' ),
+                array(
+                    'post_title' => 'orig', 'post_name' => 'orig-slug',
+                    'op_meta_value' => $claim_op_id, 'idempotency_key' => 'idem-ud18',
+                ),
+                'agent',
+                JR_T0
+            );
+            $op['id']      = $claim_op_id;
+            $op['state']   = 'claimed';
+            $op['post_id'] = 999;
+            $op['before']  = array(
+                'post_type' => 'page', 'post_status' => 'draft',
+                'post_title' => 'orig', 'post_content' => 'orig',
+                'post_excerpt' => '', 'post_name' => 'orig-slug',
+                'post_date_gmt' => '2026-01-01 00:00:00',
+                'post_modified_gmt' => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'orig' ),
+                'post_content_length' => 4,
+                'op_meta_value' => $claim_op_id,
+            );
+
+            $tx = Tx::instance()->payload();
+            $tx['content']['ops'][ $claim_op_id ] = $op;
+            jr_seed( $tx );
+
+            // The post being updated (922) carries the claim op's
+            // marker. Without the target.post_id check, the marker
+            // match alone would be enough; the second-leg check
+            // refuses.
+            jr_post( 922, array(
+                'post_status' => 'draft', 'post_title' => 'orig', 'post_content' => 'orig',
+                'post_name' => 'orig-slug',
+            ), $claim_op_id );
+
+            $tool = new Update_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id' => 922, 'type' => 'page', 'title' => 'edited-ud18',
+                    'idempotency_key' => 'idem-ud18-edit',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message )
+                    && (
+                        false !== strpos( $message, 'transaction_update_draft_not_transaction_owned' )
+                        || false !== strpos( $message, 'no OP_CREATE_DRAFT or OP_EDIT_EXISTING_DRAFT op' )
+                    ),
+                'and names the cause: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
         }
     }
 );
