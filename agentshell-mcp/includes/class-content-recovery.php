@@ -258,7 +258,16 @@ class Content_Recovery {
         $settled = 0;
         $owed    = 0;
 
-        foreach ( $content['ops'] as $op_id => $op ) {
+        // Compensation order matters when the journal carries both
+        // OP_UPDATE_DRAFT and OP_CREATE_DRAFT ops. An update's inverse is
+        // `wp_update_post` (apply the before-image); a create's inverse is
+        // `wp_delete_post`. Once the create's inverse has run, the post is
+        // gone and the update inverses have nothing to act on. Process
+        // updates first, in reverse chronological order, and the create
+        // last. For a journal with only one op type, the order is a no-op.
+        $ordered_ops = self::order_ops_for_compensation( $content['ops'] );
+
+        foreach ( $ordered_ops as $op_id => $op ) {
             $step = self::settle_operation( $working, (string) $op_id, $actor, $explicitly_authorized, $report );
             if ( self::STATUS_CONTENDED === $step['status'] ) {
                 // Somebody else moved the row while we held a decision about
@@ -602,6 +611,64 @@ class Content_Recovery {
     }
 
     /**
+     * Order operations for compensation.
+     *
+     * The only ordering requirement is that the OP_CREATE_DRAFT op (whose
+     * inverse is `wp_delete_post`) must be the last op processed when the
+     * journal also carries OP_UPDATE_DRAFT ops for the same post. The
+     * update ops are mutually independent — each one carries its own
+     * before-image — so the order within the update group does not matter
+     * for correctness, but processing them in reverse chronological order
+     * means the most recent edit is reverted first, which matches what an
+     * operator reading the audit log would expect.
+     *
+     * A journal containing only OP_CREATE_DRAFT ops is returned unchanged
+     * (with the same keys, so downstream `ksort` semantics are preserved).
+     *
+     * @param array<string,array> $ops The journal's operations map.
+     * @return array<string,array> Re-keyed in compensation order.
+     */
+    private static function order_ops_for_compensation( array $ops ) {
+        if ( count( $ops ) <= 1 ) {
+            return $ops;
+        }
+        $has_update = false;
+        $has_create = false;
+        foreach ( $ops as $op ) {
+            $type = isset( $op['op'] ) ? (string) $op['op'] : '';
+            if ( Content_Journal::OP_UPDATE_DRAFT === $type ) {
+                $has_update = true;
+            } elseif ( Content_Journal::OP_CREATE_DRAFT === $type ) {
+                $has_create = true;
+            }
+        }
+        if ( ! ( $has_update && $has_create ) ) {
+            // One op type only: original key order is fine.
+            return $ops;
+        }
+
+        $updates = array();
+        $creates = array();
+        foreach ( $ops as $op_id => $op ) {
+            $type = isset( $op['op'] ) ? (string) $op['op'] : '';
+            if ( Content_Journal::OP_UPDATE_DRAFT === $type ) {
+                $updates[ (string) $op_id ] = $op;
+            } else {
+                $creates[ (string) $op_id ] = $op;
+            }
+        }
+        // Reverse chronological: most recent first. `recorded_at` is set by
+        // record_intent() to a monotonic transaction clock, so sorting on it
+        // matches the operator's mental model of "last edit first".
+        uasort( $updates, function ( $a, $b ) {
+            $ra = isset( $a['recorded_at'] ) ? (int) $a['recorded_at'] : 0;
+            $rb = isset( $b['recorded_at'] ) ? (int) $b['recorded_at'] : 0;
+            return $rb <=> $ra;
+        } );
+        return $updates + $creates;
+    }
+
+    /**
      * Undo one journalled operation, or say why it cannot be undone.
      *
      * The return shape is fixed — `outcome`, `post_id`, `reason` — because
@@ -629,6 +696,20 @@ class Content_Recovery {
      */
     private static function compensate( array $op, $current_actor = '', $explicitly_authorized = false ) {
         $type = (string) $op['op'];
+
+        if ( Content_Journal::OP_UPDATE_DRAFT === $type ) {
+            return self::compensate_update( $op, $current_actor, $explicitly_authorized );
+        }
+
+        if ( ! in_array( $type, Content_Journal::SUPPORTED_OPERATIONS, true ) ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => (int) $op['post_id'],
+                'reason'  => 'Operation type "' . $type . '" has no compensation contract in this build '
+                    . '(supported: ' . implode( ', ', Content_Journal::SUPPORTED_OPERATIONS )
+                    . '). It is not guessed at and not deleted; a human must decide.',
+            );
+        }
 
         if ( ! in_array( $type, Content_Journal::SUPPORTED_OPERATIONS, true ) ) {
             return array(
@@ -836,6 +917,161 @@ class Content_Recovery {
             'post_id' => $post_id,
             'reason'  => 'post ' . $post_id . ' was created by this transaction and still matched its recorded '
                 . 'after-image; deleted permanently under the per-post advisory lock',
+        );
+    }
+
+    /**
+     * Compensate an OP_UPDATE_DRAFT op: apply the recorded before-image so the
+     * post is restored to the state it had before this update ran.
+     *
+     * The inverse of an update is "write the prior state back". This is not
+     * destructive of the post itself (the post is still there afterwards), so
+     * the gate is the per-post `edit_post` capability, not `delete_post` —
+     * and the OCC check is the same six-field check the create path uses,
+     * against the after-image this op recorded. A divergence between the
+     * live post and the recorded after-image means somebody has edited the
+     * post since the update was applied; the op transitions to `conflict`,
+     * the post is preserved, and a human resolves the divergence.
+     *
+     * The before-image is the load-bearing piece: a record without one is
+     * refused by `Content_Journal::validate_update_draft()` and never reaches
+     * this method. A compensation that cannot run because the live post has
+     * moved is not a failure to compensate, it is a refusal to compensate
+     * with the post preserved, and the journal's `comp` field records the
+     * reason.
+     *
+     * The per-post advisory lock is the same exclusion primitive the create
+     * path uses: a second recoverer acquiring `GET_LOCK` on the same name
+     * while this one is mid-`wp_update_post` is refused at the lock layer
+     * (promptly, with timeout 0) rather than racing the update. The lock is
+     * connection-scoped and is released by the server on connection close
+     * (KILL -9, PHP-FPM worker death) — which is what the previous
+     * `add_option`-based lock could not guarantee.
+     *
+     * @param array  $op                    The op record.
+     * @param string $current_actor         The actor who triggered compensation.
+     * @param bool   $explicitly_authorized Pass-through of the tool-boundary opt-in.
+     * @return array{outcome:string,post_id:int,reason:string}
+     */
+    private static function compensate_update( array $op, $current_actor = '', $explicitly_authorized = false ) {
+        $post_id = (int) ( $op['post_id'] ?? 0 );
+        $marker  = self::marker_of( $op );
+
+        if ( $post_id <= 0 ) {
+            // An update op without a post id is unrecoverable here: it has
+            // nothing to apply the before-image to, and the create-side
+            // partial-applied path does not produce an update op (only the
+            // create tool ever records a post id). Refuse and keep the
+            // journal so a human can reconcile.
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => 0,
+                'reason'  => 'update op ' . (string) ( $op['id'] ?? '' ) . ' has no post_id recorded; the inverse '
+                    . 'operation has nothing to act on. The journal is kept so a recovery_administrator '
+                    . '(manage_options + explicit opt-in) can resolve it.',
+            );
+        }
+
+        $post = get_post( $post_id );
+        if ( ! $post ) {
+            // Post already gone. The create op's compensation (or an outside
+            // actor) has done our work; nothing to restore.
+            return array(
+                'outcome' => 'compensated',
+                'post_id' => $post_id,
+                'reason'  => 'post ' . $post_id . ' is already gone; nothing to restore',
+            );
+        }
+
+        // The OCC check: the live post must still match the after-image this
+        // op recorded. A divergence means the post has been edited since the
+        // update was applied; the op transitions to conflict and the post is
+        // preserved. The same six-field check the create path uses — the
+        // strong after-image makes the content hash the load-bearing piece.
+        $mismatch = self::verify_post( $op, $post, $marker );
+        if ( '' !== $mismatch ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $post_id,
+                'reason'  => $mismatch,
+            );
+        }
+
+        // Per-post `edit_post` re-check, immediately before applying the
+        // before-image. The op is destructive of the post's *current* content
+        // (it overwrites the live state with the recorded prior state), so
+        // the same "the cap is a property of the destructive call, not of
+        // the original create" reasoning applies. An owner who lost the
+        // per-post cap since the update was applied is refused here, and the
+        // post is preserved.
+        if ( function_exists( 'current_user_can' )
+            && ! current_user_can( 'edit_post', $post_id ) ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $post_id,
+                'reason'  => 'post ' . $post_id . ' cannot be modified by the current actor: the per-post '
+                    . '`edit_post` capability is no longer held. The draft is preserved and the journal '
+                    . 'is kept so a recovery_administrator (manage_options + explicit opt-in) can resolve it.',
+            );
+        }
+
+        $before = is_array( $op['before'] ?? null ) ? $op['before'] : array();
+
+        // Per-post advisory lock: same exclusion primitive as the create
+        // path. A second recoverer is refused at the lock layer rather than
+        // racing the update.
+        $acquired = false;
+        try {
+            $acquired = Recovery_Advisory_Lock::acquire( $post_id );
+        } catch ( \RuntimeException $e ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $post_id,
+                'reason'  => $e->getMessage() . ' The draft is preserved and the journal is kept so a '
+                    . 'recovery_administrator (manage_options + explicit opt-in) can resolve it on an '
+                    . 'engine that supports advisory locks.',
+            );
+        }
+        if ( ! $acquired ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $post_id,
+                'reason'  => 'another recovery holds the per-post advisory lock for post ' . $post_id
+                    . '. The draft is preserved; retry once the holder has finished.',
+            );
+        }
+
+        try {
+            $restore = array(
+                'ID'           => $post_id,
+                'post_title'   => (string) ( $before['post_title'] ?? $post->post_title ),
+                'post_content' => (string) ( $before['post_content'] ?? $post->post_content ),
+                'post_name'    => (string) ( $before['post_name'] ?? $post->post_name ),
+            );
+            $updated = Content_Write_Guard::run(
+                function () use ( $restore ) {
+                    return wp_update_post( wp_slash( $restore ), true );
+                }
+            );
+            if ( Content_Write_Guard::is_failure( $updated ) ) {
+                return array(
+                    'outcome' => 'update_failed',
+                    'post_id' => $post_id,
+                    'reason'  => 'wp_update_post( ' . $post_id . ' ) to restore the before-image failed'
+                        . ( is_wp_error( $updated ) ? ': ' . $updated->get_error_code() . ' — ' . $updated->get_error_message() : '' )
+                        . '. The write was rolled back, so the post is unchanged and this operation is still owed. '
+                        . 'Recovery can be retried.',
+                );
+            }
+        } finally {
+            Recovery_Advisory_Lock::release( $post_id );
+        }
+
+        return array(
+            'outcome' => 'compensated',
+            'post_id' => $post_id,
+            'reason'  => 'post ' . $post_id . ' was updated by this transaction and still matched its recorded '
+                . 'after-image; the before-image was applied under the per-post advisory lock',
         );
     }
 

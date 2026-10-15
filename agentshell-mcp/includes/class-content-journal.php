@@ -83,15 +83,31 @@ class Content_Journal {
     const OP_CREATE_DRAFT = 'create_draft';
 
     /**
+     * Update a draft this transaction already created.
+     *
+     * Stage 2a: the inverse of an update is "apply the before-image via
+     * `wp_update_post`", so a rollback that has compensated a chain of
+     * updates must apply them in reverse chronological order before
+     * compensating the create. The contract is narrower than update_content's
+     * (no status, no parent, no taxonomy; the post is required to be a draft
+     * the current transaction owns), and the before-image is the strong
+     * after-image's predecessor: `post_title`, `post_content`, `post_name`,
+     * `post_content_sha256`, `post_content_length`, `post_modified_gmt`,
+     * and `op_meta_value` (the create op's id, which is what the post
+     * carries as its `_agentshell_journal_op`).
+     */
+    const OP_UPDATE_DRAFT = 'update_draft';
+
+    /**
      * Operation types this build is willing to compensate.
      *
-     * Deliberately one entry. Every other type the design document discusses is
-     * recorded nowhere and compensated by nothing, and `Content_Recovery`
+     * Deliberately two entries. Every other type the design document discusses
+     * is recorded nowhere and compensated by nothing, and `Content_Recovery`
      * refuses an operation that is not in this list rather than guessing at an
      * inverse. Adding a row here is the commit that makes that operation
      * recoverable, and it must bring its own before-image contract.
      */
-    const SUPPORTED_OPERATIONS = array( self::OP_CREATE_DRAFT );
+    const SUPPORTED_OPERATIONS = array( self::OP_CREATE_DRAFT, self::OP_UPDATE_DRAFT );
 
     /** The journal's key inside $tx['content']. */
     const CONTENT_KEY = 'content';
@@ -620,6 +636,7 @@ class Content_Journal {
             if ( isset( $op['state'] ) && ! in_array( $op['state'], self::STATES, true ) ) {
                 $problems[] = $label . ' has state "' . (string) $op['state'] . '", which is not a state';
             }
+            // Common target requirements: every op names the post it is about.
             foreach ( array( 'post_type', 'post_status' ) as $needed ) {
                 if ( ! isset( $op['target'][ $needed ] ) || '' === $op['target'][ $needed ] ) {
                     $problems[] = $label . ' has no target.' . $needed . ' to identify its post with';
@@ -627,7 +644,7 @@ class Content_Journal {
             }
 
             // The expected after-image is not optional decoration. It is what
-            // compensation checks the real post against before destroying it,
+            // compensation checks the real post against before acting on it,
             // and post_name + op_meta_value are what let an operation whose id
             // was never recorded be found at all. A record missing them cannot
             // be safely resolved, and an unresolvable record must be refused —
@@ -637,8 +654,68 @@ class Content_Journal {
                     $problems[] = $label . ' has no after.' . $needed . ' to identify its post with';
                 }
             }
+
+            // Per-op-type structural requirements. create_draft is what it has
+            // always been; update_draft carries a `before` and a stronger
+            // after-image because compensation applies the before via
+            // `wp_update_post` and must verify the live post first.
+            $op_type = isset( $op['op'] ) ? (string) $op['op'] : '';
+            if ( self::OP_UPDATE_DRAFT === $op_type ) {
+                $problems = array_merge( $problems, self::validate_update_draft( $op, $label ) );
+            }
         }
 
+        return $problems;
+    }
+
+    /**
+     * Structural checks specific to OP_UPDATE_DRAFT.
+     *
+     * The before-image is the load-bearing piece: it is what makes the
+     * inverse operation a `wp_update_post` rather than a guess. The
+     * after-image must carry the strong evidence `mark_applied` records for
+     * create (content hash, length, modified time), because OCC compares the
+     * live post against it before applying the before-image. target.post_id
+     * is what the new tool wrote at intent time and is what
+     * `verify_post()` will check.
+     *
+     * @param array  $op    The op record.
+     * @param string $label Human-readable label for problem strings.
+     * @return array<int,string> Per-op problems; empty when well-formed.
+     */
+    private static function validate_update_draft( array $op, $label ) {
+        $problems = array();
+        if ( ! is_array( $op['before'] ?? null ) ) {
+            $problems[] = $label . ' has no before-image; an update without a prior state is not compensable.';
+            return $problems;
+        }
+        if ( empty( $op['target']['post_id'] ) ) {
+            $problems[] = $label . ' has no target.post_id; compensation cannot find the post to restore.';
+        }
+        $before_required = array(
+            'post_title',
+            'post_content',
+            'post_name',
+            'post_content_sha256',
+            'post_content_length',
+            'post_modified_gmt',
+            'op_meta_value',
+        );
+        foreach ( $before_required as $needed ) {
+            if ( ! array_key_exists( $needed, $op['before'] ) ) {
+                $problems[] = $label . ' has no before.' . $needed . '; the inverse operation would be a guess.';
+            }
+        }
+        $after_required = array(
+            'post_content_sha256',
+            'post_content_length',
+            'post_modified_gmt',
+        );
+        foreach ( $after_required as $needed ) {
+            if ( ! array_key_exists( $needed, $op['after'] ) ) {
+                $problems[] = $label . ' has no after.' . $needed . '; the OCC check cannot be performed.';
+            }
+        }
         return $problems;
     }
 
