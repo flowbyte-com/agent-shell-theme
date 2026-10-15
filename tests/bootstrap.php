@@ -160,6 +160,18 @@ if ( ! function_exists( 'maybe_serialize' ) ) {
         return $data;
     }
 }
+if ( ! function_exists( 'wp_slash' ) ) {
+    function wp_slash( $value ) {
+        if ( is_array( $value ) ) { return array_map( 'wp_slash', $value ); }
+        if ( is_object( $value ) ) {
+            $out = new stdClass();
+            foreach ( (array) $value as $k => $v ) { $out->{$k} = wp_slash( $v ); }
+            return $out;
+        }
+        if ( is_string( $value ) ) { return addslashes( $value ); }
+        return $value;
+    }
+}
 if ( ! function_exists( 'maybe_unserialize' ) ) {
     function maybe_unserialize( $data ) {
         if ( is_string( $data ) && preg_match( '/^a:\d+:|^s:\d+:|^O:\d+:/', $data ) ) {

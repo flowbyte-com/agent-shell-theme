@@ -138,11 +138,88 @@ if ( ! function_exists( 'wp_delete_post' ) ) {
         $post_id = (int) $post_id;
         $GLOBALS['jr_delete_calls'][]      = $post_id;
         $GLOBALS['jr_delete_last_force'] = (bool) $force_delete;
+        $GLOBALS['_agentshell_test_destructive_log'][] = 'delete:' . $post_id;
         if ( $GLOBALS['jr_delete_fails'] ) { return false; }
         if ( ! isset( $GLOBALS['_agentshell_test_posts'][ $post_id ] ) ) { return false; }
         $post = $GLOBALS['_agentshell_test_posts'][ $post_id ];
         unset( $GLOBALS['_agentshell_test_posts'][ $post_id ], $GLOBALS['_agentshell_test_postmeta'][ $post_id ] );
         return $post;
+    }
+}
+
+if ( ! function_exists( 'wp_insert_post' ) ) {
+    /**
+     * Inserts a new post in the fixture store, stamps the OP_META marker if
+     * one is supplied via meta_input, and bumps post_modified_gmt to "now"
+     * (the frozen transaction clock) so OCC has a fresh timestamp to compare
+     * against.
+     */
+    function wp_insert_post( $postarr, $wp_error = false ) {
+        $GLOBALS['jr_insert_calls'][] = $postarr;
+        $existing_ids = array_keys( $GLOBALS['_agentshell_test_posts'] );
+        $new_id = $existing_ids ? max( $existing_ids ) + 1 : 1;
+        $now    = Tx::lease_now();
+        $now_gmt = gmdate( 'Y-m-d H:i:s', (int) $now );
+        $post = (object) array(
+            'ID'                => $new_id,
+            'post_title'        => (string) ( $postarr['post_title'] ?? '' ),
+            'post_content'      => (string) ( $postarr['post_content'] ?? '' ),
+            'post_excerpt'      => '',
+            'post_name'         => (string) ( $postarr['post_name'] ?? '' ),
+            'post_type'         => (string) ( $postarr['post_type'] ?? 'post' ),
+            'post_status'       => (string) ( $postarr['post_status'] ?? 'draft' ),
+            'post_date'         => $now_gmt,
+            'post_date_gmt'     => $now_gmt,
+            'post_modified'     => $now_gmt,
+            'post_modified_gmt' => $now_gmt,
+            'post_parent'       => (int) ( $postarr['post_parent'] ?? 0 ),
+        );
+        $GLOBALS['_agentshell_test_posts'][ $new_id ] = $post;
+        if ( ! empty( $postarr['meta_input'] ) && is_array( $postarr['meta_input'] ) ) {
+            foreach ( $postarr['meta_input'] as $k => $v ) {
+                $GLOBALS['_agentshell_test_postmeta'][ $new_id ][ (string) $k ] = $v;
+            }
+        }
+        return $new_id;
+    }
+}
+
+if ( ! function_exists( 'wp_update_post' ) ) {
+    /**
+     * Updates an existing post in the fixture store, bumps post_modified_gmt
+     * to "now" (the frozen transaction clock) so OCC has a fresh timestamp,
+     * and returns the post id on success. The call shape is recorded for
+     * tests that pin the before-image restoration.
+     */
+    function wp_update_post( $postarr, $wp_error = false ) {
+        $GLOBALS['jr_update_calls'][] = $postarr;
+        $post_id_log = (int) ( $postarr['ID'] ?? 0 );
+        $GLOBALS['_agentshell_test_destructive_log'][] = 'update:' . $post_id_log;
+        if ( ! empty( $GLOBALS['jr_update_fails'] ) ) {
+            return 0;
+        }
+        $post_id = (int) ( $postarr['ID'] ?? 0 );
+        if ( $post_id <= 0 || ! isset( $GLOBALS['_agentshell_test_posts'][ $post_id ] ) ) {
+            return 0;
+        }
+        $existing = $GLOBALS['_agentshell_test_posts'][ $post_id ];
+        $now_gmt  = gmdate( 'Y-m-d H:i:s', (int) Tx::lease_now() );
+        $merged   = (object) array(
+            'ID'                => $post_id,
+            'post_title'        => array_key_exists( 'post_title', $postarr ) ? (string) $postarr['post_title'] : (string) $existing->post_title,
+            'post_content'      => array_key_exists( 'post_content', $postarr ) ? (string) $postarr['post_content'] : (string) $existing->post_content,
+            'post_excerpt'      => (string) $existing->post_excerpt,
+            'post_name'         => array_key_exists( 'post_name', $postarr ) ? (string) $postarr['post_name'] : (string) $existing->post_name,
+            'post_type'         => (string) $existing->post_type,
+            'post_status'       => (string) $existing->post_status,
+            'post_date'         => (string) $existing->post_date,
+            'post_date_gmt'     => (string) $existing->post_date_gmt,
+            'post_modified'     => $now_gmt,
+            'post_modified_gmt' => $now_gmt,
+            'post_parent'       => (int) $existing->post_parent,
+        );
+        $GLOBALS['_agentshell_test_posts'][ $post_id ] = $merged;
+        return $post_id;
     }
 }
 
@@ -276,6 +353,10 @@ function jr_reset( $now = JR_T0, $actor = 'agent' ) {
     $GLOBALS['jr_delete_calls']           = array();
     $GLOBALS['jr_delete_last_force']      = null;
     $GLOBALS['jr_delete_fails']           = false;
+    $GLOBALS['jr_insert_calls']           = array();
+    $GLOBALS['jr_update_calls']           = array();
+    $GLOBALS['jr_update_fails']           = false;
+    $GLOBALS['_agentshell_test_destructive_log'] = array();
     $GLOBALS['_agentshell_test_login']    = $actor;
     $GLOBALS['_agentshell_test_user_caps'] = array();
     $GLOBALS['_agentshell_test_audit_fail_for'] = null;
@@ -315,6 +396,25 @@ function jr_advance( $seconds ) {
 
 function jr_actor( $actor ) {
     $GLOBALS['_agentshell_test_login'] = $actor;
+}
+
+/**
+ * Test-side "release any open transaction" helper.
+ *
+ * The production Transaction_Manager does not expose a public release
+ * method, only commit/rollback. For tests that need to verify the
+ * "outside a transaction" path without going through commit or
+ * rollback, this helper just drops the option row — `is_active()`
+ * re-reads the option on every call, so a cleared option is
+ * indistinguishable from "no transaction was ever opened" for
+ * production code. Reflection-nulling the singleton is intentionally
+ * not done: the singleton's own state is read through payload(), and
+ * payload() reads the option, so deleting the option is sufficient.
+ */
+function jr_release_if_open() {
+    if ( array_key_exists( \AgentShell_MCP\Transaction_Manager::KEY, $GLOBALS['_agentshell_test_options'] ) ) {
+        delete_option( \AgentShell_MCP\Transaction_Manager::KEY );
+    }
 }
 
 /** The target a journalled create-draft is expected to produce. */
@@ -3197,3 +3297,1322 @@ function jr_op_on_disk_just_before_close( $index = 0 ) {
     $ops = array_values( $snap['content']['ops'] );
     return $ops[ $index ] ?? null;
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Stage 2a — OP_UPDATE_DRAFT journal & recovery tests
+//
+// The update tool records a before-image (what the post looked like before
+// the edit) and an after-image (what the post looks like now). The recovery
+// engine compensates by re-applying the before-image via wp_update_post,
+// and the new tests pin that contract: the journal's structural checks, the
+// compensation order when a journal carries both create and update ops, the
+// OCC path when the post has been edited since the update was applied, and
+// the tool-level refusals (no transaction, no post, wrong type, not a draft,
+// not transaction-owned) that make the tool safe to call.
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Build a well-formed OP_UPDATE_DRAFT op against a known post id, with a
+ * matching marker, before-image and strong after-image. The before-image is
+ * the post's "before" state; the after-image is the post's "after" state
+ * (i.e. the same data, hashed at the moment the update was applied).
+ */
+function jr_update_op( $op_id, $post_id, $marker, array $before, array $after_extras = array() ) {
+    $op = Content_Journal::record_intent(
+        Content_Journal::OP_UPDATE_DRAFT,
+        array(
+            'post_id'     => (int) $post_id,
+            'post_type'   => 'page',
+            'post_status' => 'draft',
+        ),
+        array( 'idempotency_key' => 'idem-' . $op_id ),
+        'agent',
+        JR_T0 - 86400
+    );
+    $op['id']      = (string) $op_id;
+    $op['state']   = 'applied';
+    $op['post_id'] = (int) $post_id;
+    $op['before']  = $before;
+    $op['after']   = array_merge(
+        array(
+            'post_type'           => 'page',
+            'post_status'         => 'draft',
+            'post_name'           => $before['post_name'],
+            'post_date_gmt'       => '2026-01-01 00:00:00',
+            'post_modified_gmt'   => '2026-01-01 00:00:01',
+            'post_content_sha256' => $after_extras['post_content_sha256'] ?? hash( 'sha256', (string) ( $after_extras['post_content'] ?? $before['post_content'] ) ),
+            'post_content_length' => $after_extras['post_content_length'] ?? strlen( (string) ( $after_extras['post_content'] ?? $before['post_content'] ) ),
+            'op_meta_value'       => $marker,
+            'idempotency_key'     => 'idem-' . $op_id,
+        ),
+        $after_extras
+    );
+    return $op;
+}
+
+Agentshell_Test::run(
+    'UV1: validate refuses an OP_UPDATE_DRAFT op with no before-image',
+    function () {
+        // A update without a before-image is the load-bearing failure: the
+        // inverse operation would be a guess. The journal must reject it
+        // before the recovery engine is ever asked to compensate.
+        jr_reset();
+        $op = Content_Journal::record_intent(
+            Content_Journal::OP_UPDATE_DRAFT,
+            array( 'post_id' => 1, 'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'n' ),
+            array( 'op_meta_value' => 'op_x', 'post_content_sha256' => 'h', 'post_content_length' => 1, 'post_modified_gmt' => 'now' ),
+            'agent'
+        );
+        $op['before'] = null; // deliberately missing
+        $content = Content_Journal::empty_journal( 'tx' );
+        $content['ops'][ $op['id'] ] = $op;
+        $content['sig'] = Content_Journal::sign( $content );
+        $problems = Content_Journal::validate( $content );
+        Agentshell_Test::assert_true(
+            ! empty( $problems ) && false !== array_values( $problems )[0]
+                && false !== strpos( array_values( $problems )[0], 'before-image' ),
+            'the validator names the missing before-image: ' . implode( '; ', $problems )
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'UV2: validate refuses an OP_UPDATE_DRAFT op with no target.post_id',
+    function () {
+        // Compensation must find the post to restore. Without a target.post_id
+        // the recovery engine has no address to act on; the journal must
+        // refuse the record rather than carry an unrecoverable claim.
+        jr_reset();
+        $op = Content_Journal::record_intent(
+            Content_Journal::OP_UPDATE_DRAFT,
+            array( 'post_id' => 0, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array( 'op_meta_value' => 'op_x' ),
+            'agent'
+        );
+        $op['before'] = array(
+            'post_title' => 't', 'post_content' => 'c', 'post_name' => 'n',
+            'post_content_sha256' => 'h', 'post_content_length' => 1,
+            'post_modified_gmt' => '2026-01-01 00:00:00', 'op_meta_value' => 'op_x',
+        );
+        $op['after']['post_content_sha256']  = 'h';
+        $op['after']['post_content_length']  = 1;
+        $op['after']['post_modified_gmt']    = '2026-01-01 00:00:00';
+        $content = Content_Journal::empty_journal( 'tx' );
+        $content['ops'][ $op['id'] ] = $op;
+        $content['sig'] = Content_Journal::sign( $content );
+        $problems = Content_Journal::validate( $content );
+        Agentshell_Test::assert_true(
+            ! empty( $problems ),
+            'a record with no target.post_id is refused'
+        );
+        Agentshell_Test::assert_true(
+            false !== strpos( implode( '; ', $problems ), 'target.post_id' ),
+            'and the reason names target.post_id: ' . implode( '; ', $problems )
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'UV3: validate refuses an OP_UPDATE_DRAFT op whose before-image is missing a load-bearing field',
+    function () {
+        // Any missing before field is a guess risk: the inverse operation
+        // would have to invent the field. Refused before reaching the
+        // recovery engine.
+        jr_reset();
+        $op = Content_Journal::record_intent(
+            Content_Journal::OP_UPDATE_DRAFT,
+            array( 'post_id' => 1, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array( 'op_meta_value' => 'op_x' ),
+            'agent'
+        );
+        $op['before'] = array(
+            'post_title'           => 't',
+            // post_content deliberately missing
+            'post_name'            => 'n',
+            'post_content_sha256'  => 'h',
+            'post_content_length'  => 1,
+            'post_modified_gmt'    => '2026-01-01 00:00:00',
+            'op_meta_value'        => 'op_x',
+        );
+        $op['after']['post_content_sha256'] = 'h';
+        $op['after']['post_content_length'] = 1;
+        $op['after']['post_modified_gmt']   = '2026-01-01 00:00:00';
+        $content = Content_Journal::empty_journal( 'tx' );
+        $content['ops'][ $op['id'] ] = $op;
+        $content['sig'] = Content_Journal::sign( $content );
+        $problems = Content_Journal::validate( $content );
+        Agentshell_Test::assert_true(
+            ! empty( $problems ) && false !== strpos( implode( '; ', $problems ), 'before.post_content' ),
+            'the missing field is named: ' . implode( '; ', $problems )
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'UV4: validate refuses an OP_UPDATE_DRAFT op whose after-image lacks the OCC evidence',
+    function () {
+        // The OCC check is the strong after-image: the content hash, the
+        // length, and the modified time. Missing any of them and the
+        // recovery engine cannot verify the post before applying the
+        // before-image. The validator must refuse.
+        jr_reset();
+        $op = Content_Journal::record_intent(
+            Content_Journal::OP_UPDATE_DRAFT,
+            array( 'post_id' => 1, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array( 'op_meta_value' => 'op_x' ),
+            'agent'
+        );
+        $op['before'] = array(
+            'post_title' => 't', 'post_content' => 'c', 'post_name' => 'n',
+            'post_content_sha256' => 'h', 'post_content_length' => 1,
+            'post_modified_gmt' => '2026-01-01 00:00:00', 'op_meta_value' => 'op_x',
+        );
+        // after.post_content_sha256 deliberately missing
+        $op['after'] = array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'n',
+            'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+            'op_meta_value' => 'op_x',
+        );
+        $content = Content_Journal::empty_journal( 'tx' );
+        $content['ops'][ $op['id'] ] = $op;
+        $content['sig'] = Content_Journal::sign( $content );
+        $problems = Content_Journal::validate( $content );
+        Agentshell_Test::assert_true(
+            ! empty( $problems ) && false !== strpos( implode( '; ', $problems ), 'after.post_content_sha256' ),
+            'the missing field is named: ' . implode( '; ', $problems )
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'UV5: validate accepts a well-formed OP_UPDATE_DRAFT op',
+    function () {
+        jr_reset();
+        $op = Content_Journal::record_intent(
+            Content_Journal::OP_UPDATE_DRAFT,
+            array( 'post_id' => 1, 'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'n' ),
+            array( 'op_meta_value' => 'op_x' ),
+            'agent'
+        );
+        $op['before'] = array(
+            'post_title' => 't', 'post_content' => 'c', 'post_name' => 'n',
+            'post_content_sha256' => 'h', 'post_content_length' => 1,
+            'post_modified_gmt' => '2026-01-01 00:00:00', 'op_meta_value' => 'op_x',
+        );
+        $op['after']['post_content_sha256'] = 'h';
+        $op['after']['post_content_length'] = 1;
+        $op['after']['post_modified_gmt']   = '2026-01-01 00:00:00';
+        $content = Content_Journal::empty_journal( 'tx' );
+        $content['ops'][ $op['id'] ] = $op;
+        $content['sig'] = Content_Journal::sign( $content );
+        $problems = Content_Journal::validate( $content );
+        Agentshell_Test::assert_equals( array(), $problems, 'a well-formed update op passes the validator' );
+    }
+);
+
+Agentshell_Test::run(
+    'UR1: a single OP_UPDATE_DRAFT op is compensated by re-applying the before-image; the post survives',
+    function () {
+        // The happy path. The post is in the after-state; the recovery
+        // engine re-applies the before-state via wp_update_post under the
+        // per-post advisory lock. The post is preserved (it is a draft the
+        // journal created; the inverse of an update is not a delete), the
+        // content is rolled back to what it was, and the op transitions to
+        // compensated.
+        jr_reset();
+        jr_as_administrator();
+        $marker = 'op_create_root';
+        $post = jr_post( 600, array(
+            'post_title'        => 'after',
+            'post_content'      => 'after-content',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:01',
+        ), $marker );
+        $op = jr_update_op(
+            'op_update_1', 600, $marker,
+            array(
+                'post_title'           => 'before',
+                'post_content'         => 'before-content',
+                'post_name'            => 'jr-draft',
+                'post_content_sha256'  => hash( 'sha256', 'before-content' ),
+                'post_content_length'  => strlen( 'before-content' ),
+                'post_modified_gmt'    => '2026-01-01 00:00:00',
+                'op_meta_value'        => $marker,
+            ),
+            array(
+                'post_content'         => 'after-content',
+                'post_content_sha256'  => hash( 'sha256', 'after-content' ),
+                'post_content_length'  => strlen( 'after-content' ),
+                'post_modified_gmt'    => '2026-01-01 00:00:01',
+            )
+        );
+        jr_seed( jr_row( array( $op ) ) );
+        jr_with_post_cap( 600, 'edit_post' );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
+
+        Agentshell_Test::assert_equals(
+            'compensated', $report['operations'][0]['outcome'] ?? '',
+            'a well-formed update op is compensated'
+        );
+        Agentshell_Test::assert_true(
+            jr_post_exists( 600 ),
+            'the draft itself is preserved (an update\'s inverse is not a delete)'
+        );
+        $after = $GLOBALS['_agentshell_test_posts'][600];
+        Agentshell_Test::assert_equals( 'before', $after->post_title, 'the title was rolled back' );
+        Agentshell_Test::assert_equals( 'before-content', $after->post_content, 'and the content was rolled back' );
+        Agentshell_Test::assert_equals( array(), $GLOBALS['jr_delete_calls'], 'no wp_delete_post ran' );
+        Agentshell_Test::assert_true(
+            ! empty( $GLOBALS['jr_update_calls'] ),
+            'a wp_update_post ran to apply the before-image: ' . count( $GLOBALS['jr_update_calls'] )
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'UR2: compensation of mixed create + update ops processes updates first, in reverse chronological, then the create',
+    function () {
+        // The compensation order is the load-bearing piece of mixed-journal
+        // recovery. Updates are mutually independent but must be applied
+        // BEFORE the create's inverse (wp_delete_post) runs, because once
+        // the post is gone the update inverses have nothing to act on. The
+        // ordering is enforced by order_ops_for_compensation(). This test
+        // drives the post through three ops (create, update A, update B),
+        // then recovers, and asserts the live update_post and delete_post
+        // calls happen in the right order: update_B (latest first), then
+        // update_A, then delete.
+        jr_reset();
+        jr_as_administrator();
+        $marker = 'op_create_root';
+        // The wp_update_post mock bumps post_modified_gmt to the frozen time
+        // (gmdate of JR_T0), so every after.post_modified_gmt below must
+        // match what the mock will produce when the inverse of *that* op
+        // is applied. Update B (the most recent) is the first to run; the
+        // live post starts at the value the mock's first apply would have
+        // produced, so subsequent ops see gmdate(JR_T0) too.
+        $frozen_modified = gmdate( 'Y-m-d H:i:s', JR_T0 );
+        jr_post( 700, array(
+            'post_title'        => 'after-B',
+            'post_content'      => 'after-B-content',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => $frozen_modified,
+        ), $marker );
+
+        $create = jr_op( 'applied', 700 );
+        $create['after']['op_meta_value']       = $marker;
+        $create['after']['post_content_sha256'] = hash( 'sha256', 'after-create-content' );
+        $create['after']['post_content_length'] = strlen( 'after-create-content' );
+        $create['after']['post_date_gmt']       = '2026-01-01 00:00:00';
+        $create['after']['post_modified_gmt']   = $frozen_modified;
+        $create['recorded_at']                  = JR_T0 - 100;
+
+        $upd_a = jr_update_op(
+            'op_upd_a', 700, $marker,
+            array(
+                'post_title'           => 'after-create',
+                'post_content'         => 'after-create-content',
+                'post_name'            => 'jr-draft',
+                'post_content_sha256'  => hash( 'sha256', 'after-create-content' ),
+                'post_content_length'  => strlen( 'after-create-content' ),
+                'post_modified_gmt'    => $frozen_modified,
+                'op_meta_value'        => $marker,
+            ),
+            array(
+                'post_content'         => 'after-A-content',
+                'post_content_sha256'  => hash( 'sha256', 'after-A-content' ),
+                'post_content_length'  => strlen( 'after-A-content' ),
+                'post_modified_gmt'    => $frozen_modified,
+            )
+        );
+        $upd_a['recorded_at'] = JR_T0 - 50;
+
+        $upd_b = jr_update_op(
+            'op_upd_b', 700, $marker,
+            array(
+                'post_title'           => 'after-A',
+                'post_content'         => 'after-A-content',
+                'post_name'            => 'jr-draft',
+                'post_content_sha256'  => hash( 'sha256', 'after-A-content' ),
+                'post_content_length'  => strlen( 'after-A-content' ),
+                'post_modified_gmt'    => $frozen_modified,
+                'op_meta_value'        => $marker,
+            ),
+            array(
+                'post_content'         => 'after-B-content',
+                'post_content_sha256'  => hash( 'sha256', 'after-B-content' ),
+                'post_content_length'  => strlen( 'after-B-content' ),
+                'post_modified_gmt'    => $frozen_modified,
+            )
+        );
+        $upd_b['recorded_at'] = JR_T0 - 10;
+
+        // Sanity: the after-image of each update is what the *next* op's
+        // before-image sees, so the chain composes.
+        jr_seed( jr_row( array( $create, $upd_a, $upd_b ) ) );
+        // Update inverses re-apply the before-image via wp_update_post, so the
+        // recovery engine re-checks `edit_post` at the moment of the update.
+        // The create inverse re-checks `delete_post`. Grant both.
+        jr_with_post_cap( 700, 'edit_post' );
+        jr_with_post_cap( 700, 'delete_post' );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
+
+        $outcomes = array();
+        foreach ( $report['operations'] as $row ) {
+            $outcomes[] = $row['outcome'] ?? '';
+        }
+        Agentshell_Test::assert_equals(
+            array( 'compensated', 'compensated', 'compensated' ),
+            $outcomes,
+            'all three ops are compensated'
+        );
+
+        // The wp_delete_post call (for the create op) must be the LAST
+        // destructive call, after both wp_update_post calls (for the
+        // updates). The exact order of the updates is "most recent first"
+        // (op_upd_b, op_upd_a), per the order_ops_for_compensation helper.
+        // The two log arrays are independent (their keys both start at 0), so
+        // we cannot compare raw indices across them; instead, count the
+        // total destructive calls and confirm that every wp_update_post
+        // appears before every wp_delete_post in the interleaved log.
+        $delete_indices = array_keys( $GLOBALS['jr_delete_calls'] );
+        $update_indices = array_keys( $GLOBALS['jr_update_calls'] );
+        Agentshell_Test::assert_true( ! empty( $delete_indices ), 'the create op did call wp_delete_post' );
+        Agentshell_Test::assert_true( count( $GLOBALS['jr_update_calls'] ) >= 2, 'at least two wp_update_post calls ran' );
+        // The recovery engine must process updates first, then delete the
+        // post last. Both update inverses apply Update B (latest) before
+        // Update A; verify the post_content trace in the order they were
+        // applied.
+        Agentshell_Test::assert_equals(
+            array( 'after-A-content', 'after-create-content' ),
+            array_map( function ( $c ) { return $c['post_content'] ?? '?'; }, $GLOBALS['jr_update_calls'] ),
+            'updates are applied most-recent first: Update B inverse then Update A inverse'
+        );
+        // The last update must precede the delete in the global call order.
+        // The recovery engine's settlement loop runs updates before the
+        // create, so a single shared counter would show updates at 0,1 and
+        // delete at 2; the test stub uses two arrays whose keys both start
+        // at 0, so we reconstruct the relative order by total call count.
+        $total_update_count = count( $GLOBALS['jr_update_calls'] );
+        $total_delete_count = count( $GLOBALS['jr_delete_calls'] );
+        Agentshell_Test::assert_true(
+            $total_update_count >= 2 && $total_delete_count >= 1,
+            'the destructive stack is balanced: ' . $total_update_count . ' updates, '
+                . $total_delete_count . ' delete'
+        );
+        // The interleaved destructive log is what proves the order. The
+        // shared `_agentshell_test_destructive_log` is appended by both
+        // wp_delete_post and wp_update_post mocks in the order they are
+        // called. The expected order is: update_B_inverse, update_A_inverse,
+        // delete.
+        $expected = array( 'update:700', 'update:700', 'delete:700' );
+        Agentshell_Test::assert_equals(
+            $expected,
+            $GLOBALS['_agentshell_test_destructive_log'],
+            'destructive calls are interleaved: updates first, then delete'
+        );
+        // The post is gone.
+        Agentshell_Test::assert_true( ! jr_post_exists( 700 ), 'the post is deleted' );
+    }
+);
+
+Agentshell_Test::run(
+    'UR3: a compensation conflict on an update preserves the post and refuses the op',
+    function () {
+        // The post has been edited since the update was applied — the live
+        // post no longer matches the recorded after-image. The recovery
+        // engine must detect the divergence and refuse to apply the
+        // before-image; the post is preserved.
+        jr_reset();
+        jr_as_administrator();
+        $marker = 'op_create_root';
+        jr_post( 710, array(
+            'post_title'        => 'hand-edited-title',
+            'post_content'      => 'hand-edited-content',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:05',
+        ), $marker );
+        $op = jr_update_op(
+            'op_upd_x', 710, $marker,
+            array(
+                'post_title'           => 'before',
+                'post_content'         => 'before-content',
+                'post_name'            => 'jr-draft',
+                'post_content_sha256'  => hash( 'sha256', 'before-content' ),
+                'post_content_length'  => strlen( 'before-content' ),
+                'post_modified_gmt'    => '2026-01-01 00:00:00',
+                'op_meta_value'        => $marker,
+            ),
+            array(
+                'post_content'         => 'after-content',
+                'post_content_sha256'  => hash( 'sha256', 'after-content' ),
+                'post_content_length'  => strlen( 'after-content' ),
+                'post_modified_gmt'    => '2026-01-01 00:00:01',
+            )
+        );
+        jr_seed( jr_row( array( $op ) ) );
+        jr_with_post_cap( 710, 'edit_post' );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
+
+        Agentshell_Test::assert_equals(
+            'conflict', $report['operations'][0]['outcome'] ?? '',
+            'a diverged post surfaces as conflict'
+        );
+        $detail = $report['operations'][0]['detail'] ?? '';
+        Agentshell_Test::assert_true(
+            false !== strpos( $detail, 'sha256' ) || false !== strpos( $detail, 'content' ) || false !== strpos( $detail, 'modified' ),
+            'the conflict names the divergent field: ' . $detail
+        );
+        Agentshell_Test::assert_true( jr_post_exists( 710 ), 'the post is preserved' );
+        Agentshell_Test::assert_equals( array(), $GLOBALS['jr_update_calls'], 'no wp_update_post ran' );
+    }
+);
+
+Agentshell_Test::run(
+    'UR4: an OP_UPDATE_DRAFT op whose post is already gone is settled as compensated',
+    function () {
+        // The post has been removed before compensation runs (an outside
+        // actor deleted it, or the create's inverse ran first). The update
+        // op has nothing to restore, so it is settled as compensated and
+        // the journal can move on.
+        jr_reset();
+        jr_as_administrator();
+        $marker = 'op_create_root';
+        // Deliberately do NOT create the post.
+        $op = jr_update_op(
+            'op_upd_gone', 720, $marker,
+            array(
+                'post_title'           => 'before',
+                'post_content'         => 'before-content',
+                'post_name'            => 'jr-draft',
+                'post_content_sha256'  => hash( 'sha256', 'before-content' ),
+                'post_content_length'  => strlen( 'before-content' ),
+                'post_modified_gmt'    => '2026-01-01 00:00:00',
+                'op_meta_value'        => $marker,
+            )
+        );
+        jr_seed( jr_row( array( $op ) ) );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
+
+        Agentshell_Test::assert_equals(
+            'compensated', $report['operations'][0]['outcome'] ?? '',
+            'a post-already-gone update op is settled as compensated'
+        );
+        Agentshell_Test::assert_equals( array(), $GLOBALS['jr_update_calls'], 'no wp_update_post ran' );
+    }
+);
+
+Agentshell_Test::run(
+    'UR5: a compensation update with no edit_post capability refuses; the post is preserved',
+    function () {
+        // The actor lost edit_post since the update was applied. The op
+        // is destructive of the post's current content (it overwrites the
+        // live state), so the per-post cap is checked at the moment of
+        // the destructive call, not at recovery start. Without the cap,
+        // the recovery engine refuses and the post is preserved.
+        jr_reset();
+        jr_as_administrator();
+        $marker = 'op_create_root';
+        jr_post( 730, array(
+            'post_title'        => 'after',
+            'post_content'      => 'after-content',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:01',
+        ), $marker );
+        $op = jr_update_op(
+            'op_upd_no_cap', 730, $marker,
+            array(
+                'post_title'           => 'before',
+                'post_content'         => 'before-content',
+                'post_name'            => 'jr-draft',
+                'post_content_sha256'  => hash( 'sha256', 'before-content' ),
+                'post_content_length'  => strlen( 'before-content' ),
+                'post_modified_gmt'    => '2026-01-01 00:00:00',
+                'op_meta_value'        => $marker,
+            ),
+            array(
+                'post_content'         => 'after-content',
+                'post_content_sha256'  => hash( 'sha256', 'after-content' ),
+                'post_content_length'  => strlen( 'after-content' ),
+                'post_modified_gmt'    => '2026-01-01 00:00:01',
+            )
+        );
+        jr_seed( jr_row( array( $op ) ) );
+        // Intentionally do NOT grant edit_post on 730.
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
+
+        Agentshell_Test::assert_equals(
+            'conflict', $report['operations'][0]['outcome'] ?? '',
+            'without edit_post on the target, the op is refused'
+        );
+        $detail = $report['operations'][0]['detail'] ?? '';
+        Agentshell_Test::assert_true(
+            false !== strpos( $detail, 'edit_post' ),
+            'and the reason names the per-post cap: ' . $detail
+        );
+        Agentshell_Test::assert_true( jr_post_exists( 730 ), 'the post is preserved' );
+    }
+);
+
+Agentshell_Test::run(
+    'UR6: a wp_update_post failure during compensation leaves the post unchanged and the op is owed',
+    function () {
+        // wp_update_post returns 0 when the underlying write fails (a
+        // plugin hook returning WP_Error, a stale cache, etc.). The
+        // guarded SQL transaction ROLLBACKs and the op remains owed. The
+        // post is preserved and the compensation is a no-op, so a
+        // subsequent recover() can settle the op (or a human can resolve).
+        jr_reset();
+        jr_as_administrator();
+        $marker = 'op_create_root';
+        jr_post( 740, array(
+            'post_title'        => 'after',
+            'post_content'      => 'after-content',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:01',
+        ), $marker );
+        $op = jr_update_op(
+            'op_upd_wp_fail', 740, $marker,
+            array(
+                'post_title'           => 'before',
+                'post_content'         => 'before-content',
+                'post_name'            => 'jr-draft',
+                'post_content_sha256'  => hash( 'sha256', 'before-content' ),
+                'post_content_length'  => strlen( 'before-content' ),
+                'post_modified_gmt'    => '2026-01-01 00:00:00',
+                'op_meta_value'        => $marker,
+            ),
+            array(
+                'post_content'         => 'after-content',
+                'post_content_sha256'  => hash( 'sha256', 'after-content' ),
+                'post_content_length'  => strlen( 'after-content' ),
+                'post_modified_gmt'    => '2026-01-01 00:00:01',
+            )
+        );
+        jr_seed( jr_row( array( $op ) ) );
+        jr_with_post_cap( 740, 'edit_post' );
+        $GLOBALS['jr_update_fails'] = true;
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
+
+        Agentshell_Test::assert_equals(
+            'update_failed', $report['operations'][0]['outcome'] ?? '',
+            'a wp_update_post failure surfaces as update_failed'
+        );
+        Agentshell_Test::assert_true( jr_post_exists( 740 ), 'the post is preserved' );
+    }
+);
+
+Agentshell_Test::run(
+    'UR7: an OP_UPDATE_DRAFT op with no post_id is refused at journal validation; the journal is kept',
+    function () {
+        // A no-post_id update is the load-bearing failure the journal
+        // catches before recovery is even asked to run: the validator
+        // refuses the op because compensation would have nothing to
+        // act on. The recovery report returns a "not readable" reason
+        // and the operations array is empty; the journal is preserved
+        // so an operator can reconcile by inspection.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_update_op(
+            'op_upd_no_id', 0, 'op_marker_unused',
+            array(
+                'post_title'           => 'before',
+                'post_content'         => 'before-content',
+                'post_name'            => 'jr-draft',
+                'post_content_sha256'  => hash( 'sha256', 'before-content' ),
+                'post_content_length'  => strlen( 'before-content' ),
+                'post_modified_gmt'    => '2026-01-01 00:00:00',
+                'op_meta_value'        => 'op_marker_unused',
+            )
+        );
+        $op['post_id'] = 0; // make sure the test is exercising the zero path
+        jr_seed( jr_row( array( $op ) ) );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
+
+        Agentshell_Test::assert_true(
+            empty( $report['operations'] ),
+            'a no-post_id update never reaches the per-op loop: ' . count( $report['operations'] ?? array() )
+        );
+        Agentshell_Test::assert_true(
+            false !== strpos( $report['reason'] ?? '', 'target.post_id' )
+                || false !== strpos( $report['reason'] ?? '', 'not readable' ),
+            'and the report names the journal-level refusal: ' . ( $report['reason'] ?? '' )
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'UR8: an update op whose marker does not match the live post is refused; the post is preserved',
+    function () {
+        // The post has been reassigned to a different operation (or
+        // somebody swapped the marker). The OCC + marker check refuses
+        // to apply the before-image to a post that is not the one this
+        // op recorded.
+        jr_reset();
+        jr_as_administrator();
+        jr_post( 750, array(
+            'post_title'        => 'after',
+            'post_content'      => 'after-content',
+            'post_date_gmt'     => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:01',
+        ), 'op_someone_elses_marker' );
+        $op = jr_update_op(
+            'op_upd_marker_mismatch', 750, 'op_my_marker',
+            array(
+                'post_title'           => 'before',
+                'post_content'         => 'before-content',
+                'post_name'            => 'jr-draft',
+                'post_content_sha256'  => hash( 'sha256', 'before-content' ),
+                'post_content_length'  => strlen( 'before-content' ),
+                'post_modified_gmt'    => '2026-01-01 00:00:00',
+                'op_meta_value'        => 'op_my_marker',
+            ),
+            array(
+                'post_content'         => 'after-content',
+                'post_content_sha256'  => hash( 'sha256', 'after-content' ),
+                'post_content_length'  => strlen( 'after-content' ),
+                'post_modified_gmt'    => '2026-01-01 00:00:01',
+            )
+        );
+        jr_seed( jr_row( array( $op ) ) );
+        jr_with_post_cap( 750, 'edit_post' );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), JR_CRASHED_ACTOR, true );
+
+        Agentshell_Test::assert_equals(
+            'conflict', $report['operations'][0]['outcome'] ?? '',
+            'a marker-mismatched post is refused as conflict'
+        );
+        Agentshell_Test::assert_true( jr_post_exists( 750 ), 'the post is preserved' );
+        Agentshell_Test::assert_equals( array(), $GLOBALS['jr_update_calls'], 'no wp_update_post ran' );
+    }
+);
+
+// ── Update_Draft tool: refusal and idempotency tests ──────────────────────
+
+require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-update-draft.php';
+use AgentShell_MCP\Tools\Update_Draft;
+
+Agentshell_Test::run(
+    'UD1: Update_Draft refuses outside a transaction',
+    function () {
+        // The journal-aware update path only exists inside a transaction.
+        // Outside, the caller is using the wrong tool — update_content
+        // is the immediate-write path. The tool names the alternatives in
+        // the refusal.
+        jr_reset();
+        jr_release_if_open();
+        $tool = new Update_Draft();
+        $message = jr_refuse( function () use ( $tool ) {
+            $tool->execute( array(
+                'id'              => 1,
+                'type'            => 'page',
+                'title'           => 'x',
+                'idempotency_key' => 'idem-1',
+            ) );
+        } );
+        Agentshell_Test::assert_true( is_string( $message ), 'the tool throws outside a transaction' );
+        Agentshell_Test::assert_true(
+            false !== strpos( $message, 'outside a transaction' ),
+            'and names the cause: ' . $message
+        );
+        Agentshell_Test::assert_true(
+            false !== strpos( $message, 'agentshell_update_content' ),
+            'and names the alternative: ' . $message
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'UD2: Update_Draft refuses when no field to update is supplied',
+    function () {
+        // The schema requires at least one of title / content / slug. A
+        // "rename the post but change nothing" call is a no-op
+        // masquerading as an update; the journal would otherwise
+        // accumulate empty records.
+        jr_reset();
+        Tx::instance()->begin( 'ud-2' );
+        try {
+            $tool = new Update_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id'              => 1,
+                    'type'            => 'page',
+                    'idempotency_key' => 'idem-empty',
+                ) );
+            } );
+            Agentshell_Test::assert_true( is_string( $message ) && false !== strpos( $message, 'Nothing to update' ),
+                'and names the cause: ' . $message );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'UD3: Update_Draft refuses on a non-existent post',
+    function () {
+        jr_reset();
+        Tx::instance()->begin( 'ud-3' );
+        try {
+            $tool = new Update_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id'              => 99999,
+                    'type'            => 'page',
+                    'title'           => 'x',
+                    'idempotency_key' => 'idem-3',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message )
+                    && ( false !== strpos( $message, 'transaction_update_draft_post_not_found' )
+                      || false !== strpos( $message, 'does not exist' ) ),
+                'and names the cause: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'UD4: Update_Draft refuses when the post is not a draft',
+    function () {
+        // Status transitions are out of scope. A non-draft post is
+        // refused; the caller must commit / rollback the transaction and
+        // use a status-aware tool outside.
+        jr_reset();
+        Tx::instance()->begin( 'ud-4' );
+        try {
+            jr_post( 800, array( 'post_status' => 'publish' ), 'op_some_marker' );
+            $tool = new Update_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id'              => 800,
+                    'type'            => 'page',
+                    'title'           => 'x',
+                    'idempotency_key' => 'idem-4',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'transaction_update_draft_not_a_draft' ),
+                'and names the cause: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'UD5: Update_Draft refuses when the post is not transaction-owned (no marker)',
+    function () {
+        // A draft without the journal\'s marker is one this transaction
+        // did not create. The marker check is the gate; without it, the
+        // tool cannot prove ownership and refuses.
+        jr_reset();
+        Tx::instance()->begin( 'ud-5' );
+        try {
+            jr_post( 810, array( 'post_status' => 'draft' ) ); // no marker
+            $tool = new Update_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id'              => 810,
+                    'type'            => 'page',
+                    'title'           => 'x',
+                    'idempotency_key' => 'idem-5',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'transaction_update_draft_not_transaction_owned' ),
+                'and names the cause: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'UD6: Update_Draft refuses when the post carries a marker from a different op',
+    function () {
+        // The marker is on the post but does not match any
+        // OP_CREATE_DRAFT op in the current journal. The post is owned
+        // by a different operation (or transaction); the tool refuses.
+        jr_reset();
+        Tx::instance()->begin( 'ud-6' );
+        try {
+            jr_post( 820, array( 'post_status' => 'draft' ), 'op_some_other_op' );
+            $tool = new Update_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id'              => 820,
+                    'type'            => 'page',
+                    'title'           => 'x',
+                    'idempotency_key' => 'idem-6',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'transaction_update_draft_not_transaction_owned' ),
+                'and names the cause: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'UD7: Update_Draft fresh call records the op, applies the update, returns the op_id',
+    function () {
+        // The happy path inside a real transaction. The post exists, is
+        // a draft, carries the marker of an applied create op in this
+        // journal, and the tool records an OP_UPDATE_DRAFT op with the
+        // before-image and applies the update.
+        jr_reset();
+        $tx = Tx::instance()->begin( 'ud-7' );
+
+        // Plant a create op in the journal and a matching post.
+        $marker = 'op_create_ud7';
+        $create_op = Content_Journal::record_intent(
+            Content_Journal::OP_CREATE_DRAFT,
+            array( 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(),
+            'agent',
+            JR_T0
+        );
+        $create_op['id']    = $marker;
+        $create_op['state'] = 'applied';
+        $create_op['post_id'] = 830;
+        $create_op['after']  = array_merge(
+            $create_op['after'],
+            array(
+                'post_type'           => 'page',
+                'post_status'         => 'draft',
+                'post_name'           => 'jr-draft',
+                'post_date_gmt'       => '2026-01-01 00:00:00',
+                'post_modified_gmt'   => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'orig' ),
+                'post_content_length' => 4,
+                'op_meta_value'       => $marker,
+            )
+        );
+        $tx['content']['ops'][ $marker ] = $create_op;
+        jr_seed( $tx );
+
+        jr_post( 830, array(
+            'post_title'   => 'orig',
+            'post_content' => 'orig',
+            'post_status'  => 'draft',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $marker );
+
+        $tool = new Update_Draft();
+        $result = $tool->execute( array(
+            'id'              => 830,
+            'type'            => 'page',
+            'title'           => 'updated',
+            'idempotency_key' => 'idem-ud7',
+        ) );
+
+        Agentshell_Test::assert_equals( 830, (int) ( $result['id'] ?? 0 ), 'the post id is the same one' );
+        Agentshell_Test::assert_equals( 'updated', $result['title'] ?? '', 'the new title is returned' );
+        Agentshell_Test::assert_equals( 'draft', $result['status'] ?? '', 'and the status is draft' );
+        Agentshell_Test::assert_true( ! empty( $result['op_id'] ), 'an op id is returned' );
+        Agentshell_Test::assert_equals( false, $result['resumed'] ?? true, 'and resumed is false (fresh call)' );
+        Agentshell_Test::assert_true( ! empty( $GLOBALS['jr_update_calls'] ), 'a wp_update_post ran' );
+        Agentshell_Test::assert_equals(
+            'updated',
+            $GLOBALS['_agentshell_test_posts'][830]->post_title,
+            'and the post in the fixture has the new title'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'UD8: Update_Draft retry with the same idempotency_key and same content returns resumed:true; no second post is created',
+    function () {
+        // The retry that the brief names explicitly: a tool response
+        // that was lost in transit. The retry returns the original
+        // post id with resumed:true, no new post is created, and the
+        // journal still has one op.
+        jr_reset();
+        $tx = Tx::instance()->begin( 'ud-8' );
+        $marker = 'op_create_ud8';
+        $create_op = Content_Journal::record_intent(
+            Content_Journal::OP_CREATE_DRAFT,
+            array( 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(),
+            'agent',
+            JR_T0
+        );
+        $create_op['id']    = $marker;
+        $create_op['state'] = 'applied';
+        $create_op['post_id'] = 840;
+        $create_op['after']  = array_merge(
+            $create_op['after'],
+            array(
+                'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+                'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'orig' ), 'post_content_length' => 4, 'op_meta_value' => $marker,
+            )
+        );
+        $tx['content']['ops'][ $marker ] = $create_op;
+        jr_seed( $tx );
+
+        jr_post( 840, array(
+            'post_title' => 'orig', 'post_content' => 'orig', 'post_status' => 'draft',
+            'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $marker );
+
+        $tool = new Update_Draft();
+        $first = $tool->execute( array(
+            'id' => 840, 'type' => 'page', 'title' => 'first', 'idempotency_key' => 'idem-ud8',
+        ) );
+        Agentshell_Test::assert_equals( false, $first['resumed'] ?? true, 'first call is fresh' );
+
+        $calls_after_first = count( $GLOBALS['jr_update_calls'] );
+        $second = $tool->execute( array(
+            'id' => 840, 'type' => 'page', 'title' => 'first', 'idempotency_key' => 'idem-ud8',
+        ) );
+        Agentshell_Test::assert_equals( 840, (int) ( $second['id'] ?? 0 ), 'second call returns the same post id' );
+        Agentshell_Test::assert_equals( true, $second['resumed'] ?? false, 'and resumes the original op' );
+        Agentshell_Test::assert_equals(
+            $calls_after_first, count( $GLOBALS['jr_update_calls'] ),
+            'and no second wp_update_post ran'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'UD9: Update_Draft retry with the same idempotency_key but different content refuses as conflict',
+    function () {
+        // A retry with the same key but different content is a typo /
+        // race that must not silently overwrite the post.
+        jr_reset();
+        $tx = Tx::instance()->begin( 'ud-9' );
+        $marker = 'op_create_ud9';
+        $create_op = Content_Journal::record_intent(
+            Content_Journal::OP_CREATE_DRAFT,
+            array( 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(),
+            'agent',
+            JR_T0
+        );
+        $create_op['id']    = $marker;
+        $create_op['state'] = 'applied';
+        $create_op['post_id'] = 850;
+        $create_op['after']  = array_merge(
+            $create_op['after'],
+            array(
+                'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+                'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'orig' ), 'post_content_length' => 4, 'op_meta_value' => $marker,
+            )
+        );
+        $tx['content']['ops'][ $marker ] = $create_op;
+        jr_seed( $tx );
+
+        jr_post( 850, array(
+            'post_title' => 'orig', 'post_content' => 'orig', 'post_status' => 'draft',
+            'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $marker );
+
+        $tool = new Update_Draft();
+        $first = $tool->execute( array(
+            'id' => 850, 'type' => 'page', 'title' => 'first', 'idempotency_key' => 'idem-ud9',
+        ) );
+        Agentshell_Test::assert_equals( false, $first['resumed'] ?? true, 'first call is fresh' );
+
+        $calls_after_first = count( $GLOBALS['jr_update_calls'] );
+        $message = jr_refuse( function () use ( $tool ) {
+            $tool->execute( array(
+                'id' => 850, 'type' => 'page', 'title' => 'different-title', 'idempotency_key' => 'idem-ud9',
+            ) );
+        } );
+        Agentshell_Test::assert_true(
+            is_string( $message ) && false !== strpos( $message, 'transaction_update_draft_idempotency_conflict' ),
+            'and names the conflict: ' . $message
+        );
+        Agentshell_Test::assert_equals(
+            $calls_after_first, count( $GLOBALS['jr_update_calls'] ),
+            'and no second wp_update_post ran'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'UD10: Update_Draft retry with the same idempotency_key on an in-flight (intended) op refuses',
+    function () {
+        // A previous attempt with the same key is still in flight (state
+        // is intended or compensating). The retry is refused so the
+        // caller can reconcile.
+        jr_reset();
+        $tx = Tx::instance()->begin( 'ud-10' );
+        $marker = 'op_create_ud10';
+        $create_op = Content_Journal::record_intent(
+            Content_Journal::OP_CREATE_DRAFT,
+            array( 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(),
+            'agent',
+            JR_T0
+        );
+        $create_op['id']    = $marker;
+        $create_op['state'] = 'applied';
+        $create_op['post_id'] = 860;
+        $create_op['after']  = array_merge(
+            $create_op['after'],
+            array(
+                'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+                'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'orig' ), 'post_content_length' => 4, 'op_meta_value' => $marker,
+            )
+        );
+        $tx['content']['ops'][ $marker ] = $create_op;
+        // Plant an in-flight update op with the same key.
+        $inflight = jr_update_op(
+            'op_inflight', 860, $marker,
+            array(
+                'post_title' => 'before', 'post_content' => 'before', 'post_name' => 'jr-draft',
+                'post_content_sha256' => hash( 'sha256', 'before' ), 'post_content_length' => 6,
+                'post_modified_gmt' => '2026-01-01 00:00:00', 'op_meta_value' => $marker,
+            ),
+            array( 'idempotency_key' => 'idem-ud10' )
+        );
+        $inflight['state'] = 'intended';
+        $tx['content']['ops']['op_inflight'] = $inflight;
+        jr_seed( $tx );
+
+        jr_post( 860, array(
+            'post_title' => 'after', 'post_content' => 'after', 'post_status' => 'draft',
+            'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $marker );
+
+        $tool = new Update_Draft();
+        $message = jr_refuse( function () use ( $tool ) {
+            $tool->execute( array(
+                'id' => 860, 'type' => 'page', 'title' => 'whatever', 'idempotency_key' => 'idem-ud10',
+            ) );
+        } );
+        Agentshell_Test::assert_true(
+            is_string( $message ) && false !== strpos( $message, 'transaction_update_draft_in_progress' ),
+            'and names the in-flight reason: ' . $message
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'UD11: Update_Draft retry with the same idempotency_key on a compensated op refuses as unrecoverable',
+    function () {
+        // A previous attempt with the same key settled as compensated.
+        // The op is gone; the key cannot be resumed.
+        jr_reset();
+        $tx = Tx::instance()->begin( 'ud-11' );
+        $marker = 'op_create_ud11';
+        $create_op = Content_Journal::record_intent(
+            Content_Journal::OP_CREATE_DRAFT,
+            array( 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(),
+            'agent',
+            JR_T0
+        );
+        $create_op['id']    = $marker;
+        $create_op['state'] = 'applied';
+        $create_op['post_id'] = 870;
+        $create_op['after']  = array_merge(
+            $create_op['after'],
+            array(
+                'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+                'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'orig' ), 'post_content_length' => 4, 'op_meta_value' => $marker,
+            )
+        );
+        $tx['content']['ops'][ $marker ] = $create_op;
+        $settled = jr_update_op(
+            'op_settled', 870, $marker,
+            array(
+                'post_title' => 'before', 'post_content' => 'before', 'post_name' => 'jr-draft',
+                'post_content_sha256' => hash( 'sha256', 'before' ), 'post_content_length' => 6,
+                'post_modified_gmt' => '2026-01-01 00:00:00', 'op_meta_value' => $marker,
+            ),
+            array( 'idempotency_key' => 'idem-ud11' )
+        );
+        $settled['state'] = 'compensated';
+        $tx['content']['ops']['op_settled'] = $settled;
+        jr_seed( $tx );
+
+        jr_post( 870, array(
+            'post_title' => 'after', 'post_content' => 'after', 'post_status' => 'draft',
+            'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $marker );
+
+        $tool = new Update_Draft();
+        $message = jr_refuse( function () use ( $tool ) {
+            $tool->execute( array(
+                'id' => 870, 'type' => 'page', 'title' => 'whatever', 'idempotency_key' => 'idem-ud11',
+            ) );
+        } );
+        Agentshell_Test::assert_true(
+            is_string( $message ) && false !== strpos( $message, 'transaction_update_draft_unrecoverable' ),
+            'and names the unrecoverable state: ' . $message
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'UD12: Update_Draft with title and content both empty refuses',
+    function () {
+        jr_reset();
+        Tx::instance()->begin( 'ud-12' );
+        try {
+            $tool = new Update_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id'              => 1,
+                    'type'            => 'page',
+                    'title'           => '',
+                    'content'         => '',
+                    'idempotency_key' => 'idem-12',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'untitled draft' ),
+                'and explains the title/content rule: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'UD13: Update_Draft on a post that is the wrong type refuses',
+    function () {
+        jr_reset();
+        Tx::instance()->begin( 'ud-13' );
+        try {
+            jr_post( 880, array( 'post_status' => 'draft', 'post_type' => 'post' ), 'op_marker_13' );
+            // Create an OP_CREATE_DRAFT op in the journal with post_type 'post'
+            $create_op = Content_Journal::record_intent(
+                Content_Journal::OP_CREATE_DRAFT,
+                array( 'post_type' => 'post', 'post_status' => 'draft' ),
+                array(),
+                'agent',
+                JR_T0
+            );
+            $create_op['id']    = 'op_marker_13';
+            $create_op['state'] = 'applied';
+            $create_op['post_id'] = 880;
+            $tx = Tx::instance()->payload();
+            $tx['content']['ops']['op_marker_13'] = $create_op;
+            jr_seed( $tx );
+
+            $tool = new Update_Draft();
+            // Request a 'page' update on a 'post' post.
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id' => 880, 'type' => 'page', 'title' => 'x', 'idempotency_key' => 'idem-13',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'transaction_update_draft_wrong_type' ),
+                'and names the cause: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'UD14: Update_Draft on a post whose owning create op is in `intended` (not applied) refuses',
+    function () {
+        // The owning create op is the gate: it must be in applied or
+        // partial-applied for an update to be recorded. An update
+        // against a create that never landed would orphan the op.
+        jr_reset();
+        $tx = Tx::instance()->begin( 'ud-14' );
+        $marker = 'op_create_ud14';
+        $create_op = Content_Journal::record_intent(
+            Content_Journal::OP_CREATE_DRAFT,
+            array( 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(),
+            'agent',
+            JR_T0
+        );
+        $create_op['id']    = $marker;
+        $create_op['state'] = 'intended'; // not applied
+        $create_op['post_id'] = 890;
+        $create_op['after']  = array_merge(
+            $create_op['after'],
+            array(
+                'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+                'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'orig' ), 'post_content_length' => 4, 'op_meta_value' => $marker,
+            )
+        );
+        $tx['content']['ops'][ $marker ] = $create_op;
+        jr_seed( $tx );
+
+        jr_post( 890, array(
+            'post_title' => 'orig', 'post_content' => 'orig', 'post_status' => 'draft',
+            'post_date_gmt' => '2026-01-01 00:00:00', 'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $marker );
+
+        $tool = new Update_Draft();
+        $message = jr_refuse( function () use ( $tool ) {
+            $tool->execute( array(
+                'id' => 890, 'type' => 'page', 'title' => 'x', 'idempotency_key' => 'idem-14',
+            ) );
+        } );
+        Agentshell_Test::assert_true(
+            is_string( $message ) && false !== strpos( $message, 'transaction_update_draft_create_state_refused' ),
+            'and names the create-state gate: ' . $message
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'UD15: Update_Draft refuses when both title and content are empty',
+    function () {
+        jr_reset();
+        Tx::instance()->begin( 'ud-15' );
+        try {
+            jr_post( 900, array( 'post_status' => 'draft' ), 'op_marker_15' );
+            $create_op = Content_Journal::record_intent(
+                Content_Journal::OP_CREATE_DRAFT,
+                array( 'post_type' => 'page', 'post_status' => 'draft' ),
+                array(),
+                'agent',
+                JR_T0
+            );
+            $create_op['id']    = 'op_marker_15';
+            $create_op['state'] = 'applied';
+            $create_op['post_id'] = 900;
+            $tx = Tx::instance()->payload();
+            $tx['content']['ops']['op_marker_15'] = $create_op;
+            jr_seed( $tx );
+
+            $tool = new Update_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id' => 900, 'type' => 'page', 'title' => '', 'content' => '', 'idempotency_key' => 'idem-15',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'untitled draft' ),
+                'and explains the rule: ' . $message
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
