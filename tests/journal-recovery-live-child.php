@@ -1317,6 +1317,495 @@ $f['lock_prompt_failure'] = array(
     'prompt'         => is_int( $elapsed_ms ) && $elapsed_ms < 200,
 );
 
+// ── 15. Stage 2a acceptance: create + edit + close lifecycle ──────────────────
+// Each sub-test exercises a separate scenario from the Stage 2a completion
+// brief. The lifecycle is: open transaction, create draft, optionally
+// update, optionally apply external modification, then commit or rollback.
+// The state of the post, the journal, and the option row are all asserted.
+//
+// The scenarios map 1:1 to the live acceptance section in
+// `tests/journal-recovery-live-test.php` and the brief in the user's
+// stage/2a completion requirements.
+
+$post15_helpers = array();
+function jr15_draft( $title, $body, $token ) {
+    global $wpdb;
+    $intent = Content_Journal::record_intent(
+        Content_Journal::OP_CREATE_DRAFT,
+        array( 'post_type' => 'page', 'post_status' => 'draft', 'post_title' => $title ),
+        array(),
+        'live-recovery-probe',
+        time()
+    );
+    $tx_row = (array) get_option( Tx::KEY, null );
+    Content_Journal::attach( $tx_row, $intent );
+    $tx_row = (array) get_option( Tx::KEY, null );
+    $post_id = Content_Write_Guard::run( function () use ( $intent, $title, $body, $token ) {
+        return wp_insert_post( wp_slash( array(
+            'post_type'    => 'page',
+            'post_status'  => 'draft',
+            'post_title'   => $title,
+            'post_content' => $body,
+            'post_name'    => strtolower( $title ),
+            'meta_input'   => array( Content_Journal::OP_META => $intent['id'] ),
+        ) ), true );
+    } );
+    if ( is_wp_error( $post_id ) || ! $post_id ) {
+        return array( null, null );
+    }
+    $GLOBALS['jr_mine'][] = (int) $post_id;
+    $p = get_post( $post_id );
+    Content_Journal::mark_applied( $tx_row, $intent['id'], $post_id, array(
+        'post_type'           => (string) $p->post_type,
+        'post_status'         => (string) $p->post_status,
+        'post_name'           => (string) $p->post_name,
+        'post_title'          => (string) $p->post_title,
+        'post_date_gmt'       => (string) $p->post_date_gmt,
+        'post_modified_gmt'   => (string) $p->post_modified_gmt,
+        'post_content_sha256' => hash( 'sha256', (string) $p->post_content ),
+        'post_content_length' => strlen( (string) $p->post_content ),
+        'op_meta_value'       => (string) $intent['id'],
+    ) );
+    return array( (int) $post_id, $intent['id'] );
+}
+function jr15_close_tx( $expected_label_prefix = 'live ' ) {
+    $row = (array) get_option( Tx::KEY, null );
+    if ( is_array( $row ) && 0 === strpos( (string) ( $row['label'] ?? '' ), $expected_label_prefix ) ) {
+        delete_option( Tx::KEY );
+    }
+}
+
+// 15.1 — Create → edit once → commit: final content is retained.
+$tx15_1 = Tx::instance()->begin( 'live 2a single edit commit' );
+$tx15_1['staged'] = array();
+update_option( Tx::KEY, $tx15_1 );
+list( $p15_1, $op15_1 ) = jr15_draft( $token . '-15-1', '<p>first body</p>', $token );
+$u15_1 = new Update_Draft();
+$u15_1_first = $u15_1->execute( array(
+    'id'              => (int) $p15_1,
+    'type'            => 'page',
+    'content'         => '<p>first body edited</p>',
+    'idempotency_key' => '15-1-update-1',
+) );
+$commit15_1 = ( new \AgentShell_MCP\Tools\Commit_Transaction() )->execute( array() );
+$p15_1_after = get_post( $p15_1 );
+$f['stage2a_single_edit_commit'] = array(
+    'post_id'              => (int) $p15_1,
+    'first_update_op_id'   => (string) ( $u15_1_first['op_id'] ?? '' ),
+    'commit_status'        => $commit15_1['status'] ?? '',
+    'rows_after'           => jr_row_exists( $p15_1 ),
+    'db_content'           => (string) $p15_1_after->post_content,
+    'db_content_sha'       => hash( 'sha256', (string) $p15_1_after->post_content ),
+    'transaction_gone'     => ! is_array( get_option( Tx::KEY, null ) ),
+    'op_count'             => 2, // create + 1 update
+);
+
+// 15.2 — Create → edit multiple times → commit: final content is the last
+//         edit's content. Three sequential updates through Update_Draft.
+$tx15_2 = Tx::instance()->begin( 'live 2a multi edit commit' );
+$tx15_2['staged'] = array();
+update_option( Tx::KEY, $tx15_2 );
+list( $p15_2, $op15_2 ) = jr15_draft( $token . '-15-2', '<p>v0</p>', $token );
+$u15_2 = new Update_Draft();
+$u15_2_a = $u15_2->execute( array(
+    'id' => (int) $p15_2, 'type' => 'page', 'content' => '<p>v1</p>',
+    'idempotency_key' => '15-2-update-a',
+) );
+$u15_2_b = $u15_2->execute( array(
+    'id' => (int) $p15_2, 'type' => 'page', 'content' => '<p>v2</p>',
+    'idempotency_key' => '15-2-update-b',
+) );
+$u15_2_c = $u15_2->execute( array(
+    'id' => (int) $p15_2, 'type' => 'page', 'content' => '<p>v3</p>',
+    'idempotency_key' => '15-2-update-c',
+) );
+$commit15_2 = ( new \AgentShell_MCP\Tools\Commit_Transaction() )->execute( array() );
+$p15_2_after = get_post( $p15_2 );
+$tx15_2_after = (array) get_option( Tx::KEY, null );
+$op_count_15_2 = 0;
+if ( is_array( $tx15_2_after ) ) {
+    $op_count_15_2 = count( (array) ( $tx15_2_after['content']['ops'] ?? array() ) );
+}
+$f['stage2a_multi_edit_commit'] = array(
+    'post_id'         => (int) $p15_2,
+    'db_content'      => (string) $p15_2_after->post_content,
+    'db_content_sha'  => hash( 'sha256', (string) $p15_2_after->post_content ),
+    'commit_status'   => $commit15_2['status'] ?? '',
+    'rows_after'      => jr_row_exists( $p15_2 ),
+    'op_count'        => $op_count_15_2,
+    'transaction_gone'=> ! is_array( get_option( Tx::KEY, null ) ),
+);
+
+// 15.3 — Create → edit once → rollback: the post is gone (create op's
+//         compensation deletes it; the update op is a no-op in
+//         compensate_update because the chain is rolled back by the
+//         create op's wp_delete_post).
+$tx15_3 = Tx::instance()->begin( 'live 2a single edit rollback' );
+$tx15_3['staged'] = array();
+update_option( Tx::KEY, $tx15_3 );
+list( $p15_3, $op15_3 ) = jr15_draft( $token . '-15-3', '<p>will be deleted</p>', $token );
+$u15_3 = new Update_Draft();
+$u15_3_first = $u15_3->execute( array(
+    'id' => (int) $p15_3, 'type' => 'page', 'content' => '<p>edited</p>',
+    'idempotency_key' => '15-3-update-1',
+) );
+$rollback15_3 = ( new \AgentShell_MCP\Tools\Rollback_Transaction() )->execute( array() );
+$f['stage2a_single_edit_rollback'] = array(
+    'post_id'         => (int) $p15_3,
+    'rows_after'      => jr_row_exists( $p15_3 ),
+    'rollback_status' => $rollback15_3['status'] ?? '',
+    'transaction_gone'=> ! is_array( get_option( Tx::KEY, null ) ),
+);
+
+// 15.4 — Create → edit multiple times → rollback: the post is gone; the
+//         rollback does NOT replay inverse updates (it does not
+//         `wp_update_post` the inverse before deleting; the head-pointer
+//         model's contract is the post is deleted once by the create op's
+//         compensation, and the update ops are no-op settlements).
+$tx15_4 = Tx::instance()->begin( 'live 2a multi edit rollback' );
+$tx15_4['staged'] = array();
+update_option( Tx::KEY, $tx15_4 );
+list( $p15_4, $op15_4 ) = jr15_draft( $token . '-15-4', '<p>initial</p>', $token );
+$u15_4 = new Update_Draft();
+$u15_4_a = $u15_4->execute( array(
+    'id' => (int) $p15_4, 'type' => 'page', 'content' => '<p>v1</p>',
+    'idempotency_key' => '15-4-update-a',
+) );
+$u15_4_b = $u15_4->execute( array(
+    'id' => (int) $p15_4, 'type' => 'page', 'content' => '<p>v2</p>',
+    'idempotency_key' => '15-4-update-b',
+) );
+$u15_4_c = $u15_4->execute( array(
+    'id' => (int) $p15_4, 'type' => 'page', 'content' => '<p>v3</p>',
+    'idempotency_key' => '15-4-update-c',
+) );
+$rollback15_4 = ( new \AgentShell_MCP\Tools\Rollback_Transaction() )->execute( array() );
+$f['stage2a_multi_edit_rollback'] = array(
+    'post_id'         => (int) $p15_4,
+    'rows_after'      => jr_row_exists( $p15_4 ),
+    'rollback_status' => $rollback15_4['status'] ?? '',
+    'transaction_gone'=> ! is_array( get_option( Tx::KEY, null ) ),
+);
+
+// 15.5 — Two drafts in the same transaction with independent edit
+//         histories. The two posts are independent: editing post A does
+//         not touch post B's head; rollback deletes both.
+$tx15_5 = Tx::instance()->begin( 'live 2a two drafts' );
+$tx15_5['staged'] = array();
+update_option( Tx::KEY, $tx15_5 );
+list( $p15_5a, $op15_5a ) = jr15_draft( $token . '-15-5a', '<p>A v0</p>', $token );
+list( $p15_5b, $op15_5b ) = jr15_draft( $token . '-15-5b', '<p>B v0</p>', $token );
+$u15_5 = new Update_Draft();
+$u15_5_a = $u15_5->execute( array(
+    'id' => (int) $p15_5a, 'type' => 'page', 'content' => '<p>A v1</p>',
+    'idempotency_key' => '15-5a-update-1',
+) );
+$u15_5_b = $u15_5->execute( array(
+    'id' => (int) $p15_5b, 'type' => 'page', 'content' => '<p>B v1</p>',
+    'idempotency_key' => '15-5b-update-1',
+) );
+// Both edits advance their respective heads independently. The strong
+// after-image carries a SHA-256 of the post content, not the content
+// itself; the head stores the sha256.
+$tx15_5_after = (array) get_option( Tx::KEY, null );
+$head_a_15_5 = is_array( $tx15_5_after['content'][ Content_Journal::HEAD_KEY ] ?? null )
+    ? ( $tx15_5_after['content'][ Content_Journal::HEAD_KEY ][ $p15_5a ] ?? null ) : null;
+$head_b_15_5 = is_array( $tx15_5_after['content'][ Content_Journal::HEAD_KEY ] ?? null )
+    ? ( $tx15_5_after['content'][ Content_Journal::HEAD_KEY ][ $p15_5b ] ?? null ) : null;
+$sha_a_15_5  = hash( 'sha256', '<p>A v1</p>' );
+$sha_b_15_5  = hash( 'sha256', '<p>B v1</p>' );
+$rollback15_5 = ( new \AgentShell_MCP\Tools\Rollback_Transaction() )->execute( array() );
+$f['stage2a_two_drafts'] = array(
+    'post_a'         => (int) $p15_5a,
+    'post_b'         => (int) $p15_5b,
+    'rows_a_after'   => jr_row_exists( $p15_5a ),
+    'rows_b_after'   => jr_row_exists( $p15_5b ),
+    'rollback_ok'    => ! empty( $rollback15_5['rolled_back'] ),
+    'head_a_advanced'=> is_array( $head_a_15_5 ) && ( $sha_a_15_5 === ( $head_a_15_5['post_content_sha256'] ?? '' ) ),
+    'head_b_advanced'=> is_array( $head_b_15_5 ) && ( $sha_b_15_5 === ( $head_b_15_5['post_content_sha256'] ?? '' ) ),
+    'transaction_gone'=> ! is_array( get_option( Tx::KEY, null ) ),
+);
+
+// 15.6 — External modification after an authorised edit: the next
+//         authorised edit detects the divergence and refuses. The post
+//         is preserved (not deleted) and the journal row is kept.
+$tx15_6 = Tx::instance()->begin( 'live 2a external after edit' );
+$tx15_6['staged'] = array();
+update_option( Tx::KEY, $tx15_6 );
+list( $p15_6, $op15_6 ) = jr15_draft( $token . '-15-6', '<p>edit then external</p>', $token );
+$u15_6 = new Update_Draft();
+$u15_6_first = $u15_6->execute( array(
+    'id' => (int) $p15_6, 'type' => 'page', 'content' => '<p>edit then external v1</p>',
+    'idempotency_key' => '15-6-update-1',
+) );
+// External modification: change the slug (a field the strong after-image
+// checks). The post is no longer in the head's recorded state.
+wp_update_post( wp_slash( array(
+    'ID'        => $p15_6,
+    'post_name' => strtolower( $token . '-15-6-external-slug' ),
+) ) );
+clean_post_cache( $p15_6 );
+$u15_6_threw = false;
+$u15_6_msg   = '';
+try {
+    $u15_6->execute( array(
+        'id' => (int) $p15_6, 'type' => 'page', 'content' => '<p>would overwrite</p>',
+        'idempotency_key' => '15-6-update-2',
+    ) );
+} catch ( \Throwable $e ) {
+    $u15_6_threw = true;
+    $u15_6_msg   = $e->getMessage();
+}
+$tx15_6_after = (array) get_option( Tx::KEY, null );
+$f['stage2a_external_after_edit'] = array(
+    'post_id'         => (int) $p15_6,
+    'rows_after'      => jr_row_exists( $p15_6 ),
+    'second_refused'  => $u15_6_threw,
+    'names_cause'     => false !== strpos( $u15_6_msg, 'transaction_update_draft_external_edit_detected' ),
+    'db_slug'         => (string) get_post_field( 'post_name', $p15_6 ),
+    'transaction_kept'=> is_array( $tx15_6_after ) && 0 === strpos( (string) ( $tx15_6_after['label'] ?? '' ), 'live ' ),
+);
+jr15_close_tx();
+
+// 15.7 — Same-second title-only external modification. The strong
+//         after-image carries post_title (added in this stage); a
+//         same-second change that touches only the title would be
+//         invisible to post_modified_gmt (which is the second-resolution
+//         evidence and is bumped on every wp_update_post call). To
+//         demonstrate the same-second case honestly, the external edit
+//         is made via direct SQL so post_modified_gmt is genuinely not
+//         moved. The OCC pre-check still catches the divergence
+//         because post_title is part of the strong after-image.
+$tx15_7 = Tx::instance()->begin( 'live 2a title only divergence' );
+$tx15_7['staged'] = array();
+update_option( Tx::KEY, $tx15_7 );
+list( $p15_7, $op15_7 ) = jr15_draft( $token . '-15-7', '<p>title only</p>', $token );
+$title_before_15_7 = (string) get_post_field( 'post_title', $p15_7 );
+$mod_before_15_7   = (string) get_post_field( 'post_modified_gmt', $p15_7 );
+// Direct SQL update of post_title only. post_modified_gmt is not touched,
+// so the second-resolution field stays at the original value. The
+// post_title column is what the OCC pre-check compares against the
+// strong after-image, and the OCC refuses the next authorised update.
+$wpdb->update(
+    $wpdb->posts,
+    array( 'post_title' => $token . '-15-7-external-title' ),
+    array( 'ID' => $p15_7 ),
+    array( '%s' ),
+    array( '%d' )
+);
+clean_post_cache( $p15_7 );
+$title_after_15_7 = (string) get_post_field( 'post_title', $p15_7 );
+$mod_after_15_7   = (string) get_post_field( 'post_modified_gmt', $p15_7 );
+// Attempt an authorised update: OCC pre-check should refuse.
+$u15_7_threw = false;
+$u15_7_msg   = '';
+try {
+    ( new Update_Draft() )->execute( array(
+        'id' => (int) $p15_7, 'type' => 'page', 'content' => '<p>title only</p>',
+        'idempotency_key' => '15-7-update-1',
+    ) );
+} catch ( \Throwable $e ) {
+    $u15_7_threw = true;
+    $u15_7_msg   = $e->getMessage();
+}
+$f['stage2a_title_only_divergence'] = array(
+    'post_id'         => (int) $p15_7,
+    'title_changed'   => ( $title_before_15_7 !== $title_after_15_7 ),
+    'mod_unchanged'   => ( $mod_before_15_7 === $mod_after_15_7 ),
+    'update_refused'  => $u15_7_threw,
+    'names_cause'     => false !== strpos( $u15_7_msg, 'transaction_update_draft_external_edit_detected' ),
+    'post_preserved'  => 1 === jr_row_exists( $p15_7 ),
+);
+jr15_close_tx();
+
+// 15.8 — Idempotent update retry, including a conflicting payload. The
+//         first call with a fresh key creates an op; the second call
+//         with the same key and same content resumes; the third call
+//         with the same key but different content refuses with the
+//         named idempotency_conflict.
+$tx15_8 = Tx::instance()->begin( 'live 2a idempotent update' );
+$tx15_8['staged'] = array();
+update_option( Tx::KEY, $tx15_8 );
+list( $p15_8, $op15_8 ) = jr15_draft( $token . '-15-8', '<p>idempotency target</p>', $token );
+$u15_8 = new Update_Draft();
+$u15_8_first   = $u15_8->execute( array(
+    'id' => (int) $p15_8, 'type' => 'page', 'content' => '<p>first content</p>',
+    'idempotency_key' => '15-8-key',
+) );
+$u15_8_resume  = $u15_8->execute( array(
+    'id' => (int) $p15_8, 'type' => 'page', 'content' => '<p>first content</p>',
+    'idempotency_key' => '15-8-key',
+) );
+$u15_8_threw   = false;
+$u15_8_msg     = '';
+try {
+    $u15_8->execute( array(
+        'id' => (int) $p15_8, 'type' => 'page', 'content' => '<p>different content</p>',
+        'idempotency_key' => '15-8-key',
+    ) );
+} catch ( \Throwable $e ) {
+    $u15_8_threw = true;
+    $u15_8_msg   = $e->getMessage();
+}
+$tx15_8_after = (array) get_option( Tx::KEY, null );
+$update_op_count_15_8 = 0;
+if ( is_array( $tx15_8_after ) ) {
+    foreach ( (array) ( $tx15_8_after['content']['ops'] ?? array() ) as $o ) {
+        if ( is_array( $o ) && (string) ( $o['op'] ?? '' ) === Content_Journal::OP_UPDATE_DRAFT ) {
+            $update_op_count_15_8++;
+        }
+    }
+}
+jr15_close_tx();
+$f['stage2a_idempotent_update'] = array(
+    'post_id'              => (int) $p15_8,
+    'first_op_id'          => (string) ( $u15_8_first['op_id'] ?? '' ),
+    'resumed_op_id'        => (string) ( $u15_8_resume['op_id'] ?? '' ),
+    'resumed_flag'         => (bool) ( $u15_8_resume['resumed'] ?? false ),
+    'same_op_id'           => (string) ( $u15_8_first['op_id'] ?? '' ) === (string) ( $u15_8_resume['op_id'] ?? '' ),
+    'conflict_refused'     => $u15_8_threw,
+    'names_cause'          => false !== strpos( $u15_8_msg, 'transaction_update_draft_idempotency_conflict' ),
+    'update_op_count'      => $update_op_count_15_8,
+    'db_content'           => (string) get_post_field( 'post_content', $p15_8 ),
+);
+
+// 15.9 — Competing updates against the same journal head. The head is
+//         a CAS-protected pointer; the second update's mark_applied
+//         CAS fails if the row's bytes have moved (the first update
+//         advanced them). The OCC pre-check in Update_Draft catches
+//         the divergence before the write and refuses.
+$tx15_9 = Tx::instance()->begin( 'live 2a competing updates' );
+$tx15_9['staged'] = array();
+update_option( Tx::KEY, $tx15_9 );
+list( $p15_9, $op15_9 ) = jr15_draft( $token . '-15-9', '<p>competing target</p>', $token );
+// Simulate a "competing" update by directly advancing the head to a
+// different state, then attempting an authorised update. The OCC
+// pre-check compares the live post to the head; if the head is ahead
+// of the live post (or the live post is ahead of the head), the
+// pre-check refuses.
+$tx_row_15_9 = (array) get_option( Tx::KEY, null );
+$head_15_9   = Content_Journal::head_after( $tx_row_15_9, $p15_9 );
+// Mutate the head to a divergent state — the live post does not match.
+if ( is_array( $head_15_9 ) ) {
+    $head_15_9['post_title'] = $token . '-15-9-head-diverged';
+    Content_Journal::compare_and_set_head( $tx_row_15_9, $p15_9, $head_15_9, $head_15_9 );
+}
+$u15_9_threw = false;
+$u15_9_msg   = '';
+try {
+    ( new Update_Draft() )->execute( array(
+        'id' => (int) $p15_9, 'type' => 'page', 'content' => '<p>would overwrite head</p>',
+        'idempotency_key' => '15-9-update-1',
+    ) );
+} catch ( \Throwable $e ) {
+    $u15_9_threw = true;
+    $u15_9_msg   = $e->getMessage();
+}
+jr15_close_tx();
+$f['stage2a_competing_updates'] = array(
+    'post_id'         => (int) $p15_9,
+    'update_refused'  => $u15_9_threw,
+    'names_cause'     => false !== strpos( $u15_9_msg, 'transaction_update_draft_external_edit_detected' ),
+    'post_preserved'  => 1 === jr_row_exists( $p15_9 ),
+    'db_content'      => (string) get_post_field( 'post_content', $p15_9 ),
+);
+
+// 15.10 — Crash recovery at head-advancement boundaries. The head
+//          pointer is advanced inside the same Content_Write_Guard SQL
+//          transaction as the post update and mark_applied. A crash
+//          between the post update and the head write leaves the post
+//          and the journal row in a state that the head pre-check on
+//          the next authorised update will catch (the live post is
+//          ahead of the head; the next update must not silently
+//          overwrite the change).
+$tx15_10 = Tx::instance()->begin( 'live 2a head boundary' );
+$tx15_10['staged'] = array();
+update_option( Tx::KEY, $tx15_10 );
+list( $p15_10, $op15_10 ) = jr15_draft( $token . '-15-10', '<p>head boundary target</p>', $token );
+// First update succeeds; head advances.
+( new Update_Draft() )->execute( array(
+    'id' => (int) $p15_10, 'type' => 'page', 'content' => '<p>head boundary v1</p>',
+    'idempotency_key' => '15-10-update-1',
+) );
+// Simulate the "crash" window: the post has been updated on disk but
+// the head pointer was reset to its pre-update value. The OCC pre-check
+// for the next authorised update will see a divergence (live post
+// ahead of head) and refuse.
+$tx_row_15_10 = (array) get_option( Tx::KEY, null );
+$head_15_10_pre = Content_Journal::head_after( $tx_row_15_10, $p15_10 );
+// Compute the head's pre-image (what the head was before the first
+// update). The strong after-image captured at create_draft time
+// carries the original content_sha256.
+$create_op_15_10 = null;
+foreach ( (array) ( $tx_row_15_10['content']['ops'] ?? array() ) as $o ) {
+    if ( is_array( $o ) && (string) ( $o['op'] ?? '' ) === Content_Journal::OP_CREATE_DRAFT
+        && (int) ( $o['post_id'] ?? 0 ) === (int) $p15_10 ) {
+        $create_op_15_10 = $o;
+        break;
+    }
+}
+// Roll the head back to the create op's after-image: the post has
+// moved on, the head has not.
+$rolled = false;
+if ( is_array( $create_op_15_10 ) ) {
+    $rolled = Content_Journal::compare_and_set_head(
+        $tx_row_15_10, $p15_10, $head_15_10_pre, $create_op_15_10['after']
+    );
+}
+$u15_10_threw = false;
+$u15_10_msg   = '';
+try {
+    ( new Update_Draft() )->execute( array(
+        'id' => (int) $p15_10, 'type' => 'page', 'content' => '<p>would overwrite crash window</p>',
+        'idempotency_key' => '15-10-update-2',
+    ) );
+} catch ( \Throwable $e ) {
+    $u15_10_threw = true;
+    $u15_10_msg   = $e->getMessage();
+}
+$tx_row_15_10_after = (array) get_option( Tx::KEY, null );
+$head_15_10_post = Content_Journal::head_after( $tx_row_15_10_after, $p15_10 );
+$f['stage2a_head_boundary'] = array(
+    'post_id'           => (int) $p15_10,
+    'head_was_rolled'   => (bool) $rolled,
+    'update_refused'    => $u15_10_threw,
+    'names_cause'       => false !== strpos( $u15_10_msg, 'transaction_update_draft_external_edit_detected' ),
+    'post_preserved'    => 1 === jr_row_exists( $p15_10 ),
+    'db_content'        => (string) get_post_field( 'post_content', $p15_10 ),
+    // The head stores post_content_sha256 (not the body), because the
+    // strong after-image is the evidence. The head was rolled to the
+    // create op's after-image, whose content was the create body
+    // (`<p>head boundary target</p>`), not the post-update body.
+    'head_content_sha'  => is_array( $head_15_10_post ) ? (string) ( $head_15_10_post['post_content_sha256'] ?? '' ) : '',
+    'head_title'        => is_array( $head_15_10_post ) ? (string) ( $head_15_10_post['post_title']    ?? '' ) : '',
+);
+jr15_close_tx();
+
+// 15.11 — Stage 1b create-only commit/rollback behaviour is unchanged.
+//          Already covered by create_draft_commit and create_draft_rollback
+//          above. This block pins the contract against the
+//          post-edit additions: a create-only transaction with no
+//          updates still commits (post retained, row gone) and still
+//          rolls back (post deleted, row gone).
+$tx15_11 = Tx::instance()->begin( 'live 2a create only commit' );
+$tx15_11['staged'] = array();
+update_option( Tx::KEY, $tx15_11 );
+list( $p15_11, $op15_11 ) = jr15_draft( $token . '-15-11', '<p>create only</p>', $token );
+$commit15_11 = ( new \AgentShell_MCP\Tools\Commit_Transaction() )->execute( array() );
+$tx15_11b = Tx::instance()->begin( 'live 2a create only rollback' );
+$tx15_11b['staged'] = array();
+update_option( Tx::KEY, $tx15_11b );
+list( $p15_11b, $op15_11b ) = jr15_draft( $token . '-15-11b', '<p>create only rollback</p>', $token );
+$rollback15_11b = ( new \AgentShell_MCP\Tools\Rollback_Transaction() )->execute( array() );
+$f['stage2a_create_only_unchanged'] = array(
+    'post_commit_id'   => (int) $p15_11,
+    'post_commit_kept' => jr_row_exists( $p15_11 ),
+    'commit_status'    => $commit15_11['status'] ?? '',
+    'post_rollback_id' => (int) $p15_11b,
+    'post_rollback_gone'=> jr_row_exists( $p15_11b ),
+    'rollback_status'  => $rollback15_11b['status'] ?? '',
+);
+
 // ── cleanup: put the site back exactly as it was found ────────────────────────
 foreach ( array_unique( $GLOBALS['jr_mine'] ) as $pid ) {
     if ( $pid > 0 ) {

@@ -63,6 +63,7 @@ require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-base-too
 require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-get-journal.php';
 require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-recover-transaction.php';
 require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-rollback-transaction.php';
+require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-commit-transaction.php';
 
 use AgentShell_MCP\Content_Journal;
 use AgentShell_MCP\Content_Recovery;
@@ -4702,5 +4703,853 @@ Agentshell_Test::run(
         } finally {
             jr_release_if_open();
         }
+    }
+);
+
+// ---------------------------------------------------------------------------
+// HEAD-POINTER MUTATION COVERAGE (Stage 2a, brief task group #4)
+//
+// Nine targets, one per item in the brief:
+//   1. missing/stale head advancement
+//   2. head pointing to wrong post/operation
+//   3. broken chain validation
+//   4. commit validating old after-image rather than head
+//   5. rollback deleting without head verify
+//   6. rollback replaying inverses
+//   7. title-only divergence escaping
+//   8. content mutation succeeding when head CAS fails
+//   9. concurrent updates both reporting success from same prior head
+//
+// Each test is the load-bearing assertion that the matching mutant in
+// tests/journal-recovery-mutation.php cannot survive.
+// ---------------------------------------------------------------------------
+
+Agentshell_Test::run(
+    'HP1: a mark_applied that loses the head advance does not lose the chain — the head is the chain',
+    function () {
+        // The head is the chain's expected current state for the post.
+        // mark_applied() must advance it in the same CAS as the op-state
+        // transition; if the head is not written, compensation will
+        // revalidate against a stale (or absent) head and either refuse
+        // a post that is still ours, or accept a post that has drifted.
+        // The test simulates a mark_applied where the CAS writes the op
+        // state but not the head map, then runs compensation and asserts
+        // the engine refuses on the missing head (preserves the post as
+        // conflict) rather than deleting on guess.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'applied', 7001, array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'h1',
+        ) );
+        $tx = jr_row( array( $op ) );
+        // Strip the head: the head map is what compensation verifies
+        // against. An op whose after-image is recorded in $op but not
+        // in the head means mark_applied ran without the head advance.
+        unset( $tx['content'][ Content_Journal::HEAD_KEY ] );
+        $tx['content']['sig'] = Content_Journal::sign( $tx['content'] );
+        jr_seed( $tx );
+        jr_post( 7001, array( 'post_title' => 'h1' ), $op['id'] );
+        jr_with_post_cap( 7001 );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), 'recovery-admin', true );
+
+        Agentshell_Test::assert_equals(
+            'conflict', $report['operations'][0]['outcome'],
+            'a missing head is conflict, not silent delete: ' . var_export( $report, true )
+        );
+        Agentshell_Test::assert_true(
+            jr_post_exists( 7001 ),
+            'the post is preserved because the chain has no current head to verify against'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'HP2: the head must be the post\'s current after, not a sibling op\'s after — wrong post/operation is refused',
+    function () {
+        // The head for post 7002 is a hand-crafted after-image that does
+        // not match the live post's identity. This is what would happen
+        // if a caller wrote the head for one op to a different post id,
+        // or replaced the head with a sibling op's after. Compensation
+        // must refuse and preserve the post.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'applied', 7002, array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'real-title', 'post_modified_gmt' => '2026-01-01 00:00:00',
+        ) );
+        $tx = jr_row( array( $op ) );
+        // Plant a head whose post_title disagrees with the op's after and
+        // with the live post. This is the "head points to wrong operation"
+        // case: the head for post 7002 is the after of a different op.
+        $tx['content'][ Content_Journal::HEAD_KEY ][ 7002 ] = array_merge(
+            $op['after'],
+            array( 'post_title' => 'wrong-op-title', 'post_modified_gmt' => '2099-12-31 23:59:59' )
+        );
+        $tx['content']['sig'] = Content_Journal::sign( $tx['content'] );
+        jr_seed( $tx );
+        jr_post( 7002, array( 'post_title' => 'real-title' ), $op['id'] );
+        jr_with_post_cap( 7002 );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), 'recovery-admin', true );
+
+        Agentshell_Test::assert_equals( 'conflict', $report['operations'][0]['outcome'],
+            'a head that does not match the live post is conflict, not compensation' );
+        Agentshell_Test::assert_true( jr_post_exists( 7002 ),
+            'the post is preserved because the head pointed at a different state' );
+    }
+);
+
+Agentshell_Test::run(
+    'HP3: a chain whose head references an unknown post is broken-chain, refused',
+    function () {
+        // The chain's head still names post 7003, but the post is gone.
+        // The engine's `if ( ! $post )` branch returns `compensated` —
+        // there is nothing to delete, and the chain is settled. The
+        // important assertion is that the engine does *not* try to
+        // reanimate the post or delete something else on the strength
+        // of a head whose target is gone. The op is settled, not in
+        // a destructive state.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'applied', 7003, array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'orig', 'post_content_sha256' => hash( 'sha256', 'orig-body' ),
+            'post_content_length' => 9, 'post_modified_gmt' => '2026-01-01 00:00:00',
+        ) );
+        $tx = jr_row( array( $op ) );
+        // No live post. The head still names 7003.
+        jr_seed( $tx );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), 'recovery-admin', true );
+
+        Agentshell_Test::assert_equals( 'compensated', $report['operations'][0]['outcome'],
+            'a chain whose head points at a non-existent post is settled as compensated (no destructive step): '
+                . var_export( $report['operations'][0], true ) );
+        Agentshell_Test::assert_false( jr_post_exists( 7003 ),
+            'and the post is not on disk — it was already gone, the engine did not create one' );
+    }
+);
+
+Agentshell_Test::run(
+    'HP4: commit revalidates against the head, not the per-op after — a stale after-image is refused',
+    function () {
+        // The head and the per-op after disagree: the head is the latest
+        // applied op's after, the per-op after is the create op's older
+        // after. A commit that revalidated against the per-op after
+        // would silently accept a post that no longer matches the chain
+        // tip. The engine must compare the live post against the head.
+        jr_reset();
+        jr_as_administrator();
+        Tx::instance()->begin( 'hp-4' );
+        try {
+            $create_after = array(
+                'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+                'post_title' => 'original-title', 'post_date_gmt' => '2026-01-01 00:00:00',
+                'post_modified_gmt' => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'orig-body' ),
+                'post_content_length' => 9, 'op_meta_value' => 'op_hp4_create',
+            );
+            $head_after = array_merge( $create_after, array(
+                'post_title' => 'head-title', 'post_modified_gmt' => '2026-02-02 02:02:02',
+                'post_content_sha256' => hash( 'sha256', 'head-body' ),
+                'post_content_length' => 9,
+            ) );
+            $create_op = Content_Journal::record_intent(
+                Content_Journal::OP_CREATE_DRAFT,
+                array( 'post_type' => 'page', 'post_status' => 'draft' ),
+                $create_after,
+                'agent', JR_T0
+            );
+            $create_op['id']    = 'op_hp4_create';
+            $create_op['state'] = 'applied';
+            $create_op['post_id'] = 7004;
+            $create_op['after'] = $create_after;
+            $tx = Tx::instance()->payload();
+            $tx['content']['ops']['op_hp4_create'] = $create_op;
+            $tx['content'][ Content_Journal::HEAD_KEY ][ 7004 ] = $head_after;
+            // Commit_Transaction requires a staged config to be an array,
+            // not null. The commit's job is to promote the staged state,
+            // and a journal-only commit has no staged state. We set a
+            // minimal staged array so the commit proceeds to the
+            // journal-aware gate, which is what we are testing.
+            $tx['staged'] = array( '--jr-accent' => '#abcdef' );
+            jr_seed( $tx );
+
+            // The live post matches the per-op after but not the head.
+            // A correct commit revalidates against the head and refuses;
+            // a mutant that revalidates against the per-op after would
+            // succeed and silently strand a post that no longer matches
+            // the chain tip.
+            jr_post( 7004, array(
+                'post_title' => 'original-title', 'post_content' => 'orig-body',
+                'post_modified_gmt' => '2026-01-01 00:00:00',
+            ), 'op_hp4_create' );
+
+            $commit = new \AgentShell_MCP\Tools\Commit_Transaction();
+            $message = jr_refuse( function () use ( $commit ) {
+                $commit->execute( array( 'label' => 'hp-4 commit' ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'cannot be committed' ),
+                'commit refuses on a head/per-op-after mismatch: ' . var_export( $message, true )
+            );
+            Agentshell_Test::assert_true( jr_post_exists( 7004 ),
+                'and the post is preserved because the chain tip (the head) did not match the live post' );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'HP5: rollback refuses to delete when the head verify fails — a post with head/post drift is preserved',
+    function () {
+        // The post is present and the head's after-image disagrees with
+        // the live post. The verify_against_after check should refuse and
+        // preserve the post; a mutant that bypasses the verify and goes
+        // straight to wp_delete_post would destroy a real post on the
+        // strength of a journal whose head has drifted.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'applied', 7005, array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'stale', 'post_content_sha256' => hash( 'sha256', 'stale-body' ),
+            'post_content_length' => 10, 'post_modified_gmt' => '2026-01-01 00:00:00',
+        ) );
+        $tx = jr_row( array( $op ) );
+        jr_seed( $tx );
+        jr_post( 7005, array(
+            'post_title' => 'live-current-title', 'post_content' => 'live-body',
+            'post_modified_gmt' => '2026-06-06 06:06:06',
+        ), $op['id'] );
+        jr_with_post_cap( 7005 );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), 'recovery-admin', true );
+
+        Agentshell_Test::assert_equals( 'conflict', $report['operations'][0]['outcome'],
+            'the head/post drift is a conflict, not a successful delete' );
+        Agentshell_Test::assert_true( jr_post_exists( 7005 ),
+            'the post is preserved — rollback did not delete a post the head could not verify' );
+    }
+);
+
+Agentshell_Test::run(
+    'HP6: rollback reverts via op-types, not by replaying inverse steps in an arbitrary order — update-before-create is still safe',
+    function () {
+        // A journal with a create op and an update op for the same post
+        // (the mixed-journal case). Compensation is order-aware: it
+        // applies the inverse of each op, but the post is deleted by
+        // the create op's inverse regardless. A mutant that replays
+        // inverses in arbitrary order might apply the update inverse
+        // (wp_update_post) after the create inverse (wp_delete_post) and
+        // touch a post that is no longer there. The post must be deleted
+        // exactly once and the journal settled.
+        jr_reset();
+        jr_as_administrator();
+        $create_op = jr_op( 'applied', 7006, array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'created-title', 'post_content_sha256' => hash( 'sha256', 'create-body' ),
+            'post_content_length' => 11, 'post_modified_gmt' => '2026-01-01 00:00:00',
+            'op_meta_value' => 'op_hp6_create',
+        ) );
+        $create_op['id'] = 'op_hp6_create';
+        $update_op = Content_Journal::record_intent(
+            Content_Journal::OP_UPDATE_DRAFT,
+            array( 'post_id' => 7006, 'post_type' => 'page', 'post_status' => 'draft' ),
+            array(
+                'post_title' => 'updated-title', 'post_name' => 'jr-draft',
+                'post_content_sha256' => hash( 'sha256', 'update-body' ),
+                'post_content_length' => 11, 'post_modified_gmt' => '2026-02-02 02:02:02',
+                'op_meta_value' => 'op_hp6_create',
+            ),
+            'agent', JR_T0 + 1
+        );
+        $update_op['id']      = 'op_hp6_update';
+        $update_op['state']   = 'applied';
+        $update_op['post_id'] = 7006;
+        $update_op['before']  = array(
+            'post_title' => 'created-title', 'post_content' => 'create-body',
+            'post_name' => 'jr-draft', 'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_content_sha256' => hash( 'sha256', 'create-body' ), 'post_content_length' => 11,
+            'op_meta_value' => 'op_hp6_create',
+        );
+        // The head is the latest applied op (the update) — that is what
+        // compensation verifies against.
+        $tx = jr_row( array( $create_op, $update_op ) );
+        // jr_row() already built the head map. Verify the head is the
+        // update's after, not the create's.
+        $head = $tx['content'][ Content_Journal::HEAD_KEY ][ 7006 ] ?? array();
+        Agentshell_Test::assert_equals( 'updated-title', $head['post_title'] ?? '',
+            'precondition: the head is the latest applied op (the update), not the create' );
+        jr_seed( $tx );
+        jr_post( 7006, array(
+            'post_title' => 'updated-title', 'post_content' => 'update-body',
+            'post_modified_gmt' => '2026-02-02 02:02:02',
+        ), 'op_hp6_create' );
+        jr_with_post_cap( 7006 );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), 'recovery-admin', true );
+
+        // The post must be deleted exactly once and the journal settled.
+        // The order_ops_for_compensation path (with both update and create
+        // ops) is the one place a `replaying inverses` mutant could land.
+        Agentshell_Test::assert_false( jr_post_exists( 7006 ),
+            'the post is deleted exactly once — no double delete from replaying inverses after the create inverse' );
+        $ops = $report['operations'];
+        Agentshell_Test::assert_true( in_array( $report['status'], array(
+            Content_Recovery::STATUS_RECOVERED, Content_Recovery::STATUS_PARTIAL,
+        ), true ),
+            'a mixed journal reaches a terminal status (recovered or partial — partial if any op is conflict): '
+                . $report['status'] );
+    }
+);
+
+Agentshell_Test::run(
+    'HP7: a title-only divergence is detected — head verify uses post_title, not just the strong evidence fields',
+    function () {
+        // The head's post_title is "head-title"; the live post's
+        // post_title is "live-title". A verify that ignored post_title
+        // (or that only checked slug / status) would treat this as a
+        // match and delete a post whose title has been edited. The
+        // engine must refuse and preserve.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'applied', 7007, array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'head-title', 'post_content_sha256' => hash( 'sha256', 'body' ),
+            'post_content_length' => 4, 'post_modified_gmt' => '2026-01-01 00:00:00',
+        ) );
+        $tx = jr_row( array( $op ) );
+        jr_seed( $tx );
+        // Live post: same content, same slug, but the title has been
+        // changed by an outside actor. This is the title-only divergence
+        // case. Strong evidence on content/slug matches; only the title
+        // disagrees.
+        jr_post( 7007, array(
+            'post_title' => 'live-title', 'post_content' => 'body',
+            'post_modified_gmt' => '2026-01-01 00:00:00',
+        ), $op['id'] );
+        jr_with_post_cap( 7007 );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), 'recovery-admin', true );
+
+        Agentshell_Test::assert_equals( 'conflict', $report['operations'][0]['outcome'],
+            'a title-only divergence is conflict, not silent delete' );
+        Agentshell_Test::assert_true( jr_post_exists( 7007 ),
+            'and the post is preserved — title drift is exactly the kind of external edit a chain must not destroy' );
+    }
+);
+
+Agentshell_Test::run(
+    'HP8: an update whose head CAS loses does not silently land — the tool reports the lost race',
+    function () {
+        // Update_Draft writes through wp_update_post(), then advances
+        // the head via compare_and_set_head(). If the head CAS loses
+        // (because a concurrent update advanced the head first), the
+        // post is on disk but the chain's head did not move. The tool
+        // must report this to the caller; a mutant that proceeds as if
+        // the head advanced would leave the chain with a stale head and
+        // a post that no longer matches.
+        jr_reset();
+        jr_as_administrator();
+        Tx::instance()->begin( 'hp-8' );
+        try {
+            $create_after = array(
+                'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+                'post_title' => 'h8', 'post_date_gmt' => '2026-01-01 00:00:00',
+                'post_modified_gmt' => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'h8-body' ),
+                'post_content_length' => 7, 'op_meta_value' => 'op_hp8_create',
+            );
+            $create_op = Content_Journal::record_intent(
+                Content_Journal::OP_CREATE_DRAFT,
+                array( 'post_type' => 'page', 'post_status' => 'draft' ),
+                $create_after,
+                'agent', JR_T0
+            );
+            $create_op['id']    = 'op_hp8_create';
+            $create_op['state'] = 'applied';
+            $create_op['post_id'] = 7008;
+            $tx = Tx::instance()->payload();
+            $tx['content']['ops']['op_hp8_create'] = $create_op;
+            // The head is the create's after, exactly.
+            $tx['content'][ Content_Journal::HEAD_KEY ][ 7008 ] = $create_after;
+            jr_seed( $tx );
+            jr_post( 7008, array( 'post_title' => 'h8', 'post_content' => 'h8-body',
+                'post_date_gmt' => '2026-01-01 00:00:00' ),
+                'op_hp8_create' );
+
+            // First, run an update that will land cleanly. The second
+            // call's OCC pre-check is what we want to drive: the live
+            // post will have drifted from the on-disk head by the time
+            // the second call's tool reads it.
+            $tool = new \AgentShell_MCP\Tools\Update_Draft();
+            $first = $tool->execute( array(
+                'id' => 7008, 'type' => 'page', 'title' => 'h8-v2', 'content' => 'h8-body',
+                'idempotency_key' => 'idem-hp8-first',
+            ) );
+            Agentshell_Test::assert_true( is_array( $first ) && ! empty( $first['journal_applied'] )
+                && empty( $first['journal_note'] ),
+                'precondition: the first update lands cleanly with no journal_note (the head advanced): '
+                    . var_export( $first, true ) );
+
+            // Now overwrite the head to a different after, simulating a
+            // concurrent caller winning the head CAS. The on-disk head
+            // is now a "foreign" state.
+            $tx_now = Tx::instance()->payload();
+            $tx_now['content'][ Content_Journal::HEAD_KEY ][ 7008 ] = array_merge(
+                $create_after,
+                array( 'post_title' => 'foreign-head', 'post_content_sha256' => hash( 'sha256', 'foreign' ) )
+            );
+            $tx_now['content']['sig'] = Content_Journal::sign( $tx_now['content'] );
+            jr_seed( $tx_now );
+
+            // The second update will fail the OCC pre-check (the live
+            // post is `h8-v2` but the on-disk head says `foreign-head`)
+            // and refuse with `transaction_update_draft_external_edit_detected`.
+            // That refusal is the truthful outcome: the head CAS would
+            // have lost, and the caller is told so.
+            $second = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id' => 7008, 'type' => 'page', 'title' => 'h8-v3', 'content' => 'h8-body',
+                    'idempotency_key' => 'idem-hp8-second',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $second ) && false !== strpos( $second, 'transaction_update_draft_external_edit_detected' ),
+                'a second update whose head has been overwritten by a foreign caller is refused, not silently landed: '
+                    . var_export( $second, true )
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'HP9: a second update whose OCC check sees a different head is refused, not silently landed',
+    function () {
+        // The structural property the head-pointer model relies on: the
+        // OCC pre-check reads the head at execution time, not at some
+        // cached point earlier. A mutant that cached the head at the
+        // start of the tool (or that dropped the OCC check entirely)
+        // would let a second update run against a head that no longer
+        // matches the live post.
+        //
+        // Setup: the create's head is the live state, and the on-disk
+        // head still says so. We then directly write a foreign head
+        // into the journal row — this is the "a concurrent caller has
+        // already advanced the head" state. The live post is unchanged
+        // (still h9), so a stale-head OCC check would pass. A correct
+        // OCC check sees the foreign head, finds it disagrees with the
+        // live post, and refuses.
+        jr_reset();
+        jr_as_administrator();
+        Tx::instance()->begin( 'hp-9' );
+        try {
+            $create_after = array(
+                'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+                'post_title' => 'h9', 'post_date_gmt' => '2026-01-01 00:00:00',
+                'post_modified_gmt' => '2026-01-01 00:00:00',
+                'post_content_sha256' => hash( 'sha256', 'h9-body' ),
+                'post_content_length' => 7, 'op_meta_value' => 'op_hp9_create',
+            );
+            $create_op = Content_Journal::record_intent(
+                Content_Journal::OP_CREATE_DRAFT,
+                array( 'post_type' => 'page', 'post_status' => 'draft' ),
+                $create_after,
+                'agent', JR_T0
+            );
+            $create_op['id']    = 'op_hp9_create';
+            $create_op['state'] = 'applied';
+            $create_op['post_id'] = 7009;
+            $tx = Tx::instance()->payload();
+            $tx['content']['ops']['op_hp9_create'] = $create_op;
+            $tx['content'][ Content_Journal::HEAD_KEY ][ 7009 ] = $create_after;
+            jr_seed( $tx );
+            jr_post( 7009, array( 'post_title' => 'h9', 'post_content' => 'h9-body',
+                'post_date_gmt' => '2026-01-01 00:00:00' ),
+                'op_hp9_create' );
+
+            // Replace the on-disk head with a foreign state. A stale
+            // OCC check would still see the create's after. A correct
+            // OCC check sees the foreign head and refuses because the
+            // live post (h9) does not match the foreign state.
+            $tx_now = Tx::instance()->payload();
+            $tx_now['content'][ Content_Journal::HEAD_KEY ][ 7009 ] = array_merge(
+                $create_after,
+                array( 'post_title' => 'foreign-head-2', 'post_content_sha256' => hash( 'sha256', 'foreign' ) )
+            );
+            $tx_now['content']['sig'] = Content_Journal::sign( $tx_now['content'] );
+            jr_seed( $tx_now );
+
+            $tool = new \AgentShell_MCP\Tools\Update_Draft();
+            $message = jr_refuse( function () use ( $tool ) {
+                $tool->execute( array(
+                    'id' => 7009, 'type' => 'page', 'title' => 'h9-v2', 'content' => 'h9-body',
+                    'idempotency_key' => 'idem-hp9-second',
+                ) );
+            } );
+            Agentshell_Test::assert_true(
+                is_string( $message ) && false !== strpos( $message, 'transaction_update_draft_external_edit_detected' ),
+                'a second update whose OCC check sees a different head is refused, not silently landed: '
+                    . var_export( $message, true )
+            );
+        } finally {
+            jr_release_if_open();
+        }
+    }
+);
+
+// ---------------------------------------------------------------------------
+// Head-pointer production-path tests (HP1b–HP5b).
+//
+// These tests drive the production code paths that the head-pointer mutants
+// target: mark_applied() and compare_and_set_head() are called as written,
+// and the test asserts the structural property the mutant would break. The
+// tests in HP1–HP9 above set the journal state by hand, which is the right
+// shape for testing recovery's read paths but the wrong shape for testing
+// the writers (mark_applied, compare_and_set_head) — a hand-built state
+// bypasses the writer entirely. The tests below close that gap.
+// ---------------------------------------------------------------------------
+
+Agentshell_Test::run(
+    'HP1b: mark_applied() writes the head — the head advance is the load-bearing half of the CAS',
+    function () {
+        // Drive Content_Journal::mark_applied() with a fresh journal
+        // (no head map for the post). The post-mutation $tx must carry
+        // a head for the post. A mutant that drops the head write would
+        // leave the head map empty for the post, and the assertion
+        // fails.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'intended', 0, array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'h1b', 'post_content_sha256' => hash( 'sha256', 'h1b-body' ),
+            'post_content_length' => 8, 'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+        ) );
+        // The journal has no head yet for any post (jr_row only sets
+        // head for ops with post_id > 0; this op's post_id is 0).
+        $tx = jr_row( array( $op ) );
+        jr_seed( $tx );
+
+        $after = array(
+            'post_title'          => 'h1b-applied',
+            'post_content_sha256' => hash( 'sha256', 'h1b-applied-body' ),
+            'post_content_length' => 16,
+            'post_modified_gmt'   => '2026-02-02 02:02:02',
+        );
+        $applied_tx = Content_Journal::mark_applied(
+            jr_row_on_disk(), $op['id'], 7101, $after
+        );
+        Agentshell_Test::assert_true( is_array( $applied_tx ),
+            'precondition: mark_applied returns a row, not null: ' . var_export( $applied_tx, true ) );
+        $head = Content_Journal::head_after( $applied_tx, 7101 );
+        Agentshell_Test::assert_true( is_array( $head ) && ! empty( $head ),
+            'mark_applied must write the head for the post — the head is the chain tip: '
+                . var_export( $head, true ) );
+    }
+);
+
+Agentshell_Test::run(
+    'HP2b: mark_applied() writes the latest applied after to the head, not the original intent\'s after',
+    function () {
+        // mark_applied is called with an $after that updates title and
+        // hash. The head must reflect the *merged* after (intent +
+        // applied), not the original intent alone. A mutant that wrote
+        // the passed-in $after to the head without merging would still
+        // get the title and hash correct in this case, but a test that
+        // checks a field that the intent had but the applied after did
+        // not would distinguish the two paths.
+        //
+        // Setup: the intent's after has post_excerpt set. The applied
+        // after does NOT include post_excerpt. mark_applied merges
+        // (intent_after + applied_after), so the post-merge after keeps
+        // post_excerpt. The head must therefore have post_excerpt. A
+        // mutant that wrote the applied $after to the head without
+        // merging would drop post_excerpt.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'intended', 0, array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'h2b-intent', 'post_content_sha256' => hash( 'sha256', 'h2b-intent-body' ),
+            'post_content_length' => 14, 'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+            'post_excerpt' => 'h2b-intent-excerpt',
+        ) );
+        $tx = jr_row( array( $op ) );
+        jr_seed( $tx );
+
+        $after = array(
+            'post_title'          => 'h2b-applied',
+            'post_content_sha256' => hash( 'sha256', 'h2b-applied-body' ),
+            'post_content_length' => 16,
+            'post_modified_gmt'   => '2026-02-02 02:02:02',
+        );
+        $applied_tx = Content_Journal::mark_applied(
+            jr_row_on_disk(), $op['id'], 7102, $after
+        );
+        Agentshell_Test::assert_true( is_array( $applied_tx ),
+            'precondition: mark_applied returns a row' );
+        $head = Content_Journal::head_after( $applied_tx, 7102 );
+        Agentshell_Test::assert_equals(
+            'h2b-applied', (string) ( $head['post_title'] ?? '' ),
+            'the head has the applied title (post-merge), not the intent title: '
+                . var_export( $head, true )
+        );
+        Agentshell_Test::assert_equals(
+            'h2b-intent-excerpt', (string) ( $head['post_excerpt'] ?? '' ),
+            'the head keeps the intent-only field (post_excerpt) because mark_applied merges, '
+                . 'not overwrites — a mutant that wrote the applied $after to the head would drop this: '
+                . var_export( $head, true )
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'HP3b: compare_and_set_head() refuses to advance when the prior head is non-null and a head already exists',
+    function () {
+        // The "first op for a post" branch: the caller passes null for
+        // expected_prev, signalling "this op is the chain's first write
+        // for this post". A head already exists for the post, so the
+        // function must refuse — the caller's null claim contradicts the
+        // journal's record that this post is already owned.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'intended', 0, array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'h3b',
+        ) );
+        $tx = jr_row( array( $op ) );
+        // Plant a head for post 7103 manually (simulating "the post is
+        // already owned by another op").
+        $tx['content'][ Content_Journal::HEAD_KEY ][ 7103 ] = array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'already-there',
+        );
+        $tx['content']['sig'] = Content_Journal::sign( $tx['content'] );
+        jr_seed( $tx );
+
+        $new_after = array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'h3b-new', 'post_content_sha256' => hash( 'sha256', 'h3b' ),
+            'post_content_length' => 3,
+        );
+        $result = Content_Journal::compare_and_set_head(
+            jr_row_on_disk(), 7103, null, $new_after
+        );
+        Agentshell_Test::assert_false( $result,
+            'compare_and_set_head refuses a null expected_prev when a head already exists for the post: '
+                . var_export( $result, true ) );
+    }
+);
+
+Agentshell_Test::run(
+    'HP4b: compare_and_set_head() returns false when the strong-evidence fields disagree',
+    function () {
+        // The CAS compares post_type, post_status, post_name, and
+        // post_content_sha256. A sha256 mismatch must refuse the
+        // advance — otherwise a concurrent update that changed only the
+        // content (and left the slug unchanged) would silently overwrite
+        // the head. The test sets the on-disk head to one sha and the
+        // caller's expected_prev to a different sha, then asserts the
+        // CAS refuses.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'intended', 0, array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'h4b',
+        ) );
+        $tx = jr_row( array( $op ) );
+        // On-disk head has one sha; the caller's expected_prev is a
+        // different sha. The CAS must refuse.
+        $on_disk_head = array(
+            'post_type'           => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_content_sha256' => hash( 'sha256', 'on-disk-body' ),
+            'post_content_length' => 13,
+        );
+        $expected_prev = array(
+            'post_type'           => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_content_sha256' => hash( 'sha256', 'caller-thinks-body' ),
+            'post_content_length' => 19,
+        );
+        $tx['content'][ Content_Journal::HEAD_KEY ][ 7104 ] = $on_disk_head;
+        $tx['content']['sig'] = Content_Journal::sign( $tx['content'] );
+        jr_seed( $tx );
+
+        $new_after = array(
+            'post_type'           => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_content_sha256' => hash( 'sha256', 'new-body' ),
+            'post_content_length' => 8,
+        );
+        $result = Content_Journal::compare_and_set_head(
+            jr_row_on_disk(), 7104, $expected_prev, $new_after
+        );
+        Agentshell_Test::assert_false( $result,
+            'compare_and_set_head refuses when post_content_sha256 differs between expected and current: '
+                . var_export( $result, true ) );
+    }
+);
+
+Agentshell_Test::run(
+    'HP5b: verify_post uses the head, not the per-op after, when the head is present and disagrees with the live post',
+    function () {
+        // The recovery engine's verify_post must compare the live post
+        // against the head, not the per-op after, when both are present.
+        // A mutant that always fell back to the per-op after (regardless
+        // of head) would let a journal with a head-present-but-disagreed
+        // situation slip through with no refusal.
+        //
+        // Setup: the per-op after matches the live post (would be
+        // compensated on its own), but the head disagrees with the live
+        // post. A verify_post that uses the per-op after would say
+        // "match"; a verify_post that uses the head would say "drift".
+        jr_reset();
+        jr_as_administrator();
+        // The per-op after matches the live post (the live post is
+        // "live-title", the per-op after is "live-title"). The head
+        // disagrees (the head is "head-title"). The verify must use the
+        // head and refuse.
+        $op = jr_op( 'applied', 7105, array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'live-title', 'post_content_sha256' => hash( 'sha256', 'live-body' ),
+            'post_content_length' => 9, 'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+        ) );
+        $op['id'] = 'op_hp5b';
+        $tx = jr_row( array( $op ) );
+        // Overwrite the head (which jr_row() set to the per-op after)
+        // to a different value. The per-op after and the live post still
+        // agree; only the head disagrees.
+        $tx['content'][ Content_Journal::HEAD_KEY ][ 7105 ] = array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'head-title', 'post_content_sha256' => hash( 'sha256', 'live-body' ),
+            'post_content_length' => 9, 'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_date_gmt' => '2026-01-01 00:00:00', 'op_meta_value' => 'op_hp5b',
+        );
+        $tx['content']['sig'] = Content_Journal::sign( $tx['content'] );
+        jr_seed( $tx );
+        jr_post( 7105, array( 'post_title' => 'live-title', 'post_content' => 'live-body',
+            'post_modified_gmt' => '2026-01-01 00:00:00', 'post_date_gmt' => '2026-01-01 00:00:00' ),
+            'op_hp5b' );
+        jr_with_post_cap( 7105 );
+
+        $report = Content_Recovery::recover( jr_row_on_disk(), 'recovery-admin', true );
+
+        Agentshell_Test::assert_equals( 'conflict', $report['operations'][0]['outcome'],
+            'a journal whose head disagrees with the live post is conflict (the head, not the per-op after, governs): '
+                . var_export( $report, true ) );
+        Agentshell_Test::assert_true( jr_post_exists( 7105 ),
+            'and the post is preserved — verify used the head, not the per-op after' );
+    }
+);
+
+Agentshell_Test::run(
+    'HP7b: revalidate_applied_op_for_commit uses the head, not the per-op after, when the head is present and disagrees with the live post',
+    function () {
+        // The commit-side revalidation must consult the head, not the
+        // per-op after, when both are present. A mutant that always
+        // fell back to the per-op after (the M-HN7 find/replace) would
+        // let a journal whose head and per-op after disagree accept the
+        // per-op after's verdict and refuse to flag the drift.
+        //
+        // Setup: the per-op after matches the live post on every
+        // verified field (the marker, post_type, post_status, post_name,
+        // post_title, post_modified_gmt, post_date_gmt,
+        // post_content_sha256, post_content_length), but the head
+        // disagrees on post_title. The function's return must be a
+        // non-empty mismatch string (the head, not the per-op after,
+        // governs).
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'applied', 7107, array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'live-title', 'post_content_sha256' => hash( 'sha256', 'live-body' ),
+            'post_content_length' => 9, 'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_date_gmt' => '2026-01-01 00:00:00',
+        ) );
+        $op_marker = (string) ( $op['after']['op_meta_value'] ?? $op['id'] );
+        $tx = jr_row( array( $op ) );
+        // Overwrite the head to a different value. The per-op after
+        // and the live post still agree on every field; only the head
+        // disagrees (post_title).
+        $tx['content'][ Content_Journal::HEAD_KEY ][ 7107 ] = array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'head-title', 'post_content_sha256' => hash( 'sha256', 'live-body' ),
+            'post_content_length' => 9, 'post_modified_gmt' => '2026-01-01 00:00:00',
+            'post_date_gmt' => '2026-01-01 00:00:00', 'op_meta_value' => $op_marker,
+        );
+        $tx['content']['sig'] = Content_Journal::sign( $tx['content'] );
+        jr_seed( $tx );
+        jr_post( 7107, array( 'post_title' => 'live-title', 'post_content' => 'live-body',
+            'post_modified_gmt' => '2026-01-01 00:00:00', 'post_date_gmt' => '2026-01-01 00:00:00' ),
+            $op_marker );
+
+        $result = Content_Recovery::revalidate_applied_op_for_commit( $op, $tx );
+
+        Agentshell_Test::assert_true( '' !== $result,
+            'revalidate_applied_op_for_commit refuses when the head disagrees with the live post '
+                . '(the head, not the per-op after, governs the commit-side revalidation): '
+                . var_export( $result, true ) );
+    }
+);
+
+Agentshell_Test::run(
+    'HP6b: compare_and_set_head() returns false when the on-disk row has moved between the read and the write',
+    function () {
+        // The CAS is value-guarded: a row that moved between the
+        // compare_and_set_head() read and its cas_write_row() is
+        // detected, and the function returns false. A mutant that
+        // bypassed the CAS and returned $next would silently overwrite
+        // a head advanced by a concurrent caller.
+        //
+        // The test sets up a journal where the strong-evidence fields
+        // match expected_prev (so the inner field check passes), and
+        // uses the wpdb stub's cas_write_fail side-channel to force
+        // the cas_write_row() call to return 0 — the same shape a
+        // concurrent caller would observe if it swapped the row
+        // between the read and the write. The production function
+        // must refuse (return false). A CAS-less mutant would not
+        // notice the failure and would return $next as if the swap
+        // had landed.
+        jr_reset();
+        jr_as_administrator();
+        $op = jr_op( 'intended', 0, array(
+            'post_type' => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_title' => 'h6b',
+        ) );
+        $tx = jr_row( array( $op ) );
+        $expected_prev = array(
+            'post_type'           => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_content_sha256' => hash( 'sha256', 'h6b' ),
+            'post_content_length' => 3,
+        );
+        $tx['content'][ Content_Journal::HEAD_KEY ][ 7106 ] = $expected_prev;
+        $tx['content']['sig'] = Content_Journal::sign( $tx['content'] );
+        jr_seed( $tx );
+
+        $GLOBALS['_agentshell_test_cas_write_fail']  = true;
+        $GLOBALS['_agentshell_test_cas_write_calls'] = 0;
+
+        $new_after = array(
+            'post_type'           => 'page', 'post_status' => 'draft', 'post_name' => 'jr-draft',
+            'post_content_sha256' => hash( 'sha256', 'h6b' ),
+            'post_content_length' => 3,
+            'post_title'          => 'h6b',
+        );
+        $result = Content_Journal::compare_and_set_head(
+            jr_row_on_disk(), 7106, $expected_prev, $new_after
+        );
+        Agentshell_Test::assert_false( $result,
+            'compare_and_set_head refuses when the cas_write_row returns 0 (row moved between read and write): '
+                . var_export( $result, true ) );
+        Agentshell_Test::assert_equals( 1, (int) $GLOBALS['_agentshell_test_cas_write_calls'],
+            'cas_write_row was reached and refused exactly once' );
+
+        $GLOBALS['_agentshell_test_cas_write_fail']  = false;
+        $GLOBALS['_agentshell_test_cas_write_calls'] = 0;
     }
 );

@@ -920,6 +920,99 @@ $mutants = array(
         "        return \$updates + \$creates;",
         "        // SKIP M-UR-order\n        return \$ops;",
     ),
+
+    // ── head-pointer model (Stage 2a) ───────────────────────────────────
+
+    'M-HN1: mark_applied drops the head advance — the op-state transition lands but the head map is not written' => array(
+        // The head map is the chain's expected current state. Without it,
+        // compensation has no reference and the verify_against_after
+        // branch at class-content-recovery.php:820-844 refuses every
+        // applied op. Killed by HP1.
+        $JOURNAL_REL,
+        "        \$head[ (int) \$post_id ] = \$content['ops'][ \$op_id ]['after'];\n        \$content[ self::HEAD_KEY ] = \$head;",
+        "        // SKIP M-HN1: head advance dropped\n        \$content[ self::HEAD_KEY ] = \$head;",
+    ),
+
+    'M-HN2: mark_applied writes the per-op after to the head, not the latest applied after' => array(
+        // A mutant that always wrote $after instead of
+        // $content['ops'][ $op_id ]['after'] would let a stale after-image
+        // leak into the head when $after is empty. Killed by HP2.
+        $JOURNAL_REL,
+        "        \$head[ (int) \$post_id ] = \$content['ops'][ \$op_id ]['after'];",
+        "        \$head[ (int) \$post_id ] = \$after; // SKIP M-HN2: wrong source",
+    ),
+
+    'M-HN3: compare_and_set_head skips the strong-evidence field comparison' => array(
+        // The CAS compares post_type, post_status, post_name, and
+        // post_content_sha256. A mutant that drops the sha256 comparison
+        // would let a concurrent update with the same slug advance the
+        // head. Killed by HP5.
+        $JOURNAL_REL,
+        "            \$a = (string) ( \$expected_prev['post_content_sha256'] ?? '' );\n            \$b = (string) ( \$current['post_content_sha256'] ?? '' );\n            if ( '' !== \$a && '' !== \$b && \$a !== \$b ) {\n                return false;\n            }",
+        "            // SKIP M-HN3: sha256 comparison dropped",
+    ),
+
+    'M-HN4: compare_and_set_head returns the new head without the CAS guard' => array(
+        // The CAS is the safety: a row that moved between read and write
+        // is detected, and the function returns false. A mutant that
+        // skips the cas_write_row and returns $next would silently
+        // overwrite a head advanced by a concurrent caller. Killed by HP8
+        // / HP9.
+        $JOURNAL_REL,
+        "        return Transaction_Manager::cas_write_row( \$tx, \$next ) ? \$next : false;",
+        "        return \$next; // SKIP M-HN4: CAS bypassed",
+    ),
+
+    'M-HN5: compare_and_set_head accepts a non-empty $current when $expected_prev is null' => array(
+        // The first-op branch refuses to advance the head if a head
+        // already exists for the post. A mutant that accepts any current
+        // state would let a stale head be silently overwritten. Killed
+        // by HP3.
+        $JOURNAL_REL,
+        "        if ( null === \$expected_prev ) {\n            if ( null !== \$current ) {\n                return false;\n            }",
+        "        // SKIP M-HN5: first-op branch accepts any current\n        if ( null === \$expected_prev ) {",
+    ),
+
+    'M-HN6: head_after returns the live post array instead of the journal head' => array(
+        // Compensation verifies the live post against the journal head,
+        // not against the live post. A mutant that returned the live post
+        // would let compensation always pass its own self-check. Killed
+        // by HP1 / HP2.
+        $JOURNAL_REL,
+        "    public static function head_after( \$tx, \$post_id ) {\n        \$post_id = (int) \$post_id;\n        \$content = self::of( \$tx );\n        \$head    = is_array( \$content[ self::HEAD_KEY ] ?? null ) ? \$content[ self::HEAD_KEY ] : array();\n        return is_array( \$head[ \$post_id ] ?? null ) ? \$head[ \$post_id ] : null;\n    }",
+        "    public static function head_after( \$tx, \$post_id ) {\n        \$post_id = (int) \$post_id;\n        return array( 'post_title' => 'live' ); // SKIP M-HN6: returns live post\n    }",
+    ),
+
+    'M-HN7: verify_post falls back to the per-op after when the head is missing' => array(
+        // The head is the chain's expected current state. When it is
+        // missing, the engine must refuse (it cannot verify). A mutant
+        // that fell back to the per-op after would let compensation
+        // pass on an out-of-date reference. Killed by HP1.
+        $RECOVERY_REL,
+        "        \$head = is_array( \$tx ) ? Content_Journal::head_after( \$tx, \$post_id ) : null;\n        if ( ! is_array( \$head ) || empty( \$head ) ) {\n            \$head = is_array( \$op['after'] ?? null ) ? \$op['after'] : array();\n        }",
+        "        // SKIP M-HN7: per-op after always used\n        \$head = is_array( \$op['after'] ?? null ) ? \$op['after'] : array();",
+    ),
+
+    'M-HN8: revalidate_journal_for_commit drops the conflict transition on head drift' => array(
+        // The revalidation step distinguishes "post gone" (compensated)
+        // from "post diverged" (conflict). A mutant that drops the
+        // STATE_CONFLICT transition on a head-drift mismatch would let an
+        // externally-edited post slip through commit. Killed by HP4.
+        $TX_REL,
+        "            } elseif ( '' !== \$result ) {\n                \$next['ops'][ \$op_id ]['state']       = Content_Journal::STATE_CONFLICT;\n                \$next['ops'][ \$op_id ]['updated_at']  = \$now;\n                \$next['ops'][ \$op_id ]['notes'][]     = \$result;\n                \$changed  = true;\n                \$diverged = true;\n            }",
+        "            } elseif ( false && '' !== \$result ) {\n                // SKIP M-HN8: conflict transition dropped\n            }",
+    ),
+
+    'M-HN9: settle_operation does not refresh the claim at op boundaries' => array(
+        // The claim TTL is refreshed at every op boundary inside recover()
+        // so the takeover window opens only between ops, not during a
+        // destructive call. A mutant that dropped the refresh would let
+        // a competing recoverer take over mid-settlement. Killed by the
+        // claim-refresh overlap test in journal-recovery-live-child.
+        $RECOVERY_REL,
+        "        \$claim_result = self::claim_or_refresh( \$content, \$op_id, \$actor, \$now );",
+        "        \$claim_result = 'refreshed'; // SKIP M-HN9: claim refresh dropped",
+    ),
 );
 
 $killed   = 0;

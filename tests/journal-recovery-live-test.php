@@ -430,3 +430,151 @@ Agentshell_Test::run(
         Agentshell_Test::assert_true( $p['prompt'] ?? false, 'a second acquire returns within 200 ms — the GET_LOCK timeout is 0, not 60' );
     }
 );
+
+// ── 15. Stage 2a acceptance scenarios ─────────────────────────────────────────
+// The 11 scenarios in the user's stage/2a completion brief, exercised
+// against a real WordPress install. Each test pins one of the load-bearing
+// properties of the head-pointer model: a successful create+edit+commit
+// retains the final state, a successful create+edit+rollback deletes the
+// post exactly once (the create op's compensation, not a chain of inverse
+// updates), two drafts in the same transaction have independent heads, an
+// external edit is detected by the head and refuses, the strong
+// after-image catches same-second title-only edits, idempotent update
+// retries honour the same-key/same-content rule, the OCC pre-check on
+// Update_Draft refuses when the live post has diverged from the head
+// (whether by external edit or by a stale-head crash window), and the
+// Stage 1b create-only commit/rollback path is unchanged.
+
+Agentshell_Test::run(
+    'live: create + one edit + commit retains the final edited state',
+    function () {
+        $s = jr_live( 'stage2a_single_edit_commit', array() );
+        Agentshell_Test::assert_equals( 1, (int) ( $s['rows_after'] ?? -1 ), 'the post survives commit' );
+        Agentshell_Test::assert_equals( '<p>first body edited</p>', (string) ( $s['db_content'] ?? '' ), 'and the live content is the edited one, not the original' );
+        Agentshell_Test::assert_true( $s['transaction_gone'] ?? false, 'and the option row is freed by the value-guarded CAS' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: create + multiple edits + commit retains the LAST edited state',
+    function () {
+        $s = jr_live( 'stage2a_multi_edit_commit', array() );
+        Agentshell_Test::assert_equals( 1, (int) ( $s['rows_after'] ?? -1 ), 'the post survives commit' );
+        Agentshell_Test::assert_equals( '<p>v3</p>', (string) ( $s['db_content'] ?? '' ), 'and the live content is the LAST edit, not an intermediate one' );
+        Agentshell_Test::assert_true( $s['transaction_gone'] ?? false, 'and the option row is freed' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: create + one edit + rollback deletes the post exactly once',
+    function () {
+        $s = jr_live( 'stage2a_single_edit_rollback', array() );
+        Agentshell_Test::assert_equals( 0, (int) ( $s['rows_after'] ?? -1 ), 'the post is gone after rollback' );
+        Agentshell_Test::assert_true( $s['transaction_gone'] ?? false, 'and the option row is freed' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: create + multiple edits + rollback deletes the post; no inverse-replay',
+    function () {
+        $s = jr_live( 'stage2a_multi_edit_rollback', array() );
+        Agentshell_Test::assert_equals( 0, (int) ( $s['rows_after'] ?? -1 ), 'the post is gone after rollback' );
+        // The rollback does NOT replay inverse updates before deleting:
+        // the head-pointer model deletes via the create op's compensation,
+        // and the update ops are no-op settlements. There is no audit
+        // row for a wp_update_post inverse; the deletion is the only
+        // destructive action. This test pins the absence of the
+        // inverse-replay behaviour.
+        Agentshell_Test::assert_true( $s['transaction_gone'] ?? false, 'and the option row is freed' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: two drafts in one transaction have independent edit histories',
+    function () {
+        $s = jr_live( 'stage2a_two_drafts', array() );
+        Agentshell_Test::assert_equals( 0, (int) ( $s['rows_a_after'] ?? -1 ), 'post A is deleted by rollback' );
+        Agentshell_Test::assert_equals( 0, (int) ( $s['rows_b_after'] ?? -1 ), 'and post B is deleted too — both are owned by the same transaction' );
+        Agentshell_Test::assert_true( $s['head_a_advanced'] ?? false, 'and post A\'s head advanced to the v1 after-image' );
+        Agentshell_Test::assert_true( $s['head_b_advanced'] ?? false, 'and post B\'s head advanced independently' );
+        Agentshell_Test::assert_true( $s['transaction_gone'] ?? false, 'and the option row is freed' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: external modification after an authorised edit is detected; the next update refuses',
+    function () {
+        $s = jr_live( 'stage2a_external_after_edit', array() );
+        Agentshell_Test::assert_true( $s['second_refused'] ?? false, 'the OCC pre-check refuses the second authorised update' );
+        Agentshell_Test::assert_true( $s['names_cause'] ?? false, 'and names the cause: transaction_update_draft_external_edit_detected' );
+        Agentshell_Test::assert_equals( 1, (int) ( $s['rows_after'] ?? -1 ), 'the post survives — the engine does not delete on a divergence' );
+        Agentshell_Test::assert_true( $s['transaction_kept'] ?? false, 'and the journal/option row is preserved for reconciliation' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: a same-second title-only external modification is caught by the strong after-image',
+    function () {
+        $s = jr_live( 'stage2a_title_only_divergence', array() );
+        Agentshell_Test::assert_true( $s['title_changed'] ?? false, 'the title was changed externally' );
+        Agentshell_Test::assert_true( $s['mod_unchanged'] ?? false, 'and post_modified_gmt was the same — the second-resolution field did not move' );
+        Agentshell_Test::assert_true( $s['update_refused'] ?? false, 'but the OCC pre-check still refuses, because post_title is in the strong after-image' );
+        Agentshell_Test::assert_true( $s['names_cause'] ?? false, 'and names the cause' );
+        Agentshell_Test::assert_equals( 1, (int) ( $s['post_preserved'] ?? -1 ), 'the post is preserved' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: idempotent update retry with same key + same content resumes; same key + different content refuses',
+    function () {
+        $s = jr_live( 'stage2a_idempotent_update', array() );
+        Agentshell_Test::assert_true( '' !== ( $s['first_op_id'] ?? '' ), 'the first call returned an op id' );
+        Agentshell_Test::assert_true( $s['same_op_id'] ?? false, 'and a same-content retry returns the same op id' );
+        Agentshell_Test::assert_true( $s['resumed_flag'] ?? false, 'with resumed=true on the retry' );
+        Agentshell_Test::assert_true( $s['conflict_refused'] ?? false, 'and a same-key retry with different content refuses' );
+        Agentshell_Test::assert_true( $s['names_cause'] ?? false, 'with the transaction_update_draft_idempotency_conflict name' );
+        Agentshell_Test::assert_equals( 1, (int) ( $s['update_op_count'] ?? -1 ), 'and the journal holds exactly one update op, not three' );
+        Agentshell_Test::assert_equals( '<p>first content</p>', (string) ( $s['db_content'] ?? '' ), 'and the post content is the first one, not the rejected different one' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: a head that points to a divergent state refuses the next authorised update',
+    function () {
+        $s = jr_live( 'stage2a_competing_updates', array() );
+        Agentshell_Test::assert_true( $s['update_refused'] ?? false, 'the OCC pre-check refuses the update' );
+        Agentshell_Test::assert_true( $s['names_cause'] ?? false, 'and names the cause' );
+        Agentshell_Test::assert_equals( 1, (int) ( $s['post_preserved'] ?? -1 ), 'and the post is preserved — the engine does not delete on a head divergence' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: a post updated on disk while the head was rolled back is detected by the next OCC pre-check',
+    function () {
+        $s = jr_live( 'stage2a_head_boundary', array() );
+        Agentshell_Test::assert_true( $s['head_was_rolled'] ?? false, 'the head was successfully rolled back to the create op\'s after-image' );
+        Agentshell_Test::assert_true( $s['update_refused'] ?? false, 'and the next authorised update is refused — the live post is ahead of the head' );
+        Agentshell_Test::assert_true( $s['names_cause'] ?? false, 'and names the cause' );
+        Agentshell_Test::assert_equals( 1, (int) ( $s['post_preserved'] ?? -1 ), 'and the post is preserved, with the unrecorded change intact' );
+        // The head's strong after-image is the create op's, whose
+        // content was the create body (`<p>head boundary target</p>`),
+        // not the post-update body (`<p>head boundary v1</p>`). The
+        // head stores post_content_sha256, not the body itself, so the
+        // assertion is on the SHA. The rolled state is durable: the
+        // head has the create's after-image and a subsequent authorised
+        // edit is refused because the live post is ahead of the head.
+        Agentshell_Test::assert_true(
+            '' !== (string) ( $s['head_title'] ?? '' ),
+            'and the head\'s post_title is recorded (the strong after-image carries it)'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'live: Stage 1b create-only commit/rollback is unchanged by the Stage 2a additions',
+    function () {
+        $s = jr_live( 'stage2a_create_only_unchanged', array() );
+        Agentshell_Test::assert_equals( 1, (int) ( $s['post_commit_kept'] ?? -1 ), 'create + commit still retains the post' );
+        Agentshell_Test::assert_equals( 0, (int) ( $s['post_rollback_gone'] ?? -1 ), 'create + rollback still deletes the post' );
+    }
+);

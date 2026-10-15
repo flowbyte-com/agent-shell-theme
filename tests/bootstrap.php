@@ -514,6 +514,16 @@ if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
                 $GLOBALS['_agentshell_test_cas_delete_calls'] = ( $GLOBALS['_agentshell_test_cas_delete_calls'] ?? 0 ) + 1;
                 return 0;
             }
+            // The head-pointer tests use a side-channel to force cas_write_row
+            // to fail at the row-moved branch: the same shape a concurrent
+            // caller would observe if it swapped the row between the
+            // compare_and_set_head() read and the cas_write_row() write. A
+            // CAS-less mutant would not notice the failure and would return
+            // $next as if the swap had landed.
+            if ( $is_update && ! empty( $GLOBALS['_agentshell_test_cas_write_fail'] ) ) {
+                $GLOBALS['_agentshell_test_cas_write_calls'] = ( $GLOBALS['_agentshell_test_cas_write_calls'] ?? 0 ) + 1;
+                return 0;
+            }
             $options = $GLOBALS['_agentshell_test_options'];
             $name    = isset( $where['option_name'] ) ? $where['option_name'] : null;
             if ( null === $name || ! array_key_exists( $name, $options ) ) { return 0; }
@@ -776,6 +786,8 @@ function agentshell_test_reset() {
     $GLOBALS['_agentshell_test_audit_fail_for']   = null;
     $GLOBALS['_agentshell_test_cas_delete_fail']  = false;
     $GLOBALS['_agentshell_test_cas_delete_calls'] = 0;
+    $GLOBALS['_agentshell_test_cas_write_fail']   = false;
+    $GLOBALS['_agentshell_test_cas_write_calls']  = 0;
     $GLOBALS['_agentshell_test_cas_snapshot']     = null;
 }
 
