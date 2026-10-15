@@ -493,6 +493,15 @@ if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
          * learns it lost, so it is not a detail of the stub.
          */
         private function cas_apply( array $set, array $where, $is_update ) {
+            // The lifecycle tests use a side-channel to force cas_delete_row
+            // to fail at the row-moved branch: tampered option_value (so the
+            // guard does not match) is the same shape a competing commit or
+            // rollback would observe in the database. When the test asks for
+            // it, the deletion returns 0 and the row is preserved.
+            if ( ! $is_update && ! empty( $GLOBALS['_agentshell_test_cas_delete_fail'] ) ) {
+                $GLOBALS['_agentshell_test_cas_delete_calls'] = ( $GLOBALS['_agentshell_test_cas_delete_calls'] ?? 0 ) + 1;
+                return 0;
+            }
             $options = $GLOBALS['_agentshell_test_options'];
             $name    = isset( $where['option_name'] ) ? $where['option_name'] : null;
             if ( null === $name || ! array_key_exists( $name, $options ) ) { return 0; }
@@ -502,6 +511,12 @@ if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
                 if ( ! isset( $set['option_value'] ) ) { return 0; }
                 $options[ $name ] = maybe_unserialize( $set['option_value'] );
             } else {
+                // Side-channel: snapshot the row at the moment the cas
+                // succeeds but before the row is unlinked. The lifecycle
+                // tests use this to read the post-revalidation op state
+                // (e.g. an `applied` op that just transitioned to
+                // `compensated` because the post is gone).
+                $GLOBALS['_agentshell_test_cas_snapshot'] = $options[ $name ];
                 unset( $options[ $name ] );
             }
             $GLOBALS['_agentshell_test_options'] = $options;
@@ -514,6 +529,16 @@ if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
             }
             if ( preg_match( "/SELECT COUNT\(\*\) FROM/i", $sql ) ) {
                 return count( $GLOBALS['_agentshell_test_audit_table'] );
+            }
+            // Advisory lock probe and acquire: the stub pretends the database
+            // supports GET_LOCK and grants the lock instantly (timeout 0).
+            // Tests that need a different answer (held, NULL, error) override
+            // this in a subclass.
+            if ( preg_match( '/GET_LOCK\s*\(/i', (string) $sql ) ) {
+                return '1';
+            }
+            if ( preg_match( '/RELEASE_LOCK\s*\(/i', (string) $sql ) ) {
+                return '1';
             }
             return null;
         }
@@ -736,6 +761,10 @@ function agentshell_test_reset() {
     $GLOBALS['_agentshell_test_audit_nextid'] = 0;
     $GLOBALS['_agentshell_test_captured_headers'] = array();
     $GLOBALS['_agentshell_test_headers_already_sent'] = false;
+    $GLOBALS['_agentshell_test_audit_fail_for']   = null;
+    $GLOBALS['_agentshell_test_cas_delete_fail']  = false;
+    $GLOBALS['_agentshell_test_cas_delete_calls'] = 0;
+    $GLOBALS['_agentshell_test_cas_snapshot']     = null;
 }
 
 /**

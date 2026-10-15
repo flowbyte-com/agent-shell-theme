@@ -56,7 +56,10 @@ $GLOBALS['wp_version']              = '6.5';
 
 require_once dirname( __DIR__ ) . '/functions.php';
 foreach ( array(
-    'class-store.php', 'class-doctor.php', 'class-transactions.php',
+    'class-store.php', 'class-doctor.php', 'class-content-write-guard.php',
+    'class-content-journal.php', 'class-recovery-advisory-lock.php',
+    'class-content-recovery.php',
+    'class-transactions.php',
 ) as $inc ) {
     require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
 }

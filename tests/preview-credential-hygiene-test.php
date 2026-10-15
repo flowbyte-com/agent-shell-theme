@@ -70,7 +70,7 @@ if ( ! function_exists( 'status_header' ) ) {
 if ( ! function_exists( 'wp_reset_postdata' ) ) { function wp_reset_postdata() { $GLOBALS['_agentshell_test_post_reset'] = true; } }
 
 require_once dirname( __DIR__ ) . '/functions.php';
-foreach ( array( 'class-store.php', 'class-transactions.php', 'class-post-preview.php' ) as $inc ) {
+foreach ( array( 'class-store.php', 'class-content-write-guard.php', 'class-content-journal.php', 'class-recovery-advisory-lock.php', 'class-content-recovery.php', 'class-transactions.php', 'class-post-preview.php' ) as $inc ) {
     require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
 }
 

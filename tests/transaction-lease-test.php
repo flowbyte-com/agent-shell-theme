@@ -58,7 +58,7 @@ $GLOBALS['_agentshell_test_uploads'] = array(
 $GLOBALS['_agentshell_test_login']  = 'agent';
 $GLOBALS['wp_version']              = '6.5';
 
-foreach ( array( 'class-store.php', 'class-doctor.php', 'class-transactions.php' ) as $inc ) {
+foreach ( array( 'class-store.php', 'class-doctor.php', 'class-content-write-guard.php', 'class-content-journal.php', 'class-recovery-advisory-lock.php', 'class-content-recovery.php', 'class-transactions.php' ) as $inc ) {
     require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
 }
 require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-base-tool.php';

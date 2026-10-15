@@ -107,7 +107,9 @@ require_once dirname( __DIR__ ) . '/functions.php';
 // Earlier suites in run-all.php have already loaded most of the plugin; each
 // one is a plain require_once, so a shared file would be declared twice.
 foreach ( array(
-    'class-store.php', 'class-doctor.php', 'class-transactions.php',
+    'class-store.php', 'class-doctor.php', 'class-content-write-guard.php', 'class-content-journal.php',
+    'class-recovery-advisory-lock.php', 'class-content-recovery.php',
+    'class-transactions.php',
     'class-screenshot.php', 'class-screenshot-store.php', 'class-json-rpc.php',
     'class-server.php',
 ) as $inc ) {

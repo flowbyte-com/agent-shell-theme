@@ -783,6 +783,20 @@ class Transaction_Manager {
     /**
      * Apply staged config in one write and close the transaction.
      *
+     * When the transaction holds a content journal, the commit is gated on
+     * the journal being ready to close: every operation must be in a settled
+     * state (applied or compensated), and every applied operation is
+     * revalidated against the current WP state in case an outside actor has
+     * edited the post since mark_applied() recorded it. A divergence
+     * transitions the op to conflict and refuses the commit; a missing post
+     * transitions the op to compensated and the commit proceeds.
+     *
+     * The audit write and the value-guarded row delete share one guarded SQL
+     * transaction: if the audit write throws, the option row is preserved; if
+     * the row moved between the re-read and the delete, the audit row records
+     * the loss-of-race and the operator can re-issue the commit against the
+     * new row bytes.
+     *
      * @return array Closed transaction record
      */
     public function commit() {
@@ -796,59 +810,431 @@ class Transaction_Manager {
             throw new \InvalidArgumentException( 'Commit blocked by validation errors: ' . wp_json_encode( $issues['errors'] ) );
         }
 
-        // Close the transaction BEFORE writing so on_config_update records
-        // history with the transaction label instead of re-staging.
-        //
-        // A guarded delete, not delete_option(): commit is the one path that must
-        // never remove a transaction that is no longer the one just validated.
-        // Between the check above and the delete, a lease could have expired
-        // and a reaper could have deleted this row and opened a new one — and
-        // an unguarded delete by name would take that new transaction with it,
-        // silently destroying whatever its owner had staged since.
-        if ( ! self::cas_delete( $tx ) ) {
-            throw new \InvalidArgumentException(
-                'Transaction ' . $tx['id'] . ' changed while it was being committed, so nothing was applied. '
-                . 'Read agentshell_get_transaction and retry; any staged changes are still there.'
-            );
+        // Journal-aware gate. A transaction with no content ops is a
+        // config-only commit; the existing single-row path runs. A journal
+        // holding unsettled work (intended / compensating / conflict /
+        // partial-applied) refuses with a clear reason; the operator must
+        // resolve the op before the commit may proceed.
+        $content = Content_Journal::of( $tx );
+        if ( ! empty( $content['ops'] ) ) {
+            $next_content = self::revalidate_journal_for_commit( $content, $tx );
+            if ( is_array( $next_content ) ) {
+                // The revalidation produced a transition (a post gone, etc.);
+                // persist it through the same CAS so the journal's new state
+                // is on disk before the finalisation step is allowed to
+                // touch the row.
+                $next                  = $tx;
+                $next['content']       = $next_content;
+                if ( ! self::cas( $tx, $next ) ) {
+                    throw new \InvalidArgumentException(
+                        'Transaction ' . $tx['id'] . ' changed while its journal was being revalidated for commit. '
+                        . 'Read agentshell_get_journal and retry.'
+                    );
+                }
+                $tx = $next;
+                $content = $next_content;
+            }
+            if ( Content_Journal::has_unsettled_work( $content ) ) {
+                $unsettled = self::summarise_unsettled( $content );
+                Store::record_event(
+                    (string) $tx['actor'],
+                    'transaction_commit_refused',
+                    array(
+                        'transaction_id' => (string) $tx['id'],
+                        'reason'         => 'journal holds unsettled work; resolve the listed operations before committing',
+                        'unsettled'      => $unsettled,
+                    )
+                );
+                throw new \InvalidArgumentException(
+                    'Transaction ' . $tx['id'] . ' cannot be committed: the content journal still holds '
+                    . 'unsettled operations (' . implode( ', ', $unsettled ) . '). The journal and the option '
+                    . 'row were both preserved so the operator can resolve them. Read agentshell_get_journal.'
+                );
+            }
         }
 
-        Store::$operation_label = $tx['label'] ? 'transaction: ' . $tx['label'] : 'transaction_commit';
-        update_option( Store::CONFIG_KEY, $tx['staged'] ); // hook records the mutation
-        Store::$operation_label = '';
+        // The value-guarded close: a guarded SQL transaction contains both
+        // the audit write and the row delete. A failure between them leaves
+        // the option row intact; a row that moved between the re-read and
+        // the delete is reported with the new row bytes attached.
+        //
+        // The row is deleted BEFORE the config write so the
+        // pre_update_option_agentshell_config filter sees no open
+        // transaction and does not re-stage. That is the existing
+        // load-bearing ordering: re-staging inside commit would either
+        // re-create the row we are about to delete (silently undoing
+        // the close) or stage the new value into the next live
+        // transaction, which the operator did not ask for.
+        $committed_tokens = Store::diff_token_keys( $tx['before'], $tx['staged'] );
+        $op_summary       = self::summarise_journal_ops( $tx );
+        $audit_operation  = self::commit_audit_operation( $tx );
+        $actor            = (string) $tx['actor'];
+        $tx_id            = (string) $tx['id'];
+        $tx_label         = (string) $tx['label'];
+        $staged           = $tx['staged'];
 
-        // The pre_update_option hook above recorded the mutation; stamp the
-        // revision with the transaction id for traceability.
-        self::stamp_last_revision( $tx['id'] );
+        $result = Content_Write_Guard::run( function () use ( $tx, $actor, $tx_id, $tx_label, $committed_tokens, $staged, $op_summary, $audit_operation ) {
+            // 1. Audit the close first, so a row that moves between the
+            //    re-read and the delete is recorded even when the delete
+            //    fails.
+            Store::record_event(
+                $actor,
+                $audit_operation,
+                array(
+                    'transaction_id' => $tx_id,
+                    'label'          => $tx_label,
+                    'changed_tokens' => $committed_tokens,
+                    'ops'            => $op_summary,
+                )
+            );
 
-        return array(
-            'id'            => $tx['id'],
-            'label'         => $tx['label'],
-            'committed'     => true,
-            'changed_tokens' => Store::diff_token_keys( $tx['before'], $tx['staged'] ),
-        );
+            // 2. Value-guarded delete. The row's bytes are the guard; a
+            //    row that moved between the re-read and now returns 0
+            //    rows affected and the operator sees the refusal with
+            //    the audit row preserved.
+            if ( ! self::cas_delete( $tx ) ) {
+                throw new \InvalidArgumentException(
+                    'Transaction ' . $tx_id . ' changed while it was being committed, so nothing was applied. '
+                    . 'The audit log records the attempt; read agentshell_get_transaction and retry.'
+                );
+            }
+
+            // 3. Apply the config. The filter now sees no open
+            //    transaction and writes through, recording the
+            //    history with the transaction label rather than
+            //    re-staging into a new transaction.
+            Store::$operation_label = $tx_label ? 'transaction: ' . $tx_label : 'transaction_commit';
+            update_option( Store::CONFIG_KEY, $staged );
+            Store::$operation_label = '';
+            self::stamp_last_revision( $tx_id );
+
+            return array(
+                'id'            => $tx_id,
+                'label'         => $tx_label,
+                'committed'     => true,
+                'changed_tokens' => $committed_tokens,
+            );
+        } );
+
+        return $result;
     }
 
     /**
      * Discard staged changes. The database was never touched, so there is
      * nothing to restore.
      *
+     * When the transaction holds a content journal, the rollback
+     * auto-compensates any applied operation through the recovery engine
+     * (which uses the per-post advisory lock and re-runs verify_post under
+     * the lock), refuses on any divergence, and otherwise finalises the
+     * close with a value-guarded CAS that survives a row that moved between
+     * the re-read and the delete.
+     *
      * @return array
      */
     public function rollback() {
         $tx = $this->require_live( true );
         $this->assert_owner( $tx );
-        if ( ! self::cas_delete( $tx ) ) {
-            throw new \InvalidArgumentException(
-                'Transaction ' . $tx['id'] . ' changed while it was being rolled back, so it was not closed. '
-                . 'Read agentshell_get_transaction; the staged changes are still there.'
+
+        $content = Content_Journal::of( $tx );
+        if ( ! empty( $content['ops'] ) ) {
+            // Any applied op means work has been done in the database; the
+            // rollback's job is to undo it before the transaction row is
+            // released. The recovery engine handles the per-post advisory
+            // lock, the per-post delete_post cap, and the six-field evidence
+            // check.
+            $has_applied = false;
+            foreach ( $content['ops'] as $op ) {
+                if ( is_array( $op ) && Content_Journal::STATE_APPLIED === ( $op['state'] ?? '' ) ) {
+                    $has_applied = true;
+                    break;
+                }
+            }
+            if ( $has_applied ) {
+                // The auto-compensate rollback runs the per-op settlement
+                // loop on the owner's live transaction. We pass
+                // $allow_live = true so the expiry precondition (which is
+                // about abandoned transactions, not the owner's own
+                // close) does not refuse, and $skip_row_delete = true so
+                // the transaction row is removed by the value-guarded
+                // close in the rollback's own guarded SQL transaction,
+                // not here.
+                $recovery_report = Content_Recovery::recover( $tx, (string) $tx['actor'], false, true, true );
+                if ( ! empty( $recovery_report['conflicts'] ) ) {
+                    Store::record_event(
+                        (string) $tx['actor'],
+                        'transaction_rollback_refused_after_compensation',
+                        array(
+                            'transaction_id' => (string) $tx['id'],
+                            'reason'         => 'recovery found a divergence the operator must resolve',
+                            'conflicts'      => $recovery_report['conflicts'],
+                        )
+                    );
+                    throw new \InvalidArgumentException(
+                        'Transaction ' . $tx['id'] . ' cannot be rolled back: the recovery engine found a '
+                        . 'divergence the operator must resolve first. The journal and the option row were '
+                        . 'both preserved. Read agentshell_get_journal; the conflicts are listed there.'
+                    );
+                }
+                // Re-read the journal: recovery may have transitioned ops
+                // to compensated (or, in the conflict branch above, preserved
+                // them), and the row is the source of truth for the value-
+                // guarded close. Without this re-read, the final cas_delete
+                // uses the bytes the caller captured before recovery, and the
+                // cas delete fails because the row has moved.
+                $re_read = get_option( self::KEY, null );
+                if ( ! is_array( $re_read ) ) {
+                    // Recovery deleted the row already — a rare but
+                    // possible path; the rollback is then a no-op.
+                    return array(
+                        'id'        => $tx['id'],
+                        'label'     => $tx['label'],
+                        'rolled_back' => true,
+                        'discarded_staged_changes' => is_array( $tx['staged'] ),
+                    );
+                }
+                $tx = $re_read;
+                $content = Content_Journal::of( $tx );
+                if ( Content_Journal::has_unsettled_work( $content ) ) {
+                    $unsettled = self::summarise_unsettled( $content );
+                    Store::record_event(
+                        (string) $tx['actor'],
+                        'transaction_rollback_refused_after_compensation',
+                        array(
+                            'transaction_id' => (string) $tx['id'],
+                            'reason'         => 'recovery could not settle all operations',
+                            'unsettled'      => $unsettled,
+                        )
+                    );
+                    throw new \InvalidArgumentException(
+                        'Transaction ' . $tx['id'] . ' cannot be rolled back: the recovery engine could not '
+                        . 'settle all operations (' . implode( ', ', $unsettled ) . '). The journal and the '
+                        . 'option row were both preserved. Read agentshell_get_journal.'
+                    );
+                }
+            } else {
+                // No applied ops, but the journal may still hold ops in
+                // intended / compensating / conflict / partial-applied
+                // states. Refuse without invoking recovery.
+                if ( Content_Journal::has_unsettled_work( $content ) ) {
+                    $unsettled = self::summarise_unsettled( $content );
+                    Store::record_event(
+                        (string) $tx['actor'],
+                        'transaction_rollback_refused',
+                        array(
+                            'transaction_id' => (string) $tx['id'],
+                            'reason'         => 'journal holds unsettled work that recovery did not address',
+                            'unsettled'      => $unsettled,
+                        )
+                    );
+                    throw new \InvalidArgumentException(
+                        'Transaction ' . $tx['id'] . ' cannot be rolled back: the content journal holds '
+                        . 'unsettled operations (' . implode( ', ', $unsettled ) . ') that recovery did '
+                        . 'not address. The journal and the option row were both preserved. Read '
+                        . 'agentshell_get_journal.'
+                    );
+                }
+            }
+        }
+
+        // Re-read the live post state for each compensated op: a settlement
+        // that ran to compensated but the post is still present is a lost
+        // race or a different post entirely, and the rollback refuses rather
+        // than reporting a phantom success.
+        if ( ! empty( $content['ops'] ) ) {
+            foreach ( $content['ops'] as $op_id => $op ) {
+                if ( ! is_array( $op ) ) { continue; }
+                if ( Content_Journal::STATE_COMPENSATED !== ( $op['state'] ?? '' ) ) { continue; }
+                $post_id = (int) ( $op['post_id'] ?? 0 );
+                if ( $post_id > 0 && get_post( $post_id ) ) {
+                    Store::record_event(
+                        (string) $tx['actor'],
+                        'transaction_rollback_refused',
+                        array(
+                            'transaction_id' => (string) $tx['id'],
+                            'reason'         => "a compensated op's post {$post_id} is still present after recovery",
+                            'op'             => (string) $op_id,
+                        )
+                    );
+                    throw new \InvalidArgumentException(
+                        'Transaction ' . $tx['id'] . ' cannot be rolled back: operation ' . $op_id
+                        . ' is recorded as compensated but post ' . $post_id . ' is still present. '
+                        . 'The journal and the option row were both preserved.'
+                    );
+                }
+            }
+        }
+
+        // The value-guarded close: a guarded SQL transaction contains the
+        // audit write and the row delete. The staged config was never
+        // written to the database, so no follow-up config update runs.
+        $op_summary       = self::summarise_journal_ops( $tx );
+        $audit_operation  = self::rollback_audit_operation( $tx );
+        $actor            = (string) $tx['actor'];
+        $tx_id            = (string) $tx['id'];
+        $tx_label         = (string) $tx['label'];
+        $had_staged       = is_array( $tx['staged'] );
+
+        $result = Content_Write_Guard::run( function () use ( $tx, $actor, $tx_id, $tx_label, $had_staged, $op_summary, $audit_operation ) {
+            Store::record_event(
+                $actor,
+                $audit_operation,
+                array(
+                    'transaction_id' => $tx_id,
+                    'label'          => $tx_label,
+                    'discarded_staged_changes' => $had_staged,
+                    'ops'            => $op_summary,
+                )
+            );
+            if ( ! self::cas_delete( $tx ) ) {
+                throw new \InvalidArgumentException(
+                    'Transaction ' . $tx_id . ' changed while it was being rolled back, so it was not closed. '
+                    . 'The audit log records the attempt; read agentshell_get_transaction and retry.'
+                );
+            }
+            return array(
+                'id'        => $tx_id,
+                'label'     => $tx_label,
+                'rolled_back' => true,
+                'discarded_staged_changes' => $had_staged,
+            );
+        } );
+
+        return $result;
+    }
+
+    /**
+     * Apply the post-validated revalidation pass for commit.
+     *
+     * For every `applied` op, run Content_Recovery::revalidate_applied_op_for_commit()
+     * against the live WP state. A `'gone'` return transitions the op to
+     * `compensated` (the post was deleted by an outside actor; the commit
+     * proceeds and the audit records `transaction_committed_after_compensation`).
+     * A non-empty mismatch reason transitions the op to `conflict` and the
+     * commit refuses; the journal is preserved.
+     *
+     * Returns the updated content array on success, or `null` when no
+     * transitions are needed (the journal was already consistent and the
+     * caller may skip the persistence step).
+     */
+    private static function revalidate_journal_for_commit( array $content, array $tx ) {
+        $changed         = false;
+        $diverged        = false;
+        $next            = $content;
+        $now             = self::now();
+        foreach ( $next['ops'] as $op_id => $op ) {
+            if ( ! is_array( $op ) || Content_Journal::STATE_APPLIED !== ( $op['state'] ?? '' ) ) {
+                continue;
+            }
+            $result = Content_Recovery::revalidate_applied_op_for_commit( $op );
+            if ( 'gone' === $result ) {
+                $next['ops'][ $op_id ]['state']       = Content_Journal::STATE_COMPENSATED;
+                $next['ops'][ $op_id ]['updated_at']  = $now;
+                $next['ops'][ $op_id ]['comp']        = array(
+                    'outcome' => 'compensated',
+                    'post_id' => (int) ( $op['post_id'] ?? 0 ),
+                    'actor'   => (string) ( $tx['actor'] ?? '' ),
+                    'at'      => $now,
+                    'reason'  => 'post was gone by the time commit revalidated the recorded after-image',
+                );
+                $changed = true;
+            } elseif ( '' !== $result ) {
+                $next['ops'][ $op_id ]['state']       = Content_Journal::STATE_CONFLICT;
+                $next['ops'][ $op_id ]['updated_at']  = $now;
+                $next['ops'][ $op_id ]['notes'][]     = $result;
+                $changed  = true;
+                $diverged = true;
+            }
+        }
+        if ( $changed ) {
+            $next['sig'] = Content_Journal::sign( $next );
+        }
+        return $changed ? $next : null;
+    }
+
+    /**
+     * A short list of unsettled operation ids, for refusal messages and the
+     * audit log. The id is enough for an operator to query the journal; the
+     * full op record is in the journal itself.
+     */
+    private static function summarise_unsettled( array $content ) {
+        $out = array();
+        if ( ! isset( $content['ops'] ) || ! is_array( $content['ops'] ) ) {
+            return $out;
+        }
+        foreach ( $content['ops'] as $op_id => $op ) {
+            if ( ! is_array( $op ) ) { continue; }
+            $state = (string) ( $op['state'] ?? '' );
+            if ( Content_Journal::STATE_APPLIED === $state || Content_Journal::STATE_COMPENSATED === $state ) {
+                continue;
+            }
+            $out[] = (string) $op_id . '(' . $state . ')';
+        }
+        return $out;
+    }
+
+    /**
+     * Per-op summary for the commit/rollback audit row.
+     */
+    private static function summarise_journal_ops( array $tx ) {
+        $content = Content_Journal::of( $tx );
+        $out     = array();
+        if ( ! isset( $content['ops'] ) || ! is_array( $content['ops'] ) ) {
+            return $out;
+        }
+        foreach ( $content['ops'] as $op_id => $op ) {
+            if ( ! is_array( $op ) ) { continue; }
+            $out[] = array(
+                'id'             => (string) $op_id,
+                'type'           => (string) ( $op['op'] ?? '' ),
+                'state'          => (string) ( $op['state'] ?? '' ),
+                'post_id'        => (int) ( $op['post_id'] ?? 0 ),
+                'post_modified_gmt' => (string) ( $op['after']['post_modified_gmt'] ?? '' ),
+                'content_sha256' => (string) ( $op['after']['post_content_sha256'] ?? '' ),
             );
         }
-        return array(
-            'id'        => $tx['id'],
-            'label'     => $tx['label'],
-            'rolled_back' => true,
-            'discarded_staged_changes' => is_array( $tx['staged'] ),
-        );
+        return $out;
+    }
+
+    /**
+     * Which audit operation should a successful commit write? The
+     * `transaction_committed_after_compensation` variant is what tells the
+     * operator "the post was gone when we got here, but the rest of the
+     * journal settled cleanly".
+     */
+    private static function commit_audit_operation( array $tx ) {
+        $content = Content_Journal::of( $tx );
+        if ( empty( $content['ops'] ) ) {
+            return 'transaction_committed';
+        }
+        foreach ( $content['ops'] as $op ) {
+            if ( ! is_array( $op ) ) { continue; }
+            if ( Content_Journal::STATE_COMPENSATED === ( $op['state'] ?? '' ) ) {
+                return 'transaction_committed_after_compensation';
+            }
+        }
+        return 'transaction_committed';
+    }
+
+    /**
+     * Which audit operation should a successful rollback write? The
+     * `transaction_rolled_back_after_compensation` variant is the path
+     * where the recovery engine actually deleted a post.
+     */
+    private static function rollback_audit_operation( array $tx ) {
+        $content = Content_Journal::of( $tx );
+        if ( empty( $content['ops'] ) ) {
+            return 'transaction_rolled_back';
+        }
+        $had_applied = false;
+        foreach ( $content['ops'] as $op ) {
+            if ( ! is_array( $op ) ) { continue; }
+            if ( Content_Journal::STATE_COMPENSATED === ( $op['state'] ?? '' )
+                || ( isset( $op['comp']['outcome'] ) && 'compensated' === $op['comp']['outcome'] ) ) {
+                $had_applied = true;
+            }
+        }
+        return $had_applied ? 'transaction_rolled_back_after_compensation' : 'transaction_rolled_back';
     }
 
     private static function stamp_last_revision( $tx_id ) {

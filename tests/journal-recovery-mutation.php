@@ -128,8 +128,8 @@ $mutants = array(
 
     'the delete is not guarded by a transaction' => array(
         $RECOVERY_REL,
-        "        \$deleted = Content_Write_Guard::run(\n            function () use ( \$post_id ) {\n                return wp_delete_post( \$post_id, true );\n            }\n        );",
-        "        \$deleted = wp_delete_post( \$post_id, true );",
+        "        try {\n            \$deleted = Content_Write_Guard::run(\n                function () use ( \$post_id ) {\n                    return wp_delete_post( \$post_id, true );\n                }\n            );",
+        "        try {\n            \$deleted = wp_delete_post( \$post_id, true );",
     ),
 
     'a failed delete is reported as success' => array(
@@ -160,14 +160,14 @@ $mutants = array(
 
     'a live claim from another caller is ignored' => array(
         $RECOVERY_REL,
-        "        if ( 'compensating' === \$op['state'] && ! \$mine && ! \$stale ) {",
-        "        if ( false ) {",
+        "        if ( Content_Journal::STATE_COMPENSATING === ( \$op['state'] ?? '' ) && ! \$mine && ! \$stale ) {\n            return 'contended';",
+        "        if ( false ) {\n            return 'contended';",
     ),
 
     'a crashed claim never ages out' => array(
         $RECOVERY_REL,
-        "        \$stale  = empty( \$claim['at'] ) || ( \$now - (int) \$claim['at'] ) >= self::CLAIM_TTL_SECONDS;",
-        "        \$stale  = false;",
+        "        \$stale = empty( \$claim['at'] ) || ( \$now - (int) \$claim['at'] ) >= self::CLAIM_TTL_SECONDS;",
+        "        \$stale = false;",
     ),
 
     'a losing race is treated as success' => array(

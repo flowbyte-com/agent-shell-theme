@@ -135,13 +135,12 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
-    'live: a crash after the write is found through the marker and cleaned up',
+    'live: a crash after the write is found through the marker and refused (no recorded after-image)',
     function () {
         $c = jr_live( 'crash_after_write', array() );
-        Agentshell_Test::assert_equals( 'compensated', $c['outcome'] ?? '', 'the orphan must be compensated' );
-        Agentshell_Test::assert_true( (int) ( $c['deleted'] ?? 0 ) > 0, 'a post must have been identified' );
-        Agentshell_Test::assert_equals( 0, (int) ( $c['rows_after'] ?? -1 ), 'and it must be gone from wp_posts' );
-        Agentshell_Test::assert_equals( 0, (int) ( $c['meta_after'] ?? -1 ), 'with its metadata' );
+        Agentshell_Test::assert_equals( 'conflict', $c['outcome'] ?? '', 'no recorded after-image means the post is preserved, not deleted by guess' );
+        Agentshell_Test::assert_equals( 1, (int) ( $c['rows_after'] ?? -1 ), 'and the marked post must survive in wp_posts' );
+        Agentshell_Test::assert_equals( 1, (int) ( $c['meta_after'] ?? -1 ), 'with its marker meta intact' );
     }
 );
 

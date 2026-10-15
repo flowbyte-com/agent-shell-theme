@@ -79,6 +79,17 @@ class Store {
      * with no trace would leave an operator with a wedge and no explanation.
      */
     public static function record_event( $actor, $operation, array $changed = array(), $revision_id = null ) {
+        // Test seam: a conditional refusal keyed on operation name. The
+        // lifecycle tests use this to verify that a failing audit write
+        // inside the guarded SQL transaction prevents the cas_delete_row
+        // from running, and that the option row is preserved for the
+        // operator to retry.
+        if ( ! empty( $GLOBALS['_agentshell_test_audit_fail_for'] )
+            && $operation === $GLOBALS['_agentshell_test_audit_fail_for'] ) {
+            throw new \RuntimeException(
+                'audit write refused by test seam for operation: ' . $operation
+            );
+        }
         self::append_audit( $actor, $operation, $changed, $revision_id );
     }
 

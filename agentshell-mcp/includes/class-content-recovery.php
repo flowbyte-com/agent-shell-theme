@@ -178,7 +178,7 @@ class Content_Recovery {
      * @param string|null $actor                  Defaults to the current actor.
      * @param bool        $explicitly_authorized  Opt-in for a non-owner.
      */
-    public static function recover( array $tx, $actor = null, $explicitly_authorized = false ) {
+    public static function recover( array $tx, $actor = null, $explicitly_authorized = false, $allow_live = false, $skip_row_delete = false ) {
         $actor  = ( null === $actor ) ? Store::actor() : (string) $actor;
         $report = array(
             'transaction_id'          => isset( $tx['id'] ) ? (string) $tx['id'] : '',
@@ -213,7 +213,11 @@ class Content_Recovery {
         // A live transaction is not an incident; its owner should commit or
         // roll it back. Refusing here is also what stops recovery from ever
         // reaching a transaction that somebody else has just opened.
-        if ( ! Transaction_Manager::is_expired( $tx ) ) {
+        //
+        // The auto-compensate rollback calls recover() with $allow_live = true
+        // so the per-op settlement loop can run on the owner's live
+        // transaction without forcing the lease-clock detour.
+        if ( ! $allow_live && ! Transaction_Manager::is_expired( $tx ) ) {
             $report['reason'] = 'Transaction ' . $report['transaction_id'] . ' has '
                 . Transaction_Manager::seconds_remaining( $tx ) . 's of lease left, so it is not an abandoned '
                 . 'transaction and is not recovered. Its owner should commit or roll it back.';
@@ -307,8 +311,10 @@ class Content_Recovery {
             return $report;
         }
 
-        $report['transaction_row_deleted'] = Transaction_Manager::cas_delete_row( $working );
-        if ( ! $report['transaction_row_deleted'] ) {
+        $report['transaction_row_deleted'] = $skip_row_delete
+            ? false
+            : Transaction_Manager::cas_delete_row( $working );
+        if ( ! $skip_row_delete && ! $report['transaction_row_deleted'] ) {
             // The row is not what we read. Somebody opened a new transaction in
             // between — which cannot happen through begin(), so this means an
             // out-of-band write — and we did not touch it.
@@ -331,6 +337,37 @@ class Content_Recovery {
     }
 
     // ── One operation ──────────────────────────────────────────────────────
+
+    /**
+     * Decide whether this actor may claim (or refresh) the op, and what state
+     * to leave the claim in.
+     *
+     * Returns one of:
+     *   'refreshed' — the op is in `compensating` and the claim already
+     *                  belongs to $actor; the caller should bump the `at`
+     *                  to $now and write the row through the CAS.
+     *   'claimed'   — the op is unclaimed or its claim is stale; the caller
+     *                  should set state=`compensating` and a fresh claim
+     *                  and write the row through the CAS.
+     *   'contended' — a different actor holds a fresh claim; refuse.
+     */
+    private static function claim_or_refresh( array $content, $op_id, $actor, $now ) {
+        $op    = $content['ops'][ $op_id ] ?? null;
+        if ( ! is_array( $op ) ) {
+            return 'contended';
+        }
+        $claim = is_array( $op['claim'] ) ? $op['claim'] : array();
+        $mine  = isset( $claim['actor'] ) && (string) $claim['actor'] === (string) $actor;
+        $stale = empty( $claim['at'] ) || ( $now - (int) $claim['at'] ) >= self::CLAIM_TTL_SECONDS;
+
+        if ( Content_Journal::STATE_COMPENSATING === ( $op['state'] ?? '' ) && $mine && ! $stale ) {
+            return 'refreshed';
+        }
+        if ( Content_Journal::STATE_COMPENSATING === ( $op['state'] ?? '' ) && ! $mine && ! $stale ) {
+            return 'contended';
+        }
+        return 'claimed';
+    }
 
     /**
      * Claim, compensate and settle a single journalled operation.
@@ -394,35 +431,54 @@ class Content_Recovery {
         }
 
         // ── the claim ─────────────────────────────────────────────────────
-        $now    = Transaction_Manager::lease_now();
-        $claim  = is_array( $op['claim'] ) ? $op['claim'] : array();
-        $mine   = isset( $claim['actor'] ) && (string) $claim['actor'] === (string) $actor;
-        $stale  = empty( $claim['at'] ) || ( $now - (int) $claim['at'] ) >= self::CLAIM_TTL_SECONDS;
-        if ( 'compensating' === $op['state'] && ! $mine && ! $stale ) {
-            // A claim that has neither expired nor been abandoned by us. Not a
-            // conflict — the other caller is doing exactly what this one would
-            // be doing — so it is reported and left entirely alone.
+        // claim_or_refresh() returns one of:
+        //   'refreshed' — we already own the claim; its `at` is bumped to now
+        //                  so the takeover window opens only between settle_operation
+        //                  calls, not during a long-running destructive step.
+        //   'claimed'   — fresh claim, written into the row.
+        //   'contended' — a different actor holds a fresh claim; refuse.
+        $now          = Transaction_Manager::lease_now();
+        $claim_result = self::claim_or_refresh( $content, $op_id, $actor, $now );
+        if ( 'contended' === $claim_result ) {
             $base['outcome'] = 'another_recovery_in_progress';
-            $base['detail']  = 'claimed by ' . (string) ( $claim['actor'] ?? '?' ) . ' at '
-                . gmdate( 'Y-m-d H:i:s', (int) ( $claim['at'] ?? 0 ) ) . ' UTC, '
-                . max( 0, self::CLAIM_TTL_SECONDS - ( $now - (int) ( $claim['at'] ?? 0 ) ) ) . 's ago. Not touched.';
+            $base['detail']  = 'claimed by ' . (string) ( $op['claim']['actor'] ?? '?' ) . ' at '
+                . gmdate( 'Y-m-d H:i:s', (int) ( $op['claim']['at'] ?? 0 ) ) . ' UTC, '
+                . max( 0, self::CLAIM_TTL_SECONDS - ( $now - (int) ( $op['claim']['at'] ?? 0 ) ) ) . 's ago. Not touched.';
             return array( 'tx' => $tx, 'report' => $base, 'conflict' => null, 'status' => self::STATUS_PARTIAL );
         }
 
-        $claimed_content                       = $content;
-        $claimed_content['ops'][ $op_id ]['state']       = Content_Journal::STATE_COMPENSATING;
-        $claimed_content['ops'][ $op_id ]['claim']       = array( 'actor' => $actor, 'at' => $now );
-        $claimed_content['ops'][ $op_id ]['updated_at'] = $now;
-        $claimed_content['sig']                = Content_Journal::sign( $claimed_content );
+        if ( 'refreshed' === $claim_result ) {
+            // Refresh: the claim was ours, the `at` is now. Write the refreshed
+            // claim with the same CAS so a concurrent swap (e.g. takeover
+            // between settle calls) cannot be silently overridden.
+            $claimed_content                       = $content;
+            $claimed_content['ops'][ $op_id ]['claim']       = array( 'actor' => $actor, 'at' => $now );
+            $claimed_content['ops'][ $op_id ]['updated_at'] = $now;
+            $claimed_content['sig']                = Content_Journal::sign( $claimed_content );
+            $claimed                 = $tx;
+            $claimed[ Content_Journal::CONTENT_KEY ] = $claimed_content;
+            if ( ! Transaction_Manager::cas_write_row( $tx, $claimed ) ) {
+                return self::contended( array_merge( $base, array(
+                    'outcome' => 'lost_race',
+                    'detail'  => 'another caller changed the journal while we were refreshing the claim; nothing was deleted',
+                ) ) );
+            }
+        } else {
+            $claimed_content                       = $content;
+            $claimed_content['ops'][ $op_id ]['state']       = Content_Journal::STATE_COMPENSATING;
+            $claimed_content['ops'][ $op_id ]['claim']       = array( 'actor' => $actor, 'at' => $now );
+            $claimed_content['ops'][ $op_id ]['updated_at'] = $now;
+            $claimed_content['sig']                = Content_Journal::sign( $claimed_content );
 
-        $claimed                 = $tx;
-        $claimed[ Content_Journal::CONTENT_KEY ] = $claimed_content;
+            $claimed                 = $tx;
+            $claimed[ Content_Journal::CONTENT_KEY ] = $claimed_content;
 
-        if ( ! Transaction_Manager::cas_write_row( $tx, $claimed ) ) {
-            return self::contended( array_merge( $base, array(
-                'outcome' => 'lost_race',
-                'detail'  => 'another caller changed the journal first; nothing was deleted',
-            ) ) );
+            if ( ! Transaction_Manager::cas_write_row( $tx, $claimed ) ) {
+                return self::contended( array_merge( $base, array(
+                    'outcome' => 'lost_race',
+                    'detail'  => 'another caller changed the journal first; nothing was deleted',
+                ) ) );
+            }
         }
 
         // ── the compensation itself ──────────────────────────────────────
@@ -498,6 +554,54 @@ class Content_Recovery {
     // ── Compensation ───────────────────────────────────────────────────────
 
     /**
+     * Revalidate an `applied` operation against the current WP state, for a
+     * commit.
+     *
+     * The recovery engine is the only place destructive action is allowed;
+     * commit must not delete anything, but it must know whether the post the
+     * journal still names is actually the one it would be committing. This
+     * is the read-only counterpart to `verify_post()`: same six-field check,
+     * same `marker_of()` lookup, no `wp_delete_post()`.
+     *
+     * Returns one of three shapes:
+     *   - `''` (empty string): the live post matches every recorded field;
+     *     the op may stay `applied` and the commit may proceed.
+     *   - `'gone'`: `get_post( $post_id )` returned null; the post has been
+     *     deleted by an outside actor. The op transitions to `compensated`
+     *     and the commit may proceed (recording
+     *     `transaction_committed_after_compensation`).
+     *   - a string mismatch reason: a divergence between the live post and
+     *     the journal's recorded after-image. The op transitions to
+     *     `conflict`, the post is preserved, and the commit refuses.
+     *
+     * The op's `state` is not changed here; the caller writes the new state
+     * through the journal CAS, the same way recovery does. The contract is
+     * "what does the live state say", not "what should the row say".
+     */
+    public static function revalidate_applied_op_for_commit( array $op ) {
+        $post_id = (int) ( $op['post_id'] ?? 0 );
+        if ( $post_id <= 0 ) {
+            // An applied op without a post id is a half-applied op: the
+            // mark_applied() CAS failed and the op ended up in
+            // `partial-applied` (or a stale `applied` from an earlier build).
+            // Either way, there is no row to revalidate against, so the
+            // commit must refuse — the op is not safe to settle without a
+            // recorded id.
+            return 'op has no post id recorded; it cannot be revalidated against current WP state';
+        }
+        $post = get_post( $post_id );
+        if ( ! $post ) {
+            return 'gone';
+        }
+        $marker  = self::marker_of( $op );
+        $mismatch = self::verify_post( $op, $post, $marker );
+        if ( '' !== $mismatch ) {
+            return $mismatch;
+        }
+        return '';
+    }
+
+    /**
      * Undo one journalled operation, or say why it cannot be undone.
      *
      * The return shape is fixed — `outcome`, `post_id`, `reason` — because
@@ -555,6 +659,12 @@ class Content_Recovery {
             // No id was ever learned — a crash between recording the intent and
             // mark_applied(). The journal cannot say which post it made, so the
             // post has to be found by the marker that was written with it.
+            //
+            // When the journal has no strong after-image, the recovery engine
+            // cannot prove the post is unchanged — there is no content hash,
+            // no creation-time anchor — and the engine refuses to delete by
+            // guess. The marker-found branch preserves the post as a
+            // conflict; a recovery_administrator must reconcile.
             $found = self::posts_carrying_marker( $marker );
             if ( count( $found ) > 1 ) {
                 return array(
@@ -565,15 +675,22 @@ class Content_Recovery {
                 );
             }
             if ( 1 === count( $found ) ) {
-                $post_id = (int) $found[0];
-                $post    = get_post( $post_id );
-                if ( ! $post ) {
+                $found_id = (int) $found[0];
+                $found_post = get_post( $found_id );
+                if ( ! $found_post ) {
                     return array(
                         'outcome' => 'compensated',
-                        'post_id' => $post_id,
-                        'reason'  => 'the marked post ' . $post_id . ' is already gone; nothing to delete',
+                        'post_id' => $found_id,
+                        'reason'  => 'the marked post ' . $found_id . ' is already gone; nothing to delete',
                     );
                 }
+                return array(
+                    'outcome' => 'conflict',
+                    'post_id' => $found_id,
+                    'reason'  => 'this operation\'s post_id was never recorded, so the post\'s content cannot be '
+                        . 'verified against the operation that created it. The marked post (id ' . $found_id
+                        . ') is preserved.',
+                );
             } else {
                 // No marker anywhere. Either the write never happened, or it
                 // happened and the marker was removed since. Those are
@@ -630,8 +747,13 @@ class Content_Recovery {
         // has lost the cap should not have to wait for the database to
         // agree. The current_user_can() check is the gate; the
         // transaction is atomicity, not authority.
-        $actor_proxy = isset( $op['actor'] ) ? (string) $op['actor'] : '';
-        $tx_proxy    = array( 'actor' => $actor_proxy );
+        //
+        // The owner path compares $current_actor against the *transaction's*
+        // actor (the caller of recover / rollback), not the op's actor
+        // (which is whoever initiated the operation at record_intent time
+        // and may differ — the common case is a crashed actor whose
+        // transaction is being rolled back by the surviving owner).
+        $tx_proxy    = array( 'actor' => (string) $current_actor );
         $destruction = self::authorize_destruction( $tx_proxy, $current_actor, $explicitly_authorized, $post_id );
         if ( '' === $destruction ) {
             return array(
@@ -655,28 +777,65 @@ class Content_Recovery {
         //
         // Guarded, so a delete that fails part-way — meta gone, row not — is
         // rolled back and the draft is left whole for the next attempt.
-        $deleted = Content_Write_Guard::run(
-            function () use ( $post_id ) {
-                return wp_delete_post( $post_id, true );
-            }
-        );
-
-        if ( Content_Write_Guard::is_failure( $deleted ) ) {
+        //
+        // The per-post advisory lock serialises destructive compensation
+        // across PHP processes: a second recoverer acquiring GET_LOCK on the
+        // same name while this one is mid-delete is refused at the lock
+        // layer (promptly, with timeout 0) rather than racing the delete. The
+        // lock is connection-scoped and is released by the server on
+        // connection close (KILL -9, PHP-FPM worker death) — which is what
+        // the previous `add_option`-based lock could not guarantee. A
+        // failure to acquire is recorded as a `locked` outcome; the post is
+        // preserved so the next recoverer can finish the job.
+        $acquired = false;
+        try {
+            $acquired = Recovery_Advisory_Lock::acquire( $post_id );
+        } catch ( \RuntimeException $e ) {
             return array(
-                'outcome' => 'delete_failed',
+                'outcome' => 'conflict',
                 'post_id' => $post_id,
-                'reason'  => 'wp_delete_post( ' . $post_id . ', true ) failed'
-                    . ( is_wp_error( $deleted ) ? ': ' . $deleted->get_error_code() . ' — ' . $deleted->get_error_message() : '' )
-                    . '. The write was rolled back, so the post is unchanged and this operation is still owed. '
-                    . 'Recovery can be retried.',
+                'reason'  => $e->getMessage() . ' The draft is preserved and the journal is kept so a '
+                    . 'recovery_administrator (manage_options + explicit opt-in) can resolve it on an '
+                    . 'engine that supports advisory locks.',
             );
+        }
+        if ( ! $acquired ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $post_id,
+                'reason'  => 'another recovery holds the per-post advisory lock for post ' . $post_id
+                    . '. The draft is preserved; retry once the holder has finished.',
+            );
+        }
+
+        try {
+            $deleted = Content_Write_Guard::run(
+                function () use ( $post_id ) {
+                    return wp_delete_post( $post_id, true );
+                }
+            );
+
+            if ( Content_Write_Guard::is_failure( $deleted ) ) {
+                return array(
+                    'outcome' => 'delete_failed',
+                    'post_id' => $post_id,
+                    'reason'  => 'wp_delete_post( ' . $post_id . ', true ) failed'
+                        . ( is_wp_error( $deleted ) ? ': ' . $deleted->get_error_code() . ' — ' . $deleted->get_error_message() : '' )
+                        . '. The write was rolled back, so the post is unchanged and this operation is still owed. '
+                        . 'Recovery can be retried.',
+                );
+            }
+        } finally {
+            // Implicit release on connection close is what catches KILL -9;
+            // this is the orderly path.
+            Recovery_Advisory_Lock::release( $post_id );
         }
 
         return array(
             'outcome' => 'compensated',
             'post_id' => $post_id,
             'reason'  => 'post ' . $post_id . ' was created by this transaction and still matched its recorded '
-                . 'type, status and slug; deleted permanently',
+                . 'after-image; deleted permanently under the per-post advisory lock',
         );
     }
 
@@ -697,6 +856,16 @@ class Content_Recovery {
      * Returns '' when it is the post we created and never touched since, or a
      * sentence explaining why it is not. It never repairs a mismatch and never
      * decides one is fine — a mismatch means a human looks at it.
+     *
+     * The check runs the six recorded fields when the journal carried a
+     * strong after-image: post_type, post_status, post_name, post_date_gmt,
+     * post_content_sha256, post_content_length. The post_modified_gmt is a
+     * fast pre-check; the SHA-256 of post_content is the strong evidence
+     * (catches same-second edits and content-only edits that leave the slug
+     * unchanged). When the strong after-image is absent (an op whose
+     * mark_applied() never ran — found by marker alone), the four-field
+     * evidence is what is available, and the recovery path refuses to
+     * compensate a marked post that cannot be content-verified.
      */
     private static function verify_post( array $op, $post, $marker ) {
         $id = (int) ( $post->ID ?? 0 );
@@ -719,11 +888,22 @@ class Content_Recovery {
             }
         }
 
-        // The modification guard is what catches "somebody edited our draft
-        // after we made it". It only fires when the journal recorded a
-        // modification time — which mark_applied() supplies and a crash
-        // before it does not — so its absence is a real limitation rather than
-        // a check that quietly passed.
+        // post_date_gmt is set by WP at insert and not auto-bumped on edit,
+        // so it acts as a creation-time anchor that an edit cannot silently
+        // change. When the journal recorded it (the strong-after-image path),
+        // a mismatch means the row was not the one we wrote.
+        $recorded_date = (string) ( $after['post_date_gmt'] ?? '' );
+        if ( '' !== $recorded_date ) {
+            $have = (string) ( $post->post_date_gmt ?? '' );
+            if ( $have !== $recorded_date ) {
+                return 'post ' . $id . ' has post_date_gmt "' . ( $have ?: '(unknown)' )
+                    . '" where the journal recorded "' . $recorded_date . '". A different post or a replaced row '
+                    . 'is at this id. Nothing was deleted.';
+            }
+        }
+
+        // The modification guard catches edits that move post_modified_gmt
+        // forward but not the strong evidence below.
         $recorded_modified = (string) ( $after['post_modified_gmt'] ?? '' );
         if ( '' !== $recorded_modified ) {
             $have = (string) ( $post->post_modified_gmt ?? '' );
@@ -731,6 +911,31 @@ class Content_Recovery {
                 return 'post ' . $id . ' was modified at "' . ( $have ?: '(unknown)' )
                     . '" after this transaction recorded "' . $recorded_modified . '". Another actor has '
                     . 'worked on it, so deleting it would destroy their work. Nothing was deleted.';
+            }
+        }
+
+        // The strong evidence: SHA-256 of post_content at the moment of
+        // mark_applied(). A mismatch (including same-second edits that do not
+        // move post_modified_gmt) is the conflict. The length is a sanity
+        // check that the post the recovery engine is hashing is the one the
+        // journal hashed.
+        $recorded_sha = (string) ( $after['post_content_sha256'] ?? '' );
+        if ( '' !== $recorded_sha ) {
+            $have_sha = hash( 'sha256', (string) ( $post->post_content ?? '' ) );
+            if ( $have_sha !== $recorded_sha ) {
+                return 'post ' . $id . ' has a post_content hash "' . $have_sha
+                    . '" that does not match the journal\'s recorded "'
+                    . $recorded_sha . '". The content has been edited (including edits that leave the slug '
+                    . 'unchanged and edits that occur inside one second). Nothing was deleted.';
+            }
+        }
+        $recorded_len = isset( $after['post_content_length'] ) ? (int) $after['post_content_length'] : -1;
+        if ( $recorded_len >= 0 ) {
+            $have_len = strlen( (string) ( $post->post_content ?? '' ) );
+            if ( $have_len !== $recorded_len ) {
+                return 'post ' . $id . ' has post_content length ' . $have_len
+                    . ' where the journal recorded ' . $recorded_len . '. The post is not the one the journal '
+                    . 'hashed. Nothing was deleted.';
             }
         }
 

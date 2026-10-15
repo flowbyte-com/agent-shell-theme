@@ -117,6 +117,13 @@ class Content_Journal {
     const STATE_COMPENSATING = 'compensating';
     const STATE_COMPENSATED  = 'compensated';
     const STATE_CONFLICT     = 'conflict';
+    /**
+     * `mark_applied` returned null: the post and marker are on disk but
+     * the journal does not know the post id. Recorded explicitly so the
+     * close paths (commit / rollback / recovery) can refuse to discard
+     * the evidence and route the operator to recovery.
+     */
+    const STATE_PARTIAL_APPLIED = 'partial-applied';
 
     const STATES = array(
         self::STATE_INTENDED,
@@ -124,6 +131,7 @@ class Content_Journal {
         self::STATE_COMPENSATING,
         self::STATE_COMPENSATED,
         self::STATE_CONFLICT,
+        self::STATE_PARTIAL_APPLIED,
     );
 
     /**
@@ -264,6 +272,70 @@ class Content_Journal {
                 return true;
             }
             if ( ! in_array( $op['state'], self::SETTLED_STATES, true ) ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Is any operation in a non-`applied`, non-`compensated` state?
+     *
+     * "Unsettled" means the operation still needs operator or recovery
+     * action before the transaction may be closed. `intended` says the
+     * work has not been done; `compensating` says recovery is in flight;
+     * `conflict` says a divergence has been preserved for a human; and
+     * `partial-applied` says the post and marker landed but the journal
+     * CAS did not, so the post id is unknown. Any of these blocks both
+     * `commit_transaction` and `rollback_transaction`.
+     */
+    public static function has_unsettled_work( $content ) {
+        if ( ! is_array( $content ) || ! isset( $content[ self::OPS_KEY ] ) || ! is_array( $content[ self::OPS_KEY ] ) ) {
+            return true;
+        }
+        $unsettled = array(
+            self::STATE_INTENDED,
+            self::STATE_COMPENSATING,
+            self::STATE_CONFLICT,
+            self::STATE_PARTIAL_APPLIED,
+        );
+        foreach ( $content[ self::OPS_KEY ] as $op ) {
+            if ( ! is_array( $op ) || ! isset( $op['state'] ) ) {
+                return true;
+            }
+            if ( in_array( $op['state'], $unsettled, true ) ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Is any operation `applied` (work done, post retained) or in an
+     * unsettled state?
+     *
+     * The rollback gate uses this predicate, not `has_unsettled_work`,
+     * so a transaction whose only ops are `applied` is not mistaken for
+     * an empty journal — and the post those `applied` ops describe is
+     * not abandoned. A transaction with no journal at all (no ops)
+     * returns false; the rollback proceeds straight to finalisation.
+     */
+    public static function has_applied_or_unsettled_work( $content ) {
+        if ( ! is_array( $content ) || ! isset( $content[ self::OPS_KEY ] ) || ! is_array( $content[ self::OPS_KEY ] ) ) {
+            return false; // no journal: nothing to apply, nothing unsettled
+        }
+        $live = array(
+            self::STATE_APPLIED,
+            self::STATE_INTENDED,
+            self::STATE_COMPENSATING,
+            self::STATE_CONFLICT,
+            self::STATE_PARTIAL_APPLIED,
+        );
+        foreach ( $content[ self::OPS_KEY ] as $op ) {
+            if ( ! is_array( $op ) || ! isset( $op['state'] ) ) {
+                return true;
+            }
+            if ( in_array( $op['state'], $live, true ) ) {
                 return true;
             }
         }
