@@ -215,6 +215,11 @@ $GLOBALS['__s2c_pass']    = 0;
 $GLOBALS['__s2c_fail']    = 0;
 function s2c_check( $name, $ok, $detail = '' ) {
     $GLOBALS['__s2c_results'][] = array( 'name' => $name, 'ok' => (bool) $ok, 'detail' => $detail );
+    // Drive the Agentshell_Test counters too so the run-all runner's
+    // pass/fail totals reflect these assertions.
+    if ( class_exists( 'Agentshell_Test' ) ) {
+        if ( $ok ) { \Agentshell_Test::$passed++; } else { \Agentshell_Test::$failed++; }
+    }
     if ( $ok ) { $GLOBALS['__s2c_pass']++; } else { $GLOBALS['__s2c_fail']++; }
     echo ( $ok ? '  ok  ' : '  FAIL' ) . '  ' . $name . ( $detail ? '  [' . $detail . ']' : '' ) . "\n";
 }
@@ -959,4 +964,7 @@ s2c_check(
 echo "\n--- STAGE 2C FOUNDATION SUMMARY ---\n";
 echo "{$GLOBALS['__s2c_pass']} pass / {$GLOBALS['__s2c_fail']} fail\n";
 echo "db_error_count=" . $GLOBALS['__s2c_db_errors'] . "\n";
-exit( $GLOBALS['__s2c_fail'] === 0 ? 0 : 1 );
+// Note: no exit() here. The run-all runner manages process lifecycle; the
+// standalone invocation in `php tests/stage-2c-foundation-test.php` ends
+// naturally at the file's closing tag, and run-all continues into the
+// next suite.

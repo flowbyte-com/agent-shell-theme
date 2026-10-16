@@ -299,6 +299,13 @@ $suites = array(
     'browser-trust'        => __DIR__ . '/browser-trust-test.php',
     'configurator-state'   => __DIR__ . '/run-configurator-state.php',
     'mutation-sandbox'     => __DIR__ . '/mutation-sandbox-test.php',
+    // Stage 2c Milestone 1: the journal/claim foundation. Unit-only.
+    'stage-2c-foundation'  => __DIR__ . '/stage-2c-foundation-test.php',
+    // Stage 2c Milestone 2: private-shadow creation, successive authorised
+    // edits, idempotency. Unit-only; needs the wp_insert_post/wp_update_post
+    // stubs defined inline. Runs after journal-recovery so the postmeta
+    // store is already in memory if it ever needs to be.
+    'stage-2c-shadow'      => __DIR__ . '/stage-2c-shadow-test.php',
 );
 
 $total_passed   = 0;
