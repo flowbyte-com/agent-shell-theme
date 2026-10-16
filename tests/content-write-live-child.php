@@ -33,8 +33,28 @@ use AgentShell_MCP\Content_Write_Guard;
 
 global $wpdb;
 
+// Precondition: close any stale `live *` transaction left on the
+// site by a prior crashed run. The Stage 1b "refuses inside a
+// transaction" guard on every content tool would otherwise fire on
+// every test call. See `tests/agentshell-live-precondition.php` for
+// the full rationale. Refusals (non-test transaction, applied-work
+// orphan) are recorded in the report and the suite skips its
+// destructive work.
+require_once __DIR__ . '/agentshell-live-precondition.php';
+$pre = agentshell_live_precondition();
+if ( ! empty( $pre['ok'] ) && 'none' !== $pre['action'] ) {
+    fwrite( STDERR, "precondition: {$pre['action']} (tx={$pre['tx_id']} label={$pre['tx_label']})\n" );
+} elseif ( empty( $pre['ok'] ) ) {
+    fwrite( STDERR, "precondition: REFUSED {$pre['action']} (tx={$pre['tx_id']} label={$pre['tx_label']})\n" );
+    $f['precondition_refused'] = $pre;
+    file_put_contents( $report, json_encode( $f ) );
+    echo "reported\n";
+    exit( 0 );
+}
+
 $token = 'AScw' . substr( md5( (string) ( time() . getmypid() . random_int( 1, 1e9 ) ) ), 0, 8 );
 $f     = array();
+$f['precondition'] = $pre;
 $mine  = array();
 
 // Run-scoped fixture tracker — exact-id registry with try/finally

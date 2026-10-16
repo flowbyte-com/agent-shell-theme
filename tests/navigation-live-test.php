@@ -21,6 +21,7 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/agentshell-test-bed.php';
 require_once __DIR__ . '/wp-live.php';
 
 echo "live navigation registration (real WordPress)\n";

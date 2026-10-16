@@ -2591,7 +2591,7 @@ if ( ! empty( $new_markers ) ) {
     }
 }
 
-$stray_count = count( array_diff( $current_marker_values, $saved_marker_values ) );
+$stray_count = count( $current_marker_values );
 
 $f['cleanup'] = array(
     'rows_remaining'       => count( jr_rows_for( $token ) ),
