@@ -72,23 +72,23 @@ add_action( 'after_switch_theme', 'agentshell_theme_activation' );
  * Enqueue theme assets
  */
 function agentshell_enqueue_assets() {
-    // Deregister WordPress core styles that conflict with agent shell
-    wp_deregister_style( 'wp-block-library' );
-    wp_deregister_style( 'wp-block-library-theme' );
-    wp_deregister_style( 'wp-block-style' );
+    // Deregister only the admin-only styles whose CSS is not for the
+    // front end. WordPress core decides which front-end block-library
+    // styles to load (wp-block-library, wp-block-library-theme,
+    // wp-block-style, wp-emoji-styles, wp-img-autosizes,
+    // classic-theme-styles, global-styles) — we no longer pre-empt
+    // core's loading, so Gutenberg content picks up its WP-default
+    // styling while custom theme tokens (loaded after, via
+    // agentshell_inject_saved_styles) still win the cascade.
     wp_deregister_style( 'wp-components' );
     wp_deregister_style( 'wp-editor' );
     wp_deregister_style( 'wp-format-library' );
     wp_deregister_style( 'wp-nux' );
     wp_deregister_style( 'wp-list-reusable-blocks' );
-    wp_deregister_style( 'wp-emoji-styles' );
-    wp_deregister_style( 'wp-img-autosizes' );
-    wp_deregister_style( 'classic-theme-styles' );
-    wp_deregister_style( 'global-styles' );
 
-    // Remove the wp-img-autosizes inline style that gets printed separately
-    remove_action( 'wp_enqueue_scripts', 'wp_enqueue_global_styles' );
-    remove_action( 'wp_enqueue_scripts', 'wp_enqueue_block_template_styles' );
+    // Legacy deprecated printer that double-loads older stylesheets.
+    // Front-end block / global / template actions are no longer
+    // suppressed — let core decide what is needed.
     remove_action( 'wp_enqueue_scripts', 'wp_print_styles' );
     add_filter( 'wp_resource_hints', function( $urls, $relation_type ) {
         if ( 'dns-prefetch' === $relation_type ) {
@@ -859,8 +859,12 @@ add_action( 'widgets_init', 'agentshell_register_widget_areas' );
 
 // Strip unwanted WordPress inline styles from head - runs last at wp_head
 function agentshell_cleanup_wp_head() {
-    remove_action( 'wp_head', 'wp_enqueue_global_styles' );
-    remove_action( 'wp_head', 'wp_enqueue_block_template_styles' );
+    // The deprecated wp_print_styles printer double-loads legacy styles.
+    // wp_print_font_measure_styles is also a redundant printer.
+    // The wp_enqueue_global_styles and wp_enqueue_block_template_styles
+    // actions are no longer suppressed — they are the supported
+    // mechanism for theme.json and block-template CSS, and WordPress
+    // core decides when each fires.
     remove_action( 'wp_head', 'wp_print_styles' );
     remove_action( 'wp_head', 'wp_print_font_measure_styles' );
 }
