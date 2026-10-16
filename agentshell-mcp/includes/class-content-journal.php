@@ -136,9 +136,81 @@ class Content_Journal {
     const OP_EDIT_EXISTING_DRAFT = 'edit_existing_draft';
 
     /**
+     * Stage 2c. The first op that touches a *published* post.
+     *
+     * The four supported fields are the only ones this op may
+     * change: `post_title`, `post_content`, `post_excerpt`,
+     * `post_name`. Everything else (post_status, post_parent,
+     * post_author, post_password, post_mime_type, post_date,
+     * comment_status, ping_status, menu_order,
+     * post_content_filtered, meta_input, taxonomy, featured
+     * image, custom fields, navigation menus) is refused by
+     * the validator. The narrow scope is deliberate: a wider
+     * surface area would have to define inverse operations for
+     * each field, and that is the next stage's problem, not
+     * this one's.
+     *
+     * The op's `before` is the **strong immutable baseline** of
+     * the *original* post at the moment the claim was taken —
+     * the post's type, status, name, title, content, excerpt,
+     * `post_date_gmt`, `post_modified_gmt`, and a SHA-256 of
+     * `post_content` plus a content length. This is what
+     * `agentshell_publish_edit`'s write-and-verify-C check
+     * compares against to detect an external editor's
+     * intervening update. It is *not* the head of an OCC
+     * chain; the original is not under transaction control
+     * (the staging happens on a private shadow), so there is
+     * no OCC chain. There is one baseline, captured at
+     * claim time, and one final compare against it at
+     * publish time.
+     *
+     * The op's `after` carries the staged values the shadow
+     * holds at the moment of the last `edit_published` call.
+     * Each successive authorised edit re-writes the
+     * shadow's four fields and re-records the op's `after`
+     * in the same guarded write.
+     *
+     * The op's state machine is the eight-state model from
+     * §1.7: `staged` (entry), `publication_in_progress`
+     * (transient in-memory), `publication_committed` (atomic
+     * with the wp_update_post in §1.4 step 4),
+     * `reconciliation_pending`, `publication_settled`,
+     * `compensated`, `conflict`, `abandoned`. The recovery
+     * engine distinguishes `publication_committed` (the
+     * publication has landed) from any other state (it has
+     * not).
+     *
+     * Distinct from `OP_UPDATE_DRAFT` because (a) the
+     * before-image is the *original*'s state, not the
+     * *shadow*'s, and conflating them would force
+     * `verify_post` to branch on a flag, and (b) the
+     * compensation contract is "publish to the database,
+     * not delete a draft".
+     */
+    const OP_EDIT_PUBLISHED = 'edit_published';
+
+    /**
+     * The four fields an OP_EDIT_PUBLISHED may stage.
+     *
+     * Used by the validator to refuse any other field at
+     * attach time, and by the publish tool's
+     * write-and-verify-C step to know which fields to
+     * write via `wp_update_post`. Listed in the order
+     * the publish tool passes them to `wp_update_post`,
+     * which is the order WP's meta cache and term cache
+     * see them.
+     */
+    const EDIT_PUBLISHED_FIELDS = array(
+        'post_title',
+        'post_content',
+        'post_excerpt',
+        'post_name',
+    );
+
+    /**
      * Operation types this build is willing to compensate.
      *
-     * Deliberately three entries. Every other type the design document
+     * Deliberately four entries. Every other type the design document
      * discusses is recorded nowhere and compensated by nothing, and
      * `Content_Recovery` refuses an operation that is not in this list
      * rather than guessing at an inverse. Adding a row here is the commit
@@ -149,6 +221,7 @@ class Content_Journal {
         self::OP_CREATE_DRAFT,
         self::OP_UPDATE_DRAFT,
         self::OP_EDIT_EXISTING_DRAFT,
+        self::OP_EDIT_PUBLISHED,
     );
 
     /** The journal's key inside $tx['content']. */
@@ -208,6 +281,51 @@ class Content_Journal {
      */
     const STATE_CLAIMED = 'claimed';
 
+    // ── Stage 2c OP_EDIT_PUBLISHED states ─────────────────────────────────
+    //
+    // The eight-state model from docs/STAGE-2C-DESIGN.md §1.7. The first
+    // five are durable states recorded on the journal row; the
+    // `publication_in_progress` state is an in-memory marker that lives
+    // only for the lifetime of the §1.4 SQL transaction. Recovery never
+    // sees `publication_in_progress` — a crash closes the connection,
+    // InnoDB ROLLBACKs, the marker disappears, and the recovery engine
+    // sees `staged` (unpublished) or `publication_committed` (published).
+    //
+    // The §1.7 state machine exists so the recovery engine can
+    // distinguish a committed publication from unpublished staging
+    // without trusting anything but the journal's own state field.
+
+    /** Entry state: shadow written, claim held, original untouched. */
+    const STATE_STAGED = 'staged';
+
+    /**
+     * Transient in-memory marker. The §1.4 SQL transaction is
+     * open. Not a durable state — never read by recovery. Listed
+     * here so `validate()` permits a record written mid-publish
+     * to be inspected while the transaction is still in flight.
+     */
+    const STATE_PUBLICATION_IN_PROGRESS = 'publication_in_progress';
+
+    /**
+     * The §1.4 SQL transaction COMMITted; the original is
+     * published; the shadow still exists; reconciliation is owed.
+     * Written by COMMIT, not before; a ROLLBACK rolls it back.
+     */
+    const STATE_PUBLICATION_COMMITTED = 'publication_committed';
+
+    /**
+     * One or more of the three reconciliation steps (shadow
+     * delete, cache invalidation, audit) failed. The op is in
+     * this state until a retry succeeds.
+     */
+    const STATE_RECONCILIATION_PENDING = 'reconciliation_pending';
+
+    /** All three reconciliation steps completed; the op is fully done. */
+    const STATE_PUBLICATION_SETTLED = 'publication_settled';
+
+    /** The transaction's lease expired without commit or rollback. */
+    const STATE_ABANDONED = 'abandoned';
+
     const STATES = array(
         self::STATE_INTENDED,
         self::STATE_APPLIED,
@@ -216,6 +334,12 @@ class Content_Journal {
         self::STATE_CONFLICT,
         self::STATE_PARTIAL_APPLIED,
         self::STATE_CLAIMED,
+        self::STATE_STAGED,
+        self::STATE_PUBLICATION_IN_PROGRESS,
+        self::STATE_PUBLICATION_COMMITTED,
+        self::STATE_RECONCILIATION_PENDING,
+        self::STATE_PUBLICATION_SETTLED,
+        self::STATE_ABANDONED,
     );
 
     /**
@@ -573,18 +697,31 @@ class Content_Journal {
         // recovery to accept it as ours.
         $after['op_meta_value'] = $id;
 
+        // OP_EDIT_PUBLISHED enters in the `staged` state, not
+        // `intended`. The §1.7 state machine gives the op a
+        // dedicated entry point: the shadow is written, the claim
+        // is held, the original is untouched, and the op is
+        // durably recorded. `intended` is the *creation* entry
+        // state for create_draft / update_draft /
+        // edit_existing_draft, where the post is not yet on disk.
+        $entry_state = ( self::OP_EDIT_PUBLISHED === $op )
+            ? self::STATE_STAGED
+            : self::STATE_INTENDED;
+
         return array(
             'id'          => $id,
             'op'          => (string) $op,
             'v'           => self::VERSION,
-            'state'       => self::STATE_INTENDED,
+            'state'       => $entry_state,
             'actor'       => null === $actor ? Store::actor() : (string) $actor,
             'recorded_at' => $now,
             'updated_at'  => $now,
             'target'      => $target,
             // A creation has no prior state to record. Stated explicitly rather
             // than left as an empty array so that a reader cannot mistake an
-            // absent pre-image for one that was lost.
+            // absent pre-image for one that was lost. OP_EDIT_PUBLISHED
+            // overwrites this with the strong immutable baseline (see
+            // capture_edit_published_baseline()).
             'before'      => null,
             'after'       => $after,
             // 0 means "no id was ever learned", which is a real and common
@@ -595,6 +732,89 @@ class Content_Journal {
             'comp'        => null,
             'notes'       => array(),
         );
+    }
+
+    /**
+     * Capture the strong immutable baseline (baseline-A) of the original
+     * for an OP_EDIT_PUBLISHED op.
+     *
+     * Read the live original post and record its state as the
+     * `before` field of the op. The fields captured are exactly
+     * those the publish tool's write-and-verify-C step
+     * compares against, plus the identity fields that let
+     * recovery locate the post again:
+     *
+     *   - `post_type` — the original's post type. Recovery
+     *     refuses if a successor transaction's post type
+     *     differs.
+     *   - `post_status` — the original's status at capture
+     *     time. A draft the operator later publishes out of
+     *     band is detected by the publish revalidation.
+     *   - `post_title` — the original's title at capture
+     *     time.
+     *   - `post_content` — the original's content at
+     *     capture time. The publish step re-hashes this
+     *     and compares against `post_content_sha256`.
+     *   - `post_excerpt` — the original's excerpt at
+     *     capture time. The publish step re-reads this.
+     *   - `post_name` — the original's slug at capture
+     *     time. The publish step re-reads this.
+     *   - `post_date_gmt` — the original's post date in
+     *     GMT. Acts as the creation-time anchor that an
+     *     edit cannot silently change.
+     *   - `post_modified_gmt` — the original's modified
+     *     time in GMT. Fast pre-check; not the strong
+     *     evidence (a same-second edit leaves it
+     *     unchanged).
+     *   - `post_content_sha256` — SHA-256 of the original's
+     *     `post_content` at capture time. The strong
+     *     evidence.
+     *   - `post_content_length` — sanity check that the
+     *     post the publish step is hashing is the one
+     *     the journal hashed.
+     *   - `op_meta_value` — the op's marker id. The
+     *     baseline carries the op id (not a separate
+     *     shadow marker) so a record-keeping reader can
+     *     match the op to its baseline by equality.
+     *
+     * Returns the captured baseline, or throws if the original
+     * cannot be loaded (e.g. it was deleted between the
+     * caller's id check and this capture).
+     *
+     * @param int $original_id The original post id.
+     * @return array The baseline image.
+     */
+    public static function capture_edit_published_baseline( $original_id, $now = null ) {
+        $original_id = (int) $original_id;
+        if ( $original_id < 1 ) {
+            throw new \InvalidArgumentException(
+                'capture_edit_published_baseline requires a positive original id; got ' . $original_id . '.'
+            );
+        }
+        $post = get_post( $original_id );
+        if ( ! $post ) {
+            throw new \RuntimeException(
+                'capture_edit_published_baseline: the original post (id ' . $original_id
+                . ') could not be loaded. The post may have been deleted between the caller\'s '
+                . 'id check and the baseline capture.'
+            );
+        }
+        $now = ( null === $now ) ? Transaction_Manager::lease_now() : (int) $now;
+        $id  = self::new_op_id();
+        $baseline = array(
+            'post_type'            => (string) $post->post_type,
+            'post_status'          => (string) $post->post_status,
+            'post_title'           => (string) $post->post_title,
+            'post_content'         => (string) $post->post_content,
+            'post_excerpt'         => (string) $post->post_excerpt,
+            'post_name'            => (string) $post->post_name,
+            'post_date_gmt'        => (string) $post->post_date_gmt,
+            'post_modified_gmt'    => (string) $post->post_modified_gmt,
+            'post_content_sha256'  => hash( 'sha256', (string) $post->post_content ),
+            'post_content_length'  => strlen( (string) $post->post_content ),
+            'op_meta_value'        => $id,
+        );
+        return $baseline;
     }
 
     /**
@@ -855,12 +1075,18 @@ class Content_Journal {
             // after-image because compensation applies the before via
             // `wp_update_post` and must verify the live post first;
             // edit_existing_draft carries the *immutable baseline* in
-            // `before` and the post's state at first touch in `after`.
+            // `before` and the post's state at first touch in `after`;
+            // edit_published carries the *strong immutable baseline* of
+            // the original (the post the op is about to publish against)
+            // in `before`, and the staged values the shadow holds in
+            // `after`.
             $op_type = isset( $op['op'] ) ? (string) $op['op'] : '';
             if ( self::OP_UPDATE_DRAFT === $op_type ) {
                 $problems = array_merge( $problems, self::validate_update_draft( $op, $label ) );
             } elseif ( self::OP_EDIT_EXISTING_DRAFT === $op_type ) {
                 $problems = array_merge( $problems, self::validate_edit_existing_draft( $op, $label ) );
+            } elseif ( self::OP_EDIT_PUBLISHED === $op_type ) {
+                $problems = array_merge( $problems, self::validate_op_edit_published( $op, $label ) );
             }
         }
 
@@ -986,6 +1212,130 @@ class Content_Journal {
         );
         if ( '' === $state || ! in_array( $state, $lifecycle_states, true ) ) {
             $problems[] = $label . ' has state "' . $state . '"; edit_existing_draft ops are only valid in the lifecycle states.';
+        }
+        return $problems;
+    }
+
+    /**
+     * Structural checks specific to OP_EDIT_PUBLISHED.
+     *
+     * The op has TWO critical image fields:
+     *
+     *   - `before` — the *strong immutable baseline* of the
+     *     original (the live published post) at the moment the
+     *     claim was taken. The publish tool's write-and-verify-C
+     *     step compares the live original against this exact
+     *     image to detect an external editor's intervening
+     *     update. The fields it carries: `post_type`,
+     *     `post_status`, `post_title`, `post_content`,
+     *     `post_excerpt`, `post_name`, `post_date_gmt`,
+     *     `post_modified_gmt`, `post_content_sha256`,
+     *     `post_content_length`, `op_meta_value`. The hash is
+     *     the strong evidence; the modified time is the fast
+     *     pre-check.
+     *
+     *   - `after` — the four staged values the shadow holds
+     *     (post_title, post_content, post_excerpt, post_name).
+     *     Each successive authorised edit re-records this image
+     *     in the same guarded write. The publish tool reads
+     *     these values and passes them to `wp_update_post` as
+     *     the staged fields.
+     *
+     * `target.post_id` is the **original** the op is about to
+     * publish against. `target.shadow_id` is the private shadow
+     * that holds the staged values. `op_meta_value` is the
+     * marker the shadow carries; it is independent of the
+     * original's marker (the original is *not* under
+     * transaction control — only the shadow is).
+     *
+     * The op's `state` is the eight-state model from
+     * `docs/STAGE-2C-DESIGN.md` §1.7. The validator permits
+     * every state in the model so a recovery-driven transition
+     * (`staged` → `publication_in_progress` →
+     * `publication_committed` → `reconciliation_pending` →
+     * `publication_settled`, or `staged` → `compensated`, or
+     * `staged` → `conflict`, or any state → `abandoned`) is
+     * valid on disk. The validator's job is to refuse
+     * structurally-broken records, not to enforce the
+     * settlement lifecycle.
+     *
+     * @param array  $op    The op record.
+     * @param string $label Human-readable label for problem strings.
+     * @return array<int,string> Per-op problems; empty when well-formed.
+     */
+    private static function validate_op_edit_published( array $op, $label ) {
+        $problems = array();
+        if ( empty( $op['target']['original_id'] ) ) {
+            $problems[] = $label . ' has no target.original_id; the op does not name the post it is about to publish against.';
+        }
+        if ( empty( $op['target']['shadow_id'] ) ) {
+            $problems[] = $label . ' has no target.shadow_id; the op does not name the shadow that holds the staged values.';
+        }
+        if ( ! is_array( $op['before'] ?? null ) ) {
+            $problems[] = $label . ' has no before-image; publish cannot revalidate baseline-A without the immutable original state.';
+            return $problems;
+        }
+        // The strong immutable baseline. Every field the
+        // write-and-verify-C step compares against must be
+        // present; an incomplete baseline would make the
+        // publish step a guess, not a verification.
+        $baseline_required = array(
+            'post_type',
+            'post_status',
+            'post_title',
+            'post_content',
+            'post_excerpt',
+            'post_name',
+            'post_date_gmt',
+            'post_modified_gmt',
+            'post_content_sha256',
+            'post_content_length',
+            'op_meta_value',
+        );
+        foreach ( $baseline_required as $needed ) {
+            if ( ! array_key_exists( $needed, $op['before'] ) ) {
+                $problems[] = $label . ' has no before.' . $needed . '; the publish revalidation would be a guess.';
+            }
+        }
+        // The staged values the shadow holds. Only the four
+        // supported fields, and `op_meta_value` (the shadow's
+        // own marker, so the publish step can confirm the
+        // shadow is still the one the op names).
+        $after_required = array(
+            'post_title',
+            'post_content',
+            'post_excerpt',
+            'post_name',
+            'op_meta_value',
+        );
+        foreach ( $after_required as $needed ) {
+            if ( ! array_key_exists( $needed, $op['after'] ) ) {
+                $problems[] = $label . ' has no after.' . $needed . '; the publish step would not know what to write.';
+            }
+        }
+        // `original_id` and `shadow_id` must match the baseline's
+        // `op_meta_value` semantics: the baseline is for the
+        // original (the post the op publishes *against*); the
+        // shadow's marker is on the after.
+        if ( isset( $op['before']['op_meta_value'], $op['after']['op_meta_value'] )
+            && (string) $op['before']['op_meta_value'] !== ''
+            && (string) $op['before']['op_meta_value'] === (string) $op['after']['op_meta_value'] ) {
+            $problems[] = $label . ' has the same op_meta_value in before and after; the baseline is for the original, the after is for the shadow. They must be different.';
+        }
+        $state = (string) ( $op['state'] ?? '' );
+        $lifecycle_states = array(
+            self::STATE_INTENDED,
+            self::STATE_STAGED,
+            self::STATE_PUBLICATION_IN_PROGRESS,
+            self::STATE_PUBLICATION_COMMITTED,
+            self::STATE_RECONCILIATION_PENDING,
+            self::STATE_PUBLICATION_SETTLED,
+            self::STATE_COMPENSATED,
+            self::STATE_CONFLICT,
+            self::STATE_ABANDONED,
+        );
+        if ( '' === $state || ! in_array( $state, $lifecycle_states, true ) ) {
+            $problems[] = $label . ' has state "' . $state . '"; edit_published ops are only valid in the Stage 2c lifecycle states.';
         }
         return $problems;
     }
