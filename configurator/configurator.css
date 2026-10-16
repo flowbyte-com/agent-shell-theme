@@ -389,6 +389,55 @@ body.config-panel-open {
     padding: 0.5rem;
 }
 
+#agentshell-config-panel .zone-slot-builder {
+    border-top: 1px solid var(--configurator-border);
+    padding: 0.4rem 0.5rem;
+}
+
+#agentshell-config-panel .zone-slot-builder:first-of-type {
+    border-top: 0;
+    padding-top: 0.25rem;
+}
+
+#agentshell-config-panel .slot-header {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--configurator-muted);
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+#agentshell-config-panel .zone-block-area {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    margin-top: 0.1rem;
+}
+
+#agentshell-config-panel .zb-area-label {
+    font-size: 0.7rem;
+    color: var(--configurator-muted);
+    font-weight: 500;
+}
+
+#agentshell-config-panel .zb-area-select {
+    width: 100%;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--configurator-input-border);
+    border-radius: 6px;
+    font-size: 0.8rem;
+    background: var(--configurator-input-bg);
+    color: var(--configurator-text);
+    box-sizing: border-box;
+}
+
+#agentshell-config-panel .zb-area-select:focus {
+    outline: none;
+    border-color: var(--theme-accent, #3b82f6);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
 #agentshell-config-panel .zone-block-actions {
     display: flex;
     gap: 0.2rem;
