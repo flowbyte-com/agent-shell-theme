@@ -39,6 +39,57 @@
  * a new file. The previous run's file is preserved until the next
  * run starts (so the parent sweep can find it), then atomically
  * renamed out of the way.
+ *
+ * Selection predicates (this is the contract — every site-mutating
+ * operation in the live test children goes through this class):
+ *
+ *   - **Posts** — `wp_delete_post( $id, true )` is called with the
+ *     exact `ID` the test recorded. The selection is by primary key,
+ *     not by title or content. A post whose `ID` is in the registry
+ *     is deleted; a post whose `ID` is not in the registry is
+ *     never touched by this code path, even if its title happens to
+ *     start with `ASTB`.
+ *   - **Post meta** — `wpdb->delete()` keyed by `(post_id, meta_key)`.
+ *     Selection is by the (post_id, meta_key) tuple the test recorded.
+ *   - **Options** — the previous value the test observed is restored,
+ *     or the option is deleted if the test recorded that it did not
+ *     exist before. The selection is by `option_name` (the registry
+ *     key); the value is whatever the test saw.
+ *   - **Menus** — `wp_delete_nav_menu( $id )` with the term id the
+ *     test recorded. Selection is by term id.
+ *   - **User meta** — `wpdb->delete()` keyed by
+ *     `(user_id, meta_key)`.
+ *
+ * Anything that is not in the registry is not deleted by `sweep()`.
+ * The end-of-suite leak assertion (in
+ * `tests/agentshell-leak-check-child.php`) is the
+ * *complementary* check: it counts and surfaces any rows that
+ * look like a per-run fixture but are not in any registry. A
+ * non-zero leak count is the operator's signal that the
+ * registry-based sweep was not sufficient.
+ *
+ * **Crash window between `wp_insert_post` and
+ * `register_post`.** A test that crashes (KILL -9) between the
+ * successful return of `wp_insert_post` and the call to
+ * `$fixtures->register_post()` leaves a post on the site that is
+ * not in the registry. The crash-recovery path for that gap is
+ * the **prefix-based title matching** in the leak-check child:
+ * the test child stamps its per-run token into `post_title`
+ * (`ASjr / AScw / ASNav / ASTB` prefixes), so a leaked post
+ * carries the token in its title even when no registry entry
+ * exists. The leak check at the end of the suite catches it.
+ * The fix is not to add the post id to the registry before the
+ * insert (we do not know it yet) — the fix is the title prefix
+ * plus the per-run token.
+ *
+ * **Whole-database reset.** No such operation exists in this
+ * test infrastructure. If one is added in a future stage, the
+ * rules it must obey are documented at the top of
+ * `tests/run-all.php` (test-bed gate) and the bootstrap at
+ * `tests/agentshell-test-bed.php` (the fail-closed check
+ * and the exclusive runner lock). A reset that operates
+ * without those gates is a regression of the safety
+ * contract.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -219,6 +270,16 @@ class Agentshell_Test_Fixtures {
      * The $wpdb argument is the caller's database handle. The function
      * uses $wpdb->delete() and wp_delete_post() (when available) so
      * the teardown uses the same path the test would have used.
+     *
+     * **Selection predicates** — `sweep()` only touches what is in
+     * the registry. It does not run any LIKE or prefix-based query
+     * against the live site. A post that is not in the registry is
+     * never deleted by this function, even if its title happens to
+     * start with `ASTB`. A pre-existing row on the test site that
+     * the test merely read (and did not record) is also never
+     * touched. The end-of-suite leak check is the
+     * complementary assertion that surfaces such rows; the
+     * sweep is intentionally not a broad cleanup.
      */
     public static function sweep( $path, $wpdb ) {
         $r = self::load( $path );

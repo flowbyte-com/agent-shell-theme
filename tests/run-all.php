@@ -133,6 +133,39 @@ if ( is_array( $test_bed_cfg ) ) {
     }
 }
 
+// ── exclusive runner lock ──────────────────────────────────────────────────
+// Once the test-bed check has passed, take the exclusive MySQL named
+// advisory lock for the test instance. Two concurrent `php
+// tests/run-all.php` invocations would both pass the fail-closed check
+// and then both mutate the test database — the lock prevents that.
+// The lock is held by the runner's mysqli connection for the lifetime
+// of the process; the matching `agentshell_test_bed_unlock` (called
+// via `register_shutdown_function` below) releases it on graceful
+// exit, and a KILL -9 of the runner releases it implicitly when the
+// server closes the dropped connection. There is no "stale lock"
+// failure mode analogous to a stale file lock.
+//
+// This is the *only* mechanism that prevents two runners from racing
+// against the same test instance. The fail-closed check above
+// verifies the *site*; the lock verifies the *run*. Both are
+// required.
+$test_bed_lock_held = false;
+if ( is_array( $test_bed_check ) && $test_bed_check['ok'] ) {
+    if ( ! agentshell_test_bed_lock( $test_bed_cfg, $test_bed_check, 0 ) ) {
+        fwrite( STDERR, "\n[test-bed] ANOTHER RUNNER HOLDS THE EXCLUSIVE LOCK — refusing to run\n" );
+        fwrite( STDERR, "[test-bed] another `run-all.php` is currently executing against this test instance.\n" );
+        fwrite( STDERR, "[test-bed] the lock is held by the runner's MySQL connection; it is released\n" );
+        fwrite( STDERR, "[test-bed] on process exit (or on KILL -9, when the server drops the connection).\n" );
+        fwrite( STDERR, "[test-bed] wait for the in-flight run to finish, then re-run.\n\n" );
+        exit( 3 );
+    }
+    $test_bed_lock_held = true;
+    echo "[test-bed] exclusive runner lock: ok\n";
+    register_shutdown_function( function () {
+        agentshell_test_bed_unlock();
+    } );
+}
+
 $agentshell_repo_before = agentshell_repo_snapshot();
 
 $suites = array(

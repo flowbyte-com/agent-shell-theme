@@ -96,13 +96,24 @@ $ACTOR = 'live-recovery-probe';
 $saved_transaction = get_option( Tx::KEY, null );
 $saved_audit       = get_option( Store::AUDIT_KEY, null );
 // The number of journal-marker meta rows on the site before the test
-// ran. A child whose prior runs crashed mid-test may have left markers
-// on the site; the cleanup must restore the count to this number, not
-// to zero. The invariant is "the site is left exactly as it was found".
-$saved_marker_count = (int) $wpdb->get_var( $wpdb->prepare(
-    "SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value LIKE %s",
-    Content_Journal::OP_META, 'op_%'
-) );
+// ran, plus the actual marker VALUES that were present. A child whose
+// prior runs crashed mid-test may have left markers on the site; the
+// cleanup must restore the count to this number, not to zero. The
+// invariant is "the site is left exactly as it was found". A
+// count alone is not enough: the cleanup narrows its selection to
+// markers whose `meta_value` is NOT in the saved set, so a marker
+// that pre-existed on the site (e.g. a real production draft that
+// a previous test left behind) is preserved across runs, and a
+// marker that this run created is removed. This is the
+// exact-value counterpart to the LIKE-based sweep it replaces.
+$saved_marker_values = array_map(
+    'strval',
+    (array) ( $wpdb->get_col( $wpdb->prepare(
+        "SELECT DISTINCT meta_value FROM {$wpdb->postmeta} WHERE meta_key = %s",
+        Content_Journal::OP_META
+    ) ) ?: array() )
+);
+$saved_marker_count  = count( $saved_marker_values );
 
 // The journal-recovery-live suite is destructive by design: it commits
 // (which deletes the option row), rolls back (which deletes the option
@@ -2514,44 +2525,73 @@ clean_post_cache( 0 );
 wp_cache_flush();
 
 // Restore the site to the state it was in when this child started.
-// If a previous run left orphaned marker-bearing posts on the site
-// (e.g. a child that crashed before its cleanup), this run also
-// cleans those up so the count matches `saved_marker_count` (the
-// number of marker rows present when the child began). The invariant
-// is "the site is left exactly as it was found", not "no markers
-// remain"; the test's own posts and the pre-existing orphans are
-// both part of the cleanup.
-$current_marker_count = (int) $wpdb->get_var( $wpdb->prepare(
-    "SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value LIKE %s",
-    Content_Journal::OP_META, 'op_%'
-) );
-if ( $current_marker_count > $saved_marker_count ) {
-    $orphans = array_map( 'intval', $wpdb->get_col( $wpdb->prepare(
-        "SELECT DISTINCT post_id FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value LIKE %s",
-        Content_Journal::OP_META, 'op_%'
-    ) ) ?: array() );
+// The cleanup is exact-value: it identifies the markers this run
+// created by computing the set difference between the markers now
+// on the site and the markers present when the child began
+// ($saved_marker_values). A pre-existing marker — for example, a
+// production draft that a real user marked through the recovery
+// tool, or a marker left behind by a different test run with a
+// different op namespace — is NEVER deleted by this code path,
+// because its `meta_value` is in the saved set. A marker this run
+// created (a value not in the saved set) is deleted by primary
+// key, never by LIKE pattern. The selection predicate is the
+// `meta_value` set difference, not `meta_value LIKE 'op_%'`.
+//
+// The previous implementation used `LIKE 'op_%'` to find every
+// marker on the site, which would delete a production draft
+// carrying a legitimate journal marker. The exact-value form
+// prevents that. The crash window — a KILL -9 between
+// `wp_insert_post` and `$fixtures->register_post` — is still
+// caught by the prefix-based title matching in the end-of-suite
+// leak check (see `tests/agentshell-leak-check-child.php`); the
+// fixtures tracker does not know about the post in that window,
+// so the leak check is what surfaces it. The two paths are
+// complementary: the registry owns exact-id cleanup, the leak
+// check owns prefix-based discovery for the unrecorded-id case.
+$current_marker_values = array_map(
+    'strval',
+    (array) ( $wpdb->get_col( $wpdb->prepare(
+        "SELECT DISTINCT meta_value FROM {$wpdb->postmeta} WHERE meta_key = %s",
+        Content_Journal::OP_META
+    ) ) ?: array() )
+);
+$new_markers = array_values( array_diff( $current_marker_values, $saved_marker_values ) );
+
+if ( ! empty( $new_markers ) ) {
+    // Build an IN-clause of the new marker values. The set is
+    // small (the run created it) and bounded by the test's
+    // op namespace, so placeholder-per-value is correct and
+    // safe.
+    $placeholders = implode( ',', array_fill( 0, count( $new_markers ), '%s' ) );
+    $orphans = array_map(
+        'intval',
+        (array) ( $wpdb->get_col( $wpdb->prepare(
+            "SELECT DISTINCT post_id FROM {$wpdb->postmeta}
+              WHERE meta_key = %s AND meta_value IN ($placeholders)",
+            array_merge( array( Content_Journal::OP_META ), $new_markers )
+        ) ) ?: array() )
+    );
     foreach ( $orphans as $orphan_id ) {
         wp_delete_post( (int) $orphan_id, true );
     }
-    // If there are still markers after deleting those posts, the meta
-    // rows outlived the post (e.g. a row was deleted but its meta was
-    // kept); sweep them by meta_id.
+    // If there are still markers after deleting those posts, the
+    // meta rows outlived the post (e.g. a row was deleted but its
+    // meta was kept); sweep them by exact value, not by LIKE.
     $stragglers = (int) $wpdb->get_var( $wpdb->prepare(
-        "SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value LIKE %s",
-        Content_Journal::OP_META, 'op_%'
+        "SELECT COUNT(*) FROM {$wpdb->postmeta}
+          WHERE meta_key = %s AND meta_value IN ($placeholders)",
+        array_merge( array( Content_Journal::OP_META ), $new_markers )
     ) );
     if ( $stragglers > 0 ) {
         $wpdb->query( $wpdb->prepare(
-            "DELETE FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value LIKE %s",
-            Content_Journal::OP_META, 'op_%'
+            "DELETE FROM {$wpdb->postmeta}
+              WHERE meta_key = %s AND meta_value IN ($placeholders)",
+            array_merge( array( Content_Journal::OP_META ), $new_markers )
         ) );
     }
 }
 
-$stray_count = (int) $wpdb->get_var( $wpdb->prepare(
-    "SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value LIKE %s",
-    Content_Journal::OP_META, 'op_%'
-) );
+$stray_count = count( array_diff( $current_marker_values, $saved_marker_values ) );
 
 $f['cleanup'] = array(
     'rows_remaining'       => count( jr_rows_for( $token ) ),
