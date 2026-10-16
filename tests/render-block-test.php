@@ -32,14 +32,42 @@ Agentshell_Test::run(
 Agentshell_Test::run(
     'wp_widget_area block with id delegates to dynamic_sidebar',
     function () {
+        agentshell_test_reset();
         // We stub dynamic_sidebar in bootstrap; assert it was called with
         // the right id and the rendered block returns its echo buffer.
         $out = agentshell_render_block( array(
             'type' => 'wp_widget_area',
             'id'   => 'primary-sidebar',
         ) );
-        // Empty stub; just confirm no crash and string return type.
+        Agentshell_Test::assert_true(
+            in_array( 'primary-sidebar', $GLOBALS['_agentshell_test_dynamic_sidebar_calls'], true ),
+            'wp_widget_area must forward the saved id to dynamic_sidebar'
+        );
         Agentshell_Test::assert_equals( '', $out );
+    }
+);
+
+Agentshell_Test::run(
+    'wp_widget_area block in a slot — id is forwarded and populated area renders content',
+    function () {
+        agentshell_test_reset();
+        $GLOBALS['_agentshell_test_sidebar_widgets']['header-extra'] = array( 'calendar' => true );
+        $out = agentshell_render_zone( array(
+            'id'    => 'header',
+            'slots' => array(
+                'left'   => array( array( 'type' => 'wp_widget_area', 'id' => 'header-extra' ) ),
+                'center' => array(),
+                'right'  => array(),
+            ),
+        ) );
+        Agentshell_Test::assert_true(
+            in_array( 'header-extra', $GLOBALS['_agentshell_test_dynamic_sidebar_calls'], true ),
+            'tri-slot zone with wp_widget_area must forward the id to dynamic_sidebar'
+        );
+        Agentshell_Test::assert_true(
+            strpos( $out, 'widget-rendered' ) !== false,
+            'populated widget area must emit its content inside the slot wrapper'
+        );
     }
 );
 
@@ -194,6 +222,33 @@ Agentshell_Test::run(
         Agentshell_Test::assert_true(
             strpos( $html, 'No content found.' ) !== false,
             'empty composition must render the default wp_loop empty-state'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'empty wp_widget_area slot emits an empty wrapper that the grid-fix CSS collapses',
+    function () {
+        agentshell_test_reset();
+        $html = agentshell_render_zone( array(
+            'id'    => 'header',
+            'slots' => array(
+                'left'   => array( array( 'type' => 'wp_widget_area', 'id' => 'header-extra' ) ),
+                'center' => array(),
+                'right'  => array(),
+            ),
+        ) );
+        // The wrapper is still emitted (template-parts is read-only); the
+        // CSS rule in agentshell-grid-fix hides it. The renderer-level
+        // contract is: empty content goes inside the wrapper, no crash,
+        // dynamic_sidebar is forwarded the id.
+        Agentshell_Test::assert_true(
+            strpos( $html, '<div class="zone-slot slot-left"></div>' ) !== false,
+            'empty slot must still emit its wrapper (the CSS rule hides it; the wrapper itself is part of the grid protocol)'
+        );
+        Agentshell_Test::assert_true(
+            in_array( 'header-extra', $GLOBALS['_agentshell_test_dynamic_sidebar_calls'], true ),
+            'empty registered widget area must still call dynamic_sidebar'
         );
     }
 );

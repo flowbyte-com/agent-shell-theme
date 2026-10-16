@@ -750,6 +750,11 @@ function agentshell_inject_saved_styles() {
 
     // Structural prohibition: prevent agents from breaking the FSE layout
     // with position: fixed or absolute on zone containers.
+    // Also collapse empty zone slots so an empty registered widget area
+    // (header-extra / footer-extra / primary-sidebar) does not paint an
+    // empty decorative container. Replaces the plan's edit to
+    // template-parts/shell-render.php (protected file) with a CSS rule
+    // that achieves the same outcome.
     echo "<style id='agentshell-grid-fix'>
 #zone-header, #zone-main, #zone-footer {
     position: relative !important;
@@ -759,10 +764,98 @@ function agentshell_inject_saved_styles() {
     bottom: auto !important;
     z-index: auto !important;
 }
+.zone-slot:empty {
+    display: none;
+}
 </style>\n";
 }
 // Priority 100 ensures this prints AFTER style.css
 add_action( 'wp_head', 'agentshell_inject_saved_styles', 100 );
+
+/**
+ * Register the default WordPress widget areas available to AgentShell slots.
+ *
+ * Three areas ship by default — header-extra, footer-extra, and primary-sidebar.
+ * They are *available*, not auto-assigned: the default header keeps its
+ * site_logo / nav_menu / search_form arrangement and the default footer keeps
+ * its site_title / nav_menu / empty arrangement. Operators (or a transaction)
+ * place an area into a slot through the existing configurator. An empty
+ * registered area renders no visible content — the slot wrapper is collapsed
+ * by the `:empty` rule in agentshell-grid-fix below.
+ *
+ * The `agentshell_widget_areas` filter lets child themes and plugins add,
+ * remove, or reorder areas. The default list is the only starting point;
+ * removing an entry from the filtered list is the supported way to omit
+ * an area. A buggy filter that returns a non-array falls back to the
+ * defaults — silent failure of widget registration is unacceptable.
+ * A valid empty array `[]` is intentional and is respected (zero areas
+ * register). Each entry must be an array with a scalar id and name;
+ * malformed entries are silently skipped. Duplicate ids keep the first.
+ *
+ * @return void
+ */
+function agentshell_register_widget_areas() {
+    $defaults = array(
+        array(
+            'id'            => 'header-extra',
+            'name'          => __( 'Header — Extra', 'agentshell' ),
+            'description'   => __( 'Optional header slot. Operator assigns via the AgentShell configurator.', 'agentshell' ),
+            'before_widget' => '<div id="%1$s" class="widget %2$s">',
+            'after_widget'  => '</div>',
+            'before_title'  => '<h2 class="widget-title">',
+            'after_title'   => '</h2>',
+        ),
+        array(
+            'id'            => 'footer-extra',
+            'name'          => __( 'Footer — Extra', 'agentshell' ),
+            'description'   => __( 'Optional footer slot. Operator assigns via the AgentShell configurator.', 'agentshell' ),
+            'before_widget' => '<div id="%1$s" class="widget %2$s">',
+            'after_widget'  => '</div>',
+            'before_title'  => '<h2 class="widget-title">',
+            'after_title'   => '</h2>',
+        ),
+        array(
+            'id'            => 'primary-sidebar',
+            'name'          => __( 'Primary Sidebar', 'agentshell' ),
+            'description'   => __( 'Standard primary sidebar. Operator assigns via the AgentShell configurator.', 'agentshell' ),
+            'before_widget' => '<aside id="%1$s" class="widget %2$s">',
+            'after_widget'  => '</aside>',
+            'before_title'  => '<h2 class="widget-title">',
+            'after_title'   => '</h2>',
+        ),
+    );
+    /** Allow child themes and plugins to add / remove / reorder widget areas. */
+    $areas = apply_filters( 'agentshell_widget_areas', $defaults );
+
+    // A buggy filter that returns a non-array must NOT silently disable
+    // widget registration — fall back to the defaults. A valid empty array
+    // is intentional and is respected: zero areas will register.
+    if ( ! is_array( $areas ) ) {
+        $areas = $defaults;
+    }
+
+    // Defensive validation: each entry must be an array with scalar id
+    // and name. Bad entries are silently skipped, no PHP warning.
+    // Duplicate IDs keep the first.
+    $seen_ids = array();
+    foreach ( $areas as $area ) {
+        if ( ! is_array( $area ) ) {
+            continue;
+        }
+        $id   = isset( $area['id'] )   && is_scalar( $area['id'] )   ? sanitize_key( (string) $area['id'] ) : '';
+        $name = isset( $area['name'] ) && is_scalar( $area['name'] ) ? (string) $area['name']               : '';
+        if ( '' === $id || '' === $name ) {
+            continue;
+        }
+        if ( isset( $seen_ids[ $id ] ) ) {
+            continue;
+        }
+        $seen_ids[ $id ] = true;
+        $area['id']      = $id;
+        register_sidebar( $area );
+    }
+}
+add_action( 'widgets_init', 'agentshell_register_widget_areas' );
 
 // Strip unwanted WordPress inline styles from head - runs last at wp_head
 function agentshell_cleanup_wp_head() {
@@ -1928,6 +2021,33 @@ add_action( 'rest_api_init', function() {
             // Core WP components — now served by the same function used at render time
             $core_components = agentshell_get_core_components();
 
+            // Available widget areas — snapshot of $wp_registered_sidebars at
+            // request time. Surfaces child-theme and mu-plugin-registered
+            // areas alongside AgentShell's defaults so the configurator
+            // can present a single dropdown. The configurator preserves
+            // saved ids even when the area is no longer registered.
+            //
+            // Read the global directly: WP core exposes the global but
+            // older releases (e.g. 6.5) do not export a wrapper function.
+            // Newer releases add wp_registered_sidebars() — fall through
+            // to that if present.
+            $available_widget_areas = array();
+            $registered = ( function_exists( 'wp_registered_sidebars' ) )
+                ? wp_registered_sidebars()
+                : ( $GLOBALS['wp_registered_sidebars'] ?? array() );
+            if ( ! is_array( $registered ) ) {
+                $registered = array();
+            }
+            foreach ( $registered as $area_id => $area ) {
+                if ( ! is_string( $area_id ) ) {
+                    continue;
+                }
+                $available_widget_areas[] = array(
+                    'id'   => $area_id,
+                    'name' => ( is_array( $area ) && isset( $area['name'] ) ) ? (string) $area['name'] : $area_id,
+                );
+            }
+
             $schema = array(
                 'zones'           => array(
                     'type'  => 'array',
@@ -1979,12 +2099,13 @@ add_action( 'rest_api_init', function() {
             }
 
             return array(
-                'schema'             => $schema,
-                'defaults'           => $flat,
-                'config'             => $flat,
-                'zones'              => $zones,
-                'available_widgets'  => $available_widgets,
-                'core_components'    => $core_components,
+                'schema'                => $schema,
+                'defaults'              => $flat,
+                'config'                => $flat,
+                'zones'                 => $zones,
+                'available_widgets'     => $available_widgets,
+                'core_components'       => $core_components,
+                'available_widget_areas'=> $available_widget_areas,
             );
         },
         'permission_callback' => 'agentshell_rest_auth_callback',
