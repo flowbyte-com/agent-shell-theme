@@ -85,6 +85,9 @@ $test_bed_cfg     = agentshell_test_bed_load();
 $test_bed_check   = null;
 $test_bed_skipped = false;
 $test_bed_unverified = false;
+$test_bed_http_ok    = true;
+$test_bed_token      = '';
+$test_bed_identity   = '';
 if ( is_array( $test_bed_cfg ) ) {
     // The check talks to MySQL via the `mysqli` extension. When the runner
     // is invoked with a PHP that has no `mysqli` (e.g. the system CLI on
@@ -130,6 +133,45 @@ if ( is_array( $test_bed_cfg ) ) {
         foreach ( $test_bed_check['checks'] as $name => $r ) {
             echo "  $name: " . ( $r['ok'] ? 'ok' : 'FAIL' ) . ' ' . $r['detail'] . "\n";
         }
+
+        // ── HTTP identity handshake ────────────────────────────────────
+        // The 15-check CLI/DB check above proves the runner is talking
+        // to the right MySQL instance and the right wp_options row for
+        // siteurl. It does *not* prove the HTTP service resolves to the
+        // same installation. A config that pointed at a different
+        // WordPress on the same network — a clone of the dev site on a
+        // separate hostname, or a stale DNS record pointing at a
+        // long-gone server — would pass the CLI checks. The HTTP
+        // identity handshake closes that gap: the runner provisions a
+        // per-run token and identity, fetches the test-site REST
+        // endpoint, and asserts the response identity matches the
+        // value the runner just wrote to wp_options. The match proves
+        // HTTP and CLI read the same value from the same database.
+        $install = agentshell_test_bed_install_mu_plugin( $test_bed_cfg );
+        if ( ! $install['ok'] ) {
+            fwrite( STDERR, "\n[test-bed] MU-PLUGIN INSTALL FAILED — refusing to run\n" );
+            fwrite( STDERR, "[test-bed] reason: " . $install['reason'] . "\n" );
+            fwrite( STDERR, "[test-bed] the identity REST endpoint cannot be registered without\n" );
+            fwrite( STDERR, "[test-bed] the mu-plugin; the HTTP-side of the verification is missing.\n\n" );
+            exit( 2 );
+        }
+        $provision = agentshell_test_bed_provision_identity( $test_bed_cfg );
+        if ( ! $provision['ok'] ) {
+            fwrite( STDERR, "\n[test-bed] IDENTITY PROVISION FAILED — refusing to run\n" );
+            fwrite( STDERR, "[test-bed] reason: " . $provision['reason'] . "\n" );
+            fwrite( STDERR, "[test-bed] the runner could not write the per-run token and identity\n" );
+            fwrite( STDERR, "[test-bed] to wp_options; the HTTP handshake cannot complete.\n\n" );
+            exit( 2 );
+        }
+        $test_bed_token    = $provision['token'];
+        $test_bed_identity = $provision['identity'];
+        $http_check = agentshell_test_bed_check_http_identity( $test_bed_cfg, $provision['token'], $provision['identity'] );
+        if ( ! $http_check['ok'] ) {
+            echo "  http_identity: FAIL " . $http_check['detail'] . " (status=" . $http_check['status'] . ")\n";
+            $test_bed_http_ok = false;
+        } else {
+            echo "  http_identity: ok " . $http_check['detail'] . "\n";
+        }
     }
 }
 
@@ -164,6 +206,43 @@ if ( is_array( $test_bed_check ) && $test_bed_check['ok'] ) {
     register_shutdown_function( function () {
         agentshell_test_bed_unlock();
     } );
+}
+
+// ── preflight: crash-window leak check ──────────────────────────────────────
+// Once the lock is held, scan the test site for journal markers left
+// behind by a prior crashed run. The crash window is the gap between
+// `wp_insert_post` returning and the fixture tracker recording the
+// post id; a child that dies inside this window (KILL -9, PHP fatal,
+// OOM) leaves a journaled post on disk with no record in the
+// per-run registry. The preflight either restores the test site
+// from its verified baseline (destructive but bounded) or refuses
+// to run when an active recovery is in progress (the operator must
+// resolve it).
+//
+// The preflight runs under the lock so a parallel runner cannot see
+// mid-restore state. It does NOT introduce a generic prefix-based
+// delete: a baseline restore is a known-good state, not a delete-by-
+// prefix sweep. An active recovery is preserved; the option row
+// for a `live *` transaction with no applied work is closed via the
+// same value-guarded delete the live precondition uses, so the
+// restore does not have to deal with an open slot.
+if ( is_array( $test_bed_check ) && $test_bed_check['ok'] ) {
+    $preflight = agentshell_test_bed_preflight( $test_bed_cfg );
+    if ( ! $preflight['ok'] ) {
+        fwrite( STDERR, "\n[preflight] REFUSED — refusing to run\n" );
+        fwrite( STDERR, "[preflight] action: " . $preflight['action'] . "\n" );
+        fwrite( STDERR, "[preflight] detail: " . $preflight['detail'] . "\n" );
+        fwrite( STDERR, "[preflight] operator must resolve the open transaction or the leak\n" );
+        fwrite( STDERR, "[preflight] before re-running. The preflight does not delete any data;\n" );
+        fwrite( STDERR, "[preflight] it either restores the verified baseline (when no active\n" );
+        fwrite( STDERR, "[preflight] recovery is in progress) or refuses (when one is).\n\n" );
+        exit( 4 );
+    }
+    if ( 'clean' !== $preflight['action'] ) {
+        echo "[preflight] " . $preflight['action'] . ": " . $preflight['detail'] . "\n";
+    } else {
+        echo "[preflight] clean (no journal markers on the test site)\n";
+    }
 }
 
 $agentshell_repo_before = agentshell_repo_snapshot();
@@ -230,10 +309,11 @@ $skipped_suites = array();
 // Destructive live suites are gated on the fail-closed check having
 // actually run and passed. The list mirrors the four `-live-test.php`
 // files that spawn children against the test site. When the runner
-// is unverified (no mysqli extension in the runner's PHP) or the
-// check failed, these suites are replaced with an explicit
-// "skipped: not verified" pass so the report shows the destructive
-// verification as **unexecuted**, not as silently passing.
+// is unverified (no mysqli extension in the runner's PHP), the
+// check failed, or the HTTP identity handshake failed, these suites
+// are replaced with an explicit "skipped: not verified" pass so the
+// report shows the destructive verification as **unexecuted**, not
+// as silently passing.
 $destructive_live_suites = array(
     'content-write-live',
     'journal-recovery-live',
@@ -241,9 +321,29 @@ $destructive_live_suites = array(
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );
+$verification_http_fail  = ( is_array( $test_bed_cfg ) && ! $test_bed_http_ok );
 
 foreach ( $suites as $name => $path ) {
     echo "\n=== $name ===\n";
+    // Explicit "no test bed config" gate: when no test-bed.json is
+    // present, the destructive live suites (which spawn children
+    // against a real WordPress install) cannot run. The unit-only
+    // path is the legitimate default for `php tests/run-all.php`
+    // without a config; the destructive integration verification
+    // is opt-in. The skip is recorded in the report so the test
+    // output makes clear which suites are *integration* and which
+    // are unit-only.
+    if ( ! is_array( $test_bed_cfg ) && in_array( $name, $destructive_live_suites, true ) ) {
+        echo "  SKIPPED: no test-bed config — destructive integration suite requires\n";
+        echo "           a verified test installation. The unit-only mode is the\n";
+        echo "           legitimate default; the destructive path is opt-in via\n";
+        echo "           tests/config/test-bed.json.\n";
+        $skipped_suites[ $name ] = 'no_test_bed_config';
+        Agentshell_Test::$passed = 0;
+        Agentshell_Test::$failed = 0;
+        Agentshell_Test::summary();
+        continue;
+    }
     if ( $verification_unverified && in_array( $name, $destructive_live_suites, true ) ) {
         echo "  SKIPPED: runner is unverified (no mysqli in the runner's PHP).\n";
         echo "           Re-run with the test-bed's PHP to enable destructive verification.\n";
@@ -256,6 +356,17 @@ foreach ( $suites as $name => $path ) {
     if ( $verification_failed && in_array( $name, $destructive_live_suites, true ) ) {
         echo "  SKIPPED: fail-closed check failed (refusal: " . $test_bed_check['refusal'] . ").\n";
         $skipped_suites[ $name ] = 'failed_verification';
+        Agentshell_Test::$passed = 0;
+        Agentshell_Test::$failed = 0;
+        Agentshell_Test::summary();
+        continue;
+    }
+    if ( $verification_http_fail && in_array( $name, $destructive_live_suites, true ) ) {
+        echo "  SKIPPED: HTTP identity handshake failed — HTTP site is not the same\n";
+        echo "           installation as the CLI/DB path the runner verified. The\n";
+        echo "           destructive live suites are gated on the round-trip, not\n";
+        echo "           on hostname/port matching alone.\n";
+        $skipped_suites[ $name ] = 'failed_http_identity';
         Agentshell_Test::$passed = 0;
         Agentshell_Test::$failed = 0;
         Agentshell_Test::summary();
@@ -328,6 +439,10 @@ if ( is_array( $test_bed_cfg ) ) {
         echo "           Re-run with the test-bed's PHP to enable the leak assertion.\n";
     } elseif ( $verification_failed ) {
         echo "  SKIPPED: fail-closed check failed (refusal: " . $test_bed_check['refusal'] . ").\n";
+    } elseif ( ! $test_bed_http_ok ) {
+        echo "  SKIPPED: HTTP identity handshake failed — the leak check runs against\n";
+        echo "           the test database via the same identity path; if HTTP and\n";
+        echo "           CLI do not agree, the leak check cannot run with confidence.\n";
     } else {
         $leak_report = sys_get_temp_dir() . '/agentshell-leak-check-' . getmypid() . '.json';
         @unlink( $leak_report );

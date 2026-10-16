@@ -530,3 +530,371 @@ function agentshell_test_bed_unlock() {
     }
     $held = null;
 }
+
+/**
+ * Install the test-only identity mu-plugin on the test site.
+ *
+ * The mu-plugin is the test-side half of the HTTP identity handshake.
+ * It registers a REST endpoint that returns the test site's identity
+ * string when called with the per-run token. Without it, the runner
+ * can only verify CLI/DB identity and a generic "is this a WordPress
+ * site" HTTP probe — which a clone of the dev site on a different
+ * hostname would pass. With it, the runner can prove HTTP and CLI
+ * read the same value from the same database.
+ *
+ * The install is idempotent: a fresh copy is written every time. The
+ * mu-plugin source is in tests/mu-plugins/agentshell-test-identity.php
+ * in this checkout. The install path on the test site is
+ * <wp_root>/wp-content/mu-plugins/agentshell-test-identity.php.
+ *
+ * The mu-plugins directory is created if absent. The install refuses
+ * to run if wp_root does not exist or is not writable; the caller must
+ * interpret the failure as a refuse-to-run condition.
+ *
+ * @param array $cfg Test-bed config.
+ * @return array { ok: bool, path: string, reason: string }
+ */
+function agentshell_test_bed_install_mu_plugin( array $cfg ) {
+    $wp_root = isset( $cfg['wp_root'] ) ? (string) $cfg['wp_root'] : '';
+    if ( '' === $wp_root || ! is_dir( $wp_root . '/wp-content' ) ) {
+        return array( 'ok' => false, 'path' => '', 'reason' => 'wp_root has no wp-content directory' );
+    }
+    $src = __DIR__ . '/mu-plugins/agentshell-test-identity.php';
+    if ( ! is_file( $src ) ) {
+        return array( 'ok' => false, 'path' => '', 'reason' => 'mu-plugin source missing in test infrastructure: ' . $src );
+    }
+    $dst_dir = $wp_root . '/wp-content/mu-plugins';
+    $dst     = $dst_dir . '/agentshell-test-identity.php';
+    if ( ! is_dir( $dst_dir ) ) {
+        // mu-plugins is not standard; LocalWP does not create it. Make
+        // it on demand. A mkdir that fails here is a refuse-to-run
+        // condition: the test site is not in a state we can extend.
+        if ( ! @mkdir( $dst_dir, 0755, true ) && ! is_dir( $dst_dir ) ) {
+            return array( 'ok' => false, 'path' => '', 'reason' => 'cannot create ' . $dst_dir );
+        }
+    }
+    $bytes = @file_get_contents( $src );
+    if ( ! is_string( $bytes ) ) {
+        return array( 'ok' => false, 'path' => $dst, 'reason' => 'cannot read mu-plugin source' );
+    }
+    // Idempotent overwrite: every run replaces the file with the
+    // current test-infrastructure copy, so an in-place edit lands on
+    // the test site on the next run.
+    if ( false === @file_put_contents( $dst, $bytes ) ) {
+        return array( 'ok' => false, 'path' => $dst, 'reason' => 'cannot write mu-plugin to ' . $dst );
+    }
+    return array( 'ok' => true, 'path' => $dst, 'reason' => '' );
+}
+
+/**
+ * Provision a per-run token and identity on the test site.
+ *
+ * The token gates the HTTP identity endpoint; only requests with the
+ * matching `X-AgentShell-Test-Token` header receive a response. The
+ * identity is the value the endpoint returns. The test runner writes
+ * both to the test site's wp_options table directly (it already has
+ * the DB credentials and the mysqli extension), then later fetches
+ * the endpoint and asserts the round-trip.
+ *
+ * The provision is per-run: a fresh 32-byte hex token and identity
+ * are generated every call. The previous run's values are
+ * overwritten, so an old token from a prior run is automatically
+ * invalid.
+ *
+ * The values are also returned to the caller so the HTTP check can
+ * verify the round-trip without a second DB read.
+ *
+ * @param array $cfg  Test-bed config.
+ * @return array { ok: bool, token: string, identity: string, reason: string }
+ */
+function agentshell_test_bed_provision_identity( array $cfg ) {
+    if ( ! class_exists( 'mysqli' ) ) {
+        return array( 'ok' => false, 'token' => '', 'identity' => '', 'reason' => 'mysqli not available' );
+    }
+    $db_host = isset( $cfg['db']['host'] ) ? (string) $cfg['db']['host'] : 'localhost';
+    $socket  = isset( $cfg['db']['socket'] ) ? (string) $cfg['db']['socket'] : '';
+    $user    = isset( $cfg['db']['user'] ) ? (string) $cfg['db']['user'] : '';
+    $pass    = isset( $cfg['db']['password'] ) ? (string) $cfg['db']['password'] : '';
+    $db_name = isset( $cfg['db']['name'] ) ? (string) $cfg['db']['name'] : '';
+    $prefix  = isset( $cfg['expect']['wp_table_prefix'] ) ? (string) $cfg['expect']['wp_table_prefix'] : 'wp_';
+    $mysqli  = @new mysqli( $db_host, $user, $pass, $db_name, 0, $socket );
+    if ( ! ( $mysqli instanceof mysqli ) || $mysqli->connect_errno ) {
+        return array( 'ok' => false, 'token' => '', 'identity' => '', 'reason' => 'cannot connect to test DB' );
+    }
+    $token    = bin2hex( random_bytes( 16 ) );
+    $identity = bin2hex( random_bytes( 16 ) );
+    $opts     = $prefix . 'options';
+    // Upsert by option_name. The values are stored as the raw hex
+    // string; the REST endpoint reads them back verbatim. Using
+    // option_name as the key means a re-run simply overwrites the
+    // prior values; a partially-applied provision (token written,
+    // identity not) cannot leave a half-state because the query is
+    // two sequential UPDATE statements, not a transaction, and the
+    // second is independent. If a crash lands between them, the
+    // token changes on the next run (the freshly-generated token
+    // overwrites the stale one), so the endpoint stays consistent.
+    $sql_t = "UPDATE {$opts} SET option_value = '" . $mysqli->real_escape_string( $token ) . "' WHERE option_name = 'agentshell_test_bed_token'";
+    $sql_i = "UPDATE {$opts} SET option_value = '" . $mysqli->real_escape_string( $identity ) . "' WHERE option_name = 'agentshell_test_bed_identity'";
+    if ( ! $mysqli->query( $sql_t ) || ! $mysqli->query( $sql_i ) ) {
+        $reason = 'UPDATE failed: ' . $mysqli->error;
+        $mysqli->close();
+        return array( 'ok' => false, 'token' => '', 'identity' => '', 'reason' => $reason );
+    }
+    // If the option rows do not exist yet (e.g. on a freshly restored
+    // baseline), the UPDATE matched zero rows. Insert them now.
+    $check = $mysqli->query( "SELECT option_name FROM {$opts} WHERE option_name IN ('agentshell_test_bed_token', 'agentshell_test_bed_identity')" );
+    $have  = array();
+    if ( $check ) {
+        while ( $r = $check->fetch_row() ) {
+            $have[ (string) $r[0] ] = true;
+        }
+    }
+    if ( ! isset( $have['agentshell_test_bed_token'] ) ) {
+        $mysqli->query( "INSERT INTO {$opts} (option_name, option_value, autoload) VALUES ('agentshell_test_bed_token', '" . $mysqli->real_escape_string( $token ) . "', 'no')" );
+    }
+    if ( ! isset( $have['agentshell_test_bed_identity'] ) ) {
+        $mysqli->query( "INSERT INTO {$opts} (option_name, option_value, autoload) VALUES ('agentshell_test_bed_identity', '" . $mysqli->real_escape_string( $identity ) . "', 'no')" );
+    }
+    $mysqli->close();
+    return array( 'ok' => true, 'token' => $token, 'identity' => $identity, 'reason' => '' );
+}
+
+/**
+ * Verify the HTTP identity handshake.
+ *
+ * Fetches <cfg.url_https or url_http>/wp-json/agentshell-test/v1/identity
+ * with the X-AgentShell-Test-Token header set to $token, and asserts
+ * the response body's `identity` field equals $expected_identity. The
+ * round-trip proves that the HTTP service and the CLI/DB path resolve
+ * to the same WordPress install (and therefore the same database).
+ *
+ * This is a HARD check. Unreachable, 401, 503, or a mismatched
+ * identity is a failure. The unit-only mode (no test-bed config) is
+ * unaffected; the destructive live suites refuse to run when this
+ * check fails.
+ *
+ * @param array $cfg  Test-bed config.
+ * @param string $token           The per-run token from provision.
+ * @param string $expected_identity The identity the runner wrote to wp_options.
+ * @return array { ok: bool, detail: string, status: int, identity: string }
+ */
+function agentshell_test_bed_check_http_identity( array $cfg, $token, $expected_identity ) {
+    $url = '';
+    foreach ( array( 'url_https', 'url_http' ) as $k ) {
+        if ( isset( $cfg[ $k ] ) && is_string( $cfg[ $k ] ) && '' !== $cfg[ $k ] ) {
+            $url = (string) $cfg[ $k ];
+            break;
+        }
+    }
+    if ( '' === $url ) {
+        return array( 'ok' => false, 'detail' => 'no URL configured', 'status' => 0, 'identity' => '' );
+    }
+    $endpoint = rtrim( $url, '/' ) . '/wp-json/agentshell-test/v1/identity';
+    $ctx = stream_context_create( array(
+        'http' => array(
+            'timeout' => 5,
+            'ignore_errors' => true,
+            'method'        => 'GET',
+            'header'        => "X-AgentShell-Test-Token: " . $token . "\r\nUser-Agent: agentshell-test-bed-identity\r\n",
+        ),
+    ) );
+    $body = @file_get_contents( $endpoint, false, $ctx );
+    $status = 0;
+    if ( isset( $http_response_header[0] ) && preg_match( '/HTTP\/[\d.]+\s+(\d{3})/', $http_response_header[0], $m ) ) {
+        $status = (int) $m[1];
+    }
+    if ( false === $body || '' === $body ) {
+        return array( 'ok' => false, 'detail' => 'HTTP endpoint unreachable', 'status' => $status, 'identity' => '' );
+    }
+    if ( 200 !== $status ) {
+        return array( 'ok' => false, 'detail' => 'HTTP endpoint returned ' . $status, 'status' => $status, 'identity' => '' );
+    }
+    $decoded = json_decode( (string) $body, true );
+    if ( ! is_array( $decoded ) ) {
+        return array( 'ok' => false, 'detail' => 'HTTP response is not valid JSON', 'status' => $status, 'identity' => '' );
+    }
+    $returned = isset( $decoded['identity'] ) ? (string) $decoded['identity'] : '';
+    if ( '' === $returned ) {
+        return array( 'ok' => false, 'detail' => 'HTTP response has no identity field', 'status' => $status, 'identity' => '' );
+    }
+    if ( ! hash_equals( $expected_identity, $returned ) ) {
+        return array( 'ok' => false, 'detail' => 'HTTP identity does not match the value the runner wrote to wp_options', 'status' => $status, 'identity' => $returned );
+    }
+    return array( 'ok' => true, 'detail' => $endpoint . ' returned identity ' . $returned, 'status' => $status, 'identity' => $returned );
+}
+
+/**
+ * Preflight crash-window check.
+ *
+ * The crash window is the gap between `wp_insert_post` returning and
+ * the fixture tracker recording the post id. A child that dies inside
+ * this window (KILL -9, PHP fatal, OOM) leaves a journaled post on
+ * the test site with no record in the per-run fixture registry. The
+ * post is identified by the `_agentshell_journal_op` meta it carries
+ * — that is the journal's marker, set in the same `wp_insert_post`
+ * call.
+ *
+ * The preflight does *not* attempt to delete-by-prefix or
+ * delete-by-marker. Both are forbidden: a prefix-based delete can
+ * target unowned content on a non-test site (the dev site is
+ * preserved untouched, but the policy is the policy), and a
+ * marker-based delete of a row referenced by an open transaction
+ * would discard evidence the recovery engine needs. The preflight
+ * either:
+ *
+ *  1. Refuses to run when an active recovery is in progress (an
+ *     open `agentshell_transaction` row, or a journaled post whose
+ *     op_id is referenced by an applied op) — the operator must
+ *     resolve it; or
+ *  2. Restores the test site from its verified baseline under the
+ *     exclusive runner lock. The baseline is a known-good state
+ *     with no journal rows, no transactions, and no posts; the
+ *     restore is destructive but bounded.
+ *
+ * The check runs under the lock so a parallel runner cannot see
+ * mid-restore state.
+ *
+ * @param array $cfg  Test-bed config.
+ * @return array {
+ *     @type bool   $ok
+ *     @type string $action  'clean' | 'safe_to_restore' | 'restored' |
+ *                           'refused_real_user_tx' | 'refused_active_recovery' |
+ *                           'restore_failed' | 'restore_skipped_unverified'
+ *     @type int    $marker_count
+ *     @type string $detail
+ * }
+ */
+function agentshell_test_bed_preflight( array $cfg ) {
+    if ( ! class_exists( 'mysqli' ) ) {
+        return array( 'ok' => false, 'action' => 'restore_skipped_unverified', 'marker_count' => 0, 'detail' => 'mysqli not available' );
+    }
+    $db_host = isset( $cfg['db']['host'] ) ? (string) $cfg['db']['host'] : 'localhost';
+    $socket  = isset( $cfg['db']['socket'] ) ? (string) $cfg['db']['socket'] : '';
+    $user    = isset( $cfg['db']['user'] ) ? (string) $cfg['db']['user'] : '';
+    $pass    = isset( $cfg['db']['password'] ) ? (string) $cfg['db']['password'] : '';
+    $db_name = isset( $cfg['db']['name'] ) ? (string) $cfg['db']['name'] : '';
+    $prefix  = isset( $cfg['expect']['wp_table_prefix'] ) ? (string) $cfg['expect']['wp_table_prefix'] : 'wp_';
+    $mysqli  = @new mysqli( $db_host, $user, $pass, $db_name, 0, $socket );
+    if ( ! ( $mysqli instanceof mysqli ) || $mysqli->connect_errno ) {
+        return array( 'ok' => false, 'action' => 'restore_skipped_unverified', 'marker_count' => 0, 'detail' => 'cannot connect to test DB' );
+    }
+    $pmeta = $prefix . 'postmeta';
+    $r = $mysqli->query( "SELECT COUNT(*) FROM {$pmeta} WHERE meta_key = '_agentshell_journal_op'" );
+    $marker_count = ( $r instanceof mysqli_result ) ? (int) $r->fetch_row()[0] : 0;
+    if ( 0 === $marker_count ) {
+        $mysqli->close();
+        return array( 'ok' => true, 'action' => 'clean', 'marker_count' => 0, 'detail' => 'no journal markers on the test site' );
+    }
+    // Leaks detected. Check for an open transaction.
+    $opts = $prefix . 'options';
+    $tx   = null;
+    $r    = $mysqli->query( "SELECT option_value FROM {$opts} WHERE option_name = 'agentshell_transaction'" );
+    if ( $r instanceof mysqli_result && $row = $r->fetch_row() ) {
+        $tx = json_decode( (string) $row[0], true );
+    }
+    if ( is_array( $tx ) ) {
+        $label = isset( $tx['label'] ) ? (string) $tx['label'] : '';
+        // Real user transaction — refuse; the operator must close it.
+        if ( 0 !== strpos( $label, 'live ' ) ) {
+            $mysqli->close();
+            return array(
+                'ok'           => false,
+                'action'       => 'refused_real_user_tx',
+                'marker_count' => $marker_count,
+                'detail'       => 'open transaction with non-test label "' . $label . '" is preserved; operator must close it before the preflight can run',
+            );
+        }
+        // Test transaction — count applied ops. An applied op is
+        // evidence the recovery engine is using; the preflight must
+        // not discard it.
+        $applied = 0;
+        $ops     = isset( $tx['content']['ops'] ) && is_array( $tx['content']['ops'] ) ? $tx['content']['ops'] : array();
+        foreach ( $ops as $op ) {
+            if ( is_array( $op ) && ( $op['state'] ?? '' ) === 'applied' ) {
+                $applied++;
+            }
+        }
+        if ( $applied > 0 ) {
+            $mysqli->close();
+            return array(
+                'ok'           => false,
+                'action'       => 'refused_active_recovery',
+                'marker_count' => $marker_count,
+                'detail'       => 'open transaction "' . $label . '" has ' . $applied . ' applied op(s); recovery in progress, preflight refused',
+            );
+        }
+        // Test transaction with no applied work — close the option
+        // row directly (same path as the live precondition) so the
+        // restore does not have to deal with an open slot. The row
+        // is value-guarded: a row that moved between the read and
+        // the delete is left alone.
+        $current = $mysqli->query( "SELECT option_value FROM {$opts} WHERE option_name = 'agentshell_transaction'" );
+        $cur_val = ( $current instanceof mysqli_result && $row = $current->fetch_row() ) ? (string) $row[0] : '';
+        if ( '' !== $cur_val ) {
+            $mysqli->query( "DELETE FROM {$opts} WHERE option_name = 'agentshell_transaction' AND option_value = '" . $mysqli->real_escape_string( $cur_val ) . "'" );
+        }
+    }
+    // Leaks remain, no active recovery. Restore from baseline.
+    $baseline = isset( $cfg['expect']['baseline_snapshot_path'] ) ? (string) $cfg['expect']['baseline_snapshot_path'] : '';
+    if ( '' === $baseline || ! is_file( $baseline ) ) {
+        $mysqli->close();
+        return array(
+            'ok'           => false,
+            'action'       => 'refused_active_recovery',
+            'marker_count' => $marker_count,
+            'detail'       => 'crash-window leak detected but no baseline_snapshot_path configured; operator must intervene',
+        );
+    }
+    $sql = @file_get_contents( $baseline );
+    if ( ! is_string( $sql ) || '' === $sql ) {
+        $mysqli->close();
+        return array(
+            'ok'           => false,
+            'action'       => 'restore_failed',
+            'marker_count' => $marker_count,
+            'detail'       => 'cannot read baseline at ' . $baseline,
+        );
+    }
+    // Apply baseline under the same connection. multi_query is
+    // used because the baseline contains many statements separated
+    // by semicolons; the default single-statement query() would
+    // execute only the first one. The connection is closed on
+    // error; on success we close it cleanly.
+    if ( ! $mysqli->multi_query( $sql ) ) {
+        $reason = $mysqli->error;
+        $mysqli->close();
+        return array(
+            'ok'           => false,
+            'action'       => 'restore_failed',
+            'marker_count' => $marker_count,
+            'detail'       => 'multi_query failed: ' . $reason,
+        );
+    }
+    // Drain the result sets multi_query queues up.
+    while ( $mysqli->more_results() && $mysqli->next_result() ) {
+        $extra = $mysqli->store_result();
+        if ( $extra instanceof mysqli_result ) {
+            $extra->free();
+        }
+    }
+    // Verify the restore took: zero markers, zero open transaction.
+    $r = $mysqli->query( "SELECT COUNT(*) FROM {$pmeta} WHERE meta_key = '_agentshell_journal_op'" );
+    $post_marker_count = ( $r instanceof mysqli_result ) ? (int) $r->fetch_row()[0] : -1;
+    $r = $mysqli->query( "SELECT COUNT(*) FROM {$opts} WHERE option_name = 'agentshell_transaction'" );
+    $post_tx_count = ( $r instanceof mysqli_result ) ? (int) $r->fetch_row()[0] : -1;
+    $mysqli->close();
+    if ( 0 !== $post_marker_count || 0 !== $post_tx_count ) {
+        return array(
+            'ok'           => false,
+            'action'       => 'restore_failed',
+            'marker_count' => $marker_count,
+            'detail'       => 'baseline restored but verification shows ' . $post_marker_count . ' marker(s) and ' . $post_tx_count . ' open transaction(s)',
+        );
+    }
+    return array(
+        'ok'           => true,
+        'action'       => 'restored',
+        'marker_count' => $marker_count,
+        'detail'       => 'crash-window leak (' . $marker_count . ' marker(s)) cleared by baseline restore; 0 markers, 0 transactions after',
+    );
+}
