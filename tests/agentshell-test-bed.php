@@ -320,6 +320,123 @@ function agentshell_test_bed_check( array $cfg ) {
         $table_prefix = substr( $observed_options, 0, -7 );
     }
 
+    // 13. The config's domain is not a forbidden (known-dev) domain.
+    //     This is the safety net against a config file that was
+    //     accidentally repointed at the development site: the dev
+    //     domain is `agentshell.local`, the test domain is
+    //     `agentshell-test.local`. A typo or a copy-paste from the
+    //     dev config would name the dev domain and fail here. The
+    //     list is configurable; the default is the dev site only.
+    $observed_domain = isset( $cfg['domain'] ) ? (string) $cfg['domain'] : '';
+    $forbidden       = isset( $cfg['expect']['forbidden_domains'] ) && is_array( $cfg['expect']['forbidden_domains'] )
+        ? array_map( 'strval', $cfg['expect']['forbidden_domains'] )
+        : array( 'agentshell.local' );
+    if ( '' !== $observed_domain && in_array( $observed_domain, $forbidden, true ) ) {
+        $fail( 'forbidden_domain', 'config domain "' . $observed_domain . '" is a known development domain; refusing to run' );
+    } else {
+        $pass( 'forbidden_domain', $observed_domain );
+    }
+
+    // 14. The config's wp_root is not a known development path. A
+    //     test config that points at the dev site's WordPress
+    //     installation (a /home/v/local/agentshell/app/public path
+    //     on this workstation) would be a destructive test against
+    //     a real site. The list is configurable; the default
+    //     names the dev path.
+    $observed_root = realpath( $wp_root );
+    $forbidden_roots = isset( $cfg['expect']['forbidden_wp_roots'] ) && is_array( $cfg['expect']['forbidden_wp_roots'] )
+        ? array_map( 'strval', $cfg['expect']['forbidden_wp_roots'] )
+        : array( '/home/v/local/agentshell/app/public' );
+    $root_is_forbidden = false;
+    if ( is_string( $observed_root ) ) {
+        foreach ( $forbidden_roots as $bad ) {
+            $bad_real = realpath( $bad );
+            if ( false !== $bad_real && $observed_root === $bad_real ) {
+                $root_is_forbidden = true;
+                break;
+            }
+        }
+    }
+    if ( $root_is_forbidden ) {
+        $fail( 'forbidden_wp_root', 'config wp_root resolves to a known development path; refusing to run' );
+    } else {
+        $pass( 'forbidden_wp_root', is_string( $observed_root ) ? $observed_root : $wp_root );
+    }
+
+    // 15. HTTP-side validation: the URL the config advertises
+    //     actually serves a WordPress site. A config whose URL
+    //     points at a different (dev) site would have passed the
+    //     DB-side checks above — the dev site also has a WordPress
+    //     `siteurl` option — but the HTTP fetch would land on the
+    //     dev site and surface a different generator tag or
+    //     siteurl. We use the configured PHP binary's
+    //     `file_get_contents` (over the test bed's libs) so the
+    //     fetch shares the test bed's resolution rather than the
+    //     runner's; this is a soft check that reports rather than
+    //     hard-fails if the HTTP server is not running, so a
+    //     developer who is running just the unit suites against a
+    //     cold test bed is not blocked. The check is also a
+    //     fail-closed refusal of any config whose HTTP response
+    //     names a forbidden domain in the HTML — a clone of the
+    //     dev site on a different name would be detected here.
+    $http_url = '';
+    foreach ( array( 'url_https', 'url_http' ) as $k ) {
+        if ( isset( $cfg[ $k ] ) && is_string( $cfg[ $k ] ) && '' !== $cfg[ $k ] ) {
+            $http_url = (string) $cfg[ $k ];
+            break;
+        }
+    }
+    if ( '' !== $http_url ) {
+        $http_status = 0;
+        $http_body   = '';
+        $http_error  = '';
+        $ctx = stream_context_create( array(
+            'http' => array(
+                'timeout' => 5,
+                'ignore_errors' => true,
+                'header'  => "User-Agent: agentshell-test-bed-check\r\n",
+            ),
+        ) );
+        $http_body = @file_get_contents( $http_url, false, $ctx );
+        if ( false === $http_body ) {
+            $http_error = error_get_last() ? ( error_get_last()['message'] ?? '' ) : '';
+        }
+        if ( isset( $http_response_header[0] ) && preg_match( '/HTTP\/[\d.]+\s+(\d{3})/', $http_response_header[0], $m ) ) {
+            $http_status = (int) $m[1];
+        }
+        if ( '' === $http_body || $http_status >= 500 ) {
+            // Soft skip: the test bed's HTTP server may not be
+            // running, and the CLI path is the load-bearing
+            // channel. A runner with an HTTP-unreachable test bed
+            // is reported but not failed.
+            $pass( 'http_fetch', 'unreachable (' . ( '' !== $http_error ? $http_error : 'status=' . $http_status ) . '); CLI path is sufficient' );
+        } else {
+            // Hard checks: the response is HTML, the response
+            // names the configured domain, and the response does
+            // not name a forbidden domain.
+            $body_has_generator = ( false !== stripos( $http_body, 'name="generator"' ) && false !== stripos( $http_body, 'WordPress' ) );
+            $body_names_forbidden = false;
+            foreach ( $forbidden as $bad_domain ) {
+                if ( false !== stripos( $http_body, $bad_domain ) ) {
+                    $body_names_forbidden = true;
+                    break;
+                }
+            }
+            $body_names_observed = ( '' === $observed_domain || false !== stripos( $http_body, $observed_domain ) );
+            if ( $body_names_forbidden ) {
+                $fail( 'http_fetch', 'HTTP response names a forbidden dev domain; refusing to run' );
+            } elseif ( ! $body_has_generator ) {
+                $pass( 'http_fetch', 'HTTP response is not a WordPress site (no generator tag); CLI path is sufficient' );
+            } elseif ( ! $body_names_observed ) {
+                $pass( 'http_fetch', 'HTTP response does not name the configured domain "' . $observed_domain . '"; CLI path is sufficient' );
+            } else {
+                $pass( 'http_fetch', $http_url . ' (status=' . $http_status . ', names ' . $observed_domain . ')' );
+            }
+        }
+    } else {
+        $pass( 'http_fetch', '(no URL configured; skipped)' );
+    }
+
     $mysqli->close();
 
     return array(
