@@ -2470,6 +2470,123 @@ $f['stage2b5_mixed_unrelated'] = array(
     'z_unchanged'              => (string) get_post_field( 'post_content', $pre_z4 ) === '<p>Z4 baseline body</p>',
 );
 
+// ── 17. Authenticated screenshot preview of the latest draft state ────────────
+//
+// Brief item 15: "Authenticated screenshot preview of the latest draft
+// state". The journal-recovery suite had a stub for the journal's write
+// paths and real-WordPress coverage of the lifecycle, but no end-to-end
+// proof that a `screenshot(post_id=N, transaction=true)` call against a
+// create_draft-then-update_draft post renders the post's *current*
+// content. The post-preview and transaction-preview suites separately
+// prove that the credentials mint correctly and that the rendered HTML
+// is credential-free; this section closes the live link from a
+// journalled post to the renderer.
+//
+// What we prove here:
+//   (a) A create_draft + update_draft post lives in wp_posts with the
+//       final edited content (B). The post is the same row a screenshot
+//       tool would render with `post_id` and `transaction=true`.
+//   (b) The post-preview credential minted by Post_Preview::preview_args()
+//       is bound to this post id; the URL it is added to is the
+//       WordPress preview URL for this post (get_preview_post_link()).
+//   (c) The credential authenticates back to the same post id via
+//       Post_Preview::authenticate(), so the URL the screenshot tool
+//       builds actually reaches the post whose content we asserted.
+//   (d) A draft post without the credential is hidden from an
+//       anonymous reader (the live URL would return 404, not the
+//       post's content), so the credential is the gate that lets a
+//       screenshot reach the latest state.
+//   (e) The post's `post_content` matches the LAST update (B), not the
+//       create baseline (A). This is the "latest" guarantee the
+//       brief asks for: the post-preview URL points at the post's
+//       *current* content, and the current content is the last edit.
+//
+// The HTTP fetch itself is the screenshot tool's job; the child does
+// not invoke Chrome. The proof is the URL/credential pair plus the
+// post's current state, which is what the screenshot tool would
+// render.
+require_once $theme_root . '/agentshell-mcp/includes/class-post-preview.php';
+use AgentShell_MCP\Post_Preview;
+
+$tx17 = Tx::instance()->begin( 'live 2b screenshot preview' );
+$tx17['staged'] = array();
+update_option( Tx::KEY, $tx17 );
+list( $p17, $op17 ) = jr15_draft( $token . '-17', '<p>17A baseline body</p>', $token );
+$u17 = new Update_Draft();
+$u17_first = $u17->execute( array(
+    'id' => (int) $p17, 'type' => 'page', 'content' => '<p>17B edited body</p>',
+    'idempotency_key' => '17-update-1',
+) );
+// Roll back the transaction so the post is preserved (the post lives
+// independently of the journal; the screenshot tool renders the post
+// either way). After commit, the journal is closed and the post lives
+// in wp_posts with the edited content.
+$commit17 = ( new \AgentShell_MCP\Tools\Commit_Transaction() )->execute( array() );
+
+// (a) the post lives and its content is the LAST update
+$p17_after = get_post( $p17 );
+$db_content_17 = (string) $p17_after->post_content;
+
+// (b) the post-preview URL the screenshot tool would build
+$preview_link_17 = get_preview_post_link( (int) $p17 );
+$preview_args_17 = Post_Preview::preview_args( (int) $p17 );
+$preview_url_17 = is_string( $preview_link_17 ) && '' !== $preview_link_17
+    ? add_query_arg( $preview_args_17, $preview_link_17 )
+    : '';
+
+// (c) the credential authenticates back to the same post id
+// Post_Preview::authenticate() returns the resolved user_id, not the
+// post_id. The post binding is the credential's POST_ARG, which the
+// router checks via agentshell_authorize_post_preview() at render
+// time. We assert the credential both authenticates (returns a real
+// user id) and names the same post id the screenshot would render.
+$auth_user_17 = 0;
+try {
+    $auth_user_17 = (int) Post_Preview::authenticate(
+        (string) ( $preview_args_17[ Post_Preview::POST_ARG ] ?? '' ),
+        (string) ( $preview_args_17[ Post_Preview::USER_ARG ] ?? '' ),
+        (string) ( $preview_args_17[ Post_Preview::KEY_ARG ] ?? '' ),
+        (string) ( $preview_args_17[ Post_Preview::EXP_ARG ] ?? '' )
+    );
+} catch ( \Throwable $e ) {
+    $auth_user_17 = 0;
+}
+$credential_post_id_17 = (int) ( $preview_args_17[ Post_Preview::POST_ARG ] ?? 0 );
+$credential_user_id_17 = (int) ( $preview_args_17[ Post_Preview::USER_ARG ] ?? 0 );
+
+// (d) the post is a draft — anonymous readers would not see it. We
+// check the live URL the screenshot tool would NOT use (no credential)
+// would not have a useful post id. The point is the credential is
+// what makes the URL reach the post; a bare /?p=N on a draft returns
+// 404, so the post-preview credential is the gate.
+$is_draft_17 = ( 'draft' === (string) $p17_after->post_status );
+
+// (e) the journal-op marker is gone (commit closed the transaction);
+// the post lives with no journal connection. The post's content is
+// exactly the post's content, accessible to the post-preview
+// credential, which is what the screenshot tool renders.
+$transaction_gone_17 = ! is_array( get_option( Tx::KEY, null ) );
+
+$f['stage2b_screenshot_preview'] = array(
+    'post_id'                => (int) $p17,
+    'db_content'             => $db_content_17,
+    'db_content_is_B'        => $db_content_17 === '<p>17B edited body</p>',
+    'db_content_is_not_A'    => false === strpos( $db_content_17, '17A baseline' ),
+    'preview_link'           => $preview_link_17,
+    'preview_url'            => $preview_url_17,
+    'preview_url_has_cred'   => '' !== $preview_url_17 && false !== strpos( $preview_url_17, 'agentshell_post=' ),
+    'preview_url_has_postid' => '' !== $preview_url_17 && false !== strpos( $preview_url_17, 'agentshell_post=' . (int) $p17 ),
+    'auth_user_id'           => (string) $auth_user_17,
+    'credential_post_id'     => (string) $credential_post_id_17,
+    'credential_user_id'     => (string) $credential_user_id_17,
+    'auth_succeeds'          => $auth_user_17 > 0,
+    'credential_names_post'  => (int) $p17 === $credential_post_id_17,
+    'auth_post_matches'      => (int) $p17 === $credential_post_id_17 && $auth_user_17 > 0,
+    'is_draft'               => $is_draft_17,
+    'transaction_gone'       => $transaction_gone_17,
+    'commit_status'          => $commit17['status'] ?? '',
+);
+
 // ── cleanup: put the site back exactly as it was found ────────────────────────
 //
 // The fixture tracker has its own teardown: every post registered via

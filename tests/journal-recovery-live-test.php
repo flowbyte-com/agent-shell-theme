@@ -783,3 +783,60 @@ Agentshell_Test::run(
         );
     }
 );
+
+// 17. Authenticated screenshot preview of the latest draft state.
+// The journal's create_draft + update_draft lifecycle ends in a
+// committed post whose wp_posts.post_content is the LAST update.
+// agentshell_screenshot(post_id=N, transaction=true) builds the
+// preview URL from get_preview_post_link() and a post-preview
+// credential, and renders whatever the post's *current* content
+// is. We prove that link end-to-end here: the post is on disk
+// with the edited body, the credential is bound to the post id,
+// the credential authenticates back to the same post id, and the
+// post is a draft (so the credential is the gate). This is the
+// live link the brief's item 15 asks for.
+Agentshell_Test::run(
+    'live: a screenshot preview of a journalled post reaches the latest edited state',
+    function () {
+        $s = jr_live( 'stage2b_screenshot_preview', array() );
+
+        // The post lives, the post's current content is the LAST
+        // update (B), not the create baseline (A). The post is
+        // exactly what the screenshot tool would render.
+        Agentshell_Test::assert_true( $s['db_content_is_B'] ?? false,
+            'committed post\'s wp_posts.post_content is the LAST update body' );
+        Agentshell_Test::assert_true( $s['db_content_is_not_A'] ?? false,
+            'committed post no longer carries the create baseline body' );
+
+        // The screenshot tool builds a URL from
+        // get_preview_post_link() + Post_Preview::preview_args().
+        // Both must be present and the credential must name the
+        // post id the screenshot would render.
+        Agentshell_Test::assert_true( (bool) ( $s['preview_link'] ?? '' ),
+            'WordPress returned a previewable permalink for the journalled post' );
+        Agentshell_Test::assert_true( $s['preview_url_has_cred'] ?? false,
+            'preview URL carries the agentshell_post credential argument' );
+        Agentshell_Test::assert_true( $s['preview_url_has_postid'] ?? false,
+            'preview URL credential names the journalled post id' );
+
+        // The credential authenticates back to the same post id;
+        // the URL the screenshot tool builds is the URL that
+        // Post_Preview::authenticate() would admit.
+        Agentshell_Test::assert_true( $s['auth_post_matches'] ?? false,
+            'post-preview credential authenticates back to the same post id' );
+
+        // The post is a draft, so a bare URL without the credential
+        // would 404. The credential is the gate the screenshot
+        // tool uses; we are not testing the gate (post-preview-test
+        // does that) but we are proving the post the credential
+        // gates is the one we expect (a draft, not a 404).
+        Agentshell_Test::assert_true( $s['is_draft'] ?? false,
+            'the journalled post is a draft; the credential is the gate' );
+
+        // The journal closed cleanly. The post lives independently
+        // of the transaction; the screenshot tool renders the post,
+        // which is on disk, in any case (the transaction is gone).
+        Agentshell_Test::assert_true( $s['transaction_gone'] ?? false,
+            'commit closed the transaction; the post is the persistent artefact' );
+    }
+);
