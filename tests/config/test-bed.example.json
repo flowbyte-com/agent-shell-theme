@@ -34,7 +34,8 @@
     "auth": {
         "admin_user":        "REPLACE_ADMIN_USER",
         "_admin_password":   "REPLACE — store in test-bed.json (gitignored), never here",
-        "_app_password":     "REPLACE — application password, stored in test-bed.json only"
+        "_app_password":     "REPLACE — application password, stored in test-bed.json only",
+        "_auth_comment":     "X-AgentShell-Token is the working auth path for this test bed. The static token + AGENTSHELL_REST_TOKEN_USER_ID=1 must be defined in the test site's wp-config.php BEFORE the require_once ABSPATH . 'wp-settings.php' line: PHP constants are immutable once defined, and WordPress's init/template_redirect hook callbacks run during wp-settings.php loading. The test process sees the constant after wp-load.php returns, but the live PHP-FPM request only sees it during the request if the define happens before wp-settings.php. The admin_password is set in wp_users but Basic Auth via WP application password is not available (no wp_application_passwords table on the test bed)."
     },
 
     "expect": {
