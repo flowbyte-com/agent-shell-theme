@@ -84,18 +84,27 @@ define( 'AGENTSHELL_TEST_AGGREGATE', true );
 $test_bed_cfg     = agentshell_test_bed_load();
 $test_bed_check   = null;
 $test_bed_skipped = false;
+$test_bed_unverified = false;
 if ( is_array( $test_bed_cfg ) ) {
     // The check talks to MySQL via the `mysqli` extension. When the runner
     // is invoked with a PHP that has no `mysqli` (e.g. the system CLI on
     // a workstation with only LocalWP's PHP for the test site), the
-    // check is skipped with a clear note rather than a fatal. The
-    // config still gates the live children through the env-var path
-    // (AGENTSHELL_TEST_BED_CONFIG propagates), and the end-of-suite
-    // leak check below uses LocalWP's PHP via the spawn helper.
+    // check cannot run. **The runner is then in an unverified state for
+    // destructive work** — the whole point of the fail-closed check is
+    // to gate destructive integration verification, and a missing check
+    // is the same as a failed check. The destructive live suites below
+    // refuse to run (their strict resolution returns null) and the
+    // leak check refuses to run; unit suites continue as before. A
+    // re-run with the test-bed's PHP (which has mysqli) is required for
+    // destructive verification.
     if ( ! class_exists( 'mysqli' ) ) {
         echo "\n[test-bed] config present at " . (string) ( $test_bed_cfg['_config_path'] ?? '' ) . "\n";
-        echo "[test-bed] SKIP fail-closed check: this PHP has no mysqli (run with the test-bed's PHP to enable)\n";
-        $test_bed_skipped = true;
+        echo "[test-bed] UNVERIFIED: this PHP has no mysqli, so the fail-closed check cannot run.\n";
+        echo "[test-bed]            Destructive live suites and the end-of-suite leak check\n";
+        echo "[test-bed]            will refuse to run. Re-run with the test-bed's PHP to\n";
+        echo "[test-bed]            enable destructive verification.\n";
+        $test_bed_skipped   = true;
+        $test_bed_unverified = true;
     } else {
         $test_bed_check = agentshell_test_bed_check( $test_bed_cfg );
         if ( ! $test_bed_check['ok'] ) {
@@ -180,12 +189,45 @@ $suites = array(
     'mutation-sandbox'     => __DIR__ . '/mutation-sandbox-test.php',
 );
 
-$total_passed = 0;
-$total_failed = 0;
-$failed_suites = array();
+$total_passed   = 0;
+$total_failed   = 0;
+$failed_suites  = array();
+$skipped_suites = array();
+
+// Destructive live suites are gated on the fail-closed check having
+// actually run and passed. The list mirrors the four `-live-test.php`
+// files that spawn children against the test site. When the runner
+// is unverified (no mysqli extension in the runner's PHP) or the
+// check failed, these suites are replaced with an explicit
+// "skipped: not verified" pass so the report shows the destructive
+// verification as **unexecuted**, not as silently passing.
+$destructive_live_suites = array(
+    'content-write-live',
+    'journal-recovery-live',
+    'navigation-live',
+);
+$verification_unverified = $test_bed_unverified;
+$verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );
 
 foreach ( $suites as $name => $path ) {
     echo "\n=== $name ===\n";
+    if ( $verification_unverified && in_array( $name, $destructive_live_suites, true ) ) {
+        echo "  SKIPPED: runner is unverified (no mysqli in the runner's PHP).\n";
+        echo "           Re-run with the test-bed's PHP to enable destructive verification.\n";
+        $skipped_suites[ $name ] = 'unverified';
+        Agentshell_Test::$passed = 0;
+        Agentshell_Test::$failed = 0;
+        Agentshell_Test::summary();
+        continue;
+    }
+    if ( $verification_failed && in_array( $name, $destructive_live_suites, true ) ) {
+        echo "  SKIPPED: fail-closed check failed (refusal: " . $test_bed_check['refusal'] . ").\n";
+        $skipped_suites[ $name ] = 'failed_verification';
+        Agentshell_Test::$passed = 0;
+        Agentshell_Test::$failed = 0;
+        Agentshell_Test::summary();
+        continue;
+    }
     Agentshell_Test::$passed = 0;
     Agentshell_Test::$failed = 0;
     Agentshell_Test::$current_test = '';
@@ -199,7 +241,14 @@ foreach ( $suites as $name => $path ) {
 }
 
 echo "\n=== TOTAL ===\n";
-echo "$total_passed passed, $total_failed failed\n";
+echo "$total_passed passed, $total_failed failed";
+if ( ! empty( $skipped_suites ) ) {
+    echo ", " . count( $skipped_suites ) . " skipped";
+    foreach ( $skipped_suites as $n => $why ) {
+        echo "\n  skipped: $n ($why)";
+    }
+}
+echo "\n";
 if ( ! empty( $failed_suites ) ) {
     echo "Failed suites: " . implode( ', ', $failed_suites ) . "\n";
 }
@@ -241,45 +290,58 @@ if ( 0 === $touched ) {
 // persists on disk and on the database.
 if ( is_array( $test_bed_cfg ) ) {
     echo "\n=== LEAK CHECK (test bed: " . (string) ( $test_bed_cfg['_config_path'] ?? '' ) . ") ===\n";
-    $leak_report = sys_get_temp_dir() . '/agentshell-leak-check-' . getmypid() . '.json';
-    @unlink( $leak_report );
-
-    $leak_cfg = agentshell_wp_live_config();
-    if ( null === $leak_cfg ) {
-        echo "  SKIP: no PHP / wp_root resolvable from the test-bed config\n";
+    if ( $verification_unverified ) {
+        echo "  SKIPPED: runner is unverified (no mysqli in the runner's PHP).\n";
+        echo "           Re-run with the test-bed's PHP to enable the leak assertion.\n";
+    } elseif ( $verification_failed ) {
+        echo "  SKIPPED: fail-closed check failed (refusal: " . $test_bed_check['refusal'] . ").\n";
     } else {
-        $leak_child = __DIR__ . '/agentshell-leak-check-child.php';
-        if ( ! is_file( $leak_child ) ) {
-            echo "  SKIP: child not present at $leak_child\n";
+        $leak_report = sys_get_temp_dir() . '/agentshell-leak-check-' . getmypid() . '.json';
+        @unlink( $leak_report );
+
+        // The leak check queries the test database. Use the strict
+        // resolution path so the check never runs against an auto-
+        // discovered (dev) site. A null return is a clean skip, not
+        // a fail; if the test-bed config is missing, the destructive
+        // suites above also skipped and the leak check has nothing
+        // to verify against.
+        $leak_cfg = agentshell_wp_live_config_destructive();
+        if ( null === $leak_cfg ) {
+            echo "  SKIP: no test-bed config (destructive suites also skipped)\n";
         } else {
-            $leak_run = agentshell_wp_live_run(
-                $leak_cfg,
-                $leak_child,
-                array( $leak_cfg['wp_root'], $leak_report )
-            );
-            $leak = json_decode( (string) @file_get_contents( $leak_report ), true );
-            @unlink( $leak_report );
-            if ( ! is_array( $leak ) ) {
-                echo "  FAIL: child did not report: " . substr( $leak_run['output'], 0, 400 ) . "\n";
-                $total_failed++;
+            $leak_child = __DIR__ . '/agentshell-leak-check-child.php';
+            if ( ! is_file( $leak_child ) ) {
+                echo "  SKIP: child not present at $leak_child\n";
             } else {
-                $leak_count = 0;
-                foreach ( array( 'posts_with_fixture_title', 'posts_with_journal_marker', 'nav_menus_with_fixture_prefix' ) as $k ) {
-                    $n = (int) ( $leak[ $k ] ?? 0 );
-                    $leak_count += $n;
-                    echo "  $k: $n\n";
-                }
-                if ( $leak_count > 0 ) {
-                    echo "  LEAKS DETECTED — the test database is not clean.\n";
-                    if ( ! empty( $leak['sample_post_titles'] ) ) {
-                        echo "  sample post titles: " . implode( ', ', array_slice( (array) $leak['sample_post_titles'], 0, 5 ) ) . "\n";
-                    }
-                    if ( ! empty( $leak['sample_menu_names'] ) ) {
-                        echo "  sample menu names:  " . implode( ', ', array_slice( (array) $leak['sample_menu_names'], 0, 5 ) ) . "\n";
-                    }
+                $leak_run = agentshell_wp_live_run(
+                    $leak_cfg,
+                    $leak_child,
+                    array( $leak_cfg['wp_root'], $leak_report )
+                );
+                $leak = json_decode( (string) @file_get_contents( $leak_report ), true );
+                @unlink( $leak_report );
+                if ( ! is_array( $leak ) ) {
+                    echo "  FAIL: child did not report: " . substr( $leak_run['output'], 0, 400 ) . "\n";
                     $total_failed++;
                 } else {
-                    echo "  ok: test database is clean\n";
+                    $leak_count = 0;
+                    foreach ( array( 'posts_with_fixture_title', 'posts_with_journal_marker', 'nav_menus_with_fixture_prefix' ) as $k ) {
+                        $n = (int) ( $leak[ $k ] ?? 0 );
+                        $leak_count += $n;
+                        echo "  $k: $n\n";
+                    }
+                    if ( $leak_count > 0 ) {
+                        echo "  LEAKS DETECTED — the test database is not clean.\n";
+                        if ( ! empty( $leak['sample_post_titles'] ) ) {
+                            echo "  sample post titles: " . implode( ', ', array_slice( (array) $leak['sample_post_titles'], 0, 5 ) ) . "\n";
+                        }
+                        if ( ! empty( $leak['sample_menu_names'] ) ) {
+                            echo "  sample menu names:  " . implode( ', ', array_slice( (array) $leak['sample_menu_names'], 0, 5 ) ) . "\n";
+                        }
+                        $total_failed++;
+                    } else {
+                        echo "  ok: test database is clean\n";
+                    }
                 }
             }
         }

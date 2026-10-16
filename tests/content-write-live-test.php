@@ -23,15 +23,17 @@ require_once __DIR__ . '/wp-live.php';
 
 echo "live content write (real WordPress)\n";
 
-$config = agentshell_wp_live_config();
+// Destructive live suite: requires the test-bed config. The strict
+// resolution refuses to fall back to LocalWP auto-discovery.
+$config = agentshell_wp_live_config_destructive();
 if ( null === $config ) {
     Agentshell_Test::run(
         'live content-write suite',
         function () {
-            Agentshell_Test::assert_true( true, 'skipped: no WordPress install found' );
+            Agentshell_Test::assert_true( true, 'skipped: no test-bed config (destructive suites require tests/config/test-bed.json)' );
         }
     );
-    echo "  (skipped: no WordPress install found; set AGENTSHELL_TEST_WP_ROOT to enable)\n";
+    echo "  (skipped: destructive suites require a test-bed config; tests/config/test-bed.json not present or invalid)\n";
     return;
 }
 
