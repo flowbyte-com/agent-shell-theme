@@ -8,9 +8,27 @@
  * affair — this file resolves a PHP that *can* talk to the database, and spawns
  * the child with it.
  *
- * Everything is discovered rather than hard-coded, and every path can be
- * overridden by environment variable, so the suite skips cleanly on a machine
- * with no LocalWP rather than failing.
+ * The infrastructure has two resolution paths, tried in order:
+ *
+ *   1. **Opt-in: read tests/config/test-bed.json** (the disposable test
+ *      bed). This is what every committed fixture assumes. The config names
+ *      the WordPress root, the PHP binary, the MySQL socket, the database
+ *      credentials, and the expected instance fingerprint (server_uuid,
+ *      datadir, port) — exactly the things the runner needs to know to
+ *      spawn a child against the *test* site rather than the *dev* site.
+ *
+ *   2. **Auto-discovery: glob $HOME/local/<asterisk>/app/public/wp-load.php** and
+ *      the LocalWP lightning-services PHP, picking the alphabetically
+ *      first match. This is the legacy behaviour, kept for machines
+ *      without a test bed config — a machine with no config skips the
+ *      live suite cleanly rather than failing. **A machine that *has* a
+ *      config but the safety check fails falls back to auto-discovery
+ *      and skips the live suite, rather than accidentally running
+ *      against the dev site.** The fail-closed check is the gate, not
+ *      auto-discovery's absence.
+ *
+ * Every path can be overridden by environment variable, so the suite skips
+ * cleanly on a machine with no LocalWP rather than failing.
  */
 
 /**
@@ -22,6 +40,13 @@
  *     @type array  $env        Environment additions (LD_LIBRARY_PATH, ...).
  *     @type string $wp_root    WordPress root, i.e. the directory holding
  *                              wp-load.php.
+ *     @type array  $cfg        Test-bed config (when present), passed
+ *                              through so the child script can read
+ *                              fixture prefixes, expected fingerprints,
+ *                              and the baseline snapshot path.
+ *     @type string $source     "test_bed_config" | "auto_discovery" —
+ *                              surfaced in reports so an unexpected
+ *                              auto-discovery run is visible.
  * } Null when no usable install was found.
  */
 function agentshell_wp_live_config() {
@@ -30,6 +55,44 @@ function agentshell_wp_live_config() {
         return null;
     }
 
+    // 1. Try the opt-in test-bed config. This is the path the test
+    //    infrastructure expects when a real test bed has been
+    //    provisioned.
+    if ( function_exists( 'agentshell_test_bed_load' ) ) {
+        $cfg = agentshell_test_bed_load();
+        if ( is_array( $cfg ) && isset( $cfg['wp_root'] ) && isset( $cfg['php']['binary'] ) ) {
+            $wp_root = (string) $cfg['wp_root'];
+            $php     = (string) $cfg['php']['binary'];
+            if ( is_file( $wp_root . '/wp-load.php' ) && is_executable( $php ) ) {
+                $socket = isset( $cfg['db']['socket'] ) ? (string) $cfg['db']['socket'] : '';
+                $libs   = isset( $cfg['php']['shared_libs'] ) ? (string) $cfg['php']['shared_libs'] : '';
+
+                $ini = array();
+                $env = array();
+                if ( '' !== $socket ) {
+                    $ini[] = 'mysqli.default_socket=' . $socket;
+                }
+                if ( '' !== $libs && is_dir( $libs ) ) {
+                    $env['LD_LIBRARY_PATH'] = $libs;
+                }
+                return array(
+                    'php'     => $php,
+                    'ini'     => $ini,
+                    'env'     => $env,
+                    'wp_root' => $wp_root,
+                    'cfg'     => $cfg,
+                    'source'  => 'test_bed_config',
+                );
+            }
+        }
+    }
+
+    // 2. Auto-discovery fallback. Only used when no test-bed config
+    //    was found. Picks the alphabetically first LocalWP site
+    //    (typically the dev site, on a system with only one site) and
+    //    the alphabetically first LocalWP PHP. **Machines with both a
+    //    dev and a test install must use the test-bed config path
+    //    above; auto-discovery cannot tell them apart.**
     $wp_root = getenv( 'AGENTSHELL_TEST_WP_ROOT' );
     if ( ! is_string( $wp_root ) || '' === $wp_root ) {
         foreach ( glob( $home . '/local/*/app/public/wp-load.php' ) ?: array() as $candidate ) {
@@ -41,8 +104,6 @@ function agentshell_wp_live_config() {
         return null;
     }
 
-    // Prefer an explicitly nominated binary, then LocalWP's, then whatever the
-    // runner is itself using (which works when it has mysqli).
     $php = getenv( 'AGENTSHELL_TEST_PHP' );
     if ( ! is_string( $php ) || ! is_executable( $php ) ) {
         $php = PHP_BINARY;
@@ -70,11 +131,20 @@ function agentshell_wp_live_config() {
         'ini'     => $ini,
         'env'     => $env,
         'wp_root' => $wp_root,
+        'cfg'     => null,
+        'source'  => 'auto_discovery',
     );
 }
 
 /**
  * Run a PHP script against a real WordPress install and capture its stdout.
+ *
+ * The child is spawned with the same environment additions the runner
+ * would have made (`LD_LIBRARY_PATH` for LocalWP's PHP shared libs) and
+ * with `AGENTSHELL_TEST_WP_ROOT` set to the resolved wp root, plus
+ * `AGENTSHELL_TEST_BED_CONFIG` set to the config path (when one was
+ * found), so the child bootstrap can read the same config the runner
+ * read without re-discovering it.
  *
  * @param array  $config  As returned by agentshell_wp_live_config().
  * @param string $script  Absolute path to the child script.
@@ -87,6 +157,9 @@ function agentshell_wp_live_run( array $config, $script, array $argv = array() )
         $cmd .= $k . '=' . escapeshellarg( $v ) . ' ';
     }
     $cmd .= 'AGENTSHELL_TEST_WP_ROOT=' . escapeshellarg( $config['wp_root'] ) . ' ';
+    if ( is_array( $config['cfg'] ) && isset( $config['cfg']['_config_path'] ) ) {
+        $cmd .= 'AGENTSHELL_TEST_BED_CONFIG=' . escapeshellarg( (string) $config['cfg']['_config_path'] ) . ' ';
+    }
     $cmd .= escapeshellarg( $config['php'] );
     foreach ( $config['ini'] as $arg ) {
         $cmd .= ' -d ' . escapeshellarg( $arg );

@@ -68,8 +68,61 @@
 
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/mutation-sandbox.php';
+require_once __DIR__ . '/agentshell-test-bed.php';
+require_once __DIR__ . '/wp-live.php';
 
 define( 'AGENTSHELL_TEST_AGGREGATE', true );
+
+// ── test-bed gate ──────────────────────────────────────────────────────────
+// When a test-bed config is present, run the fail-closed check before any
+// suite. The check refuses to run unless every fingerprint (server_uuid,
+// datadir, port, sentinel, siteurl, db user grants) matches the expected
+// test site. A failure here is reported and the runner exits before
+// touching any suite. When no config is present, the runner proceeds as
+// before — every live suite individually skips cleanly, the no-test-bed
+// case is treated as "no live test bed available" rather than "fail".
+$test_bed_cfg     = agentshell_test_bed_load();
+$test_bed_check   = null;
+$test_bed_skipped = false;
+if ( is_array( $test_bed_cfg ) ) {
+    // The check talks to MySQL via the `mysqli` extension. When the runner
+    // is invoked with a PHP that has no `mysqli` (e.g. the system CLI on
+    // a workstation with only LocalWP's PHP for the test site), the
+    // check is skipped with a clear note rather than a fatal. The
+    // config still gates the live children through the env-var path
+    // (AGENTSHELL_TEST_BED_CONFIG propagates), and the end-of-suite
+    // leak check below uses LocalWP's PHP via the spawn helper.
+    if ( ! class_exists( 'mysqli' ) ) {
+        echo "\n[test-bed] config present at " . (string) ( $test_bed_cfg['_config_path'] ?? '' ) . "\n";
+        echo "[test-bed] SKIP fail-closed check: this PHP has no mysqli (run with the test-bed's PHP to enable)\n";
+        $test_bed_skipped = true;
+    } else {
+        $test_bed_check = agentshell_test_bed_check( $test_bed_cfg );
+        if ( ! $test_bed_check['ok'] ) {
+            fwrite( STDERR, "\n[test-bed] FAIL-CLOSED CHECK FAILED — refusing to run\n" );
+            fwrite( STDERR, "[test-bed] refusal: " . $test_bed_check['refusal'] . "\n" );
+            fwrite( STDERR, "[test-bed] config:  " . (string) ( $test_bed_cfg['_config_path'] ?? '(unknown)' ) . "\n" );
+            fwrite( STDERR, "[test-bed] expected: server_uuid=" . (string) ( $test_bed_cfg['expect']['server_uuid'] ?? '' )
+                . " datadir=" . (string) ( $test_bed_cfg['expect']['expected_datadir'] ?? '' )
+                . " port=" . (string) ( $test_bed_cfg['expect']['expected_port'] ?? '' )
+                . " sentinel=" . (string) ( $test_bed_cfg['expect']['site_mode_sentinel'] ?? '' ) . "\n" );
+            fwrite( STDERR, "[test-bed] observed: server_uuid=" . $test_bed_check['server_uuid']
+                . " datadir=" . $test_bed_check['datadir']
+                . " port=" . (string) $test_bed_check['port']
+                . " sentinel=" . $test_bed_check['sentinel'] . "\n" );
+            fwrite( STDERR, "\nThis is a fail-closed gate, not a test failure. The test\n" );
+            fwrite( STDERR, "infrastructure refuses to run against the wrong MySQL instance\n" );
+            fwrite( STDERR, "or the wrong WordPress site. Re-check the config, fix the\n" );
+            fwrite( STDERR, "sentinel, or move the test-bed.json aside to skip the live\n" );
+            fwrite( STDERR, "suites for this run.\n\n" );
+            exit( 2 );
+        }
+        echo "\n[test-bed] ok: " . (string) ( $test_bed_cfg['_config_path'] ?? '' ) . "\n";
+        foreach ( $test_bed_check['checks'] as $name => $r ) {
+            echo "  $name: " . ( $r['ok'] ? 'ok' : 'FAIL' ) . ' ' . $r['detail'] . "\n";
+        }
+    }
+}
 
 $agentshell_repo_before = agentshell_repo_snapshot();
 
@@ -172,6 +225,65 @@ if ( 0 === $touched ) {
         }
     }
     $total_failed++;
+}
+
+// ── end-of-suite leak assertion ─────────────────────────────────────────────
+// When a test bed is configured, every test must leave the test database
+// exactly as the baseline snapshot describes. The leak check spawns a
+// child PHP (LocalWP's PHP, with the test socket) that connects to the
+// test database, scans for fixture markers, and reports any leftovers.
+// A leftover is any post whose title carries a per-run token prefix
+// (ASTB/ASjr/AScw/ASNav), any post whose `_agentshell_journal_op` meta
+// exists, or any nav menu term whose name starts with `ASTB `. The
+// thresholds are zero by design: a clean run is a clean run. The
+// assertion is run even when live suites were skipped (no WordPress
+// install found) because fixture state from a prior crashed run
+// persists on disk and on the database.
+if ( is_array( $test_bed_cfg ) ) {
+    echo "\n=== LEAK CHECK (test bed: " . (string) ( $test_bed_cfg['_config_path'] ?? '' ) . ") ===\n";
+    $leak_report = sys_get_temp_dir() . '/agentshell-leak-check-' . getmypid() . '.json';
+    @unlink( $leak_report );
+
+    $leak_cfg = agentshell_wp_live_config();
+    if ( null === $leak_cfg ) {
+        echo "  SKIP: no PHP / wp_root resolvable from the test-bed config\n";
+    } else {
+        $leak_child = __DIR__ . '/agentshell-leak-check-child.php';
+        if ( ! is_file( $leak_child ) ) {
+            echo "  SKIP: child not present at $leak_child\n";
+        } else {
+            $leak_run = agentshell_wp_live_run(
+                $leak_cfg,
+                $leak_child,
+                array( $leak_cfg['wp_root'], $leak_report )
+            );
+            $leak = json_decode( (string) @file_get_contents( $leak_report ), true );
+            @unlink( $leak_report );
+            if ( ! is_array( $leak ) ) {
+                echo "  FAIL: child did not report: " . substr( $leak_run['output'], 0, 400 ) . "\n";
+                $total_failed++;
+            } else {
+                $leak_count = 0;
+                foreach ( array( 'posts_with_fixture_title', 'posts_with_journal_marker', 'nav_menus_with_fixture_prefix' ) as $k ) {
+                    $n = (int) ( $leak[ $k ] ?? 0 );
+                    $leak_count += $n;
+                    echo "  $k: $n\n";
+                }
+                if ( $leak_count > 0 ) {
+                    echo "  LEAKS DETECTED — the test database is not clean.\n";
+                    if ( ! empty( $leak['sample_post_titles'] ) ) {
+                        echo "  sample post titles: " . implode( ', ', array_slice( (array) $leak['sample_post_titles'], 0, 5 ) ) . "\n";
+                    }
+                    if ( ! empty( $leak['sample_menu_names'] ) ) {
+                        echo "  sample menu names:  " . implode( ', ', array_slice( (array) $leak['sample_menu_names'], 0, 5 ) ) . "\n";
+                    }
+                    $total_failed++;
+                } else {
+                    echo "  ok: test database is clean\n";
+                }
+            }
+        }
+    }
 }
 
 exit( $total_failed === 0 ? 0 : 1 );

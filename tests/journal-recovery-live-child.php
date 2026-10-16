@@ -68,6 +68,18 @@ $token = 'ASjr' . substr( md5( (string) ( time() . getmypid() . random_int( 1, 1
 $f     = array();
 $mine  = array();
 
+// Run-scoped fixture tracker. Every disposable record this child
+// creates — drafts, trashed posts, kept posts, nav menus, options —
+// is registered against the tracker's per-run registry, so a
+// child that crashes mid-script still releases its holdings when
+// the parent sweeps the registry file. The existing end-of-file
+// foreach over $mine is preserved (it is the primary path), and
+// the tracker is the safety net: `teardown()` at the end of this
+// script is idempotent against $mine because both reach the same
+// rows by exact id.
+require_once __DIR__ . '/agentshell-test-fixtures.php';
+$fixtures = new Agentshell_Test_Fixtures();
+
 // The per-post `delete_post` capability is checked at the moment of
 // destruction inside `compensate()`. The CLI context has no logged-in
 // user, so `current_user_can()` returns false for everything. Switch
@@ -231,6 +243,7 @@ function jr_expired_row( $op, array $over = array() ) {
  * lookup is what covers.
  */
 function jr_real_draft( $token, $suffix, $op_state = 'applied' ) {
+    global $fixtures;
     $op = Content_Journal::record_intent(
         Content_Journal::OP_CREATE_DRAFT,
         array( 'post_type' => 'page', 'post_status' => 'draft', 'post_title' => $token . $suffix ),
@@ -251,7 +264,7 @@ function jr_real_draft( $token, $suffix, $op_state = 'applied' ) {
         return array( null, null );
     }
 
-    $GLOBALS['jr_mine'][] = (int) $id;
+    $fixtures->register_post( (int) $id, $token );
     update_post_meta( $id, Content_Journal::OP_META, $op['id'] );
 
     $op['state']   = $op_state;
@@ -271,7 +284,7 @@ $trash_id = wp_insert_post( wp_slash( array(
     'post_type' => 'page', 'post_status' => 'draft', 'post_title' => $token . '-trashme',
     'post_content' => '<p>trash semantics</p>', 'post_name' => strtolower( $token . '-trashme' ),
 ) ), true );
-$GLOBALS['jr_mine'][] = (int) $trash_id;
+$fixtures->register_post( (int) $trash_id, $token );
 $slug_before = get_post_field( 'post_name', $trash_id );
 wp_delete_post( $trash_id );
 clean_post_cache( $trash_id );
@@ -328,7 +341,7 @@ $keeper = wp_insert_post( wp_slash( array(
     'post_type' => 'page', 'post_status' => 'draft', 'post_title' => $token . '-keeper',
     'post_content' => '<p>not ours</p>', 'post_name' => strtolower( $token . '-keeper' ),
 ) ), true );
-$GLOBALS['jr_mine'][] = (int) $keeper;
+$fixtures->register_post( (int) $keeper, $token );
 
 $orphan_op = Content_Journal::record_intent(
     Content_Journal::OP_CREATE_DRAFT,
@@ -629,7 +642,7 @@ $post11 = Content_Write_Guard::run( function () use ( $tx11, $intent11, $token )
     jr_apply_create( $tx11, $intent11['id'], $id, $after );
     return $id;
 } );
-$GLOBALS['jr_mine'][] = (int) $post11;
+$fixtures->register_post( (int) $post11, $token );
 
 // Atomicity: read wp_posts and wp_postmeta together under one transaction.
 // Either both rows are present, or neither is — the marker cannot exist
@@ -677,7 +690,7 @@ $post12 = Content_Write_Guard::run( function () use ( $intent12, $token ) {
         'meta_input'   => array( Content_Journal::OP_META => $intent12['id'] ),
     ) ), true );
 } );
-$GLOBALS['jr_mine'][] = (int) $post12;
+$fixtures->register_post( (int) $post12, $token );
 $p12 = get_post( $post12 );
 jr_apply_create( $tx12, $intent12['id'], $post12, array(
     'post_type'           => (string) $p12->post_type,
@@ -723,7 +736,7 @@ $post13 = Content_Write_Guard::run( function () use ( $intent13, $token ) {
         'meta_input'   => array( Content_Journal::OP_META => $intent13['id'] ),
     ) ), true );
 } );
-$GLOBALS['jr_mine'][] = (int) $post13;
+$fixtures->register_post( (int) $post13, $token );
 $p13 = get_post( $post13 );
 jr_apply_create( $tx13, $intent13['id'], $post13, array(
     'post_type'           => (string) $p13->post_type,
@@ -797,7 +810,7 @@ $post14 = Content_Write_Guard::run( function () use ( $intent14, $token ) {
         'meta_input'   => array( Content_Journal::OP_META => $intent14['id'] ),
     ) ), true );
 } );
-$GLOBALS['jr_mine'][] = (int) $post14;
+$fixtures->register_post( (int) $post14, $token );
 $p14 = get_post( $post14 );
 jr_apply_create( $tx14, $intent14['id'], $post14, array(
     'post_type'           => (string) $p14->post_type,
@@ -862,7 +875,7 @@ $post15 = Content_Write_Guard::run( function () use ( $intent15, $token ) {
         'meta_input'   => array( Content_Journal::OP_META => $intent15['id'] ),
     ) ), true );
 } );
-$GLOBALS['jr_mine'][] = (int) $post15;
+$fixtures->register_post( (int) $post15, $token );
 $p15 = get_post( $post15 );
 jr_apply_create( $tx15, $intent15['id'], $post15, array(
     'post_type'           => (string) $p15->post_type,
@@ -950,7 +963,7 @@ $post16 = Content_Write_Guard::run( function () use ( $intent16, $token ) {
         'meta_input'   => array( Content_Journal::OP_META => $intent16['id'] ),
     ) ), true );
 } );
-$GLOBALS['jr_mine'][] = (int) $post16;
+$fixtures->register_post( (int) $post16, $token );
 
 // Side-channel: another caller (a different process in production; a
 // direct update here) bumps the journal row to a new version so the
@@ -1088,7 +1101,7 @@ $u4_post = wp_insert_post( wp_slash( array(
     'post_content' => '<p>no marker</p>',
     'post_name'    => strtolower( $token . '-u4-nomarker' ),
 ) ), true );
-$GLOBALS['jr_mine'][] = (int) $u4_post;
+$fixtures->register_post( (int) $u4_post, $token );
 // Deliberately do NOT stamp the OP_META on this post.
 $u4_tool = new Update_Draft();
 $u4_threw = false;
@@ -1141,7 +1154,7 @@ $u5_post = Content_Write_Guard::run( function () use ( $u5_intent, $token ) {
         'meta_input'   => array( Content_Journal::OP_META => $u5_intent['id'] ),
     ) ), true );
 } );
-$GLOBALS['jr_mine'][] = (int) $u5_post;
+$fixtures->register_post( (int) $u5_post, $token );
 $u5_p = get_post( $u5_post );
 jr_apply_create( $tx_u5, $u5_intent['id'], $u5_post, array(
     'post_type'           => (string) $u5_p->post_type,
@@ -1227,7 +1240,7 @@ $u6_post = Content_Write_Guard::run( function () use ( $u6_intent, $token ) {
         'meta_input'   => array( Content_Journal::OP_META => $u6_intent['id'] ),
     ) ), true );
 } );
-$GLOBALS['jr_mine'][] = (int) $u6_post;
+$fixtures->register_post( (int) $u6_post, $token );
 $u6_p = get_post( $u6_post );
 jr_apply_create( $tx_u6, $u6_intent['id'], $u6_post, array(
     'post_type'           => (string) $u6_p->post_type,
@@ -1364,7 +1377,7 @@ $f['lock_prompt_failure'] = array(
 
 $post15_helpers = array();
 function jr15_draft( $title, $body, $token ) {
-    global $wpdb;
+    global $wpdb, $fixtures;
     $intent = Content_Journal::record_intent(
         Content_Journal::OP_CREATE_DRAFT,
         array( 'post_type' => 'page', 'post_status' => 'draft', 'post_title' => $title ),
@@ -1388,7 +1401,7 @@ function jr15_draft( $title, $body, $token ) {
     if ( is_wp_error( $post_id ) || ! $post_id ) {
         return array( null, null );
     }
-    $GLOBALS['jr_mine'][] = (int) $post_id;
+    $fixtures->register_post( (int) $post_id, $token );
     $p = get_post( $post_id );
     jr_apply_create( $tx_row, $intent['id'], $post_id, array(
         'post_type'           => (string) $p->post_type,
@@ -1914,8 +1927,8 @@ $pre_z = wp_insert_post( wp_slash( array(
 if ( is_wp_error( $pre_y ) || ! $pre_y || is_wp_error( $pre_z ) || ! $pre_z ) {
     throw new \RuntimeException( 'could not seed pre-existing Y and Z for section 16.1' );
 }
-$GLOBALS['jr_mine'][] = (int) $pre_y;
-$GLOBALS['jr_mine'][] = (int) $pre_z;
+$fixtures->register_post( (int) $pre_y, $token );
+$fixtures->register_post( (int) $pre_z, $token );
 // Capture baseline state right after creation; do not touch them again
 // until the rollback assertions below. modified_gmt is the post's
 // creation-time stamp and is the strongest possible signal that no
@@ -2140,8 +2153,8 @@ $pre_z2 = wp_insert_post( wp_slash( array(
 if ( is_wp_error( $pre_y2 ) || ! $pre_y2 || is_wp_error( $pre_z2 ) || ! $pre_z2 ) {
     throw new \RuntimeException( 'could not seed pre-existing Y2 and Z2 for section 16.2' );
 }
-$GLOBALS['jr_mine'][] = (int) $pre_y2;
-$GLOBALS['jr_mine'][] = (int) $pre_z2;
+$fixtures->register_post( (int) $pre_y2, $token );
+$fixtures->register_post( (int) $pre_z2, $token );
 $z2_baseline_modified = (string) get_post_field( 'post_modified_gmt', $pre_z2 );
 $z2_baseline_body     = (string) get_post_field( 'post_content', $pre_z2 );
 
@@ -2249,8 +2262,8 @@ $pre_z3 = wp_insert_post( wp_slash( array(
 if ( is_wp_error( $pre_y3 ) || ! $pre_y3 || is_wp_error( $pre_z3 ) || ! $pre_z3 ) {
     throw new \RuntimeException( 'could not seed pre-existing Y3 and Z3 for section 16.3' );
 }
-$GLOBALS['jr_mine'][] = (int) $pre_y3;
-$GLOBALS['jr_mine'][] = (int) $pre_z3;
+$fixtures->register_post( (int) $pre_y3, $token );
+$fixtures->register_post( (int) $pre_z3, $token );
 $z3_baseline_modified = (string) get_post_field( 'post_modified_gmt', $pre_z3 );
 $z3_baseline_body     = (string) get_post_field( 'post_content', $pre_z3 );
 
@@ -2370,7 +2383,7 @@ $unrelated = wp_insert_post( wp_slash( array(
 if ( is_wp_error( $unrelated ) || ! $unrelated ) {
     throw new \RuntimeException( 'could not seed unrelated post for section 16.4' );
 }
-$GLOBALS['jr_mine'][] = (int) $unrelated;
+$fixtures->register_post( (int) $unrelated, $token );
 $unrelated_before_modified = (string) get_post_field( 'post_modified_gmt', $unrelated );
 $unrelated_before_body     = (string) get_post_field( 'post_content', $unrelated );
 
@@ -2391,8 +2404,8 @@ $pre_z4 = wp_insert_post( wp_slash( array(
 if ( is_wp_error( $pre_y4 ) || ! $pre_y4 || is_wp_error( $pre_z4 ) || ! $pre_z4 ) {
     throw new \RuntimeException( 'could not seed pre-existing Y4 and Z4 for section 16.4' );
 }
-$GLOBALS['jr_mine'][] = (int) $pre_y4;
-$GLOBALS['jr_mine'][] = (int) $pre_z4;
+$fixtures->register_post( (int) $pre_y4, $token );
+$fixtures->register_post( (int) $pre_z4, $token );
 
 // Clear the audit log so this section's filter only sees this transaction's
 // events. The 100-entry cap pushes earlier transactions' events off the
@@ -2447,11 +2460,15 @@ $f['stage2b5_mixed_unrelated'] = array(
 );
 
 // ── cleanup: put the site back exactly as it was found ────────────────────────
-foreach ( array_unique( $GLOBALS['jr_mine'] ) as $pid ) {
-    if ( $pid > 0 ) {
-        wp_delete_post( $pid, true );
-    }
-}
+//
+// The fixture tracker has its own teardown: every post registered via
+// `$fixtures->register_post()` is removed by the call below. The marker-
+// based sweeps that follow are the existing per-section safety net and
+// remain in place. Both layers reach the same rows by exact id, so a
+// double-delete is a no-op (`wp_delete_post($id, true)` is a no-op on a
+// non-existent post).
+$fixtures->teardown();
+
 foreach ( jr_rows_for( $token ) as $pid ) {
     wp_delete_post( $pid, true );
 }

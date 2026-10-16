@@ -42,6 +42,16 @@ $made      = array();   // every menu term this run created
 $facts     = array();
 $failures  = array();
 
+// Run-scoped fixture tracker — exact-id registry with try/finally
+// teardown and parent-process recovery sweep. Every menu id this
+// run creates is registered against the tracker's per-run
+// registry so a child that crashes mid-script still releases its
+// holdings when the parent sweeps the registry file. The
+// existing $made foreach remains the primary cleanup path; the
+// tracker is a redundant safety net.
+require_once __DIR__ . '/agentshell-test-fixtures.php';
+$fixtures = new Agentshell_Test_Fixtures();
+
 /**
  * Remove every probe menu and restore the location map, whatever happens.
  *
@@ -159,6 +169,7 @@ if ( ! $created['ok'] ) {
     note_failure( 'create failed: ' . $created['error'] );
 } else {
     $made[] = $created['result']['menu_id'];
+    $fixtures->register_menu( (int) $created['result']['menu_id'], $created['result']['name'] ?? '' );
 }
 $menu_id = $created['ok'] ? (int) $created['result']['menu_id'] : 0;
 fact( 'create_ok', $created['ok'] );
@@ -214,6 +225,7 @@ $parented    = call_tool( array(
 ) );
 if ( $parented['ok'] ) {
     $made[] = $parented['result']['menu_id'];
+    $fixtures->register_menu( (int) $parented['result']['menu_id'], $parented['result']['name'] ?? '' );
     $pid    = (int) $parented['result']['menu_id'];
     $pids   = menu_ids( $pid );
     fact( 'parent_child_order', menu_titles( $pid ) );
@@ -303,6 +315,7 @@ $seed          = call_tool( array(
 ) );
 if ( $seed['ok'] ) {
     $made[]     = $seed['result']['menu_id'];
+    $fixtures->register_menu( (int) $seed['result']['menu_id'], $seed['result']['name'] ?? '' );
     $existing_id = (int) $seed['result']['menu_id'];
 } else {
     note_failure( 'seed failed: ' . $seed['error'] );
@@ -348,6 +361,14 @@ fact( 'invalid_errors', array_map( function ( $r ) { return $r['ok'] ? '' : $r['
 fact( 'invalid_created_any', count( wp_get_nav_menus() ) > count( $menus_before_invalid ) );
 
 // ------------------------------------------------------------- 8. cleanup
+//
+// The fixture tracker's per-run registry is the safety net: every
+// menu registered via `$fixtures->register_menu()` is removed by
+// the teardown call below. The existing $made foreach is the
+// primary path and remains in place. Both reach the same menus by
+// exact id, so a double-delete is a no-op.
+$fixtures->teardown();
+
 foreach ( $made as $id ) {
     wp_delete_nav_menu( $id );
 }

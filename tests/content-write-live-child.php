@@ -37,6 +37,15 @@ $token = 'AScw' . substr( md5( (string) ( time() . getmypid() . random_int( 1, 1
 $f     = array();
 $mine  = array();
 
+// Run-scoped fixture tracker — exact-id registry with try/finally
+// teardown and parent-process recovery sweep. The existing
+// $mine array and the LIKE-pattern ids_for() sweep remain as
+// the primary mechanism; the tracker is a redundant safety net
+// so a child that crashes mid-script still releases its
+// holdings when the parent sweeps the registry file.
+require_once __DIR__ . '/agentshell-test-fixtures.php';
+$fixtures = new Agentshell_Test_Fixtures();
+
 function ids_for( $needle ) {
     global $wpdb;
     return array_map( 'intval', $wpdb->get_col( $wpdb->prepare(
@@ -57,6 +66,17 @@ function meta_for( $id ) {
 function track( &$mine, $id ) {
     if ( $id > 0 ) {
         $mine[] = (int) $id;
+    }
+}
+
+// Mirror every `track()` call into the run-scoped fixture tracker.
+// The tracker's per-run registry is the safety net for a child that
+// crashes mid-script; the primary cleanup is still the existing
+// `$mine` foreach and the LIKE-pattern `ids_for()` sweep at the end.
+function cw_register_fixture( $id, $token ) {
+    global $fixtures;
+    if ( isset( $fixtures ) && is_object( $fixtures ) && $id > 0 ) {
+        $fixtures->register_post( (int) $id, $token );
     }
 }
 
@@ -95,6 +115,7 @@ $title = $token . '-ok';
 try {
     $rec = Content_Primitives::create( 'page', $title, '<p>probe body</p>', 'draft', array( 'post_name' => strtolower( $title ) ) );
     track( $mine, $rec['id'] );
+    cw_register_fixture( $rec['id'], $token );
     $f['create_ok'] = array(
         'returned_id'  => isset( $rec['id'] ) ? (int) $rec['id'] : 0,
         'title'        => isset( $rec['title'] ) ? $rec['title'] : '',
@@ -136,6 +157,7 @@ $f['f3'] = array(
 );
 foreach ( $leaked as $id ) {
     track( $mine, $id );
+    cw_register_fixture( $id, $token );
 }
 
 // ── 3. Metadata written before the failure must not survive either ───────────
@@ -157,12 +179,14 @@ $f['f3meta'] = array(
 );
 foreach ( $leaked as $id ) {
     track( $mine, $id );
+    cw_register_fixture( $id, $token );
 }
 
 // ── 4. A failed write must not damage content that already existed ───────────
 $keep_title = $token . '-keep';
 $keep       = Content_Primitives::create( 'page', $keep_title, '<p>original body</p>', 'publish', array( 'post_name' => strtolower( $keep_title ) ) );
 track( $mine, $keep['id'] );
+cw_register_fixture( $keep['id'], $token );
 $before   = get_post( $keep['id'] );
 $before_s = array( $before->post_title, $before->post_content, $before->post_status, $before->post_name, $before->post_modified, $before->post_date );
 
@@ -193,6 +217,7 @@ $upd = Content_Primitives::update( $keep['id'], 'page', array(
     'status'  => 'draft',
 ) );
 track( $mine, $upd['id'] );
+cw_register_fixture( $upd['id'], $token );
 $f['update_ok'] = array(
     'returned_id' => (int) $upd['id'],
     'db_title'    => get_post_field( 'post_title', $keep['id'] ),
@@ -206,6 +231,7 @@ $untitled_before = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->posts} WH
 try {
     $r = Content_Primitives::create( 'page', '', '', 'draft', array() );
     track( $mine, $r['id'] );
+    cw_register_fixture( $r['id'], $token );
     $f['empty_refused'] = null;
 } catch ( \Throwable $e ) {
     $f['empty_refused'] = $e->getMessage();
@@ -233,6 +259,7 @@ try {
     $tool  = new \AgentShell_MCP\Tools\Create_Page();
     $rec   = $tool->execute( array( 'title' => $title, 'content' => '<p>tool body</p>', 'status' => 'draft' ) );
     track( $mine, $rec['id'] );
+    cw_register_fixture( $rec['id'], $token );
     $f['tool'] = array(
         'id'         => (int) $rec['id'],
         'db_title'   => get_post_field( 'post_title', $rec['id'] ),
@@ -252,6 +279,15 @@ try {
 }
 
 // ── cleanup, then report ────────────────────────────────────────────────────
+//
+// The fixture tracker's per-run registry is the safety net: every
+// post registered via `cw_register_fixture()` is removed by the
+// teardown call below. The existing `$mine` foreach and the
+// LIKE-pattern `ids_for()` sweep that follow are the primary
+// paths and remain in place. Both layers reach the same rows by
+// exact id, so a double-delete is a no-op.
+$fixtures->teardown();
+
 foreach ( array_unique( $mine ) as $id ) {
     if ( $id > 0 ) {
         wp_delete_post( $id, true );
