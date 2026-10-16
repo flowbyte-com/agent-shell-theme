@@ -31,10 +31,17 @@ Text Domain: agentshell
     --theme-accent-strong: #d4622a;  /* hover / active */
 
     --theme-header-bg: transparent;        /* header sits on body bg */
-    --theme-header-text: var(--theme-text);
+    /* Header / footer text defaults to light so that legacy persisted
+     * configurations (which set --theme-header-bg / --theme-footer-bg
+     * to a dark colour but do not set the text counterpart) remain
+     * legible without overwriting the site's stored configuration.
+     * The modernized default-config.json overrides these via the
+     * custom_css_vars wildcard pass for sites using the new
+     * light / transparent header. */
+    --theme-header-text: #ffffff;
     --theme-header-accent: var(--theme-accent);
     --theme-footer-bg: transparent;        /* footer sits on body bg */
-    --theme-footer-text: var(--theme-text);
+    --theme-footer-text: #ffffff;
     --theme-footer-accent: var(--theme-accent);
     --theme-link: var(--theme-text);
 
@@ -135,6 +142,20 @@ body {
     display: flex;
     flex-direction: column;
     min-height: 100dvh;
+}
+
+/* Sticky-footer wiring, second hop. The body is a flex column whose
+ * only in-flow child is #agentshell-root (the .skip-link is
+ * position: absolute). For #zone-main's flex: 1 0 auto (Section 4)
+ * to actually push the footer to the bottom of the viewport on
+ * short pages, the chain has to reach from body → #agentshell-root
+ * → #zone-main, which means #agentshell-root itself has to grow
+ * within the body column. This is the smallest possible wiring rule
+ * that does it; the structural selectors and properties in
+ * Sections 3 & 4 are untouched. */
+#agentshell-root {
+    flex: 1 0 auto;
+    min-height: 0; /* allow the child #zone-main to shrink if needed */
 }
 
 img { max-width: 100%; height: auto; }
@@ -365,6 +386,48 @@ p  { margin: 0 0 var(--space-4, 1rem); }
 /* Current menu item — single 2px underline in the warm accent. */
 .wp-core-nav_menu .wp-core-nav .current-menu-item > a,
 .wp-core-nav_menu .wp-core-nav .current_page_item > a {
+    color: var(--theme-accent);
+    box-shadow: inset 0 -2px 0 0 var(--theme-accent);
+}
+
+/*
+ * WordPress menu fallback markup. When no menu is assigned to the
+ * 'primary' (or other) location, wp_nav_menu emits
+ *   <nav class="menu"><ul><li class="page_item">…</li></ul></nav>
+ * instead of the explicit-menu form above. A fresh install without
+ * a custom menu therefore lands here, and the rules above would
+ * leave it as a vertical bulleted list. These rules give the
+ * fallback the same visual contract (horizontal on desktop,
+ * coherent on mobile) without touching unrelated <nav class="menu">
+ * elsewhere — every selector is scoped to .wp-core-nav_menu.
+ */
+.wp-core-nav_menu nav.menu,
+.wp-core-nav_menu nav.menu ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-5, 1.5rem);
+    align-items: center;
+}
+
+.wp-core-nav_menu nav.menu li { position: relative; }
+
+.wp-core-nav_menu nav.menu a {
+    display: inline-block;
+    padding: 0.25rem 0;
+    text-decoration: none;
+    color: var(--theme-header-text, var(--theme-text));
+    font-weight: 500;
+    transition: color 150ms ease;
+}
+
+.wp-core-nav_menu nav.menu a:hover {
+    color: var(--theme-header-accent, var(--theme-accent));
+}
+
+.wp-core-nav_menu nav.menu .current_page_item > a {
     color: var(--theme-accent);
     box-shadow: inset 0 -2px 0 0 var(--theme-accent);
 }
