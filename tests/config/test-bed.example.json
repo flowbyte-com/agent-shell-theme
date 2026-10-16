@@ -1,0 +1,64 @@
+{
+    "kind": "agentshell-test-bed/v1",
+    "_comment": [
+        "Local test-bed config. Copy to tests/config/test-bed.json and fill in.",
+        "test-bed.json is gitignored. AGENTSHELL_TEST_BED_CONFIG overrides the path.",
+        "Never commit: db passwords, app passwords, salts, certificates, or absolute",
+        "personal paths (e.g. /home/<user>/). Keep this template fully redacted."
+    ],
+
+    "label": "disposable-test-bed",
+    "_label_comment": "Free-form label. Not used for safety; surfaced in reports.",
+
+    "wp_root": "/REPLACE/WITH/WORDPRESS/ROOT",
+    "domain":  "REPLACE.example.test",
+    "url_http":  "http://REPLACE.example.test",
+    "url_https": "https://REPLACE.example.test",
+
+    "db": {
+        "host":     "localhost",
+        "name":     "REPLACE_DB_NAME",
+        "user":     "REPLACE_DB_USER",
+        "_password": "REPLACE — store in test-bed.json (gitignored), never here",
+        "socket":   "REPLACE/WITH/PATH/TO/mysqld.sock",
+        "port":     0,
+        "_port_comment": "0 means use the socket; non-zero means TCP, with the port value."
+    },
+
+    "php": {
+        "binary":      "REPLACE/WITH/PATH/TO/php",
+        "shared_libs": "REPLACE/WITH/PATH/TO/shared-libs",
+        "_shared_libs_comment": "LocalWP: <lightning-services>/php-*/bin/linux/shared-libs"
+    },
+
+    "auth": {
+        "admin_user":        "REPLACE_ADMIN_USER",
+        "_admin_password":   "REPLACE — store in test-bed.json (gitignored), never here",
+        "_app_password":     "REPLACE — application password, stored in test-bed.json only"
+    },
+
+    "expect": {
+        "_comment": "These are checked at bootstrap. Any mismatch refuses to run.",
+
+        "site_mode_sentinel": "disposable_test_bed",
+        "server_uuid":        "REPLACE — MySQL @@server_uuid of the test instance",
+        "expected_datadir":   "REPLACE — absolute path to test instance datadir",
+        "expected_port":      0,
+
+        "wp_table_prefix": "wp_",
+
+        "db_user_grants_only": "REPLACE_DB_NAME",
+        "_grants_comment": "Bootstrap checks the db user has NO grants beyond <name>.*",
+
+        "baseline_snapshot_path": "REPLACE/WITH/PATH/TO/test-bed-baseline.sql",
+        "_baseline_comment": "mysqldump produced at test-bed setup. The runner restores the test database from this snapshot under the exclusive runner lock; never used on the dev database."
+    },
+
+    "fixture": {
+        "post_title_prefix":  "ASTB",
+        "post_meta_prefix":   "_astb_",
+        "option_prefix":      "astb_",
+        "menu_prefix":        "ASTB ",
+        "post_status_for_created": "draft"
+    }
+}
