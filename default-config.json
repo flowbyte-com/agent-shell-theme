@@ -28,22 +28,30 @@
   ],
   "design": {
     "colors": {
-      "background": "#ffffff",
+      "background": "#fafaf9",
       "surface": "#f4f4f5",
-      "text": "#18181b",
-      "border": "#e4e4e7",
-      "accent": "#3b82f6",
-      "primary": "#1a1a2e",
-      "secondary": "#16213e"
+      "text": "#1f2937",
+      "border": "#e7e5e4",
+      "accent": "#e87a3e",
+      "primary": "#1f2937",
+      "secondary": "#6b7280"
     },
     "typography": {
-      "fontFamily": "system-ui, sans-serif",
-      "mono": "monospace",
+      "fontFamily": "ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif",
+      "mono": "ui-monospace, SFMono-Regular, \"SF Mono\", Menlo, Consolas, monospace",
       "baseSize": "1rem",
       "scale": "1.25"
     },
     "layout": {
-      "radius": "8px"
+      "radius": "6px"
+    },
+    "custom_css_vars": {
+      "--theme-text-muted": "#6b7280",
+      "--theme-accent-strong": "#d4622a",
+      "--theme-header-bg": "transparent",
+      "--theme-header-text": "#1f2937",
+      "--theme-footer-bg": "transparent",
+      "--theme-footer-text": "#1f2937"
     }
   },
   "layout": {}
