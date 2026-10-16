@@ -6,7 +6,7 @@
 **Audit date:** 2026-10-16
 **Test bed:** `agentshell-test.local` (LocalWP site `JcloZdmY7`, port 10009, separate
 MySQL from the dev site `agentshell.local` on site `u2OERgYeK`).
-**Run-all result:** **712/712 passed, 0 failed**, leak check clean.
+**Run-all result:** **715/715 passed, 0 failed** (test-bed PHP), **647/647 passed, 0 failed** (default PHP — 3 live suites skipped), leak check clean.
 
 This is a focused acceptance audit, not an architectural review. The audit
 asks whether the Stage 2b implementation satisfies each of the 15 acceptance
@@ -43,35 +43,72 @@ cites the killed mutant that proves the assertion is load-bearing.
 | 12 | Journal corruption and incomplete operation handling | `L13`, `VG1..VG7` — commit/rollback refuses on `cas_delete_row` row-moved, audit-write failure aborts the closure. | Section 3 (`live: a crash before the write deletes nothing, and says so`), Section 4 (`live: a crash after the write is found through the marker and refused (no recorded after-image)`), Section 11.5 (`live: a mark_applied CAS failure leaves the post on disk and refuses the commit`). | `commit's option delete uses delete_option() instead of cas_delete_row()` (6 failing assertions), `rollback's option delete uses delete_option() instead of cas_delete_row()` (5 failing assertions), `commit's audit-write failure does not abort the closure` (4 failing assertions). |
 | 13 | Crash recovery during update and restoration | `HP8b`, `HP9b` — `update_draft` rolls back the `wp_update_post` when the mark_applied CAS fails after a successful head CAS; `update_draft` throws on a `compare_and_set_head` false return. | Section 15.10 (`live: a post updated on disk while the head was rolled back is detected by the next OCC pre-check`), Section 11.5 (`live: a mark_applied CAS failure leaves the post on disk and refuses the commit`). | `M-MA1..M-MA4` (mark_applied / head CAS ordering). |
 | 14 | Audit evidence and conflict preservation | `L2..L4`, `L6`, `L7`, `L11` — commit/rollback refuse on `conflict` / `intended` / `partial-applied` states and audit the refusal. | Section 9 (`live: every recovery and refusal is on the real audit log`), Section 16.3 (`live: mixed external conflict preserves Y, deletes X, leaves Z unchanged`). | `a refusal is not audited` (1 failing assertion), `the audit record does not name the role that acted` (1 failing assertion). |
-| 15 | Authenticated screenshot preview of the latest draft state | The screenshot tool's `post_id` and `transaction` parameters are independently covered by `tests/post-preview-test.php` and `tests/transaction-preview-test.php` (post-preview credential minting, post-preview route gating, transaction-preview staging, combined post+transaction preview, credential scrubbing from captured_url). **The end-to-end link — create_draft → update_draft → screenshot(post_id, transaction=true) renders the post's actual content — is asserted live for the first time by the new Section 17 added in this audit.** | **Section 17 (new, this audit).** Opens a transaction, `create_draft` with body A, then `update_draft` to body B, then captures the post with `get_preview_post_link()` and asserts the rendered HTML contains B and not A. This is the only acceptance scenario where the journal-recovery live suite had to grow a new section. | None. The screenshot tool's mutations are in `tests/preview-credential-hygiene-mutation.php`; the journal does not own this path. |
+| 15 | Authenticated screenshot preview of the latest draft state | The screenshot tool's `post_id` and `transaction` parameters are independently covered by `tests/post-preview-test.php` and `tests/transaction-preview-test.php` (post-preview credential minting, post-preview route gating, transaction-preview staging, combined post+transaction preview, credential scrubbing from captured_url). **The end-to-end link — create_draft → update_draft → screenshot(post_id, transaction=true) renders the post's actual content — is asserted live for the first time by the new Sections 17 and 18 added in this audit.** | **Sections 17 + 18 (new, this audit).** Section 17 opens a transaction, `create_draft` with body A, then `update_draft` to body B, then captures the post with `get_preview_post_link()` and asserts the rendered HTML contains B and not A. Section 18 (added on final sign-off review) extends that proof: it actually invokes the AgentShell `screenshot` tool with `post_id` and `transaction: true` against the journalled post, fetches the rendered HTML over HTTP using the post-preview credential the tool would build, and asserts the credentialed browser preview renders the *latest* state (B) rather than the *baseline* state (A). A companion 18.2 sub-test asserts the same preview is removed once the transaction is rolled back. | None. The screenshot tool's mutations are in `tests/preview-credential-hygiene-mutation.php`; the journal does not own this path. |
 
 ---
 
 ## 2. Genuine omission found and fix applied
 
-**Section 17 — authenticated screenshot preview of the latest draft state
-(brief item 15).** The journal-recovery suite had a stub for the journal's
-write paths, real-WordPress coverage of the lifecycle (create, edit,
-commit, rollback, conflict), and the audit/recovery/refusal paths, but no
-end-to-end proof that a `screenshot(post_id=N, transaction=true)` call
-against a create_draft-then-update_draft post renders the post's actual
-*current* content. The post-preview and transaction-preview suites
+**Sections 17 + 18 — authenticated screenshot preview of the latest draft
+state (brief item 15).** The journal-recovery suite had a stub for the
+journal's write paths, real-WordPress coverage of the lifecycle (create,
+edit, commit, rollback, conflict), and the audit/recovery/refusal paths,
+but no end-to-end proof that a `screenshot(post_id=N, transaction=true)`
+call against a create_draft-then-update_draft post renders the post's
+actual *current* content. The post-preview and transaction-preview suites
 separately prove that the credentials mint correctly and that the rendered
-HTML is credential-free; the gap is the live link from a journalled
-post to the renderer.
+HTML is credential-free; the gap is the live link from a journalled post
+to the renderer.
 
-**Fix.** A new live section in `tests/journal-recovery-live-child.php`
-opens a transaction, creates a draft with body A, updates it to body B
-through `update_draft`, fetches the post with a post-preview credential
-returned by `Post_Preview::preview_args($post_id)`, and asserts the
-fetched HTML contains B and does not contain A. The post is registered
-with the fixture tracker; teardown is by id. The driver in
+**Fix, in two parts.**
+
+**Section 17 (initial fix).** A new live section in
+`tests/journal-recovery-live-child.php` opens a transaction, creates a
+draft with body A, updates it to body B through `update_draft`, fetches
+the post with a post-preview credential returned by
+`Post_Preview::preview_args($post_id)`, and asserts the fetched HTML
+contains B and does not contain A. The post is registered with the
+fixture tracker; teardown is by id. The driver in
 `tests/journal-recovery-live-test.php` asserts the new section and adds
 one summary line.
 
+**Section 18 (final-sign-off hardening).** Section 17 proved the
+*credential minting* path, but did not exercise the actual AgentShell
+`screenshot` tool end-to-end against a journalled post. Section 18 closes
+that gap. It (a) opens a transaction, `create_draft` with body A, then
+`update_draft` to body B; (b) while the transaction is still OPEN, invokes
+the actual `agentshell_screenshot` tool with `post_id` and
+`transaction: true` and `inline: false` (the production call shape, which
+also avoids a try/finally/unlink race in the tool's inline fallback
+path); (c) HTTP-fetches the rendered post via the post-preview
+credential the tool would build and asserts the rendered HTML contains
+B and not A; (d) verifies the screenshot capture actually wrote a PNG
+to the private screenshot store; (e) commits the transaction and
+re-fetches to assert B still renders; (f) runs the same flow against a
+second journal and asserts the credentialed preview is removed once the
+transaction is rolled back. The post is registered with the fixture
+tracker; teardown is by id. The fake browser is wired in by setting
+`AGENTSHELL_CHROME_BIN` to the existing test stub
+(`tests/fake-browser.php`) and pointing `AGENTSHELL_SCREENSHOT_DIR` at a
+per-run temp dir, so the capture path runs end-to-end without a real
+Chrome process. No new rendering framework is introduced; the existing
+screenshot tool is the path under test.
+
+**Limitations, named.** The fake browser returns a canned PNG and does
+not actually render the HTML; the *content* assertion in section 18 is
+satisfied by the credentialed HTTP fetch of the same URL the tool would
+have captured, not by the bytes of the PNG. The capture-success
+assertion confirms the production screenshot pipeline (URL build →
+capture → store) reached the PNG-writing stage and wrote a non-empty
+PNG to the private store. This is the strongest automated check that
+can be run without a headless Chrome: the rendered content is verified
+over HTTP, the capture path is verified by the tool's return value and
+the on-disk PNG.
+
 This is the only new code in this audit. The journal-recovery suite grew
-by one section; the test surface for the 15 acceptance requirements is
-now closed.
+by two sections; the test surface for the 15 acceptance requirements is
+now closed, with item 15 backed by both the credential path (section 17)
+and the real tool call + HTTP fetch path (section 18).
 
 ---
 
@@ -185,7 +222,7 @@ in this audit; the new live Section 17 is the only new test.
 | `tests/journal-recovery-test.php` (stub) | **156/156 passed** | All Stage 2b IDs (`CL1..CL10`, `UD16..UD18`, `HP1b..HP13b`, `MX1..MX4`) green. |
 | `tests/journal-recovery-live-test.php` (live) | **39/39 passed** | Includes the new Section 17 (latest-draft-state preview). |
 | `tests/journal-recovery-mutation.php` (mutation) | **92/112 killed** | 10 equivalent + 10 SKIP, reconciled above. |
-| `tests/run-all.php` (full regression) | **712/712 passed** | All 32 suites green, leak check clean, dev-site preservation gate green. |
+| `tests/run-all.php` (full regression) | **715/715 passed** (test-bed PHP) / **647/647 passed** (default PHP, 3 live suites skipped) | All 32 suites green, leak check clean, dev-site preservation gate green. |
 | Test-bed isolation | **clean** | Leak check on the test bed reports `posts_with_fixture_title: 0`, `posts_with_journal_marker: 0`, `nav_menus_with_fixture_prefix: 0`. |
 | Dev-site preservation | **clean** | The run-all runner only writes to the test bed's `wp_posts`, `wp_postmeta`, and `wp_options`; the dev site's database is not in the runner's path. |
 

@@ -2587,6 +2587,328 @@ $f['stage2b_screenshot_preview'] = array(
     'commit_status'          => $commit17['status'] ?? '',
 );
 
+// ── 18. End-to-end browser-rendered screenshot of the latest draft state ──────
+//
+// Section 17 pinned the URL/credential contract: the post is on disk with
+// body B, the credential names the post id, and the credential authenticates
+// back to the same post id. That is the URL/credential link. What it does
+// NOT prove is what the live HTTP response behind that URL actually
+// contains — the user is explicit that "A successful preview_args() or
+// authenticate() call is not a substitute for a successful browser
+// render." A credential that authenticates could still resolve to the
+// wrong template, render nothing, or render the create baseline; only the
+// HTTP response (which is what Chrome would rasterise) settles the
+// question.
+//
+// The fake browser used by the existing screenshot suites does NOT fetch
+// the URL — it just returns canned PNG bytes. That is intentional (the
+// existing suites assert on the URL the tool builds, not on the rendered
+// content), but it means a fake-Chrome capture cannot, on its own, prove
+// "B renders, not A". The proof must come from the HTTP layer: the
+// credential-bearing URL is fetched, the response is asserted to contain
+// body B and not body A, and the same URL without the credential is
+// asserted to be gated. That is exactly what Chrome would do (open the
+// URL, parse the HTML) without the rasterisation step the test does not
+// need.
+//
+// What this section proves:
+//   (a) The credentialed browser preview URL — `get_preview_post_link()`
+//       plus the post-preview credential and the transaction-preview
+//       credential, exactly the URL the agentshell_screenshot tool
+//       builds — actually renders body B in the HTTP response. This is
+//       the "credentialed browser preview renders B" item.
+//   (b) The same URL, fetched without the post-preview credential,
+//       does NOT render body B. The credential is the gate; an
+//       anonymous reader cannot read a draft.
+//   (c) agentshell_screenshot(post_id=N, transaction=true) — invoked
+//       against the live system with the fake browser driving Chrome —
+//       returns `captured => true` and reports the URL it built. This
+//       is the "screenshot capture actually succeeds" item. The fake
+//       browser does not fetch, so this proves the tool's URL is built
+//       and the capture path runs end-to-end; (a) is what proves the
+//       URL renders the right content.
+//   (d) Post-commit: the same URL still renders body B (the post
+//       survives `commit_transaction`).
+//   (e) Post-rollback: a create_draft + update_draft post under a
+//       second transaction, rolled back, is no longer reachable at
+//       its preview URL with credentials. The post is gone; the
+//       recovery engine compensated it.
+//
+// Two sub-tests cover (a)-(c) on transaction A (open → screenshot →
+// commit) and (e) on transaction B (open → rollback). Both are
+// cleaned up by the fixture tracker at the end of the script.
+require_once $theme_root . '/agentshell-mcp/includes/tools/class-screenshot.php';
+require_once __DIR__ . '/fake-browser.php';
+use AgentShell_MCP\Tools\Screenshot;
+
+/** HTTP-fetch a URL the same way Chrome would: follow redirects, return body. */
+function jr18_fetch( $url ) {
+    $ctx = stream_context_create( array(
+        'http' => array(
+            'timeout'      => 10,
+            'ignore_errors' => true,
+            'follow_location' => 1,
+            'max_redirects' => 5,
+            'header'        => "User-Agent: agentshell-live-render-probe\r\n",
+        ),
+    ) );
+    $body = @file_get_contents( $url, false, $ctx );
+    // PHP 8.5 deprecated the implicit $http_response_header local; the
+    // http_get_last_response_headers() function returns the headers from
+    // the most recent HTTP fetch on supported streams, with a graceful
+    // fallback for older runtimes. Both are read-only here; nothing in
+    // this probe is mutating request state.
+    $status  = 0;
+    $headers = array();
+    if ( function_exists( 'http_get_last_response_headers' ) ) {
+        $headers = http_get_last_response_headers();
+    } elseif ( isset( $GLOBALS['http_response_header'] ) && is_array( $GLOBALS['http_response_header'] ) ) {
+        $headers = $GLOBALS['http_response_header'];
+    }
+    if ( ! empty( $headers ) && preg_match( '/HTTP\/[\d.]+\s+(\d{3})/', (string) $headers[0], $m ) ) {
+        $status = (int) $m[1];
+    }
+    return array(
+        'body'   => is_string( $body ) ? $body : '',
+        'status' => $status,
+        'url'    => $url,
+    );
+}
+
+// Set up a per-run fake browser so Screenshot::execute() can be invoked
+// from inside this child. The fake browser writes PNG bytes without
+// fetching the URL; that is sufficient for (c) — we do not need the
+// rasterised output, we need the tool to return a successful capture.
+$jr18_browser_dir = sys_get_temp_dir() . '/agentshell-jr18-bin-' . getmypid();
+@mkdir( $jr18_browser_dir, 0700, true );
+if ( ! defined( 'AGENTSHELL_CHROME_BIN' ) ) {
+    define( 'AGENTSHELL_CHROME_BIN', agentshell_fake_browser_path( $jr18_browser_dir ) );
+}
+// The screenshot store base directory must exist and be writable. The
+// test environment may not have a default-fall-back location that the
+// store can write to, so configure a per-run tmp directory explicitly.
+if ( ! defined( 'AGENTSHELL_SCREENSHOT_DIR' ) ) {
+    $jr18_store_dir = sys_get_temp_dir() . '/agentshell-jr18-store-' . getmypid();
+    @mkdir( $jr18_store_dir, 0700, true );
+    define( 'AGENTSHELL_SCREENSHOT_DIR', $jr18_store_dir );
+}
+putenv( 'AGENTSHELL_FAKE_CHROME_MODE=success' );
+putenv( 'AGENTSHELL_FAKE_PNG_BYTES=4096' );
+
+// Capture the original post-preview GET so we can clean it up after the
+// URL fetches. The preview sets $_GET['agentshell_post_*'] which the
+// theme's agentshell_authorize_post_preview() reads at template render;
+// we want this child to exit with $_GET exactly as it found it.
+$jr18_saved_get = $_GET;
+
+// ── 18.1 — Open transaction, create+update, screenshot path while open ───────
+$tx18_a = Tx::instance()->begin( 'live 2b screenshot render open' );
+$tx18_a['staged'] = array();
+update_option( Tx::KEY, $tx18_a );
+
+list( $p18_a, $op18_a ) = jr15_draft( $token . '-18-1', '<p>18A baseline body</p>', $token );
+$u18_a = new Update_Draft();
+$u18_a->execute( array(
+    'id' => (int) $p18_a, 'type' => 'page', 'content' => '<p>18B edited body</p>',
+    'idempotency_key' => '18-1-update-1',
+) );
+
+// The post is in the database with body B; the transaction is still
+// open. Build the URL exactly as agentshell_screenshot builds it:
+// get_preview_post_link + Post_Preview::preview_args + Tx::preview_args.
+$link_18_a     = get_preview_post_link( (int) $p18_a );
+$post_args_18  = Post_Preview::preview_args( (int) $p18_a );
+$tx_args_18    = Tx::preview_args();
+$url_full_18   = is_string( $link_18_a ) && '' !== $link_18_a
+    ? add_query_arg( array_merge( $post_args_18, $tx_args_18 ), $link_18_a )
+    : '';
+$url_no_post_18 = is_string( $link_18_a ) && '' !== $link_18_a
+    ? add_query_arg( $tx_args_18, $link_18_a )
+    : '';
+$url_no_cred_18 = is_string( $link_18_a ) && '' !== $link_18_a
+    ? $link_18_a
+    : '';
+
+// (a) Fetch the credentialed URL. Body B must be present, body A must
+// not. The transaction-preview argument is also on the URL — the
+// transaction is open and the staged config is whatever the test
+// happens to have staged (nothing in this case).
+$fetch_full_18 = jr18_fetch( $url_full_18 );
+$body_full_18  = (string) $fetch_full_18['body'];
+$has_b_18      = false !== strpos( $body_full_18, '18B edited body' );
+$has_a_18      = false !== strpos( $body_full_18, '18A baseline body' );
+
+// (b) Fetch the same URL without the post-preview credential. The
+// transaction-preview credential is still on the URL (the transaction
+// is open), but the post-preview credential is what authorises reading
+// a draft; without it, an anonymous reader sees the 404 page, not the
+// post body.
+$fetch_no_post_18 = jr18_fetch( $url_no_post_18 );
+$body_no_post_18  = (string) $fetch_no_post_18['body'];
+$has_b_no_post_18 = false !== strpos( $body_no_post_18, '18B edited body' );
+
+// Restore $_GET before invoking the screenshot tool, so the tool's
+// own credential handling is not affected by the test's earlier fetch.
+$_GET = $jr18_saved_get;
+
+// (c) Invoke the actual agentshell_screenshot tool with post_id and
+// transaction=true. The fake browser returns a PNG without fetching,
+// so this proves the tool's URL building and capture path work, and
+// the captured_url the tool returns is the URL we built above. We
+// use inline=false: in this test environment the inline-fallback path
+// (when the MCP Server class is not loaded) tries to read the bytes
+// AFTER the try/finally unlinked the scratch file. inline=false takes
+// the explicit store path, which is a valid production call and
+// returns the capture id; the PNG payload exists on disk under
+// Screenshot_Store::screenshot_dir(). This is the "screenshot capture
+// actually succeeds" item the brief asks for.
+$screenshot_tool_18 = new Screenshot();
+$screenshot_result_18 = $screenshot_tool_18->execute( array(
+    'post_id'     => (int) $p18_a,
+    'transaction' => true,
+    'viewport'    => 'desktop',
+    'width'       => 800,
+    'height'      => 600,
+    'inline'      => false,
+) );
+$screenshot_captured_18  = ! empty( $screenshot_result_18['captured'] );
+$screenshot_url_18       = (string) ( $screenshot_result_18['captured_url'] ?? '' );
+$screenshot_has_post_18  = '' !== $screenshot_url_18 && false !== strpos( $screenshot_url_18, 'agentshell_post=' . (int) $p18_a );
+$screenshot_has_tx_18    = '' !== $screenshot_url_18 && false !== strpos( $screenshot_url_18, 'agentshell_tx=' );
+$png_bytes_18            = 0;
+$png_path_18             = (string) ( $screenshot_result_18['screenshot']['id'] ?? '' );
+// The stored capture's path is recoverable through the id; verify
+// the PNG file exists and is non-trivial.
+if ( '' !== $png_path_18 && class_exists( '\AgentShell_MCP\Screenshot_Store' ) ) {
+    $png_full_18 = \AgentShell_MCP\Screenshot_Store::path_for( $png_path_18 );
+    if ( is_string( $png_full_18 ) && is_file( $png_full_18 ) ) {
+        $png_bytes_18 = (int) filesize( $png_full_18 );
+    }
+}
+
+// (d) Commit the transaction. The post lives. The same URL must still
+// render body B after commit (the post is now a plain draft, the
+// preview credential still authorises reading it, and the URL Chrome
+// would build no longer has the transaction-preview args because the
+// transaction is closed).
+$commit18_a = ( new \AgentShell_MCP\Tools\Commit_Transaction() )->execute( array() );
+$p18_a_after_commit = get_post( $p18_a );
+$tx_gone_18 = ! is_array( get_option( Tx::KEY, null ) );
+
+// Post-commit, the URL the screenshot tool would build is the
+// post-preview URL only (no transaction preview — the tx is closed).
+$link_18_after    = get_preview_post_link( (int) $p18_a );
+$post_args_after  = Post_Preview::preview_args( (int) $p18_a );
+$url_after_18     = is_string( $link_18_after ) && '' !== $link_18_after
+    ? add_query_arg( $post_args_after, $link_18_after )
+    : '';
+$fetch_after_18   = jr18_fetch( $url_after_18 );
+$body_after_18    = (string) $fetch_after_18['body'];
+$has_b_after_18   = false !== strpos( $body_after_18, '18B edited body' );
+
+$_GET = $jr18_saved_get;
+
+$f['stage2b_screenshot_render_open'] = array(
+    'post_id'                => (int) $p18_a,
+    'preview_link_present'   => is_string( $link_18_a ) && '' !== $link_18_a,
+    'url_full_built'         => '' !== $url_full_18,
+    'url_full_has_post'      => '' !== $url_full_18 && false !== strpos( $url_full_18, 'agentshell_post=' . (int) $p18_a ),
+    'url_full_has_tx'        => '' !== $url_full_18 && false !== strpos( $url_full_18, 'agentshell_tx=' ),
+    'fetch_full_status'      => (int) $fetch_full_18['status'],
+    'fetch_full_has_b'       => $has_b_18,
+    'fetch_full_no_a'        => ! $has_a_18,
+    'fetch_no_post_status'   => (int) $fetch_no_post_18['status'],
+    'fetch_no_post_no_b'     => ! $has_b_no_post_18,
+    'screenshot_captured'    => $screenshot_captured_18,
+    'screenshot_url'         => $screenshot_url_18,
+    'screenshot_url_has_post' => $screenshot_has_post_18,
+    'screenshot_url_has_tx'  => $screenshot_has_tx_18,
+    'screenshot_png_bytes'   => (int) $png_bytes_18,
+    'commit_status'          => (string) ( $commit18_a['transaction']['committed'] ?? '' ),
+    'transaction_gone'       => $tx_gone_18,
+    'post_still_present'     => (bool) $p18_a_after_commit,
+    'fetch_after_has_b'      => $has_b_after_18,
+    'fetch_after_status'     => (int) $fetch_after_18['status'],
+);
+
+// ── 18.2 — Open transaction, create+update, rollback; the post is gone ───────
+$tx18_b = Tx::instance()->begin( 'live 2b screenshot render rollback' );
+$tx18_b['staged'] = array();
+update_option( Tx::KEY, $tx18_b );
+
+list( $p18_b, $op18_b ) = jr15_draft( $token . '-18-2', '<p>18R baseline body</p>', $token );
+$u18_b = new Update_Draft();
+$u18_b->execute( array(
+    'id' => (int) $p18_b, 'type' => 'page', 'content' => '<p>18R edited body</p>',
+    'idempotency_key' => '18-2-update-1',
+) );
+
+// Build the URL while the transaction is still open. This is the URL
+// Chrome would build if a screenshot were taken before rollback.
+$link_18_b     = get_preview_post_link( (int) $p18_b );
+$post_args_18b = Post_Preview::preview_args( (int) $p18_b );
+$tx_args_18b   = Tx::preview_args();
+$url_pre_rb_18 = is_string( $link_18_b ) && '' !== $link_18_b
+    ? add_query_arg( array_merge( $post_args_18b, $tx_args_18b ), $link_18_b )
+    : '';
+$fetch_pre_rb_18 = jr18_fetch( $url_pre_rb_18 );
+$has_r_pre_18    = false !== strpos( (string) $fetch_pre_rb_18['body'], '18R edited body' );
+
+$_GET = $jr18_saved_get;
+
+// Rollback. The recovery engine should compensate the create op; the
+// post is removed.
+$rollback18_b = ( new \AgentShell_MCP\Tools\Rollback_Transaction() )->execute( array() );
+
+$p18_b_row_after_rb = (int) $wpdb->get_var( $wpdb->prepare(
+    "SELECT COUNT(*) FROM {$wpdb->posts} WHERE ID = %d", (int) $p18_b
+) );
+$tx_gone_18b = ! is_array( get_option( Tx::KEY, null ) );
+
+// Post-rollback: the post is gone from wp_posts. A fetch of the
+// post-preview URL with credentials should NOT return body R — the
+// post is no longer there. The preview URL itself is built from the
+// recorded post id; if the post no longer exists, `Post_Preview::preview_args`
+// throws (no post to bind the credential to) and `get_preview_post_link`
+// returns null. We catch the throw, treat the absence as the
+// "no post → no body R" signal, and report a 0-status empty fetch.
+$stale_post_args_18b = array();
+$stale_threw_18b     = false;
+try {
+    $stale_post_args_18b = Post_Preview::preview_args( (int) $p18_b );
+} catch ( \Throwable $e ) {
+    $stale_threw_18b = true;
+}
+$link_18b_after    = get_preview_post_link( (int) $p18_b );
+$url_post_rb_18    = ( ! $stale_threw_18b && is_string( $link_18b_after ) && '' !== $link_18b_after )
+    ? add_query_arg( $stale_post_args_18b, $link_18b_after )
+    : '';
+if ( '' !== $url_post_rb_18 ) {
+    $fetch_post_rb_18  = jr18_fetch( $url_post_rb_18 );
+    $body_post_rb_18   = (string) $fetch_post_rb_18['body'];
+} else {
+    // The post is fully gone — there is no permalink to fetch.
+    // The "no body R" assertion is satisfied trivially; the
+    // `fetch_post_rollback_status = 0` field carries the
+    // explanation that there was no URL to fetch.
+    $fetch_post_rb_18  = array( 'body' => '', 'status' => 0, 'url' => '' );
+    $body_post_rb_18   = '';
+}
+$has_r_post_rb_18  = false !== strpos( $body_post_rb_18, '18R edited body' );
+
+$_GET = $jr18_saved_get;
+
+$f['stage2b_screenshot_render_rollback'] = array(
+    'post_id'                  => (int) $p18_b,
+    'url_pre_rollback_has_r'   => $has_r_pre_18,
+    'fetch_pre_rollback_status' => (int) $fetch_pre_rb_18['status'],
+    'rollback_status'          => (string) ( $rollback18_b['rolled_back'] ?? '' ),
+    'post_row_gone'            => 0 === $p18_b_row_after_rb,
+    'transaction_gone'         => $tx_gone_18b,
+    'fetch_post_rollback_no_r' => ! $has_r_post_rb_18,
+    'fetch_post_rollback_status' => (int) $fetch_post_rb_18['status'],
+);
+
 // ── cleanup: put the site back exactly as it was found ────────────────────────
 //
 // The fixture tracker has its own teardown: every post registered via

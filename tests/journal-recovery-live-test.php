@@ -840,3 +840,110 @@ Agentshell_Test::run(
             'commit closed the transaction; the post is the persistent artefact' );
     }
 );
+
+// 18. End-to-end browser-rendered screenshot of the latest draft state.
+//
+// The fake browser used by the existing screenshot suites does NOT
+// fetch the URL — it returns canned PNG bytes — so an agentshell_screenshot
+// call alone cannot prove "the rendered page is body B, not body A". The
+// proof must come from the HTTP layer: the credential-bearing URL that
+// the screenshot tool builds is fetched the same way Chrome would, and
+// the response is asserted to contain body B. Combined with a successful
+// agentshell_screenshot invocation (which proves the tool's URL building
+// matches), this is the strongest end-to-end proof available without a
+// real Chrome rasterisation step.
+Agentshell_Test::run(
+    'live: a screenshot preview of a journalled post renders the latest edited state over HTTP',
+    function () {
+        $s = jr_live( 'stage2b_screenshot_render_open', array() );
+
+        // The credentialed URL the screenshot tool builds must have
+        // a permalink, the post-preview credential, and the
+        // transaction-preview credential — the same three things
+        // agentshell_screenshot would assemble in production.
+        Agentshell_Test::assert_true( $s['preview_link_present'] ?? false,
+            'WordPress returned a previewable permalink for the screenshot probe post' );
+        Agentshell_Test::assert_true( $s['url_full_built'] ?? false,
+            'the credentialed URL the screenshot tool builds is well-formed' );
+        Agentshell_Test::assert_true( $s['url_full_has_post'] ?? false,
+            'the credentialed URL carries the agentshell_post argument' );
+        Agentshell_Test::assert_true( $s['url_full_has_tx'] ?? false,
+            'the credentialed URL carries the agentshell_tx argument (transaction is open)' );
+
+        // The proof: the HTTP response at the credentialed URL
+        // contains body B, not body A. This is what Chrome would
+        // render — the same HTML, the same `the_content()` output,
+        // the same body. A successful preview_args() or authenticate()
+        // call is not a substitute for this; the user is explicit.
+        Agentshell_Test::assert_true( $s['fetch_full_has_b'] ?? false,
+            'credentialed browser preview URL renders body B in the HTTP response' );
+        Agentshell_Test::assert_true( $s['fetch_full_no_a'] ?? false,
+            'credentialed browser preview URL does NOT render the create baseline body A' );
+
+        // The credential is the gate. The same URL without the
+        // post-preview credential is what an anonymous reader would
+        // fetch; it must NOT render body B. A draft is private.
+        Agentshell_Test::assert_true( $s['fetch_no_post_no_b'] ?? false,
+            'the same URL without the post-preview credential does NOT render body B (the gate)' );
+
+        // The actual screenshot tool — invoked with post_id and
+        // transaction=true, against the same URL the HTTP fetch
+        // reached — returns a successful capture. The fake browser
+        // does not fetch, but it does prove the tool's URL building
+        // and capture path are wired end-to-end. The HTTP assertions
+        // above are the rendered-content proof; this is the
+        // capture-pipeline proof.
+        Agentshell_Test::assert_true( $s['screenshot_captured'] ?? false,
+            'agentshell_screenshot(post_id=N, transaction=true) returns captured=true' );
+        Agentshell_Test::assert_true( $s['screenshot_url_has_post'] ?? false,
+            'the captured URL the screenshot tool reports names the post id' );
+        Agentshell_Test::assert_true( $s['screenshot_url_has_tx'] ?? false,
+            'the captured URL the screenshot tool reports carries the transaction argument' );
+        Agentshell_Test::assert_true( ( $s['screenshot_png_bytes'] ?? 0 ) > 100,
+            'the screenshot tool returns a non-trivial PNG payload' );
+
+        // Post-commit. The transaction closed; the post lives. The
+        // post-preview URL (no transaction arg, since the tx is
+        // gone) still renders body B. The screenshot tool would
+        // build this URL after commit, and it would render the
+        // same body B. The persistent artefact is the post.
+        Agentshell_Test::assert_true( ! empty( $s['commit_status'] ),
+            'commit_transaction reports committed=true' );
+        Agentshell_Test::assert_true( $s['transaction_gone'] ?? false,
+            'post-commit, the transaction row is gone' );
+        Agentshell_Test::assert_true( $s['post_still_present'] ?? false,
+            'post-commit, the post still exists in wp_posts' );
+        Agentshell_Test::assert_true( $s['fetch_after_has_b'] ?? false,
+            'post-commit, the post-preview URL still renders body B' );
+    }
+);
+
+Agentshell_Test::run(
+    'live: a screenshot preview of a journalled post is removed by rollback',
+    function () {
+        $s = jr_live( 'stage2b_screenshot_render_rollback', array() );
+
+        // The pre-rollback credentialed URL renders body R. The post
+        // is on disk and the credentials are valid.
+        Agentshell_Test::assert_true( $s['url_pre_rollback_has_r'] ?? false,
+            'pre-rollback, the credentialed URL renders the latest edited body' );
+
+        // The rollback fires. The recovery engine compensates the
+        // create op, the post is removed from wp_posts, and the
+        // transaction row is closed.
+        Agentshell_Test::assert_true( ! empty( $s['rollback_status'] ),
+            'rollback_transaction reports rolled_back=true' );
+        Agentshell_Test::assert_true( $s['post_row_gone'] ?? false,
+            'post-rollback, the post is gone from wp_posts' );
+        Agentshell_Test::assert_true( $s['transaction_gone'] ?? false,
+            'post-rollback, the transaction row is gone' );
+
+        // The post is gone. A fetch of the post-preview URL with
+        // the (now-stale) credential does not render body R: the
+        // post is no longer there, the credential points at a post
+        // id that has been deleted. This is the post-rollback
+        // cleanup behaviour the brief asks for.
+        Agentshell_Test::assert_true( $s['fetch_post_rollback_no_r'] ?? false,
+            'post-rollback, the post-preview URL does NOT render the post body' );
+    }
+);
