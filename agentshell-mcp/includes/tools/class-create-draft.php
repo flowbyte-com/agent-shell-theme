@@ -145,10 +145,19 @@ class Create_Draft extends Base_Tool {
             'post_type'   => $type,
             'post_status' => 'draft',
         );
+        // Defence in depth: if the user provided a slug, stamp it on the op
+        // as the expected post_name. mark_applied will overwrite it with the
+        // post's actual slug on success; if mark_applied never runs (a
+        // crash, a CAS refusal), recovery still has a non-empty post_name
+        // to look for and validate() does not refuse the record.
+        $intent_after = array( 'idempotency_key' => $idem );
+        if ( '' !== $slug ) {
+            $intent_after['post_name'] = sanitize_title( $slug );
+        }
         $op = \AgentShell_MCP\Content_Journal::record_intent(
             \AgentShell_MCP\Content_Journal::OP_CREATE_DRAFT,
             $target,
-            array( 'idempotency_key' => $idem ),
+            $intent_after,
             $actor
         );
         // Bind the content fingerprint up front; the op now carries the
@@ -159,6 +168,23 @@ class Create_Draft extends Base_Tool {
             throw new \InvalidArgumentException(
                 'Transaction ' . $tx_id . ' changed while the intent was being recorded; nothing was written. '
                 . 'Read agentshell_get_transaction and retry.'
+            );
+        }
+
+        // Re-read the row after attach() so the guard closure starts from the
+        // post-attach bytes. This is the only honest "row is at the version
+        // we just attached" baseline; the pre-attach $tx we have in scope has
+        // no `ops[$op_id]` for the subsequent mark_applied() / head CAS to
+        // find, and the closure must not pass an obsolete row to either.
+        // Without this re-read, the create path's compare_and_set_head CAS
+        // sends a row that no longer matches the on-disk option value and
+        // the post is rolled back, leaving the op in `intended` with no
+        // post id and no recoverable after-image (the bug Gate 3 fixed).
+        $tx_post_attach = (array) get_option( \AgentShell_MCP\Transaction_Manager::KEY, null );
+        if ( empty( $tx_post_attach ) || empty( $tx_post_attach['content']['ops'][ $op['id'] ] ) ) {
+            throw new \InvalidArgumentException(
+                'Transaction ' . $tx_id . ' is no longer present after the create intent was attached; '
+                . 'the row was removed by a competing close. Read agentshell_get_transaction and retry.'
             );
         }
 
@@ -175,7 +201,7 @@ class Create_Draft extends Base_Tool {
             'meta_input'   => array( \AgentShell_MCP\Content_Journal::OP_META => $op_id ),
         );
 
-        $result = \AgentShell_MCP\Content_Write_Guard::run( function () use ( $postarr, $type, $tx, $op_id ) {
+        $result = \AgentShell_MCP\Content_Write_Guard::run( function () use ( $postarr, $type, $tx_post_attach, $op_id ) {
             $id = wp_insert_post( wp_slash( $postarr ), true );
             if ( is_wp_error( $id ) || ! $id ) {
                 $msg = is_wp_error( $id ) ? $id->get_error_message() : 'WordPress returned no post ID.';
@@ -207,7 +233,7 @@ class Create_Draft extends Base_Tool {
             // throws to roll back the wp_insert_post, and a failed
             // mark_applied CAS throws to roll back both.
             $head_tx = \AgentShell_MCP\Content_Journal::compare_and_set_head(
-                $tx, (int) $id, null, $after_image
+                $tx_post_attach, (int) $id, null, $after_image
             );
             if ( ! is_array( $head_tx ) ) {
                 throw new \InvalidArgumentException(

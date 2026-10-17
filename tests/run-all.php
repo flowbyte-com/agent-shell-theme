@@ -366,6 +366,12 @@ $suites = array(
     // wrong-actor credentials, baseline drift, and outside-the-
     // four-fields shadow changes. Destructive live.
     'stage-2c-end-to-end-live' => __DIR__ . '/stage-2c-end-to-end-live-test.php',
+    // Gate 3 Section D regression: journal-only commit must succeed
+    // without a dummy set_css_var, must preserve the persisted config,
+    // and must not regress the empty-tx refuse or the staged-only path.
+    // Destructive live: gated on the same fail-closed check the other
+    // destructive suites use.
+    'journal-only-commit-live' => __DIR__ . '/journal-only-commit-live-test.php',
 );
 
 $total_passed   = 0;
@@ -391,6 +397,7 @@ $destructive_live_suites = array(
     'stage-2c-publish-edit-race-live',
     'stage-2c-publish-edit-recovery-live',
     'stage-2c-end-to-end-live',
+    'journal-only-commit-live',
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );

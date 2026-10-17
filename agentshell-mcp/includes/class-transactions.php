@@ -802,12 +802,28 @@ class Transaction_Manager {
     public function commit() {
         $tx = $this->require_live( true );
         $this->assert_owner( $tx );
-        if ( ! is_array( $tx['staged'] ) ) {
+
+        // A transaction is closeable when EITHER a staged config is
+        // pending OR a content journal holds at least one op. The
+        // journal-only path is the create_draft / update_draft
+        // / claim_existing_draft workflow: no config change is staged
+        // because the only work the transaction does is content
+        // writing, and refusing those commits with "no staged changes"
+        // would force a dummy `set_css_var` purely to pass the gate.
+        // The journal-aware gate below revalidates every op before
+        // the close; an unsettled op still refuses, with a clear
+        // reason, exactly as it did before.
+        $content       = Content_Journal::of( $tx );
+        $has_staged    = is_array( $tx['staged'] );
+        $has_journal   = ! empty( $content['ops'] );
+        if ( ! $has_staged && ! $has_journal ) {
             throw new \InvalidArgumentException( 'Transaction has no staged changes. Call a mutation tool first.' );
         }
-        $issues = Doctor::check( $tx['staged'] );
-        if ( ! empty( $issues['errors'] ) ) {
-            throw new \InvalidArgumentException( 'Commit blocked by validation errors: ' . wp_json_encode( $issues['errors'] ) );
+        if ( $has_staged ) {
+            $issues = Doctor::check( $tx['staged'] );
+            if ( ! empty( $issues['errors'] ) ) {
+                throw new \InvalidArgumentException( 'Commit blocked by validation errors: ' . wp_json_encode( $issues['errors'] ) );
+            }
         }
 
         // Journal-aware gate. A transaction with no content ops is a
@@ -820,7 +836,6 @@ class Transaction_Manager {
         // content, and the op transitions to `applied` with a recorded note.
         // The rollback gate still treats `claimed` as unsettled (rollback
         // runs the destructive inverse via the recovery engine).
-        $content = Content_Journal::of( $tx );
         if ( ! empty( $content['ops'] ) ) {
             $next_content = self::revalidate_journal_for_commit( $content, $tx );
             if ( is_array( $next_content ) ) {
@@ -883,15 +898,24 @@ class Transaction_Manager {
         // re-create the row we are about to delete (silently undoing
         // the close) or stage the new value into the next live
         // transaction, which the operator did not ask for.
-        $committed_tokens = Store::diff_token_keys( $tx['before'], $tx['staged'] );
+        //
+        // Journal-only transactions have $tx['staged'] === null. The
+        // option write below is gated on $has_staged: writing null would
+        // erase the persisted config, which is a destructive action
+        // neither the operator nor the journal-aware gate asked for.
+        // The diff token list is empty in that branch, and the
+        // success-path audit records the op summary instead.
+        $committed_tokens = $has_staged
+            ? Store::diff_token_keys( $tx['before'], $tx['staged'] )
+            : array();
         $op_summary       = self::summarise_journal_ops( $tx );
         $audit_operation  = self::commit_audit_operation( $tx );
         $actor            = (string) $tx['actor'];
         $tx_id            = (string) $tx['id'];
         $tx_label         = (string) $tx['label'];
-        $staged           = $tx['staged'];
+        $staged           = $has_staged ? $tx['staged'] : null;
 
-        $result = Content_Write_Guard::run( function () use ( $tx, $actor, $tx_id, $tx_label, $committed_tokens, $staged, $op_summary ) {
+        $result = Content_Write_Guard::run( function () use ( $tx, $actor, $tx_id, $tx_label, $committed_tokens, $staged, $op_summary, $has_staged ) {
             // 1. Value-guarded delete. The row's bytes are the
             //    guard; a row that moved between the re-read and
             //    now returns 0 rows affected and the operator
@@ -911,11 +935,16 @@ class Transaction_Manager {
             // 2. Apply the config. The filter now sees no open
             //    transaction and writes through, recording the
             //    history with the transaction label rather than
-            //    re-staging into a new transaction.
-            Store::$operation_label = $tx_label ? 'transaction: ' . $tx_label : 'transaction_commit';
-            update_option( Store::CONFIG_KEY, $staged );
-            Store::$operation_label = '';
-            self::stamp_last_revision( $tx_id );
+            //    re-staging into a new transaction. A journal-only
+            //    commit (no staged config) skips this write: there
+            //    is nothing to apply to the option, and writing the
+            //    null staged value would erase the live config.
+            if ( $has_staged ) {
+                Store::$operation_label = $tx_label ? 'transaction: ' . $tx_label : 'transaction_commit';
+                update_option( Store::CONFIG_KEY, $staged );
+                Store::$operation_label = '';
+                self::stamp_last_revision( $tx_id );
+            }
 
             return array(
                 'id'            => $tx_id,
