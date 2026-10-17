@@ -326,6 +326,13 @@ $suites = array(
     // code path against a real WordPress install. Gated on the test-bed
     // fail-closed check having passed; otherwise skipped cleanly.
     'stage-2c-overlay-live'=> __DIR__ . '/stage-2c-overlay-live-test.php',
+    // Stage 2c Milestone 4 live verification: the publish-edit tool
+    // against a real WordPress install. Runs the same publication
+    // path the unit tests drive with a recording wpdb, but with
+    // wp_update_post against a real wp_posts row, a real advisory
+    // lock, a real per-original claim swap, and a real anonymous
+    // HTTP request that walks the permalink redirect chain.
+    'stage-2c-publish-edit-live' => __DIR__ . '/stage-2c-publish-edit-live-test.php',
 );
 
 $total_passed   = 0;
@@ -346,6 +353,7 @@ $destructive_live_suites = array(
     'journal-recovery-live',
     'navigation-live',
     'stage-2c-overlay-live',
+    'stage-2c-publish-edit-live',
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );
