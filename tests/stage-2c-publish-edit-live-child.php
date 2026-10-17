@@ -129,6 +129,11 @@ function pe_drop_fixture( $mysqli, $orig_id, $shadow_id, $template_name = '' ) {
     $mysqli->query( "DELETE FROM wp_postmeta WHERE post_id IN (" . (int) $orig_id . "," . (int) $shadow_id . ")" );
     $mysqli->query( "DELETE FROM wp_posts WHERE ID IN (" . (int) $orig_id . "," . (int) $shadow_id . ")" );
     $mysqli->query( "DELETE FROM wp_options WHERE option_name LIKE 'agentshell_claim_" . (int) $orig_id . "'" );
+    // M5-s2: clean up the per-original Published_Claim row and any
+    // remaining shadow meta markers so a refused-publish fixture
+    // (T3-T7) does not leak rows that the M5 leak check would catch.
+    $mysqli->query( "DELETE FROM wp_options WHERE option_name = 'agentshell_published_claim_" . (int) $orig_id . "'" );
+    $mysqli->query( "DELETE FROM wp_postmeta WHERE meta_key IN ('_agentshell_shadow_for','_agentshell_shadow_tx_id','_agentshell_shadow_op_id') AND post_id IN (" . (int) $orig_id . "," . (int) $shadow_id . ")" );
     $mysqli->query( "DELETE FROM wp_options WHERE option_name = 'agentshell_transaction'" );
     if ( '' !== $template_name ) {
         $path = '/home/v/local/agentshell-test/app/public/wp-content/themes/agentshell/' . $template_name;
@@ -268,6 +273,11 @@ function pe_stage( $mysqli, $orig_id, $mark, $suffix, array $staged, $op_actor =
 function pe_reset() {
     $GLOBALS['mysqli']->query( "DELETE FROM wp_options WHERE option_name = 'agentshell_transaction'" );
     $GLOBALS['mysqli']->query( "DELETE FROM wp_options WHERE option_name LIKE 'agentshell_claim_%'" );
+    // M5-s2: also clear the per-original Published_Claim rows and the
+    // shadow meta markers so pe_reset() between T1-T8 does not leak
+    // any of the side-tables the M5 leak check audits.
+    $GLOBALS['mysqli']->query( "DELETE FROM wp_options WHERE option_name LIKE 'agentshell_published_claim_%'" );
+    $GLOBALS['mysqli']->query( "DELETE FROM wp_postmeta WHERE meta_key IN ('_agentshell_shadow_for','_agentshell_shadow_tx_id','_agentshell_shadow_op_id')" );
     // Flush the wpdb option cache for the transaction key. The wpdb
     // layer caches get_option results in `last_result` / `notoptions`,
     // so the next Tx::payload() call must re-read from disk.
@@ -291,6 +301,11 @@ $mysqli->query( "DELETE FROM wp_options WHERE option_name = 'agentshell_transact
 $mysqli->query( "DELETE FROM wp_postmeta WHERE post_id IN (SELECT ID FROM wp_posts WHERE post_name LIKE '{$MARKER}-%')" );
 $db( "DELETE FROM wp_posts WHERE post_name LIKE '{$MARKER}-%'" );
 $db( "DELETE FROM wp_options WHERE option_name LIKE 'agentshell_claim_%'" );
+// M5-s2: also clean up the per-original Published_Claim rows and the
+// shadow meta markers before the suite starts, so a prior crashed
+// run's residue does not survive the preflight.
+$db( "DELETE FROM wp_options WHERE option_name LIKE 'agentshell_published_claim_%'" );
+$db( "DELETE FROM wp_postmeta WHERE meta_key IN ('_agentshell_shadow_for','_agentshell_shadow_tx_id','_agentshell_shadow_op_id')" );
 $db( "DELETE FROM wp_options WHERE option_name = 'agentshell_transaction'" );
 pe_reset();
 

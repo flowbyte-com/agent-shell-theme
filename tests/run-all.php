@@ -333,6 +333,12 @@ $suites = array(
     // lock, a real per-original claim swap, and a real anonymous
     // HTTP request that walks the permalink redirect chain.
     'stage-2c-publish-edit-live' => __DIR__ . '/stage-2c-publish-edit-live-test.php',
+    // Stage 2c M5-s2 self-test: confirms the end-of-suite leak
+    // check reports synthetic agentshell_published_claim_* rows
+    // and synthetic _agentshell_shadow_* postmeta rows. Gated on
+    // the same test-bed fail-closed check the other destructive
+    // live suites use.
+    'stage-2c-leak-check-live' => __DIR__ . '/stage-2c-leak-check-live-test.php',
 );
 
 $total_passed   = 0;
@@ -352,6 +358,7 @@ $destructive_live_suites = array(
     'content-write-live',
     'journal-recovery-live',
     'navigation-live',
+    'stage-2c-leak-check-live',
     'stage-2c-overlay-live',
     'stage-2c-publish-edit-live',
 );
@@ -509,7 +516,7 @@ if ( is_array( $test_bed_cfg ) ) {
                     $total_failed++;
                 } else {
                     $leak_count = 0;
-                    foreach ( array( 'posts_with_fixture_title', 'posts_with_journal_marker', 'nav_menus_with_fixture_prefix' ) as $k ) {
+                    foreach ( array( 'posts_with_fixture_title', 'posts_with_journal_marker', 'nav_menus_with_fixture_prefix', 'claim_rows_with_fixture_prefix', 'shadow_meta_with_marker' ) as $k ) {
                         $n = (int) ( $leak[ $k ] ?? 0 );
                         $leak_count += $n;
                         echo "  $k: $n\n";
@@ -521,6 +528,12 @@ if ( is_array( $test_bed_cfg ) ) {
                         }
                         if ( ! empty( $leak['sample_menu_names'] ) ) {
                             echo "  sample menu names:  " . implode( ', ', array_slice( (array) $leak['sample_menu_names'], 0, 5 ) ) . "\n";
+                        }
+                        if ( ! empty( $leak['sample_claim_option_names'] ) ) {
+                            echo "  sample claim option names: " . implode( ', ', array_slice( (array) $leak['sample_claim_option_names'], 0, 5 ) ) . "\n";
+                        }
+                        if ( ! empty( $leak['sample_shadow_meta_rows'] ) ) {
+                            echo "  sample shadow meta rows: " . count( (array) $leak['sample_shadow_meta_rows'] ) . " of " . (int) ( $leak['shadow_meta_with_marker'] ?? 0 ) . "\n";
                         }
                         $total_failed++;
                     } else {
