@@ -309,12 +309,26 @@ class Publish_Edit_Reconcile extends Base_Tool {
      * Build the public result.
      */
     private static function build_result( $committed_op, $recon ) {
+        // The op on disk may have been transitioned to
+        // `publication_settled` by `run_reconciliation` (or
+        // earlier by `settle_publication`). The in-process
+        // `$committed_op` is a snapshot from before the
+        // reconcile ran; use the post-reconcile state returned
+        // by `run_reconciliation` so the result reflects the
+        // op's current state, not the snapshot.
+        $current_state = (string) ( $recon['state'] ?? '' );
+        if ( '' === $current_state ) {
+            $current_state = (string) ( $committed_op['state'] ?? '' );
+        }
+        $current_recon = is_array( $recon['reconciliation'] ?? null )
+            ? $recon['reconciliation']
+            : ( is_array( $committed_op['reconciliation'] ?? null ) ? $committed_op['reconciliation'] : array() );
         return array(
             'op_id'         => (string) $committed_op['id'],
-            'state'         => (string) ( $committed_op['state'] ?? '' ),
+            'state'         => $current_state,
             'original_id'   => (int) ( $committed_op['target']['original_id'] ?? 0 ),
             'shadow_id'     => (int) ( $committed_op['target']['shadow_id']   ?? 0 ),
-            'reconciliation'=> is_array( $committed_op['reconciliation'] ?? null ) ? $committed_op['reconciliation'] : array(),
+            'reconciliation'=> $current_recon,
             'audit'         => array(
                 'op_summary' => 'reconciled',
             ),

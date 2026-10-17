@@ -492,7 +492,14 @@ class Content_Recovery {
 
         // ── the compensation itself ──────────────────────────────────────
         $claimed_op      = $claimed_content['ops'][ $op_id ];
-        $result          = self::compensate( $claimed_op, $claimed, $actor, $explicitly_authorized );
+        // The op was transitioned to `compensating` by the claim
+        // step. The compensation contract dispatches on the
+        // pre-claim state (staged / publication_committed / etc.),
+        // so capture it before passing the op down. The
+        // compensation contract sees the original state, the
+        // outcome still transitions via the per-state branches
+        // below.
+        $result          = self::compensate( $claimed_op, $claimed, $actor, $explicitly_authorized, $op );
         $base['outcome'] = $result['outcome'];
         $base['detail']  = $result['reason'];
 
@@ -542,6 +549,48 @@ class Content_Recovery {
             $done_content['ops'][ $op_id ]['notes'][] = $result['reason'];
         }
         $done_content['sig'] = Content_Journal::sign( $done_content );
+
+        // The compensation contract (e.g. `run_reconciliation`)
+        // may have issued its own CAS writes against the
+        // journal row. Refresh `$claimed` from disk so the final
+        // settle CAS uses the current on-disk row as the
+        // expected value, not the pre-compensation snapshot.
+        $refreshed = Transaction_Manager::instance()->payload();
+        if ( ! is_array( $refreshed ) ) {
+            return self::contended( array_merge( $base, array(
+                'outcome' => 'lost_race',
+                'detail'  => $base['detail'] . ' — but the journal row could not be re-read after compensation',
+            ) ), $conflict );
+        }
+        $claimed = $refreshed;
+        // The re-read row may already reflect this op's terminal
+        // state (e.g. `run_reconciliation` set
+        // `publication_settled` for all three steps). If so, the
+        // outcome is recorded but the transition is a no-op.
+        $already_terminal = isset( $claimed['content']['ops'][ $op_id ]['state'] )
+            && in_array( $claimed['content']['ops'][ $op_id ]['state'], array(
+                Content_Journal::STATE_PUBLICATION_SETTLED,
+                Content_Journal::STATE_COMPENSATED,
+            ), true );
+
+        if ( $already_terminal ) {
+            // Already at the terminal state on disk. Skip the
+            // write; report the outcome as recorded.
+            if ( 'reconciled' === $result['outcome'] ) {
+                Store::record_event( $actor, 'transaction_recovery_reconciled', array(
+                    'transaction_id' => $report['transaction_id'],
+                    'operation'      => $op_id,
+                    'operation_type' => (string) $claimed_op['op'],
+                    'post_id'        => (int) $result['post_id'],
+                ) );
+            }
+            return array(
+                'tx'      => $claimed,
+                'report'  => $base,
+                'conflict'=> $conflict,
+                'status'  => self::STATUS_RECOVERED,
+            );
+        }
 
         $done                 = $claimed;
         $done[ Content_Journal::CONTENT_KEY ] = $done_content;
@@ -765,7 +814,7 @@ class Content_Recovery {
      * @param bool     $explicitly_authorized  Pass-through of the
      *                                 tool-boundary opt-in.
      */
-    private static function compensate( array $op, array $tx, $current_actor = '', $explicitly_authorized = false ) {
+    private static function compensate( array $op, array $tx, $current_actor = '', $explicitly_authorized = false, $pre_claim_op = null ) {
         $type = (string) $op['op'];
 
         if ( Content_Journal::OP_UPDATE_DRAFT === $type ) {
@@ -777,7 +826,7 @@ class Content_Recovery {
         }
 
         if ( Content_Journal::OP_EDIT_PUBLISHED === $type ) {
-            return self::compensate_edit_published( $op, $tx, $current_actor, $explicitly_authorized );
+            return self::compensate_edit_published( $op, $tx, $current_actor, $explicitly_authorized, $pre_claim_op );
         }
 
         if ( ! in_array( $type, Content_Journal::SUPPORTED_OPERATIONS, true ) ) {
@@ -1369,9 +1418,16 @@ class Content_Recovery {
      *
      * @return array{outcome: string, post_id: int, reason: string}
      */
-    private static function compensate_edit_published( array $op, array $tx, $current_actor = '', $explicitly_authorized = false ) {
+    private static function compensate_edit_published( array $op, array $tx, $current_actor = '', $explicitly_authorized = false, $pre_claim_op = null ) {
         $op_id_str   = (string) ( $op['id'] ?? '' );
-        $state       = (string) ( $op['state'] ?? '' );
+        // The op has been transitioned to `compensating` by the
+        // claim step. Dispatch on the pre-claim state, which
+        // determines which compensation contract runs (staged →
+        // pre-publication rollback, publication_committed /
+        // reconciliation_pending → reconcile tail).
+        $state       = is_array( $pre_claim_op ) && isset( $pre_claim_op['state'] )
+            ? (string) $pre_claim_op['state']
+            : (string) ( $op['state'] ?? '' );
         $original_id = (int) ( $op['target']['original_id'] ?? 0 );
         $shadow_id   = (int) ( $op['target']['shadow_id']   ?? 0 );
 

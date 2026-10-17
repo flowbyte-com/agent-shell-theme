@@ -843,6 +843,15 @@ class Content_Journal {
         }
         $now = ( null === $now ) ? Transaction_Manager::lease_now() : (int) $now;
         $id  = self::new_op_id();
+        // The baseline A captures every field the publish-edit
+        // tool's post-write allowlist can reclassify as a
+        // supported-, protected-preserved-, or housekeeping-field
+        // divergence. Capturing the protected-preserved fields
+        // here is what makes the post-write check able to refuse
+        // a hook-induced change to a field the publish-edit
+        // tool did not write to: without the baseline value,
+        // expected_c() falls back to the post-write value and
+        // the divergence is invisible.
         $baseline = array(
             'post_type'            => (string) $post->post_type,
             'post_status'          => (string) $post->post_status,
@@ -850,8 +859,21 @@ class Content_Journal {
             'post_content'         => (string) $post->post_content,
             'post_excerpt'         => (string) $post->post_excerpt,
             'post_name'            => (string) $post->post_name,
+            'post_date'            => (string) $post->post_date,
             'post_date_gmt'        => (string) $post->post_date_gmt,
             'post_modified_gmt'    => (string) $post->post_modified_gmt,
+            'post_author'          => (string) ( isset( $post->post_author ) ? (int) $post->post_author : 0 ),
+            'post_parent'          => (string) ( isset( $post->post_parent ) ? (int) $post->post_parent : 0 ),
+            'post_mime_type'       => (string) ( $post->post_mime_type ?? '' ),
+            'comment_status'       => (string) ( $post->comment_status ?? '' ),
+            'ping_status'          => (string) ( $post->ping_status ?? '' ),
+            'menu_order'           => (string) ( isset( $post->menu_order ) ? (int) $post->menu_order : 0 ),
+            'post_password'        => (string) ( $post->post_password ?? '' ),
+            'post_content_filtered'=> (string) ( $post->post_content_filtered ?? '' ),
+            'comment_count'        => (string) ( isset( $post->comment_count ) ? (int) $post->comment_count : 0 ),
+            'to_ping'              => (string) ( $post->to_ping ?? '' ),
+            'pinged'               => (string) ( $post->pinged ?? '' ),
+            'guid'                 => (string) ( $post->guid ?? '' ),
             'post_content_sha256'  => hash( 'sha256', (string) $post->post_content ),
             'post_content_length'  => strlen( (string) $post->post_content ),
             'op_meta_value'        => $id,

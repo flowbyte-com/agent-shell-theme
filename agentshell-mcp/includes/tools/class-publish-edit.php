@@ -273,9 +273,24 @@ class Publish_Edit extends Base_Tool {
             // 9-10. After COMMIT: reconciliation. The op is in
             //    `publication_committed`; the three reconciliation
             //    steps are owed. Each step is durable on its own.
+            //    run_reconciliation returns the op as it stands
+            //    on disk after the three steps (or after the
+            //    short-circuit when every step is already
+            //    verified). The op transitions to
+            //    `publication_settled` on a clean run; an
+            //    already-settled op stays settled.
             $recon = self::run_reconciliation( $tx, $committed_op, $actor, $original_id, $shadow_id );
 
-            return self::build_result( $committed_op, $recon );
+            // The reconciliation's status field is the
+            // authoritative answer for the three steps. Build the
+            // public result from the returned status (which
+            // carries the post-settlement state) and the original
+            // committed op (which carries op_id / target fields).
+            $op_id_for_result = (string) ( $recon['op_id'] ?? $committed_op['id'] ?? '' );
+            $state_for_result = (string) ( $recon['state'] ?? $committed_op['state'] ?? '' );
+            $recon_for_result = is_array( $recon['reconciliation'] ?? null ) ? $recon['reconciliation'] : array();
+
+            return self::build_result_from_recon( $committed_op, $op_id_for_result, $state_for_result, $recon_for_result );
         } finally {
             if ( $lock_held ) {
                 \AgentShell_MCP\Recovery_Advisory_Lock::release( 'tx_' . $tx_id );
@@ -564,6 +579,12 @@ class Publish_Edit extends Base_Tool {
         if ( \AgentShell_MCP\Content_Journal::STATE_CONFLICT === ( $existing['state'] ?? '' ) ) {
             return; // already conflicted; no-op
         }
+        // The cas guard reads the row at this exact moment, then
+        // writes the modified version; the value-guarded UPDATE
+        // refuses to land if the row moved between the read and
+        // the write. Capturing the read separately from the
+        // modified row is the whole point of a cas_write_row.
+        $expected = $row;
         $row['content']['ops'][ $op['id'] ]['state']       = \AgentShell_MCP\Content_Journal::STATE_CONFLICT;
         $row['content']['ops'][ $op['id'] ]['updated_at']  = (int) $now;
         $row['content']['ops'][ $op['id'] ]['comp']        = array(
@@ -574,8 +595,8 @@ class Publish_Edit extends Base_Tool {
             'reason'  => (string) $reason,
         );
         $row['content']['ops'][ $op['id'] ]['notes'][]     = (string) $reason;
-        $row['content']['sig']                              = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
-        \AgentShell_MCP\Transaction_Manager::cas_write_row( $row, $row );
+        $row['content']['sig'] = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
+        \AgentShell_MCP\Transaction_Manager::cas_write_row( $expected, $row );
     }
 
     // ── run_publish_transaction ──────────────────────────────────────────
@@ -616,7 +637,7 @@ class Publish_Edit extends Base_Tool {
             'post_name'    => (string) ( $after['post_name']    ?? '' ),
         );
 
-        $closure = function () use ( $original_id, $shadow_id, $postarr, $baseline, $op, $op_id_str, $actor, $tx, $now ) {
+        $closure = function () use ( $original_id, $shadow_id, $postarr, $after, $baseline, $op, $op_id_str, $actor, $tx, $now ) {
             // 4. SELECT ... FOR UPDATE the original. The column
             //    list matches the verify_columns() set so the
             //    baseline revalidate and the post-write re-read
@@ -700,6 +721,15 @@ class Publish_Edit extends Base_Tool {
                     . 'row was reclaimed. The publish is rolled back.'
                 );
             }
+            // The cas guard reads the row at this exact moment, then
+            // writes the modified version; the value-guarded UPDATE
+            // refuses to land if the row moved between the read and
+            // the write. Capturing the read separately from the
+            // modified row is the whole point of a cas_write_row:
+            // passing the same array as both args would compare the
+            // post-write bytes against themselves and never detect
+            // a concurrent transition.
+            $expected = $row;
             $row['content']['ops'][ $op_id_str ]['state']       = \AgentShell_MCP\Content_Journal::STATE_PUBLICATION_COMMITTED;
             $row['content']['ops'][ $op_id_str ]['updated_at']  = (int) $now;
             $row['content']['ops'][ $op_id_str ]['after']       = array_merge(
@@ -718,7 +748,7 @@ class Publish_Edit extends Base_Tool {
             );
             $row['content']['sig']                                = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
 
-            if ( ! \AgentShell_MCP\Transaction_Manager::cas_write_row( $row, $row ) ) {
+            if ( ! \AgentShell_MCP\Transaction_Manager::cas_write_row( $expected, $row ) ) {
                 throw new \RuntimeException(
                     'publication_refused_journal_cas_lost: the journal row CAS refused to '
                     . 'advance the op to `publication_committed` (the row moved between the '
@@ -825,6 +855,12 @@ class Publish_Edit extends Base_Tool {
                 || \AgentShell_MCP\Content_Journal::STATE_PUBLICATION_SETTLED === ( $existing['state'] ?? '' ) ) {
                 return null; // do not regress a settled state
             }
+            // The cas guard reads the row at this exact moment, then
+            // writes the modified version; the value-guarded UPDATE
+            // refuses to land if the row moved between the read and
+            // the write. Capturing the read separately from the
+            // modified row is the whole point of a cas_write_row.
+            $expected = $row;
             $row['content']['ops'][ $op['id'] ]['state']       = \AgentShell_MCP\Content_Journal::STATE_CONFLICT;
             $row['content']['ops'][ $op['id'] ]['updated_at']  = (int) $now;
             $row['content']['ops'][ $op['id'] ]['comp']        = array(
@@ -835,8 +871,8 @@ class Publish_Edit extends Base_Tool {
                 'reason'  => (string) $refused->reason,
             );
             $row['content']['ops'][ $op['id'] ]['notes'][]     = (string) $refused->reason;
-            $row['content']['sig']                              = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
-            \AgentShell_MCP\Transaction_Manager::cas_write_row( $row, $row );
+            $row['content']['sig'] = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
+            \AgentShell_MCP\Transaction_Manager::cas_write_row( $expected, $row );
             return null;
         } );
         // 2. Refusal audit, outside the SQL transaction.
@@ -1050,7 +1086,10 @@ class Publish_Edit extends Base_Tool {
         if ( ! $caches_done ) {
             self::reconcile_cache_invalidation( $original_id );
             // Mark step 2 verified.
-            $committed_op = self::mark_reconciliation_step( $tx, $committed_op, $actor, 'caches_invalidated', $now );
+            $committed_op = self::mark_reconciliation_step( $tx, $committed_op, $actor, 'caches_invalidated', $now, array(
+                'status' => 'verified',
+                'detail' => 'clean_post_cache issued for original post; cache reset is best-effort and idempotent',
+            ) );
         }
 
         // 3. Claim release + journal settlement, with the crash-
@@ -1108,16 +1147,36 @@ class Publish_Edit extends Base_Tool {
             if ( \AgentShell_MCP\Content_Journal::STATE_PUBLICATION_SETTLED === ( $existing['state'] ?? '' ) ) {
                 return null;
             }
+            // The cas guard reads the row at this exact moment, then
+            // writes the modified version; the value-guarded UPDATE
+            // refuses to land if the row moved between the read and
+            // the write. Capturing the read separately from the
+            // modified row is the whole point of a cas_write_row.
+            $expected = $row;
+            // Preserve any per-step status the op already carries.
+            // A re-entry from the reconcile tool after a partial
+            // pre-publication crash will have shadow_deleted.verified
+            // and caches_invalidated.verified from a previous attempt;
+            // overwriting the field with all-false would lose the
+            // markers and force the steps to re-run. The settlement
+            // helpers skip steps whose marker is already verified,
+            // so the safe path is to merge rather than replace.
+            $recon = is_array( $row['content']['ops'][ $op_id_str ]['reconciliation'] ?? null )
+                ? $row['content']['ops'][ $op_id_str ]['reconciliation']
+                : array();
             $row['content']['ops'][ $op_id_str ]['state']       = \AgentShell_MCP\Content_Journal::STATE_RECONCILIATION_PENDING;
             $row['content']['ops'][ $op_id_str ]['updated_at']  = (int) $now;
-            $row['content']['ops'][ $op_id_str ]['reconciliation'] = array(
-                'shadow_deleted'     => false,
-                'caches_invalidated' => false,
-                'claim_released'     => false,
-                'audit_written'      => false,
+            $row['content']['ops'][ $op_id_str ]['reconciliation'] = array_merge(
+                array(
+                    'shadow_deleted'     => false,
+                    'caches_invalidated' => false,
+                    'claim_released'     => false,
+                    'audit_written'      => false,
+                ),
+                $recon
             );
-            $row['content']['sig']                                = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
-            \AgentShell_MCP\Transaction_Manager::cas_write_row( $row, $row );
+            $row['content']['sig'] = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
+            \AgentShell_MCP\Transaction_Manager::cas_write_row( $expected, $row );
             return null;
         } );
     }
@@ -1300,6 +1359,12 @@ class Publish_Edit extends Base_Tool {
                 );
                 $wpdb->query( $sql );
             }
+            // The cas guard reads the row at this exact moment, then
+            // writes the modified version; the value-guarded UPDATE
+            // refuses to land if the row moved between the read and
+            // the write. Capturing the read separately from the
+            // modified row is the whole point of a cas_write_row.
+            $expected_journal = $row;
             // 3a. Mark the per-step status as `status:pending` so a
             //     crash between here and 3c leaves the op with a
             //     pending marker that the next retry observes.
@@ -1311,8 +1376,8 @@ class Publish_Edit extends Base_Tool {
                 'status'       => 'pending',
             );
             $row['content']['ops'][ $op_id_str ]['updated_at'] = (int) $now;
-            $row['content']['sig']                                = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
-            \AgentShell_MCP\Transaction_Manager::cas_write_row( $row, $row );
+            $row['content']['sig'] = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
+            \AgentShell_MCP\Transaction_Manager::cas_write_row( $expected_journal, $row );
             // Best-effort cache invalidation: the actual SQL is the
             // source of truth, the cache invalidation is the
             // get_option() surface.
@@ -1450,6 +1515,12 @@ class Publish_Edit extends Base_Tool {
             if ( \AgentShell_MCP\Content_Journal::STATE_PUBLICATION_SETTLED === ( $existing['state'] ?? '' ) ) {
                 return null;
             }
+            // The cas guard reads the row at this exact moment, then
+            // writes the modified version; the value-guarded UPDATE
+            // refuses to land if the row moved between the read and
+            // the write. Capturing the read separately from the
+            // modified row is the whole point of a cas_write_row.
+            $expected = $row;
             $row['content']['ops'][ $op_id_str ]['state']       = \AgentShell_MCP\Content_Journal::STATE_PUBLICATION_SETTLED;
             $row['content']['ops'][ $op_id_str ]['updated_at']  = (int) $now;
             $row['content']['ops'][ $op_id_str ]['comp']        = array(
@@ -1459,8 +1530,8 @@ class Publish_Edit extends Base_Tool {
                 'at'      => (int) $now,
                 'reason'  => 'all reconciliation steps verified',
             );
-            $row['content']['sig']                                = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
-            \AgentShell_MCP\Transaction_Manager::cas_write_row( $row, $row );
+            $row['content']['sig'] = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
+            \AgentShell_MCP\Transaction_Manager::cas_write_row( $expected, $row );
             return null;
         } );
         if ( ! is_array( $row ) || empty( $row['content']['ops'][ $op_id_str ] ) ) {
@@ -1488,14 +1559,20 @@ class Publish_Edit extends Base_Tool {
             if ( ! is_array( $row ) || empty( $row['content']['ops'][ $op_id_str ] ) ) {
                 return null;
             }
+            // The cas guard reads the row at this exact moment, then
+            // writes the modified version; the value-guarded UPDATE
+            // refuses to land if the row moved between the read and
+            // the write. Capturing the read separately from the
+            // modified row is the whole point of a cas_write_row.
+            $expected = $row;
             $recon = is_array( $row['content']['ops'][ $op_id_str ]['reconciliation'] ?? null )
                 ? $row['content']['ops'][ $op_id_str ]['reconciliation']
                 : array();
             $recon[ $step ] = $status;
             $row['content']['ops'][ $op_id_str ]['reconciliation'] = $recon;
             $row['content']['ops'][ $op_id_str ]['updated_at']      = (int) $now;
-            $row['content']['sig']                                   = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
-            \AgentShell_MCP\Transaction_Manager::cas_write_row( $row, $row );
+            $row['content']['sig'] = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
+            \AgentShell_MCP\Transaction_Manager::cas_write_row( $expected, $row );
             return null;
         } );
         if ( ! is_array( $row ) || empty( $row['content']['ops'][ $op_id_str ] ) ) {
@@ -1514,6 +1591,27 @@ class Publish_Edit extends Base_Tool {
             'original_id'   => (int) ( $committed_op['target']['original_id'] ?? 0 ),
             'shadow_id'     => (int) ( $committed_op['target']['shadow_id']   ?? 0 ),
             'reconciliation'=> is_array( $committed_op['reconciliation'] ?? null ) ? $committed_op['reconciliation'] : array(),
+            'audit'         => array(
+                'op_summary' => 'published',
+            ),
+        );
+    }
+
+    /**
+     * Build the public result when the call has already been
+     * through reconciliation. Carries the post-settlement state
+     * (which build_result would have lost — by the time
+     * reconciliation finishes, the op has transitioned to
+     * `publication_settled` and the outer committed_op is the
+     * pre-settlement snapshot).
+     */
+    private static function build_result_from_recon( $committed_op, $op_id, $state, $recon ) {
+        return array(
+            'op_id'         => (string) $op_id,
+            'state'         => (string) $state,
+            'original_id'   => (int) ( $committed_op['target']['original_id'] ?? 0 ),
+            'shadow_id'     => (int) ( $committed_op['target']['shadow_id']   ?? 0 ),
+            'reconciliation'=> is_array( $recon ) ? $recon : array(),
             'audit'         => array(
                 'op_summary' => 'published',
             ),
