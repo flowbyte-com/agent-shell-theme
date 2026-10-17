@@ -125,6 +125,8 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-create-post.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-update-content.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-publish-content.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-publish-edit.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-publish-edit-reconcile.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-unpublish-content.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-search-content.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-get-content.php';
@@ -201,6 +203,8 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     $tools[] = new AgentShell_MCP\Tools\Create_Post();
     $tools[] = new AgentShell_MCP\Tools\Update_Content();
     $tools[] = new AgentShell_MCP\Tools\Publish_Content();
+    $tools[] = new AgentShell_MCP\Tools\Publish_Edit();
+    $tools[] = new AgentShell_MCP\Tools\Publish_Edit_Reconcile();
     $tools[] = new AgentShell_MCP\Tools\Unpublish_Content();
     $tools[] = new AgentShell_MCP\Tools\Search_Content();
     $tools[] = new AgentShell_MCP\Tools\Get_Content();
