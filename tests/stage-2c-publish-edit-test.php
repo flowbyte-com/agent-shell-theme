@@ -1611,6 +1611,128 @@ s2cs_check( '12.8 shadow was deleted (the destructive step before the refusal)',
 s2cs_drop_transaction();
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §13 — R-4: pre-publish rollback emits precise audit hygiene
+// ─────────────────────────────────────────────────────────────────────────────
+
+echo "\n--- §13 R-4: pre-publish rollback audit hygiene ---\n";
+
+// Helper: count the audit rows emitted by the next recovery.
+// The audit log is prepended (newest first), so the new
+// rows are at indices [0, count_after - count_before).
+function s2cs_audit_delta( $before_count, $operation_filter ) {
+    $log = (array) \AgentShell_MCP\Store::audit_log();
+    $delta = array_slice( $log, 0, count( $log ) - $before_count );
+    foreach ( $delta as $row ) {
+        if ( isset( $row['operation'] ) && $row['operation'] === $operation_filter ) {
+            return $row;
+        }
+    }
+    return null;
+}
+
+// 13.1: shadow was already gone before the rollback ran
+//       (e.g. a prior crashed recovery deleted it). The
+//       audit row says shadow_already_gone, not 'shadow
+//       deleted'.
+s2cs_reset_state();
+$tx = s2cs_begin_tx( 'agent-1', 'R-4 shadow already gone' );
+s2cs_seed_original( 12003, 'Original Title', 'Original content.', '', 'orig-12003' );
+$op = s2cs_stage_edit_published( 12003, 17003, array( 'post_title' => 'Staged Title' ) );
+s2cs_seed_shadow( 17003, 12003, $op['id'], array( 'post_title' => 'Staged Title' ) );
+// Remove the shadow before the recovery runs.
+unset( $GLOBALS['_agentshell_test_posts'][ 17003 ] );
+
+$now = S2C_T0 + 5;
+$recovery_actor = (string) \AgentShell_MCP\Store::actor();
+s2cs_update_op( $op['id'], function ( $op_row ) use ( $now, $recovery_actor ) {
+    $op_row['state'] = Content_Journal::STATE_COMPENSATING;
+    $op_row['claim'] = array(
+        'actor'     => $recovery_actor,
+        'at'        => $now,
+        'pre_state' => Content_Journal::STATE_STAGED,
+    );
+    return $op_row;
+} );
+
+$audit_before_r4a = count( (array) \AgentShell_MCP\Store::audit_log() );
+$res_r4a = \AgentShell_MCP\Content_Recovery::recover( Tx::instance()->payload(), \AgentShell_MCP\Store::actor(), false, true, true );
+$found_r4a = s2cs_audit_delta( $audit_before_r4a, 'transaction_edit_published_pre_publication_rollback' );
+s2cs_check( '13.1 R-4 rollback settles to recovered', is_array( $res_r4a ) && 'recovered' === ( $res_r4a['status'] ?? '' ) );
+s2cs_check( '13.2 R-4 audit row was recorded', is_array( $found_r4a ) );
+$changed_r4a = is_array( $found_r4a ) ? ( $found_r4a['changed'] ?? array() ) : array();
+s2cs_check( '13.3 R-4 audit shadow_step = already_gone', is_array( $changed_r4a ) && ( $changed_r4a['shadow_step'] ?? '' ) === 'already_gone', 'shadow_step=' . ( is_array( $changed_r4a ) ? ( $changed_r4a['shadow_step'] ?? '' ) : 'n/a' ) );
+s2cs_check( '13.4 R-4 audit claim_step in {released,already_absent}', is_array( $changed_r4a ) && in_array( $changed_r4a['claim_step'] ?? '', array( 'released', 'already_absent' ), true ), 'claim_step=' . ( is_array( $changed_r4a ) ? ( $changed_r4a['claim_step'] ?? '' ) : 'n/a' ) );
+s2cs_check( '13.5 R-4 reason string mentions "already gone"', is_array( $changed_r4a ) && strpos( (string) ( $changed_r4a['reason'] ?? '' ), 'already gone' ) !== false, 'reason=' . ( is_array( $changed_r4a ) ? (string) ( $changed_r4a['reason'] ?? '' ) : 'n/a' ) );
+s2cs_drop_transaction();
+
+// 13.6: claim was already absent before the rollback ran
+//       (a prior crashed recovery released it). The audit
+//       row says claim_step=already_absent.
+s2cs_reset_state();
+$tx = s2cs_begin_tx( 'agent-1', 'R-4 claim already absent' );
+s2cs_seed_original( 12004, 'Original Title', 'Original content.', '', 'orig-12004' );
+$op = s2cs_stage_edit_published( 12004, 17004, array( 'post_title' => 'Staged Title' ) );
+s2cs_seed_shadow( 17004, 12004, $op['id'], array( 'post_title' => 'Staged Title' ) );
+// Release the claim before the recovery runs.
+$pres = Published_Claim::read( 12004 );
+if ( is_array( $pres ) ) {
+    Published_Claim::release( 12004, $pres );
+}
+
+$now = S2C_T0 + 5;
+$recovery_actor = (string) \AgentShell_MCP\Store::actor();
+s2cs_update_op( $op['id'], function ( $op_row ) use ( $now, $recovery_actor ) {
+    $op_row['state'] = Content_Journal::STATE_COMPENSATING;
+    $op_row['claim'] = array(
+        'actor'     => $recovery_actor,
+        'at'        => $now,
+        'pre_state' => Content_Journal::STATE_STAGED,
+    );
+    return $op_row;
+} );
+
+$audit_before_r4b = count( (array) \AgentShell_MCP\Store::audit_log() );
+$res_r4b = \AgentShell_MCP\Content_Recovery::recover( Tx::instance()->payload(), \AgentShell_MCP\Store::actor(), false, true, true );
+$found_r4b = s2cs_audit_delta( $audit_before_r4b, 'transaction_edit_published_pre_publication_rollback' );
+s2cs_check( '13.6 R-4 claim-already-absent settles to recovered', is_array( $res_r4b ) && 'recovered' === ( $res_r4b['status'] ?? '' ) );
+s2cs_check( '13.7 R-4 audit row recorded', is_array( $found_r4b ) );
+$changed_r4b = is_array( $found_r4b ) ? ( $found_r4b['changed'] ?? array() ) : array();
+s2cs_check( '13.8 R-4 audit claim_step = already_absent', is_array( $changed_r4b ) && ( $changed_r4b['claim_step'] ?? '' ) === 'already_absent', 'claim_step=' . ( is_array( $changed_r4b ) ? ( $changed_r4b['claim_step'] ?? '' ) : 'n/a' ) );
+s2cs_check( '13.9 R-4 audit shadow_step = deleted', is_array( $changed_r4b ) && ( $changed_r4b['shadow_step'] ?? '' ) === 'deleted' );
+s2cs_check( '13.10 R-4 reason string mentions "already absent"', is_array( $changed_r4b ) && strpos( (string) ( $changed_r4b['reason'] ?? '' ), 'already absent' ) !== false, 'reason=' . ( is_array( $changed_r4b ) ? (string) ( $changed_r4b['reason'] ?? '' ) : 'n/a' ) );
+s2cs_drop_transaction();
+
+// 13.11: the common case still works after the R-4
+//        changes — shadow deleted, claim released.
+s2cs_reset_state();
+$tx = s2cs_begin_tx( 'agent-1', 'R-4 common case' );
+s2cs_seed_original( 12005, 'Original Title', 'Original content.', '', 'orig-12005' );
+$op = s2cs_stage_edit_published( 12005, 17005, array( 'post_title' => 'Staged Title' ) );
+s2cs_seed_shadow( 17005, 12005, $op['id'], array( 'post_title' => 'Staged Title' ) );
+
+$now = S2C_T0 + 5;
+$recovery_actor = (string) \AgentShell_MCP\Store::actor();
+s2cs_update_op( $op['id'], function ( $op_row ) use ( $now, $recovery_actor ) {
+    $op_row['state'] = Content_Journal::STATE_COMPENSATING;
+    $op_row['claim'] = array(
+        'actor'     => $recovery_actor,
+        'at'        => $now,
+        'pre_state' => Content_Journal::STATE_STAGED,
+    );
+    return $op_row;
+} );
+
+$audit_before_r4c = count( (array) \AgentShell_MCP\Store::audit_log() );
+$res_r4c = \AgentShell_MCP\Content_Recovery::recover( Tx::instance()->payload(), \AgentShell_MCP\Store::actor(), false, true, true );
+$found_r4c = s2cs_audit_delta( $audit_before_r4c, 'transaction_edit_published_pre_publication_rollback' );
+s2cs_check( '13.11 R-4 common case settles to recovered', is_array( $res_r4c ) && 'recovered' === ( $res_r4c['status'] ?? '' ) );
+$changed_r4c = is_array( $found_r4c ) ? ( $found_r4c['changed'] ?? array() ) : array();
+s2cs_check( '13.12 R-4 common case audit shadow_step = deleted', is_array( $changed_r4c ) && ( $changed_r4c['shadow_step'] ?? '' ) === 'deleted' );
+s2cs_check( '13.13 R-4 common case audit claim_step = released', is_array( $changed_r4c ) && ( $changed_r4c['claim_step'] ?? '' ) === 'released' );
+s2cs_check( '13.14 R-4 common case reason mentions both', is_array( $changed_r4c ) && strpos( (string) ( $changed_r4c['reason'] ?? '' ), 'deleted' ) !== false && strpos( (string) ( $changed_r4c['reason'] ?? '' ), 'released' ) !== false );
+s2cs_drop_transaction();
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Summary
 // ─────────────────────────────────────────────────────────────────────────────
 

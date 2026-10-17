@@ -1589,6 +1589,22 @@ class Content_Recovery {
     private static function compensate_edit_published_staged(
         array $op, array $tx, $current_actor, $original_id, $shadow_id, $op_id_str
     ) {
+        // M5-audit hygiene R-4 (LOW). The pre-fix audit row
+        // and reason string said "shadow deleted, claim
+        // released" regardless of which steps actually ran.
+        // The shadow may not exist (never created or already
+        // deleted by a prior crashed recovery), the claim
+        // may not exist (already released by a prior crashed
+        // recovery), and the cas may classify the outcome
+        // as anything other than 'absent'. Track each
+        // step's actual outcome in local flags and emit a
+        // precise audit row + reason describing what
+        // actually happened.
+        $steps = array(
+            'shadow'  => 'pending',
+            'claim'   => 'pending',
+        );
+
         // 1. Identity-validated shadow delete.
         $shadow = get_post( $shadow_id );
         if ( $shadow ) {
@@ -1634,6 +1650,13 @@ class Content_Recovery {
                         . 'for the next recovery.',
                 );
             }
+            $steps['shadow'] = 'deleted';
+        } else {
+            // Shadow was already gone — a prior recovery may
+            // have deleted it before crashing, or it was never
+            // created. The destructive step is the no-op; the
+            // audit must say so.
+            $steps['shadow'] = 'already_gone';
         }
 
         // 2. Value-guarded claim release. Uses the same
@@ -1677,7 +1700,8 @@ class Content_Recovery {
         $recovery_tx_id = (string) ( $tx['id'] ?? '' );
         $outer_claim = \AgentShell_MCP\Published_Claim::read( $original_id );
         if ( null === $outer_claim ) {
-            $claim_outcome = array( 'class' => 'absent', 'row' => null );
+            $claim_outcome = array( 'class' => 'absent', 'row' => null, 'label' => 'already_absent' );
+            $steps['claim'] = 'already_absent';
         } elseif ( '' !== $recovery_tx_id && (string) ( $outer_claim['tx_id'] ?? '' ) !== $recovery_tx_id ) {
             // The row on disk belongs to a different tx.
             // We have no authority to release it. The
@@ -1689,6 +1713,7 @@ class Content_Recovery {
                 'row'      => $outer_claim,
                 'outer'    => $outer_claim,
                 'no_inner' => true,
+                'label'    => 'outer_claim_belongs_to_other_tx',
             );
         } else {
             $outer_bytes = maybe_serialize( $outer_claim );
@@ -1703,6 +1728,7 @@ class Content_Recovery {
                     return array(
                         'class' => 'absent',
                         'row'   => null,
+                        'label' => 'released_between_reads',
                     );
                 }
                 $inner_bytes = maybe_serialize( $inner_claim );
@@ -1715,6 +1741,7 @@ class Content_Recovery {
                         'class'    => 'successor',
                         'row'      => $inner_claim,
                         'outer'    => $outer_claim,
+                        'label'    => 'replaced_between_reads',
                     );
                 }
                 // The row matches our bytes. Run the cas_delete
@@ -1743,6 +1770,7 @@ class Content_Recovery {
                     return array(
                         'class' => 'absent',
                         'row'   => null,
+                        'label' => 'released',
                     );
                 }
                 $row = is_string( $blob ) ? maybe_unserialize( $blob ) : null;
@@ -1750,6 +1778,7 @@ class Content_Recovery {
                     return array(
                         'class' => 'anomalous',
                         'row'   => null,
+                        'label' => 'unreadable_post_cas',
                     );
                 }
                 if ( \AgentShell_MCP\Published_Claim::rows_equal( $row, $outer_claim ) ) {
@@ -1760,11 +1789,13 @@ class Content_Recovery {
                     return array(
                         'class' => 'anomalous',
                         'row'   => $row,
+                        'label' => 'cas_did_not_match',
                     );
                 }
                 return array(
                     'class' => 'successor',
                     'row'   => $row,
+                    'label' => 'replaced_post_cas',
                 );
             } );
         }
@@ -1815,6 +1846,42 @@ class Content_Recovery {
         // (in settle_operation). The `post_id` returned is
         // the original's id so the audit log shows what
         // record the compensation was on behalf of.
+        //
+        // M5-audit hygiene R-4: the audit row and reason
+        // string now describe the actual steps that ran,
+        // using the local $steps flags. The 'absent' path
+        // for the claim (ours was already gone) emits
+        // `claim_already_absent` rather than the misleading
+        // 'claim released'. The 'already_gone' path for the
+        // shadow emits `shadow_already_gone` rather than
+        // 'shadow deleted'.
+        $steps['claim'] = is_array( $claim_outcome )
+            ? ( 'absent' === $claim_outcome['class']
+                ? ( isset( $claim_outcome['label'] ) ? (string) $claim_outcome['label'] : 'released' )
+                : $claim_outcome['class'] )
+            : 'unknown';
+        // The audit `reason` is the human-readable form. The
+        // machine-readable form lives in `shadow_step` and
+        // `claim_step` (so a post-hoc analysis can query the
+        // structured field rather than parsing prose).
+        $audit_reason = 'pre-publication rollback: '
+            . str_replace( '_', ' ', (string) $steps['shadow'] )
+            . ' / '
+            . str_replace( '_', ' ', (string) $steps['claim'] );
+        $reason_fragments = array();
+        if ( 'deleted' === $steps['shadow'] ) {
+            $reason_fragments[] = 'the shadow (id ' . $shadow_id . ') was deleted';
+        } elseif ( 'already_gone' === $steps['shadow'] ) {
+            $reason_fragments[] = 'the shadow (id ' . $shadow_id . ') was already gone';
+        }
+        if ( 'released' === $steps['claim'] ) {
+            $reason_fragments[] = 'the per-original claim was value-guarded released';
+        } elseif ( 'released_between_reads' === $steps['claim'] ) {
+            $reason_fragments[] = 'the per-original claim was already released between the outside-read and the inside-read';
+        } elseif ( 'already_absent' === $steps['claim'] ) {
+            $reason_fragments[] = 'the per-original claim was already absent';
+        }
+        $reason_fragments[] = 'the original is unchanged (the publication never committed)';
         \AgentShell_MCP\Store::record_event(
             (string) $current_actor,
             'transaction_edit_published_pre_publication_rollback',
@@ -1823,16 +1890,16 @@ class Content_Recovery {
                 'op_id'          => (string) $op_id_str,
                 'original_id'    => (int) $original_id,
                 'shadow_id'      => (int) $shadow_id,
-                'reason'         => 'pre-publication rollback: shadow deleted, claim released',
+                'shadow_step'    => (string) $steps['shadow'],
+                'claim_step'     => (string) $steps['claim'],
+                'reason'         => $audit_reason,
             )
         );
         return array(
             'outcome' => 'compensated',
             'post_id' => (int) $original_id,
             'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' pre-publication rollback: '
-                . 'the shadow (id ' . $shadow_id . ') was deleted, the per-original claim was '
-                . 'value-guarded released, and the original is unchanged (the publication never '
-                . 'committed).',
+                . implode( '; ', $reason_fragments ) . '.',
         );
     }
 
