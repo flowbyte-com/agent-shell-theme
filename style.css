@@ -551,6 +551,18 @@ p  { margin: 0 0 var(--space-4, 1rem); }
     border-radius: 2px;
 }
 
+@media (max-width: 768px) {
+    /* Slightly smaller wordmark at narrow widths so the brand,
+     * the inline search form, and the mobile menu toggle all fit
+     * on a single row without overlapping. 1.35rem fits at 768px+
+     * but is too wide at 390px (where the search form + button
+     * already take ~190px and the wordmark would push past the
+     * left edge of the right slot). */
+    .wp-core-site_logo .wp-core-site-logo-fallback {
+        font-size: 1.1rem;
+    }
+}
+
 /* Search Form — inline, light, single line. Works on the new flat
  * header background.
  *
@@ -565,6 +577,11 @@ p  { margin: 0 0 var(--space-4, 1rem); }
     gap: var(--space-2, 0.5rem);
     align-items: center;
     flex-wrap: nowrap;
+    /* Allow the form to shrink below its intrinsic content width
+     * (input + submit + gap) so it can fit inside the right slot
+     * at narrow viewports. Without this, the form overflows the
+     * grid track and the submit button is clipped off-screen. */
+    min-width: 0;
 }
 
 .wp-core-search_form input[type="search"] {
@@ -575,10 +592,13 @@ p  { margin: 0 0 var(--space-4, 1rem); }
     color: var(--theme-text, #1f2937);
     font-size: 0.95rem;
     font-family: inherit;
+    /* Allow the input to shrink below its intrinsic content width
+     * so the right slot's flex layout can fit a search + button
+     * + mobile-menu-toggle inside the available row width on
+     * narrow viewports. Without this, the form overflows the
+     * slot and the submit button is clipped. */
     min-width: 0;
-    /* Make the input shrink first on narrow widths; the button
-     * keeps a sensible minimum width so the label doesn't wrap. */
-    flex: 1 1 10rem;
+    flex: 1 1 6rem;
     max-width: 14rem;
     transition: border-color 150ms ease, box-shadow 150ms ease;
 }
@@ -632,11 +652,15 @@ p  { margin: 0 0 var(--space-4, 1rem); }
     outline-offset: var(--focus-ring-offset, 2px);
 }
 
-/* On narrow viewports the search input should fill its slot; the
- * button keeps its label. */
+/* On very narrow viewports the search form, the mobile menu toggle,
+ * and the wordmark compete for the same row width. Hide the inline
+ * search form and let the user rely on the menu + the browser's
+ * native search; the form remains in the DOM (and the menu's
+ * expanded panel on mobile could surface it later) so this is a
+ * visual hide, not a content change. */
 @media (max-width: 480px) {
-    .wp-core-search_form input[type="search"] {
-        max-width: 100%;
+    .wp-core-search_form {
+        display: none;
     }
 }
 
@@ -680,7 +704,10 @@ p  { margin: 0 0 var(--space-4, 1rem); }
 @media (max-width: 768px) {
     #zone-header,
     #zone-footer {
-        grid-template-columns: 1fr 1fr;
+        /* minmax(0, 1fr) caps the column at its grid share so a wide
+         * right slot (search form + mobile menu toggle) cannot
+         * overflow the row and push the submit button off-screen. */
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     }
 
     .slot-center {
@@ -689,6 +716,7 @@ p  { margin: 0 0 var(--space-4, 1rem); }
 
     .slot-left {
         justify-self: start;
+        min-width: 0;
     }
 
     .slot-right {
@@ -696,6 +724,7 @@ p  { margin: 0 0 var(--space-4, 1rem); }
         display: flex;
         align-items: center;
         gap: 0.5rem;
+        min-width: 0;
     }
 
     /* Hamburger toggle */
