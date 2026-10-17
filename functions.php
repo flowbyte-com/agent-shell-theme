@@ -2183,6 +2183,142 @@ function agentshell_harden_custom_css( $value ) {
 }
 
 /**
+ * Build the response payload for GET /wp/v2/agentshell/config.
+ *
+ * Extracted from the rest_api_init closure so it can be unit-tested
+ * without spinning up a full WP REST stack. The fix for the
+ * custom_css round-trip defect lives here: prior to the fix, the GET
+ * response omitted custom_css and custom_js, so an agent reading the
+ * current config via GET could not see what was stored, and an
+ * agent updating only some other field (e.g. zones) had no way to
+ * confirm its custom_css was not silently lost. Surfacing the
+ * strings plus a byte counter closes that gap.
+ *
+ * Layout is also surfaced: the agentshell_set_layout tool writes to
+ * config['layout'] and the agent may want to read the stored value
+ * back (e.g. to verify a tool call landed before re-emitting CSS).
+ */
+function agentshell_build_config_get_response() {
+    $config = agentshell_get_config();
+    $flat   = agentshell_flatten_config( $config );
+
+    // Pull widgets from the merged bilateral registry, not the
+    // legacy agentshell_widgets option. This means the configurator
+    // sees widgets written via agentshell_register_widget (main
+    // plugin) as well as widgets written via the blocks plugin's
+    // legacy tool. Migration is handled by
+    // agentshell_migrate_legacy_widgets_option() on plugin activation.
+    $available_widgets = array();
+    $registry          = agentshell_get_widget_registry();
+    foreach ( $registry as $widget ) {
+        $available_widgets[] = array(
+            'id'     => $widget['id'],
+            'name'   => $widget['name'] ?? $widget['id'],
+            'source' => $widget['source'] ?? 'config',
+            'status' => $widget['status'] ?? 'active',
+        );
+    }
+
+    // Core WP components — now served by the same function used at render time
+    $core_components = agentshell_get_core_components();
+
+    // Available widget areas — snapshot of $wp_registered_sidebars at
+    // request time. Surfaces child-theme and mu-plugin-registered
+    // areas alongside AgentShell's defaults so the configurator
+    // can present a single dropdown. The configurator preserves
+    // saved ids even when the area is no longer registered.
+    //
+    // Read the global directly: WP core exposes the global but
+    // older releases (e.g. 6.5) do not export a wrapper function.
+    // Newer releases add wp_registered_sidebars() — fall through
+    // to that if present.
+    $available_widget_areas = array();
+    $registered = ( function_exists( 'wp_registered_sidebars' ) )
+        ? wp_registered_sidebars()
+        : ( $GLOBALS['wp_registered_sidebars'] ?? array() );
+    if ( ! is_array( $registered ) ) {
+        $registered = array();
+    }
+    foreach ( $registered as $area_id => $area ) {
+        if ( ! is_string( $area_id ) ) {
+            continue;
+        }
+        $available_widget_areas[] = array(
+            'id'   => $area_id,
+            'name' => ( is_array( $area ) && isset( $area['name'] ) ) ? (string) $area['name'] : $area_id,
+        );
+    }
+
+    $schema = array(
+        'zones'           => array(
+            'type'  => 'array',
+            'items' => array(
+                'type'       => 'object',
+                'properties' => array(
+                    'id'          => array( 'type' => 'string' ),
+                    'label'       => array( 'type' => 'string' ),
+                    'composition' => array( 'type' => 'array' ),
+                    'slots'      => array(
+                        'type'       => 'object',
+                        'properties' => array(
+                            'left'   => array( 'type' => 'array' ),
+                            'center' => array( 'type' => 'array' ),
+                            'right'  => array( 'type' => 'array' ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        'custom_css' => array( 'type' => 'string', 'maxLength' => 10000 ),
+        'custom_js'  => array( 'type' => 'string', 'maxLength' => 10000 ),
+        'design'     => array( 'type' => 'object' ),
+        'layout'     => array( 'type' => 'object' ),
+    );
+
+    // Ensure zones and compositions are always proper sequential arrays
+    $zones = $config['zones'] ?? array();
+    if ( is_array( $zones ) ) {
+        $zones = array_values( $zones );
+        foreach ( $zones as &$zone ) {
+            if ( isset( $zone['composition'] ) && is_array( $zone['composition'] ) ) {
+                $zone['composition'] = array_values( $zone['composition'] );
+            }
+            // Normalize slot arrays to sequential arrays
+            if ( isset( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
+                foreach ( array( 'left', 'center', 'right' ) as $slot_key ) {
+                    if ( isset( $zone['slots'][ $slot_key ] ) && is_array( $zone['slots'][ $slot_key ] ) ) {
+                        $zone['slots'][ $slot_key ] = array_values( $zone['slots'][ $slot_key ] );
+                    } else {
+                        $zone['slots'][ $slot_key ] = array();
+                    }
+                }
+            }
+        }
+        unset( $zone );
+    } else {
+        $zones = array();
+    }
+
+    $custom_css = (string) ( $config['custom_css'] ?? '' );
+    $custom_js  = (string) ( $config['custom_js']  ?? '' );
+
+    return array(
+        'schema'                => $schema,
+        'defaults'              => $flat,
+        'config'                => $flat,
+        'zones'                 => $zones,
+        'available_widgets'     => $available_widgets,
+        'core_components'       => $core_components,
+        'available_widget_areas'=> $available_widget_areas,
+        'custom_css'            => $custom_css,
+        'custom_js'             => $custom_js,
+        'custom_css_bytes'      => strlen( $custom_css ),
+        'custom_js_bytes'       => strlen( $custom_js ),
+        'layout'                => is_array( $config['layout'] ?? null ) ? $config['layout'] : array(),
+    );
+}
+
+/**
  * REST API: GET/PUT /wp/v2/agentshell/config
  * GET returns schema metadata + defaults + config for agent introspection.
  * PUT accepts flat key-value pairs, merges into nested config, persists.
@@ -2190,117 +2326,7 @@ function agentshell_harden_custom_css( $value ) {
 add_action( 'rest_api_init', function() {
     register_rest_route( 'wp/v2', '/agentshell/config', array(
         'methods'  => 'GET',
-        'callback' => function() {
-            $config = agentshell_get_config();
-            $flat   = agentshell_flatten_config( $config );
-
-            // Pull widgets from the merged bilateral registry, not the
-            // legacy agentshell_widgets option. This means the configurator
-            // sees widgets written via agentshell_register_widget (main
-            // plugin) as well as widgets written via the blocks plugin's
-            // legacy tool. Migration is handled by
-            // agentshell_migrate_legacy_widgets_option() on plugin activation.
-            $available_widgets = array();
-            $registry          = agentshell_get_widget_registry();
-            foreach ( $registry as $widget ) {
-                $available_widgets[] = array(
-                    'id'     => $widget['id'],
-                    'name'   => $widget['name'] ?? $widget['id'],
-                    'source' => $widget['source'] ?? 'config',
-                    'status' => $widget['status'] ?? 'active',
-                );
-            }
-
-            // Core WP components — now served by the same function used at render time
-            $core_components = agentshell_get_core_components();
-
-            // Available widget areas — snapshot of $wp_registered_sidebars at
-            // request time. Surfaces child-theme and mu-plugin-registered
-            // areas alongside AgentShell's defaults so the configurator
-            // can present a single dropdown. The configurator preserves
-            // saved ids even when the area is no longer registered.
-            //
-            // Read the global directly: WP core exposes the global but
-            // older releases (e.g. 6.5) do not export a wrapper function.
-            // Newer releases add wp_registered_sidebars() — fall through
-            // to that if present.
-            $available_widget_areas = array();
-            $registered = ( function_exists( 'wp_registered_sidebars' ) )
-                ? wp_registered_sidebars()
-                : ( $GLOBALS['wp_registered_sidebars'] ?? array() );
-            if ( ! is_array( $registered ) ) {
-                $registered = array();
-            }
-            foreach ( $registered as $area_id => $area ) {
-                if ( ! is_string( $area_id ) ) {
-                    continue;
-                }
-                $available_widget_areas[] = array(
-                    'id'   => $area_id,
-                    'name' => ( is_array( $area ) && isset( $area['name'] ) ) ? (string) $area['name'] : $area_id,
-                );
-            }
-
-            $schema = array(
-                'zones'           => array(
-                    'type'  => 'array',
-                    'items' => array(
-                        'type'       => 'object',
-                        'properties' => array(
-                            'id'          => array( 'type' => 'string' ),
-                            'label'       => array( 'type' => 'string' ),
-                            'composition' => array( 'type' => 'array' ),
-                            'slots'      => array(
-                                'type'       => 'object',
-                                'properties' => array(
-                                    'left'   => array( 'type' => 'array' ),
-                                    'center' => array( 'type' => 'array' ),
-                                    'right'  => array( 'type' => 'array' ),
-                                ),
-                            ),
-                        ),
-                    ),
-                ),
-                'custom_css' => array( 'type' => 'string', 'maxLength' => 10000 ),
-                'custom_js'  => array( 'type' => 'string', 'maxLength' => 10000 ),
-                'design'     => array( 'type' => 'object' ),
-                'layout'     => array( 'type' => 'object' ),
-            );
-
-            // Ensure zones and compositions are always proper sequential arrays
-            $zones = $config['zones'] ?? array();
-            if ( is_array( $zones ) ) {
-                $zones = array_values( $zones );
-                foreach ( $zones as &$zone ) {
-                    if ( isset( $zone['composition'] ) && is_array( $zone['composition'] ) ) {
-                        $zone['composition'] = array_values( $zone['composition'] );
-                    }
-                    // Normalize slot arrays to sequential arrays
-                    if ( isset( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
-                        foreach ( array( 'left', 'center', 'right' ) as $slot_key ) {
-                            if ( isset( $zone['slots'][ $slot_key ] ) && is_array( $zone['slots'][ $slot_key ] ) ) {
-                                $zone['slots'][ $slot_key ] = array_values( $zone['slots'][ $slot_key ] );
-                            } else {
-                                $zone['slots'][ $slot_key ] = array();
-                            }
-                        }
-                    }
-                }
-                unset( $zone );
-            } else {
-                $zones = array();
-            }
-
-            return array(
-                'schema'                => $schema,
-                'defaults'              => $flat,
-                'config'                => $flat,
-                'zones'                 => $zones,
-                'available_widgets'     => $available_widgets,
-                'core_components'       => $core_components,
-                'available_widget_areas'=> $available_widget_areas,
-            );
-        },
+        'callback' => 'agentshell_build_config_get_response',
         'permission_callback' => 'agentshell_rest_auth_callback',
     ) );
 
