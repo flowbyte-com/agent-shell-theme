@@ -354,6 +354,13 @@ $suites = array(
     // re-publishing, and a second reconcile is mutation-free.
     // Destructive live.
     'stage-2c-publish-edit-recovery-live' => __DIR__ . '/stage-2c-publish-edit-recovery-live-test.php',
+    // Stage 2c M5-t3 end-to-end acceptance: the full published-edit
+    // lifecycle against a real WordPress install — page → claim →
+    // shadow → stage → preview (real HTTP) → publish → reconcile,
+    // plus retry safety, anonymous-isolation, forged / expired /
+    // wrong-actor credentials, baseline drift, and outside-the-
+    // four-fields shadow changes. Destructive live.
+    'stage-2c-end-to-end-live' => __DIR__ . '/stage-2c-end-to-end-live-test.php',
 );
 
 $total_passed   = 0;
@@ -378,6 +385,7 @@ $destructive_live_suites = array(
     'stage-2c-publish-edit-live',
     'stage-2c-publish-edit-race-live',
     'stage-2c-publish-edit-recovery-live',
+    'stage-2c-end-to-end-live',
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );

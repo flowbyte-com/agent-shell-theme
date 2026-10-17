@@ -216,6 +216,13 @@ class Published_Preview_Overlay {
         $ops = isset( $tx_row['content']['ops'] ) && is_array( $tx_row['content']['ops'] )
             ? $tx_row['content']['ops']
             : array();
+        // The op's `actor` field is the user_login (set by
+        // Content_Journal::record_intent() from Store::actor()), while
+        // the credential's `actor` is the integer user_id (set by
+        // Post_Preview::published_preview_url_args()). Resolve the op
+        // actor to a user_id and compare; numeric-string op actors
+        // (test fixtures) are compared as-is.
+        $cred_actor = (int) ( $cred['actor'] ?? 0 );
         foreach ( $ops as $op ) {
             if ( ! is_array( $op ) ) { continue; }
             if ( ! isset( $op['op'] ) || Content_Journal::OP_EDIT_PUBLISHED !== $op['op'] ) {
@@ -226,12 +233,31 @@ class Published_Preview_Overlay {
             }
             if ( (int) $op['target']['original_id'] !== $cred['oid'] ) { continue; }
             if ( (int) $op['target']['shadow_id']   !== $cred['sid'] ) { continue; }
-            if ( ! isset( $op['actor'] ) || (string) $op['actor'] !== (string) $cred['actor'] ) {
+            if ( ! self::op_actor_matches( $op, $cred_actor ) ) {
                 continue;
             }
             return $op;
         }
         return null;
+    }
+
+    /**
+     * Resolve the op's `actor` field to a user_id and compare against
+     * the credential's actor (which is the integer user_id). If the op
+     * actor is a numeric string, treat it as a user_id directly (test
+     * fixture path). If it is a user_login, look it up.
+     */
+    private static function op_actor_matches( array $op, int $cred_actor ) : bool {
+        $op_actor = (string) ( $op['actor'] ?? '' );
+        if ( '' === $op_actor ) { return false; }
+        if ( ctype_digit( $op_actor ) ) {
+            return (int) $op_actor === $cred_actor;
+        }
+        $user = \get_user_by( 'login', $op_actor );
+        if ( $user instanceof \WP_User ) {
+            return (int) $user->ID === $cred_actor;
+        }
+        return false;
     }
 
     /**
