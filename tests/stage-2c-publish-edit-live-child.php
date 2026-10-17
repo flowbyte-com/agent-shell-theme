@@ -25,14 +25,36 @@
 ini_set( 'display_errors', 'stderr' );
 error_reporting( E_ALL );
 
+// argv: 1 WordPress root, 2 report path. DB / site come from the
+// same test-bed config the parent runner used to spawn us, so the
+// same child code runs against the integration site when
+// AGENTSHELL_TEST_BED_CONFIG points there.
 $WP_ROOT  = (string) ( $argv[1] ?? '' );
-$SITE     = 'http://agentshell-test.local';
-$DB_SOCK  = '/home/v/.config/Local/run/JcloZdmY7/mysql/mysqld.sock';
-$DB_USER  = 'agentshell_test';
-$DB_PASS  = 'NkeWyTNCSUYSEGHUN0toj07xKNlnleI';
-$DB_NAME  = 'agentshell_test_bed';
-$MARKER   = 'stage2c_pe_live';
 $RESULT   = (string) ( $argv[2] ?? '' );
+
+// Read the test-bed config WITHOUT including agentshell-test-bed.php
+// (that file defines its own ABSPATH side effect, which would clash
+// with the one we set later from $WP_ROOT). Resolve the same way
+// agentshell_test_bed_config_path() does: env override, then the
+// local default.
+$__asint_bed_cfg_path = getenv( 'AGENTSHELL_TEST_BED_CONFIG' );
+if ( ! is_string( $__asint_bed_cfg_path ) || '' === $__asint_bed_cfg_path ) {
+    $__asint_bed_cfg_path = __DIR__ . '/config/test-bed.json';
+}
+$__asint_bed_cfg = is_file( $__asint_bed_cfg_path )
+    ? json_decode( (string) file_get_contents( $__asint_bed_cfg_path ), true )
+    : null;
+if ( ! is_array( $__asint_bed_cfg ) ) {
+    fwrite( STDERR, "test-bed config not found or malformed at {$__asint_bed_cfg_path}\n" );
+    exit( 2 );
+}
+$DB_SOCK  = (string) ( $__asint_bed_cfg['db']['socket']   ?? '' );
+$DB_USER  = (string) ( $__asint_bed_cfg['db']['user']     ?? '' );
+$DB_PASS  = (string) ( $__asint_bed_cfg['db']['password'] ?? '' );
+$DB_NAME  = (string) ( $__asint_bed_cfg['db']['name']     ?? '' );
+$SITE     = rtrim( (string) ( $__asint_bed_cfg['url_http'] ?? '' ), '/' );
+$MARKER   = 'stage2c_pe_live';
+unset( $__asint_bed_cfg, $__asint_bed_cfg_path );
 
 if ( '' === $WP_ROOT || '' === $RESULT ) {
     fwrite( STDERR, "usage: <child> <wp_root> <report_path>\n" );
@@ -46,7 +68,7 @@ if ( ! is_file( $WP_ROOT . '/wp-load.php' ) ) {
 
 define( 'ABSPATH', rtrim( $WP_ROOT, '/' ) . '/' );
 define( 'WP_USE_THEMES', false );
-$_SERVER['HTTP_HOST']   = 'agentshell-test.local';
+$_SERVER['HTTP_HOST']   = (string) ( $__asint_bed_cfg['domain'] ?? parse_url( (string) ( $__asint_bed_cfg['url_http'] ?? '' ), PHP_URL_HOST ) ?? 'localhost' );
 $_SERVER['REQUEST_URI']  = '/';
 ini_set( 'mysqli.default_socket', $DB_SOCK );
 require_once ABSPATH . 'wp-load.php';
