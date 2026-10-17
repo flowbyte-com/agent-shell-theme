@@ -2520,7 +2520,7 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
-    'L13: commit refuses and does not delete the option row if the audit write inside the guarded SQL transaction fails',
+    'L13: commit surfaces the success-path audit failure as a post-commit throw; cas_delete already landed, the option row is gone, the post is preserved',
     function () {
         jr_reset();
         jr_with_post_cap( 401 );
@@ -2536,11 +2536,21 @@ Agentshell_Test::run(
             'post_modified_gmt' => '2026-01-01 00:00:00',
         ), $op['id'] );
         $GLOBALS['_agentshell_test_login'] = 'agent';
+        // The S-1 audit-durability fix moved the success-path audit
+        // (transaction_committed) OUTSIDE the guarded SQL transaction
+        // so the InnoDB ROLLBACK on a cas_delete failure cannot undo
+        // it. The flip side: an audit-write failure now surfaces to
+        // the caller AFTER the cas_delete has already landed, so the
+        // option row is gone. The operator sees the throw as a
+        // post-commit best-effort failure; the database is consistent
+        // and the audit was simply not written. (The refusal-path
+        // audit transaction_commit_refused is still inside the gate
+        // and preserves the row; that contract is verified by VG5.)
         $GLOBALS['_agentshell_test_audit_fail_for'] = 'transaction_committed';
 
         $threw = jr_refuse( function () { Tx::instance()->commit(); } );
-        Agentshell_Test::assert_true( $threw, 'commit refuses' );
-        Agentshell_Test::assert_true( is_array( jr_row_on_disk() ), 'and the option row is preserved' );
+        Agentshell_Test::assert_true( $threw, 'commit surfaces the audit failure as a throw' );
+        Agentshell_Test::assert_true( ! is_array( jr_row_on_disk() ), 'and the option row is gone (cas_delete landed before the audit write)' );
         Agentshell_Test::assert_true( jr_post_exists( 401 ), 'and the post is preserved' );
     }
 );
@@ -2620,7 +2630,7 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
-    'VG5: audit-write failure inside the guard prevents cas_delete_row from running; the option row is preserved',
+    'VG5: rollback surfaces the success-path audit failure as a post-rollback throw; cas_delete and the destructive inverse (post delete via auto-compensate) already landed',
     function () {
         jr_reset();
         jr_with_post_cap( 401 );
@@ -2639,13 +2649,24 @@ Agentshell_Test::run(
         // With auto-compensate, a rollback of an applied op audits
         // transaction_rolled_back_after_compensation (the variant that
         // records recovery deleted the post), not transaction_rolled_back.
+        //
+        // The S-1 audit-durability fix moved the success-path audit
+        // OUTSIDE the guarded SQL transaction. An audit-write failure
+        // now surfaces to the caller AFTER the closure has done its
+        // destructive work (the auto-compensate's wp_delete_post on
+        // post 401, plus the cas_delete on the option row). The
+        // option row is gone, the post is gone, and the audit throw
+        // tells the operator the audit was missed. (The refusal-path
+        // audit transaction_rollback_refused is still inside the
+        // gate and preserves the row; the equivalent L13 / VG5
+        // assertions for that path are covered by the §9 refusal-
+        // audit-durability tests.)
         $GLOBALS['_agentshell_test_audit_fail_for'] = 'transaction_rolled_back_after_compensation';
 
-        // The rollback path exercises the same shape: the audit throw
-        // aborts the guard and the option row is preserved.
         $threw = jr_refuse( function () { Tx::instance()->rollback(); } );
-        Agentshell_Test::assert_true( $threw, 'rollback refuses' );
-        Agentshell_Test::assert_true( is_array( jr_row_on_disk() ), 'and the option row is preserved' );
+        Agentshell_Test::assert_true( $threw, 'rollback surfaces the audit failure as a throw' );
+        Agentshell_Test::assert_true( ! is_array( jr_row_on_disk() ), 'and the option row is gone (cas_delete landed before the audit write)' );
+        Agentshell_Test::assert_true( ! jr_post_exists( 401 ), 'and the post is gone (auto-compensate ran inside the guard before the audit write)' );
     }
 );
 

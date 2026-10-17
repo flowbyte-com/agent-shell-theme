@@ -39,9 +39,15 @@ if ( ! defined( 'AUTH_SALT' ) ) { define( 'AUTH_SALT', 'stage-2c-publish-edit-su
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) { define( 'HOUR_IN_SECONDS', 3600 ); }
 if ( ! defined( 'MB_IN_BYTES' ) ) { define( 'MB_IN_BYTES', 1048576 ); }
 
+// Doctor::check() refuses on a missing or low WordPress version.
+// The stub environment does not load wp-includes, so Doctor
+// sees an empty $wp_version; declare one that clears the gate.
+$GLOBALS['wp_version'] = '6.5';
+
 foreach ( array(
     'class-store.php',
     'class-transactions.php',
+    'class-doctor.php',
     'class-content-write-guard.php',
     'class-content-journal.php',
     'class-recovery-advisory-lock.php',
@@ -448,6 +454,14 @@ $GLOBALS['wpdb'] = new class {
         return 1;
     }
     private function do_delete( $sql ) {
+        // Test seam: force cas_delete_row to fail at the row-moved branch
+        // (same shape as the bootstrap.php stub). Returning 0 preserves the
+        // option row so the test can assert the option-row-preserved
+        // contract of the S-1 audit-durability path.
+        if ( ! empty( $GLOBALS['_agentshell_test_cas_delete_fail'] ) ) {
+            $GLOBALS['_agentshell_test_cas_delete_calls'] = ( $GLOBALS['_agentshell_test_cas_delete_calls'] ?? 0 ) + 1;
+            return 0;
+        }
         if ( ! preg_match( "/DELETE FROM wp_options WHERE option_name = '([^']*)' AND option_value = '((?:[^']|'')*)'/", $sql, $m ) ) {
             return false;
         }
@@ -487,6 +501,8 @@ function s2cs_reset_state() {
     $GLOBALS['_agentshell_test_lock_contended'] = false;
     $GLOBALS['__s2c_db_errors']                = 0;
     $GLOBALS['__s2c_txid']                     = null;
+    $GLOBALS['_agentshell_test_cas_delete_fail']  = false;
+    $GLOBALS['_agentshell_test_cas_delete_calls'] = 0;
     \AgentShell_MCP\Recovery_Advisory_Lock::reset();
     \AgentShell_MCP\Content_Write_Guard::reset();
 }
@@ -1731,6 +1747,125 @@ s2cs_check( '13.12 R-4 common case audit shadow_step = deleted', is_array( $chan
 s2cs_check( '13.13 R-4 common case audit claim_step = released', is_array( $changed_r4c ) && ( $changed_r4c['claim_step'] ?? '' ) === 'released' );
 s2cs_check( '13.14 R-4 common case reason mentions both', is_array( $changed_r4c ) && strpos( (string) ( $changed_r4c['reason'] ?? '' ), 'deleted' ) !== false && strpos( (string) ( $changed_r4c['reason'] ?? '' ), 'released' ) !== false );
 s2cs_drop_transaction();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Summary
+// ─────────────────────────────────────────────────────────────────────────────
+
+echo "\n";
+// ─────────────────────────────────────────────────────────────────────────────
+// §14 — S-1: success-path audit durability on cas_delete_row failure
+// ─────────────────────────────────────────────────────────────────────────────
+
+echo "\n--- §14 S-1: success-path audit lives outside the SQL guard ---\n";
+
+// 14.1: a commit() whose cas_delete_row is forced to fail
+//       (the row-moved branch) throws and the option row
+//       is preserved. The success-path audit is OUTSIDE
+//       the guard, so the InnoDB ROLLBACK on the failed
+//       cas_delete does not undo the audit (because the
+//       audit was never written — it is only written on
+//       success). The audit is therefore ABSENT on
+//       failure, not the previous (broken) "audit written
+//       then rolled back" path.
+s2cs_reset_state();
+$tx_s1 = s2cs_begin_tx( 'agent-1', 'S-1 commit refusal' );
+$tx_id_s1 = (string) $tx_s1['id'];
+\AgentShell_MCP\Transaction_Manager::instance()->stage( array( 'palette' => array( 'primary' => '#ff0000' ) ) );
+$audit_before_s1 = count( (array) \AgentShell_MCP\Store::audit_log() );
+$GLOBALS['_agentshell_test_cas_delete_fail'] = true;
+$commit_threw = false;
+$commit_msg = '';
+try {
+    \AgentShell_MCP\Transaction_Manager::instance()->commit();
+} catch ( \Throwable $e ) {
+    $commit_threw = true;
+    $commit_msg = $e->getMessage();
+}
+$GLOBALS['_agentshell_test_cas_delete_fail'] = false;
+// The option row is preserved (cas_delete was rolled back).
+$row_after_s1 = (array) get_option( \AgentShell_MCP\Transaction_Manager::KEY, null );
+$option_preserved_s1 = is_array( $row_after_s1 ) && ( $row_after_s1['id'] ?? '' ) === $tx_id_s1;
+$audit_after_s1 = count( (array) \AgentShell_MCP\Store::audit_log() );
+s2cs_check( '14.1 S-1 commit threw on forced cas_delete fail', $commit_threw, 'threw=' . ( $commit_threw ? 'y' : 'n' ) . ' msg=' . substr( $commit_msg, 0, 60 ) );
+s2cs_check( '14.2 S-1 commit refusal preserved the option row', $option_preserved_s1 );
+s2cs_check( '14.3 S-1 commit refusal wrote NO success-path audit row (audit is outside the guard)', $audit_after_s1 === $audit_before_s1, 'delta=' . ( $audit_after_s1 - $audit_before_s1 ) );
+s2cs_drop_transaction();
+
+// 14.4: a successful commit() writes the success-path
+//       audit. The audit IS on disk after a real commit.
+//       The total delta is 2 (one `config_update` from
+//       record_mutation inside the guard + one
+//       `transaction_committed` from record_event outside
+//       the guard), but the success-path audit row is
+//       precisely the one carrying `transaction_id`.
+s2cs_reset_state();
+$tx_s1b = s2cs_begin_tx( 'agent-1', 'S-1 commit success' );
+$tx_id_s1b = (string) $tx_s1b['id'];
+\AgentShell_MCP\Transaction_Manager::instance()->stage( array( 'palette' => array( 'primary' => '#ff0000' ) ) );
+$audit_before_s1b = count( (array) \AgentShell_MCP\Store::audit_log() );
+\AgentShell_MCP\Transaction_Manager::instance()->commit();
+$audit_after_s1b = count( (array) \AgentShell_MCP\Store::audit_log() );
+$audit_log_s1b = (array) \AgentShell_MCP\Store::audit_log();
+$found_s1b = null;
+foreach ( $audit_log_s1b as $row ) {
+    if ( isset( $row['changed']['transaction_id'] ) && $row['changed']['transaction_id'] === $tx_id_s1b ) {
+        $found_s1b = $row;
+        break;
+    }
+}
+s2cs_check( '14.4 S-1 commit success wrote the success-path audit row outside the guard', is_array( $found_s1b ) && ( $found_s1b['operation'] ?? '' ) === 'transaction_committed', 'delta=' . ( $audit_after_s1b - $audit_before_s1b ) );
+s2cs_check( '14.5 S-1 commit success audit row references our tx', is_array( $found_s1b ) );
+s2cs_check( '14.6 S-1 commit success audit row carries the transaction id', is_array( $found_s1b ) && ( $found_s1b['changed']['transaction_id'] ?? '' ) === $tx_id_s1b );
+
+// 14.7: a rollback() whose cas_delete_row is forced to
+//       fail preserves the option row and writes NO
+//       success-path audit row.
+s2cs_reset_state();
+$tx_s1c = s2cs_begin_tx( 'agent-1', 'S-1 rollback refusal' );
+$tx_id_s1c = (string) $tx_s1c['id'];
+\AgentShell_MCP\Transaction_Manager::instance()->stage( array( 'palette' => array( 'primary' => '#ff0000' ) ) );
+$audit_before_s1c = count( (array) \AgentShell_MCP\Store::audit_log() );
+$GLOBALS['_agentshell_test_cas_delete_fail'] = true;
+$rollback_threw = false;
+try {
+    \AgentShell_MCP\Transaction_Manager::instance()->rollback();
+} catch ( \Throwable $e ) {
+    $rollback_threw = true;
+}
+$GLOBALS['_agentshell_test_cas_delete_fail'] = false;
+$row_after_s1c = (array) get_option( \AgentShell_MCP\Transaction_Manager::KEY, null );
+$option_preserved_s1c = is_array( $row_after_s1c ) && ( $row_after_s1c['id'] ?? '' ) === $tx_id_s1c;
+$audit_after_s1c = count( (array) \AgentShell_MCP\Store::audit_log() );
+s2cs_check( '14.7 S-1 rollback threw on forced cas_delete fail', $rollback_threw );
+s2cs_check( '14.8 S-1 rollback refusal preserved the option row', $option_preserved_s1c );
+s2cs_check( '14.9 S-1 rollback refusal wrote NO success-path audit row', $audit_after_s1c === $audit_before_s1c, 'delta=' . ( $audit_after_s1c - $audit_before_s1c ) );
+s2cs_drop_transaction();
+
+// 14.10: a successful rollback() writes the success-path
+//        audit. The audit IS on disk after a real rollback.
+//        Rollback does NOT call update_option (the staged
+//        config was never written), so the total delta is 1
+//        (just the `transaction_rolled_back` from record_event
+//        outside the guard). The success-path row carries
+//        `transaction_id`.
+s2cs_reset_state();
+$tx_s1d = s2cs_begin_tx( 'agent-1', 'S-1 rollback success' );
+$tx_id_s1d = (string) $tx_s1d['id'];
+\AgentShell_MCP\Transaction_Manager::instance()->stage( array( 'palette' => array( 'primary' => '#ff0000' ) ) );
+$audit_before_s1d = count( (array) \AgentShell_MCP\Store::audit_log() );
+\AgentShell_MCP\Transaction_Manager::instance()->rollback();
+$audit_after_s1d = count( (array) \AgentShell_MCP\Store::audit_log() );
+$audit_log_s1d = (array) \AgentShell_MCP\Store::audit_log();
+$found_s1d = null;
+foreach ( $audit_log_s1d as $row ) {
+    if ( isset( $row['changed']['transaction_id'] ) && $row['changed']['transaction_id'] === $tx_id_s1d ) {
+        $found_s1d = $row;
+        break;
+    }
+}
+s2cs_check( '14.10 S-1 rollback success wrote the success-path audit row outside the guard', is_array( $found_s1d ) && ( $found_s1d['operation'] ?? '' ) === 'transaction_rolled_back', 'delta=' . ( $audit_after_s1d - $audit_before_s1d ) );
+s2cs_check( '14.11 S-1 rollback success audit row references our tx', is_array( $found_s1d ) );
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Summary

@@ -891,33 +891,24 @@ class Transaction_Manager {
         $tx_label         = (string) $tx['label'];
         $staged           = $tx['staged'];
 
-        $result = Content_Write_Guard::run( function () use ( $tx, $actor, $tx_id, $tx_label, $committed_tokens, $staged, $op_summary, $audit_operation ) {
-            // 1. Audit the close first, so a row that moves between the
-            //    re-read and the delete is recorded even when the delete
-            //    fails.
-            Store::record_event(
-                $actor,
-                $audit_operation,
-                array(
-                    'transaction_id' => $tx_id,
-                    'label'          => $tx_label,
-                    'changed_tokens' => $committed_tokens,
-                    'ops'            => $op_summary,
-                )
-            );
-
-            // 2. Value-guarded delete. The row's bytes are the guard; a
-            //    row that moved between the re-read and now returns 0
-            //    rows affected and the operator sees the refusal with
-            //    the audit row preserved.
+        $result = Content_Write_Guard::run( function () use ( $tx, $actor, $tx_id, $tx_label, $committed_tokens, $staged, $op_summary ) {
+            // 1. Value-guarded delete. The row's bytes are the
+            //    guard; a row that moved between the re-read and
+            //    now returns 0 rows affected and the operator
+            //    sees the refusal. The success-path audit is
+            //    written OUTSIDE the guard (after this closure
+            //    returns success) so the InnoDB ROLLBACK on a
+            //    cas_delete failure cannot undo the audit row.
+            //    The refusal-path audit at lines 857-865 is
+            //    already outside the guard and stays.
             if ( ! self::cas_delete( $tx ) ) {
                 throw new \InvalidArgumentException(
                     'Transaction ' . $tx_id . ' changed while it was being committed, so nothing was applied. '
-                    . 'The audit log records the attempt; read agentshell_get_transaction and retry.'
+                    . 'Read agentshell_get_transaction and retry.'
                 );
             }
 
-            // 3. Apply the config. The filter now sees no open
+            // 2. Apply the config. The filter now sees no open
             //    transaction and writes through, recording the
             //    history with the transaction label rather than
             //    re-staging into a new transaction.
@@ -933,6 +924,22 @@ class Transaction_Manager {
                 'changed_tokens' => $committed_tokens,
             );
         } );
+
+        // Success-path audit, outside the guard. A cas_delete
+        // failure throws above and we never reach this line, so
+        // the audit row records a real commit, not an attempt.
+        if ( is_array( $result ) && ! empty( $result['committed'] ) ) {
+            Store::record_event(
+                $actor,
+                $audit_operation,
+                array(
+                    'transaction_id' => $tx_id,
+                    'label'          => $tx_label,
+                    'changed_tokens' => $committed_tokens,
+                    'ops'            => $op_summary,
+                )
+            );
+        }
 
         return $result;
     }
@@ -1114,7 +1121,31 @@ class Transaction_Manager {
         $tx_label         = (string) $tx['label'];
         $had_staged       = is_array( $tx['staged'] );
 
-        $result = Content_Write_Guard::run( function () use ( $tx, $actor, $tx_id, $tx_label, $had_staged, $op_summary, $audit_operation ) {
+        $result = Content_Write_Guard::run( function () use ( $tx, $actor, $tx_id, $tx_label, $had_staged, $op_summary ) {
+            // The cas_delete is the only SQL write inside the
+            // guard. The success-path audit is written OUTSIDE
+            // the guard so the InnoDB ROLLBACK on a cas_delete
+            // failure cannot undo it. The refusal-path audit
+            // for the row-moved case is below (line 1095-1105),
+            // outside the guard.
+            if ( ! self::cas_delete( $tx ) ) {
+                throw new \InvalidArgumentException(
+                    'Transaction ' . $tx_id . ' changed while it was being rolled back, so it was not closed. '
+                    . 'Read agentshell_get_transaction and retry.'
+                );
+            }
+            return array(
+                'id'        => $tx_id,
+                'label'     => $tx_label,
+                'rolled_back' => true,
+                'discarded_staged_changes' => $had_staged,
+            );
+        } );
+
+        // Success-path audit, outside the guard. A cas_delete
+        // failure throws above and we never reach this line, so
+        // the audit row records a real rollback, not an attempt.
+        if ( is_array( $result ) && ! empty( $result['rolled_back'] ) ) {
             Store::record_event(
                 $actor,
                 $audit_operation,
@@ -1125,19 +1156,7 @@ class Transaction_Manager {
                     'ops'            => $op_summary,
                 )
             );
-            if ( ! self::cas_delete( $tx ) ) {
-                throw new \InvalidArgumentException(
-                    'Transaction ' . $tx_id . ' changed while it was being rolled back, so it was not closed. '
-                    . 'The audit log records the attempt; read agentshell_get_transaction and retry.'
-                );
-            }
-            return array(
-                'id'        => $tx_id,
-                'label'     => $tx_label,
-                'rolled_back' => true,
-                'discarded_staged_changes' => $had_staged,
-            );
-        } );
+        }
 
         return $result;
     }
