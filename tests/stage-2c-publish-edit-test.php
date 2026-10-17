@@ -1429,7 +1429,7 @@ s2cs_drop_transaction();
 // 11.6: a crashed staged-rollback compensation (pre_state was
 //       staged) is resumed and settled to compensated.
 s2cs_reset_state();
-$tx = Tx::instance()->begin( 'agent-1', 'R-2 staged test' );
+$tx = s2cs_begin_tx( 'agent-1', 'R-2 staged test' );
 s2cs_seed_original( 11002, 'Original Title', 'Original content.', '', 'orig-11002' );
 $op = s2cs_stage_edit_published( 11002, 16002, array( 'post_title' => 'Staged Title' ) );
 s2cs_seed_shadow( 16002, 11002, $op['id'], array( 'post_title' => 'Staged Title' ) );
@@ -1471,6 +1471,142 @@ $disk_op_resume2 = $row_after_resume2['content']['ops'][ $op['id'] ] ?? null;
 s2cs_check( '11.8 op on disk is in compensated after resume', is_array( $disk_op_resume2 ) && ( $disk_op_resume2['state'] ?? '' ) === Content_Journal::STATE_COMPENSATED );
 s2cs_check( '11.9 shadow deleted by resume', ! isset( $GLOBALS['_agentshell_test_posts'][ 16002 ] ) );
 s2cs_check( '11.10 claim released by resume', null === Published_Claim::read( 11002 ) );
+
+s2cs_drop_transaction();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §12 — R-3: pre-publish claim release classifies successor / anomalous
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// M5-audit defect R-3 (LOW). The pre-publish claim release in
+// compensate_edit_published_staged() read the claim outside
+// the Content_Write_Guard::run() closure and used the read
+// bytes as the cas_delete expected value. A narrow TOCTOU
+// window let a successor tx acquire the claim between the
+// read and the cas_delete, and the cas would silently
+// delete the successor's claim. The R-3 fix re-reads the
+// claim INSIDE the guard, classifies the outcome into
+// absent / successor / anomalous, and refuses the
+// compensation on successor or anomalous.
+
+echo "\n--- §12 R-3: pre-publish claim release is classification-safe ---\n";
+
+// 12.1: the common-case pre-publish rollback (the claim
+//       was ours, the cas_delete released it) still
+//       succeeds and settles to compensated.
+s2cs_reset_state();
+$tx = s2cs_begin_tx( 'agent-1', 'R-3 common-case' );
+s2cs_seed_original( 12001, 'Original Title', 'Original content.', '', 'orig-12001' );
+$op = s2cs_stage_edit_published( 12001, 17001, array( 'post_title' => 'Staged Title' ) );
+s2cs_seed_shadow( 17001, 12001, $op['id'], array( 'post_title' => 'Staged Title' ) );
+
+// Force the op into STATE_COMPENSATING with pre_state=staged
+// to drive the staged-rollback path.
+$now = S2C_T0 + 5;
+$recovery_actor = (string) \AgentShell_MCP\Store::actor();
+s2cs_update_op( $op['id'], function ( $op_row ) use ( $now, $recovery_actor ) {
+    $op_row['state'] = Content_Journal::STATE_COMPENSATING;
+    $op_row['claim'] = array(
+        'actor'     => $recovery_actor,
+        'at'        => $now,
+        'pre_state' => Content_Journal::STATE_STAGED,
+    );
+    return $op_row;
+} );
+
+$res = \AgentShell_MCP\Content_Recovery::recover( Tx::instance()->payload(), \AgentShell_MCP\Store::actor(), false, true, true );
+$res_outcome = '';
+foreach ( (array) ( $res['operations'] ?? array() ) as $r ) {
+    if ( isset( $r['id'] ) && $r['id'] === $op['id'] ) {
+        $res_outcome = (string) ( $r['outcome'] ?? '' );
+        break;
+    }
+}
+s2cs_check( '12.1 common-case staged-rollback settles to compensated', $res_outcome === 'compensated', 'outcome=' . $res_outcome );
+s2cs_check( '12.2 claim released (absent)', null === Published_Claim::read( 12001 ) );
+s2cs_check( '12.3 shadow deleted by staged-rollback', ! isset( $GLOBALS['_agentshell_test_posts'][ 17001 ] ) );
+
+s2cs_drop_transaction();
+
+// 12.4: TOCTOU — a successor tx has acquired the claim
+//       between the read and the cas_delete. The
+//       compensation must refuse as conflict and the
+//       successor's claim must be preserved.
+//
+// We simulate the TOCTOU by setting up the op in
+// STATE_COMPENSATING with a pre_state=staged AND a
+// successor's claim already in place (the cas_delete
+// will not match our pre_state tx's bytes because the
+// row carries the successor's bytes).
+s2cs_reset_state();
+$tx = s2cs_begin_tx( 'agent-1', 'R-3 TOCTOU' );
+s2cs_seed_original( 12002, 'Original Title', 'Original content.', '', 'orig-12002' );
+$op = s2cs_stage_edit_published( 12002, 17002, array( 'post_title' => 'Staged Title' ) );
+s2cs_seed_shadow( 17002, 12002, $op['id'], array( 'post_title' => 'Staged Title' ) );
+
+// Replace the test tx's claim with a successor's claim.
+$pres = Published_Claim::read( 12002 );
+if ( is_array( $pres ) ) {
+    Published_Claim::release( 12002, $pres );
+}
+$successor_claim = Published_Claim::shape(
+    'tx_successor_9999',
+    12002,
+    17002,
+    'successor-agent',
+    S2C_T0,
+    S2C_T0,
+    Published_Claim::TTL_SECONDS
+);
+Published_Claim::create( 12002, $successor_claim );
+
+// Drive the op into STATE_COMPENSATING (the claim step
+// has run in a prior recovery and crashed before the
+// staged-rollback). pre_state=staged routes to the
+// staged-rollback path.
+$now = S2C_T0 + 5;
+$recovery_actor = (string) \AgentShell_MCP\Store::actor();
+s2cs_update_op( $op['id'], function ( $op_row ) use ( $now, $recovery_actor ) {
+    $op_row['state'] = Content_Journal::STATE_COMPENSATING;
+    $op_row['claim'] = array(
+        'actor'     => $recovery_actor,
+        'at'        => $now,
+        'pre_state' => Content_Journal::STATE_STAGED,
+    );
+    return $op_row;
+} );
+
+$res2 = \AgentShell_MCP\Content_Recovery::recover( Tx::instance()->payload(), \AgentShell_MCP\Store::actor(), false, true, true );
+$res2_outcome = '';
+$res2_detail  = '';
+foreach ( (array) ( $res2['operations'] ?? array() ) as $r ) {
+    if ( isset( $r['id'] ) && $r['id'] === $op['id'] ) {
+        $res2_outcome = (string) ( $r['outcome'] ?? '' );
+        $res2_detail  = (string) ( $r['detail']  ?? '' );
+        break;
+    }
+}
+s2cs_check( '12.4 TOCTOU refuses as conflict', $res2_outcome === 'conflict', 'outcome=' . $res2_outcome );
+s2cs_check( '12.5 detail names the classification', strpos( $res2_detail, 'successor' ) !== false || strpos( $res2_detail, 'anomalous' ) !== false, 'detail=' . substr( $res2_detail, 0, 80 ) );
+
+// Critical: the successor's claim MUST be preserved. The
+// R-3 fix never deletes a row whose bytes differ from
+// the read; the cas_delete only matches the read bytes.
+$survivor = Published_Claim::read( 12002 );
+s2cs_check( '12.6 successor claim is preserved (NOT deleted by our cas)', is_array( $survivor ) && (string) ( $survivor['tx_id'] ?? '' ) === 'tx_successor_9999', 'survivor=' . ( is_array( $survivor ) ? (string) ( $survivor['tx_id'] ?? '' ) : 'null' ) );
+
+// The op should be in conflict (refused) so a recovery_administrator
+// can resolve the divergence.
+$row_after = (array) get_option( Tx::KEY, null );
+$disk_op_after = $row_after['content']['ops'][ $op['id'] ] ?? null;
+s2cs_check( '12.7 op on disk is in conflict after refusal', is_array( $disk_op_after ) && ( $disk_op_after['state'] ?? '' ) === Content_Journal::STATE_CONFLICT );
+
+// The shadow delete already happened (it ran before the
+// claim release; the conflict was raised at the claim
+// release step). The destructive step in the pre-publish
+// rollback is the shadow delete; the claim-release
+// refusal does not undo the shadow delete.
+s2cs_check( '12.8 shadow was deleted (the destructive step before the refusal)', ! isset( $GLOBALS['_agentshell_test_posts'][ 17002 ] ) );
 
 s2cs_drop_transaction();
 

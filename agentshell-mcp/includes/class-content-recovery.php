@@ -1641,27 +1641,173 @@ class Content_Recovery {
         //    uses for the post-COMMIT path. The per-step status
         //    marker is recorded in the op's `comp` so a retry
         //    that sees a half-released claim can resume.
-        $claim = \AgentShell_MCP\Published_Claim::read( $original_id );
-        if ( null !== $claim ) {
-            $expected = maybe_serialize( $claim );
-            $released = \AgentShell_MCP\Content_Write_Guard::run( function () use ( $claim, $expected, $original_id ) {
+        //
+        // M5-audit defect R-3 (LOW). The pre-fix code read the
+        // claim outside the guard and used the read bytes as
+        // the cas_delete expected value. A narrow TOCTOU
+        // window lets a successor tx acquire the claim
+        // between the read and the cas_delete, and the cas
+        // would then match the successor's bytes — silently
+        // deleting the successor's claim. The post-publish
+        // path (class-publish-edit.php) classifies the
+        // outcome into absent / successor / anomalous. The
+        // pre-publish path now uses the same pattern, with
+        // a `tx_id` cross-check that the post-publish path
+        // does not have (the recovery knows the tx_id it is
+        // recovering for, so it can refuse any row whose
+        // tx_id is not its own):
+        //   a. Read the claim OUTSIDE the guard (the bytes
+        //      we own; the cas_delete expected value).
+        //   b. If the outer claim's tx_id does not match
+        //      `$tx['id']`, classify as `successor` and
+        //      refuse. The row was not ours to release.
+        //   c. Inside the guard, re-read the claim at the
+        //      SQL transaction boundary.
+        //   d. If the inside-read claim is absent, classify
+        //      absent (was released between outside-read
+        //      and inside-read; nothing to delete).
+        //   e. If the inside-read claim equals the
+        //      outside-read claim, run the cas_delete
+        //      using the outside-read bytes (the bytes
+        //      we own). Classify the post-cas state.
+        //   f. If the inside-read claim differs from the
+        //      outside-read claim, classify successor
+        //      (a different tx has acquired the claim).
+        //      Refuse; never delete the successor's claim.
+        $recovery_tx_id = (string) ( $tx['id'] ?? '' );
+        $outer_claim = \AgentShell_MCP\Published_Claim::read( $original_id );
+        if ( null === $outer_claim ) {
+            $claim_outcome = array( 'class' => 'absent', 'row' => null );
+        } elseif ( '' !== $recovery_tx_id && (string) ( $outer_claim['tx_id'] ?? '' ) !== $recovery_tx_id ) {
+            // The row on disk belongs to a different tx.
+            // We have no authority to release it. The
+            // cas_delete would match the row's bytes and
+            // delete the successor's claim — the exact
+            // failure mode R-3 fixes. Refuse.
+            $claim_outcome = array(
+                'class'    => 'successor',
+                'row'      => $outer_claim,
+                'outer'    => $outer_claim,
+                'no_inner' => true,
+            );
+        } else {
+            $outer_bytes = maybe_serialize( $outer_claim );
+            $claim_outcome = \AgentShell_MCP\Content_Write_Guard::run( function () use ( $original_id, $outer_claim, $outer_bytes ) {
                 global $wpdb;
                 $key = \AgentShell_MCP\Published_Claim::key( $original_id );
+                // Re-read inside the guard. This is the source of
+                // truth for "is the row the same as the bytes
+                // we will cas_delete on?".
+                $inner_claim = \AgentShell_MCP\Published_Claim::read( $original_id );
+                if ( null === $inner_claim ) {
+                    return array(
+                        'class' => 'absent',
+                        'row'   => null,
+                    );
+                }
+                $inner_bytes = maybe_serialize( $inner_claim );
+                if ( $inner_bytes !== $outer_bytes ) {
+                    // The row was replaced between the outside-read
+                    // and the inside-read. A successor tx has
+                    // acquired the claim. Never delete the new
+                    // bytes — the cas_delete would match them.
+                    return array(
+                        'class'    => 'successor',
+                        'row'      => $inner_claim,
+                        'outer'    => $outer_claim,
+                    );
+                }
+                // The row matches our bytes. Run the cas_delete
+                // on those bytes. The cas WILL match because the
+                // row is unchanged.
                 if ( isset( $wpdb ) && is_object( $wpdb ) && ! empty( $wpdb->options ) ) {
                     $wpdb->query( $wpdb->prepare(
                         "DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
-                        $key, $expected
+                        $key, $outer_bytes
                     ) );
                 }
                 if ( function_exists( 'wp_cache_delete' ) ) {
                     wp_cache_delete( $key, 'options' );
                 }
-                // Return true so the guard commits. The cas DELETE
-                // above is the success signal; returning null/false
-                // would trip `is_failure` and roll the transaction
-                // back, leaving the claim in place.
-                return true;
+                // Re-read post-cas. Direct SQL (not get_option)
+                // because the cache invalidation does not reach
+                // persistent caches that hold a stale value.
+                $blob = null;
+                if ( isset( $wpdb ) && is_object( $wpdb ) && ! empty( $wpdb->options ) ) {
+                    $blob = $wpdb->get_var( $wpdb->prepare(
+                        "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
+                        $key
+                    ) );
+                }
+                if ( null === $blob ) {
+                    return array(
+                        'class' => 'absent',
+                        'row'   => null,
+                    );
+                }
+                $row = is_string( $blob ) ? maybe_unserialize( $blob ) : null;
+                if ( ! is_array( $row ) ) {
+                    return array(
+                        'class' => 'anomalous',
+                        'row'   => null,
+                    );
+                }
+                if ( \AgentShell_MCP\Published_Claim::rows_equal( $row, $outer_claim ) ) {
+                    // Row still present with our bytes — the
+                    // cas should have matched; the only way it
+                    // did not is a row identity change we did
+                    // not write.
+                    return array(
+                        'class' => 'anomalous',
+                        'row'   => $row,
+                    );
+                }
+                return array(
+                    'class' => 'successor',
+                    'row'   => $row,
+                );
             } );
+        }
+
+        // Anomalous or successor outcomes refuse the
+        // compensation as conflict. The op stays in
+        // STATE_COMPENSATING and the next recovery (or a
+        // recovery_administrator) can resolve the divergence.
+        if ( is_array( $claim_outcome ) && in_array( $claim_outcome['class'], array( 'anomalous', 'successor' ), true ) ) {
+            $op_name = 'successor' === $claim_outcome['class']
+                ? 'transaction_claim_released_successor_took_over_pre_publish'
+                : 'transaction_claim_release_anomaly';
+            \AgentShell_MCP\Store::record_event(
+                (string) $current_actor,
+                $op_name,
+                array(
+                    'transaction_id'   => (string) ( $tx['id'] ?? '' ),
+                    'op_id'            => (string) $op_id_str,
+                    'original_id'      => (int) $original_id,
+                    'shadow_id'        => (int) $shadow_id,
+                    'classification'   => (string) $claim_outcome['class'],
+                    'successor_tx'     => (string) ( $claim_outcome['row']['tx_id'] ?? '' ),
+                    'successor_actor'  => (string) ( $claim_outcome['row']['actor'] ?? '' ),
+                    'note'             => 'pre-publication rollback refused; the claim was '
+                        . ( 'successor' === $claim_outcome['class']
+                            ? 'replaced by a successor tx between the read and the cas_delete. '
+                            : 'still present after the cas_delete — the row identity changed. ' )
+                        . 'The shadow was deleted; the claim is preserved for the next recovery.',
+                )
+            );
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' pre-publication rollback: '
+                    . 'the claim release classified as "' . $claim_outcome['class']
+                    . '" — the cas_delete did not match the expected row bytes '
+                    . ( 'successor' === $claim_outcome['class']
+                        ? '(a successor tx has acquired the claim). The shadow was deleted; '
+                        . 'the successor\'s claim is preserved.'
+                        : '(the row identity changed since the read). The shadow was deleted; '
+                        . 'the claim is preserved for the next recovery.' )
+                    . ' A recovery_administrator must resolve the divergence.',
+            );
         }
 
         // The pre-publication rollback is complete. The op
