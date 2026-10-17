@@ -882,28 +882,6 @@ function agentshell_cleanup_wp_head() {
 }
 add_action( 'init', 'agentshell_cleanup_wp_head', 100 );
 
-// Output buffer to strip persistent inline styles that bypass deregister.
-// By wp_head (priority 99999), template rendering is complete so there should
-// be exactly one buffer (ours). We use ob_end_flush to close it properly
-// instead of ob_get_clean which only retrieves content without closing.
-function agentshell_ob_strip_inline_styles() {
-    if ( is_admin() || did_action( 'wp_head' ) ) {
-        return;
-    }
-    ob_start();
-}
-add_action( 'wp', 'agentshell_ob_strip_inline_styles', 1 );
-
-function agentshell_ob_flush() {
-    if ( ob_get_level() ) {
-        $html = ob_get_clean();
-        $html = preg_replace( '/<style id=["\']wp-img-auto-sizes[^>]*>.*?<\/style>\s*/is', '', $html );
-        echo $html;
-    }
-}
-add_action( 'wp_head', 'agentshell_ob_flush', 99999 );
-
-
 /**
  * @deprecated v2.0 — sidebar removed. Keeping stub to prevent fatals on upgrade.
  */
