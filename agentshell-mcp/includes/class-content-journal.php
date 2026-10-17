@@ -361,8 +361,18 @@ class Content_Journal {
      * somebody still has to decide what to do about the post that diverged, and
      * discarding the journal to free the transaction slot would destroy the
      * record of that decision being needed. So only `compensated` frees the row.
+     *
+     * For OP_EDIT_PUBLISHED, the terminal state is `publication_settled`
+     * (the publication committed and all three reconciliation steps
+     * verified), not `compensated` — there is no post to delete, only
+     * a shadow that should already be gone. Including it here makes
+     * the close-gate logic treat a settled edit as settled, the same
+     * way it treats a compensated create op.
      */
-    const SETTLED_STATES = array( self::STATE_COMPENSATED );
+    const SETTLED_STATES = array(
+        self::STATE_COMPENSATED,
+        self::STATE_PUBLICATION_SETTLED,
+    );
 
     /**
      * Post meta that ties a post to the journal operation that created it.
@@ -606,6 +616,27 @@ class Content_Journal {
             self::STATE_CONFLICT,
             self::STATE_PARTIAL_APPLIED,
             self::STATE_CLAIMED,
+            // OP_EDIT_PUBLISHED in flight: the shadow holds the
+            // staged values, the claim holds the original; the
+            // op is "in progress" the way STATE_INTENDED is for
+            // a create or update. Closing the transaction
+            // without processing it would leave the shadow and
+            // the claim with no owner.
+            self::STATE_STAGED,
+            // OP_EDIT_PUBLISHED with the publication committed
+            // but the reconciliation tail unfinished. The
+            // original carries the staged fields; the shadow
+            // and claim remain. Closing the transaction
+            // without processing it would leave the
+            // reconciliation owed forever (or until a recovery
+            // finds the journal, which is its own race).
+            self::STATE_PUBLICATION_COMMITTED,
+            self::STATE_RECONCILIATION_PENDING,
+            // The transaction's lease has expired. The
+            // recovery engine owns the op; closing the
+            // transaction row without settling it would lose
+            // the reference to the original.
+            self::STATE_ABANDONED,
         );
         foreach ( $content[ self::OPS_KEY ] as $op ) {
             if ( ! is_array( $op ) || ! isset( $op['state'] ) ) {
@@ -639,6 +670,17 @@ class Content_Journal {
             self::STATE_CONFLICT,
             self::STATE_PARTIAL_APPLIED,
             self::STATE_CLAIMED,
+            // OP_EDIT_PUBLISHED live states — see
+            // has_unsettled_work() for the rationale. The
+            // rollback gate's auto-recovery path needs to
+            // process these so a transaction that holds an
+            // OP_EDIT_PUBLISHED op is not left with the
+            // shadow and the claim dangling when the
+            // operator rolls back.
+            self::STATE_STAGED,
+            self::STATE_PUBLICATION_COMMITTED,
+            self::STATE_RECONCILIATION_PENDING,
+            self::STATE_ABANDONED,
         );
         foreach ( $content[ self::OPS_KEY ] as $op ) {
             if ( ! is_array( $op ) || ! isset( $op['state'] ) ) {
@@ -801,6 +843,15 @@ class Content_Journal {
         }
         $now = ( null === $now ) ? Transaction_Manager::lease_now() : (int) $now;
         $id  = self::new_op_id();
+        // The baseline A captures every field the publish-edit
+        // tool's post-write allowlist can reclassify as a
+        // supported-, protected-preserved-, or housekeeping-field
+        // divergence. Capturing the protected-preserved fields
+        // here is what makes the post-write check able to refuse
+        // a hook-induced change to a field the publish-edit
+        // tool did not write to: without the baseline value,
+        // expected_c() falls back to the post-write value and
+        // the divergence is invisible.
         $baseline = array(
             'post_type'            => (string) $post->post_type,
             'post_status'          => (string) $post->post_status,
@@ -808,8 +859,21 @@ class Content_Journal {
             'post_content'         => (string) $post->post_content,
             'post_excerpt'         => (string) $post->post_excerpt,
             'post_name'            => (string) $post->post_name,
+            'post_date'            => (string) $post->post_date,
             'post_date_gmt'        => (string) $post->post_date_gmt,
             'post_modified_gmt'    => (string) $post->post_modified_gmt,
+            'post_author'          => (string) ( isset( $post->post_author ) ? (int) $post->post_author : 0 ),
+            'post_parent'          => (string) ( isset( $post->post_parent ) ? (int) $post->post_parent : 0 ),
+            'post_mime_type'       => (string) ( $post->post_mime_type ?? '' ),
+            'comment_status'       => (string) ( $post->comment_status ?? '' ),
+            'ping_status'          => (string) ( $post->ping_status ?? '' ),
+            'menu_order'           => (string) ( isset( $post->menu_order ) ? (int) $post->menu_order : 0 ),
+            'post_password'        => (string) ( $post->post_password ?? '' ),
+            'post_content_filtered'=> (string) ( $post->post_content_filtered ?? '' ),
+            'comment_count'        => (string) ( isset( $post->comment_count ) ? (int) $post->comment_count : 0 ),
+            'to_ping'              => (string) ( $post->to_ping ?? '' ),
+            'pinged'               => (string) ( $post->pinged ?? '' ),
+            'guid'                 => (string) ( $post->guid ?? '' ),
             'post_content_sha256'  => hash( 'sha256', (string) $post->post_content ),
             'post_content_length'  => strlen( (string) $post->post_content ),
             'op_meta_value'        => $id,
@@ -840,6 +904,17 @@ class Content_Journal {
      * The write is what makes the journal durable, so this is the function the
      * "durable before it depends on it" rule is enforced in: it returns true
      * only when the row on disk is the row it just built.
+     *
+     * Documented boundary (S-5, Stage 2c M5 audit): the CAS write in this
+     * method does NOT consult `self::verify()`. The integrity gate is
+     * downstream at the destructive boundary
+     * (`class-content-recovery.php::compensate()`'s `verify_post` call),
+     * not at every CAS. This is the layered-gating contract: CAS provides
+     * atomicity, verify provides integrity at destruction. Verifying on
+     * every read would make the journal a single point of contention and
+     * would force every tool call to validate the whole `content` blob.
+     * The destructive engine reads, verifies, and acts — the read path
+     * reads and trusts, because the read path cannot destroy.
      *
      * @return bool False when the row moved underneath the caller, or the
      *         write failed. The caller must treat that as "nothing was
@@ -1330,6 +1405,13 @@ class Content_Journal {
             self::STATE_PUBLICATION_COMMITTED,
             self::STATE_RECONCILIATION_PENDING,
             self::STATE_PUBLICATION_SETTLED,
+            // STATE_COMPENSATING is set by the claim step and is
+            // valid on disk if a prior recovery crashed
+            // mid-compensation. The recovery engine reads
+            // `claim.pre_state` to resume the correct compensation
+            // (M5-audit R-2 fix). The validator permits it so the
+            // recovery does not refuse the journal as "unreadable".
+            self::STATE_COMPENSATING,
             self::STATE_COMPENSATED,
             self::STATE_CONFLICT,
             self::STATE_ABANDONED,

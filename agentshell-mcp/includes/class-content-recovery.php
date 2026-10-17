@@ -406,9 +406,19 @@ class Content_Recovery {
         // Already terminal: a repeat recovery says so and touches nothing.
         // This is what makes recovery repeatable, and it is why the "already
         // compensated" case needs no special handling anywhere above.
-        if ( Content_Journal::STATE_COMPENSATED === $op['state'] ) {
+        // STATE_PUBLICATION_SETTLED is a terminal outcome of the
+        // reconciliation tail (the publication is durable; the shadow
+        // and the claim were released in a prior recovery). Without
+        // this short-circuit, a repeat recovery falls through to
+        // claim_or_refresh, writes `state: compensating`, and the
+        // STATUS_PARTIAL branch at line ~308 keeps the transaction
+        // row indefinitely, repeatedly corrupting the same op.
+        if ( Content_Journal::STATE_COMPENSATED === $op['state']
+            || Content_Journal::STATE_PUBLICATION_SETTLED === $op['state'] ) {
             $base['outcome'] = 'already_settled';
-            $base['detail']  = 'already compensated — nothing done';
+            $base['detail']  = Content_Journal::STATE_PUBLICATION_SETTLED === $op['state']
+                ? 'already settled (publication_settled) — nothing done'
+                : 'already compensated — nothing done';
             return array( 'tx' => $tx, 'report' => $base, 'conflict' => null, 'status' => self::STATUS_RECOVERED );
         }
 
@@ -459,9 +469,21 @@ class Content_Recovery {
         if ( 'refreshed' === $claim_result ) {
             // Refresh: the claim was ours, the `at` is now. Write the refreshed
             // claim with the same CAS so a concurrent swap (e.g. takeover
-            // between settle calls) cannot be silently overridden.
+            // between settle calls) cannot be silently overridden. The
+            // `pre_state` recorded at the original claim time is preserved
+            // — it is the canonical signal for the compensation's dispatch
+            // (R-2 fix: STATE_COMPENSATING on re-entry has no other source
+            // of "what was this op's pre-claim state").
+            $existing_claim          = is_array( $op['claim'] ?? null ) ? $op['claim'] : array();
+            $existing_pre_state      = (string) ( $existing_claim['pre_state'] ?? '' );
             $claimed_content                       = $content;
-            $claimed_content['ops'][ $op_id ]['claim']       = array( 'actor' => $actor, 'at' => $now );
+            $claimed_content['ops'][ $op_id ]['claim']       = array(
+                'actor'     => $actor,
+                'at'        => $now,
+                'pre_state' => '' !== $existing_pre_state
+                    ? $existing_pre_state
+                    : (string) ( $op['state'] ?? '' ),
+            );
             $claimed_content['ops'][ $op_id ]['updated_at'] = $now;
             $claimed_content['sig']                = Content_Journal::sign( $claimed_content );
             $claimed                 = $tx;
@@ -473,9 +495,17 @@ class Content_Recovery {
                 ) ) );
             }
         } else {
+            // Fresh claim: capture the pre-claim state in `claim.pre_state`
+            // so a crashed compensation (which leaves the op in
+            // STATE_COMPENSATING) can be resumed on the next recovery.
+            $pre_claim_state         = (string) ( $op['state'] ?? '' );
             $claimed_content                       = $content;
             $claimed_content['ops'][ $op_id ]['state']       = Content_Journal::STATE_COMPENSATING;
-            $claimed_content['ops'][ $op_id ]['claim']       = array( 'actor' => $actor, 'at' => $now );
+            $claimed_content['ops'][ $op_id ]['claim']       = array(
+                'actor'     => $actor,
+                'at'        => $now,
+                'pre_state' => $pre_claim_state,
+            );
             $claimed_content['ops'][ $op_id ]['updated_at'] = $now;
             $claimed_content['sig']                = Content_Journal::sign( $claimed_content );
 
@@ -492,7 +522,14 @@ class Content_Recovery {
 
         // ── the compensation itself ──────────────────────────────────────
         $claimed_op      = $claimed_content['ops'][ $op_id ];
-        $result          = self::compensate( $claimed_op, $claimed, $actor, $explicitly_authorized );
+        // The op was transitioned to `compensating` by the claim
+        // step. The compensation contract dispatches on the
+        // pre-claim state (staged / publication_committed / etc.),
+        // so capture it before passing the op down. The
+        // compensation contract sees the original state, the
+        // outcome still transitions via the per-state branches
+        // below.
+        $result          = self::compensate( $claimed_op, $claimed, $actor, $explicitly_authorized, $op );
         $base['outcome'] = $result['outcome'];
         $base['detail']  = $result['reason'];
 
@@ -519,6 +556,17 @@ class Content_Recovery {
         if ( 'compensated' === $result['outcome'] ) {
             $done_content['ops'][ $op_id ]['state'] = Content_Journal::STATE_COMPENSATED;
             $base['deleted_post_id'] = (int) $result['post_id'];
+        } elseif ( 'reconciled' === $result['outcome'] ) {
+            // OP_EDIT_PUBLISHED reconciliation tail verified.
+            // The publication committed and the three
+            // reconciliation steps landed; the op is fully
+            // settled, just not by way of compensation. The
+            // audit row recorded below uses the
+            // `transaction_published_reconciled` event so a
+            // post-hoc audit log shows the recovery path
+            // distinctly from the publish-time path.
+            $done_content['ops'][ $op_id ]['state'] = Content_Journal::STATE_PUBLICATION_SETTLED;
+            $base['deleted_post_id'] = 0;
         } elseif ( 'conflict' === $result['outcome'] ) {
             $done_content['ops'][ $op_id ]['state'] = Content_Journal::STATE_CONFLICT;
             $done_content['ops'][ $op_id ]['notes'][] = $result['reason'];
@@ -531,6 +579,48 @@ class Content_Recovery {
             $done_content['ops'][ $op_id ]['notes'][] = $result['reason'];
         }
         $done_content['sig'] = Content_Journal::sign( $done_content );
+
+        // The compensation contract (e.g. `run_reconciliation`)
+        // may have issued its own CAS writes against the
+        // journal row. Refresh `$claimed` from disk so the final
+        // settle CAS uses the current on-disk row as the
+        // expected value, not the pre-compensation snapshot.
+        $refreshed = Transaction_Manager::instance()->payload();
+        if ( ! is_array( $refreshed ) ) {
+            return self::contended( array_merge( $base, array(
+                'outcome' => 'lost_race',
+                'detail'  => $base['detail'] . ' — but the journal row could not be re-read after compensation',
+            ) ), $conflict );
+        }
+        $claimed = $refreshed;
+        // The re-read row may already reflect this op's terminal
+        // state (e.g. `run_reconciliation` set
+        // `publication_settled` for all three steps). If so, the
+        // outcome is recorded but the transition is a no-op.
+        $already_terminal = isset( $claimed['content']['ops'][ $op_id ]['state'] )
+            && in_array( $claimed['content']['ops'][ $op_id ]['state'], array(
+                Content_Journal::STATE_PUBLICATION_SETTLED,
+                Content_Journal::STATE_COMPENSATED,
+            ), true );
+
+        if ( $already_terminal ) {
+            // Already at the terminal state on disk. Skip the
+            // write; report the outcome as recorded.
+            if ( 'reconciled' === $result['outcome'] ) {
+                Store::record_event( $actor, 'transaction_recovery_reconciled', array(
+                    'transaction_id' => $report['transaction_id'],
+                    'operation'      => $op_id,
+                    'operation_type' => (string) $claimed_op['op'],
+                    'post_id'        => (int) $result['post_id'],
+                ) );
+            }
+            return array(
+                'tx'      => $claimed,
+                'report'  => $base,
+                'conflict'=> $conflict,
+                'status'  => self::STATUS_RECOVERED,
+            );
+        }
 
         $done                 = $claimed;
         $done[ Content_Journal::CONTENT_KEY ] = $done_content;
@@ -549,6 +639,20 @@ class Content_Recovery {
                 'operation_type' => (string) $claimed_op['op'],
                 'post_id'        => (int) $result['post_id'],
                 'post_type'      => (string) ( $claimed_op['target']['post_type'] ?? '' ),
+            ) );
+        }
+
+        if ( 'reconciled' === $result['outcome'] ) {
+            // OP_EDIT_PUBLISHED reconciliation tail verified via
+            // the recovery engine. The audit row uses a distinct
+            // event so post-hoc analysis can tell the recovery
+            // path from the publish-time path (the publish-time
+            // path records `transaction_published_reconciled`).
+            Store::record_event( $actor, 'transaction_recovery_reconciled', array(
+                'transaction_id' => $report['transaction_id'],
+                'operation'      => $op_id,
+                'operation_type' => (string) $claimed_op['op'],
+                'post_id'        => (int) $result['post_id'],
             ) );
         }
 
@@ -740,7 +844,7 @@ class Content_Recovery {
      * @param bool     $explicitly_authorized  Pass-through of the
      *                                 tool-boundary opt-in.
      */
-    private static function compensate( array $op, array $tx, $current_actor = '', $explicitly_authorized = false ) {
+    private static function compensate( array $op, array $tx, $current_actor = '', $explicitly_authorized = false, $pre_claim_op = null ) {
         $type = (string) $op['op'];
 
         if ( Content_Journal::OP_UPDATE_DRAFT === $type ) {
@@ -749,6 +853,10 @@ class Content_Recovery {
 
         if ( Content_Journal::OP_EDIT_EXISTING_DRAFT === $type ) {
             return self::compensate_edit_existing( $op, $tx, $current_actor, $explicitly_authorized );
+        }
+
+        if ( Content_Journal::OP_EDIT_PUBLISHED === $type ) {
+            return self::compensate_edit_published( $op, $tx, $current_actor, $explicitly_authorized, $pre_claim_op );
         }
 
         if ( ! in_array( $type, Content_Journal::SUPPORTED_OPERATIONS, true ) ) {
@@ -1293,6 +1401,572 @@ class Content_Recovery {
         } finally {
             Recovery_Advisory_Lock::release( $post_id );
         }
+    }
+
+    /**
+     * Compensate an OP_EDIT_PUBLISHED op, or settle its
+     * reconciliation tail.
+     *
+     * Stage 2c Milestone 4. The compensation shape depends on
+     * the op's `state`:
+     *
+     *   - `staged` (or `abandoned` whose last live state was
+     *     `staged`): PRE-PUBLICATION ROLLBACK. The publication
+     *     has not committed. Acquire the per-tx advisory lock,
+     *     identity-validate the shadow against the op's
+     *     `target.original_id` and `target.shadow_id`, delete
+     *     the shadow, value-guarded release the claim, and
+     *     return `compensated`. The original is NOT touched
+     *     (the publication never landed). The outcome's
+     *     `post_id` is the original's id, not the shadow's —
+     *     the operator reads the original, not the shadow.
+     *
+     *   - `publication_committed` or `reconciliation_pending`:
+     *     RECONCILIATION TAIL. The publication has already
+     *     landed. Recovery cannot reverse it (the contract
+     *     says "never reverse a committed publication"). The
+     *     recovery runs the same per-step status check the
+     *     reconcile tool runs, and only the steps that have
+     *     not been verified run again. The op transitions to
+     *     `publication_settled`; the outcome is `reconciled`,
+     *     a new outcome that `settle_operation()` knows to
+     *     map to `STATE_PUBLICATION_SETTLED`.
+     *
+     *   - `publication_settled` or `compensated`: terminal.
+     *     `settle_operation()` short-circuits this before
+     *     calling compensate(), so this branch is defensive.
+     *
+     *   - `conflict`: terminal-for-recovery. The recovery
+     *     engine does not try to resolve a conflict; a
+     *     recovery_administrator must. The state is preserved.
+     *
+     * The per-tx advisory lock is acquired and released in
+     * `finally`, the same way the create-op and claim-edit
+     * compensations do. A NULL or contended `GET_LOCK`
+     * refuses as `conflict`; the shadow and the claim are
+     * preserved for the next recovery.
+     *
+     * @return array{outcome: string, post_id: int, reason: string}
+     */
+    private static function compensate_edit_published( array $op, array $tx, $current_actor = '', $explicitly_authorized = false, $pre_claim_op = null ) {
+        $op_id_str   = (string) ( $op['id'] ?? '' );
+        // The op has been transitioned to `compensating` by the
+        // claim step. Dispatch on the pre-claim state, which
+        // determines which compensation contract runs (staged →
+        // pre-publication rollback, publication_committed /
+        // reconciliation_pending → reconcile tail).
+        //
+        // M5-audit defect R-2 (HIGH). When a prior recovery
+        // crashed mid-compensation, the op is left in
+        // STATE_COMPENSATING and `$pre_claim_op['state']`
+        // reflects the crashed state — which is uninformative.
+        // The canonical pre-claim state is recorded in
+        // `claim.pre_state` by the claim step. Prefer that.
+        $claim_record = is_array( $op['claim'] ?? null ) ? $op['claim'] : array();
+        $pre_state    = (string) ( $claim_record['pre_state'] ?? '' );
+        if ( '' === $pre_state ) {
+            $pre_state = is_array( $pre_claim_op ) && isset( $pre_claim_op['state'] )
+                ? (string) $pre_claim_op['state']
+                : (string) ( $op['state'] ?? '' );
+        }
+        $state       = $pre_state;
+        $original_id = (int) ( $op['target']['original_id'] ?? 0 );
+        $shadow_id   = (int) ( $op['target']['shadow_id']   ?? 0 );
+
+        // Per-tx advisory lock. The same lock the publish and
+        // reconcile tools acquire; the lock name is keyed by
+        // the tx id so a single transaction's compensation is
+        // serialised against any other path that might touch
+        // the shadow or the claim.
+        $tx_id = (string) ( $tx['id'] ?? '' );
+        if ( '' === $tx_id ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => 'the OP_EDIT_PUBLISHED op ' . $op_id_str . ' has no transaction id on its '
+                    . 'parent row; the per-tx advisory lock cannot be derived. The shadow and the '
+                    . 'claim are preserved.',
+            );
+        }
+        if ( ! Recovery_Advisory_Lock::available() ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => 'MySQL/MariaDB named advisory locks are unavailable on this database. '
+                    . 'The OP_EDIT_PUBLISHED op ' . $op_id_str . ' cannot be safely compensated '
+                    . 'without the lock; the shadow and the claim are preserved.',
+            );
+        }
+        $acquired = false;
+        try {
+            $acquired = Recovery_Advisory_Lock::acquire( 'tx_' . $tx_id );
+        } catch ( \RuntimeException $e ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => $e->getMessage() . ' The shadow and the claim are preserved for the '
+                    . 'next recovery on an engine that supports advisory locks.',
+            );
+        }
+        if ( ! $acquired ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => 'another connection holds the per-tx advisory lock for transaction '
+                    . $tx_id . '; a publish or reconcile is in flight, or another recovery is '
+                    . 'running. The shadow and the claim are preserved.',
+            );
+        }
+
+        try {
+            // Already-settled short-circuits.
+            if ( Content_Journal::STATE_PUBLICATION_SETTLED === $state
+                || Content_Journal::STATE_COMPENSATED === $state ) {
+                return array(
+                    'outcome' => 'already_settled',
+                    'post_id' => $original_id,
+                    'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' is in terminal state "' . $state
+                        . '"; nothing to do.',
+                );
+            }
+            if ( Content_Journal::STATE_CONFLICT === $state ) {
+                return array(
+                    'outcome' => 'conflict',
+                    'post_id' => $original_id,
+                    'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' is in conflict; the '
+                        . 'recovery engine does not retry conflicts. A recovery_administrator '
+                        . 'must resolve it.',
+                );
+            }
+
+            // Staged or abandoned (whose last live state was staged):
+            // pre-publication rollback. The publication never
+            // committed; the destructive inverse is the shadow
+            // and the claim, not the original.
+            if ( Content_Journal::STATE_STAGED === $state
+                || Content_Journal::STATE_ABANDONED === $state ) {
+                return self::compensate_edit_published_staged(
+                    $op, $tx, $current_actor, $original_id, $shadow_id, $op_id_str
+                );
+            }
+
+            // Publication committed or reconciliation pending:
+            // reconciliation tail. The publication cannot be
+            // reversed; recovery runs the same per-step code
+            // the reconcile tool runs.
+            if ( Content_Journal::STATE_PUBLICATION_COMMITTED === $state
+                || Content_Journal::STATE_RECONCILIATION_PENDING === $state ) {
+                return self::compensate_edit_published_reconcile(
+                    $op, $tx, $current_actor, $original_id, $shadow_id
+                );
+            }
+
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' is in unexpected state "'
+                    . $state . '"; the recovery engine has no compensation contract for it.',
+            );
+        } finally {
+            Recovery_Advisory_Lock::release( 'tx_' . $tx_id );
+        }
+    }
+
+    /**
+     * Pre-publication rollback for an OP_EDIT_PUBLISHED op in
+     * `staged` (or `abandoned`) state. The publication has not
+     * committed; the destructive inverse is the shadow and the
+     * claim, not the original.
+     *
+     * The shadow delete is identity-validated: the pre-delete
+     * check reads the shadow's META_SHADOW_FOR and META_OP_ID
+     * and refuses to delete if either has been retargeted.
+     * The claim release is value-guarded: the cas_delete uses
+     * the row bytes that were present at the read; a row that
+     * has been replaced (by a successor staging) is not
+     * deleted.
+     */
+    private static function compensate_edit_published_staged(
+        array $op, array $tx, $current_actor, $original_id, $shadow_id, $op_id_str
+    ) {
+        // M5-audit hygiene R-4 (LOW). The pre-fix audit row
+        // and reason string said "shadow deleted, claim
+        // released" regardless of which steps actually ran.
+        // The shadow may not exist (never created or already
+        // deleted by a prior crashed recovery), the claim
+        // may not exist (already released by a prior crashed
+        // recovery), and the cas may classify the outcome
+        // as anything other than 'absent'. Track each
+        // step's actual outcome in local flags and emit a
+        // precise audit row + reason describing what
+        // actually happened.
+        $steps = array(
+            'shadow'  => 'pending',
+            'claim'   => 'pending',
+        );
+
+        // 1. Identity-validated shadow delete.
+        $shadow = get_post( $shadow_id );
+        if ( $shadow ) {
+            $shadow_for = (int) get_post_meta(
+                $shadow_id, \AgentShell_MCP\Published_Shadow::META_SHADOW_FOR, true
+            );
+            $shadow_op = (string) get_post_meta(
+                $shadow_id, \AgentShell_MCP\Published_Shadow::META_OP_ID, true
+            );
+            if ( $shadow_for !== (int) $original_id ) {
+                return array(
+                    'outcome' => 'conflict',
+                    'post_id' => $original_id,
+                    'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' has a shadow (id '
+                        . $shadow_id . ') whose META_SHADOW_FOR is ' . $shadow_for
+                        . ', not the op\'s original id ' . $original_id . '. The shadow has '
+                        . 'been retargeted; the pre-publication rollback refuses. A '
+                        . 'recovery_administrator must resolve the divergence.',
+                );
+            }
+            if ( $shadow_op !== (string) $op_id_str ) {
+                return array(
+                    'outcome' => 'conflict',
+                    'post_id' => $original_id,
+                    'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' has a shadow (id '
+                        . $shadow_id . ') whose META_OP_ID is "' . $shadow_op . '", not the '
+                        . 'op\'s id "' . $op_id_str . '". A newer authorised edit has '
+                        . 'advanced the head pointer; the pre-publication rollback refuses. '
+                        . 'A recovery_administrator must resolve the divergence.',
+                );
+            }
+            $deleted = wp_delete_post( (int) $shadow_id, true );
+            if ( false === $deleted || ( is_object( $deleted ) && method_exists( $deleted, 'get_error_code' ) ) ) {
+                $reason = is_object( $deleted ) && method_exists( $deleted, 'get_error_code' )
+                    ? (string) $deleted->get_error_code() . ' — ' . (string) $deleted->get_error_message()
+                    : 'wp_delete_post returned false';
+                return array(
+                    'outcome' => 'conflict',
+                    'post_id' => $original_id,
+                    'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' could not have its '
+                        . 'shadow (id ' . $shadow_id . ') deleted during pre-publication '
+                        . 'rollback: ' . $reason . '. The shadow and the claim are preserved '
+                        . 'for the next recovery.',
+                );
+            }
+            $steps['shadow'] = 'deleted';
+        } else {
+            // Shadow was already gone — a prior recovery may
+            // have deleted it before crashing, or it was never
+            // created. The destructive step is the no-op; the
+            // audit must say so.
+            $steps['shadow'] = 'already_gone';
+        }
+
+        // 2. Value-guarded claim release. Uses the same
+        //    cas_delete_row that Publish_Edit::run_reconciliation()
+        //    uses for the post-COMMIT path. The per-step status
+        //    marker is recorded in the op's `comp` so a retry
+        //    that sees a half-released claim can resume.
+        //
+        // M5-audit defect R-3 (LOW). The pre-fix code read the
+        // claim outside the guard and used the read bytes as
+        // the cas_delete expected value. A narrow TOCTOU
+        // window lets a successor tx acquire the claim
+        // between the read and the cas_delete, and the cas
+        // would then match the successor's bytes — silently
+        // deleting the successor's claim. The post-publish
+        // path (class-publish-edit.php) classifies the
+        // outcome into absent / successor / anomalous. The
+        // pre-publish path now uses the same pattern, with
+        // a `tx_id` cross-check that the post-publish path
+        // does not have (the recovery knows the tx_id it is
+        // recovering for, so it can refuse any row whose
+        // tx_id is not its own):
+        //   a. Read the claim OUTSIDE the guard (the bytes
+        //      we own; the cas_delete expected value).
+        //   b. If the outer claim's tx_id does not match
+        //      `$tx['id']`, classify as `successor` and
+        //      refuse. The row was not ours to release.
+        //   c. Inside the guard, re-read the claim at the
+        //      SQL transaction boundary.
+        //   d. If the inside-read claim is absent, classify
+        //      absent (was released between outside-read
+        //      and inside-read; nothing to delete).
+        //   e. If the inside-read claim equals the
+        //      outside-read claim, run the cas_delete
+        //      using the outside-read bytes (the bytes
+        //      we own). Classify the post-cas state.
+        //   f. If the inside-read claim differs from the
+        //      outside-read claim, classify successor
+        //      (a different tx has acquired the claim).
+        //      Refuse; never delete the successor's claim.
+        $recovery_tx_id = (string) ( $tx['id'] ?? '' );
+        $outer_claim = \AgentShell_MCP\Published_Claim::read( $original_id );
+        if ( null === $outer_claim ) {
+            $claim_outcome = array( 'class' => 'absent', 'row' => null, 'label' => 'already_absent' );
+            $steps['claim'] = 'already_absent';
+        } elseif ( '' !== $recovery_tx_id && (string) ( $outer_claim['tx_id'] ?? '' ) !== $recovery_tx_id ) {
+            // The row on disk belongs to a different tx.
+            // We have no authority to release it. The
+            // cas_delete would match the row's bytes and
+            // delete the successor's claim — the exact
+            // failure mode R-3 fixes. Refuse.
+            $claim_outcome = array(
+                'class'    => 'successor',
+                'row'      => $outer_claim,
+                'outer'    => $outer_claim,
+                'no_inner' => true,
+                'label'    => 'outer_claim_belongs_to_other_tx',
+            );
+        } else {
+            $outer_bytes = maybe_serialize( $outer_claim );
+            $claim_outcome = \AgentShell_MCP\Content_Write_Guard::run( function () use ( $original_id, $outer_claim, $outer_bytes ) {
+                global $wpdb;
+                $key = \AgentShell_MCP\Published_Claim::key( $original_id );
+                // Re-read inside the guard. This is the source of
+                // truth for "is the row the same as the bytes
+                // we will cas_delete on?".
+                $inner_claim = \AgentShell_MCP\Published_Claim::read( $original_id );
+                if ( null === $inner_claim ) {
+                    return array(
+                        'class' => 'absent',
+                        'row'   => null,
+                        'label' => 'released_between_reads',
+                    );
+                }
+                $inner_bytes = maybe_serialize( $inner_claim );
+                if ( $inner_bytes !== $outer_bytes ) {
+                    // The row was replaced between the outside-read
+                    // and the inside-read. A successor tx has
+                    // acquired the claim. Never delete the new
+                    // bytes — the cas_delete would match them.
+                    return array(
+                        'class'    => 'successor',
+                        'row'      => $inner_claim,
+                        'outer'    => $outer_claim,
+                        'label'    => 'replaced_between_reads',
+                    );
+                }
+                // The row matches our bytes. Run the cas_delete
+                // on those bytes. The cas WILL match because the
+                // row is unchanged.
+                if ( isset( $wpdb ) && is_object( $wpdb ) && ! empty( $wpdb->options ) ) {
+                    $wpdb->query( $wpdb->prepare(
+                        "DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+                        $key, $outer_bytes
+                    ) );
+                }
+                if ( function_exists( 'wp_cache_delete' ) ) {
+                    wp_cache_delete( $key, 'options' );
+                }
+                // Re-read post-cas. Direct SQL (not get_option)
+                // because the cache invalidation does not reach
+                // persistent caches that hold a stale value.
+                $blob = null;
+                if ( isset( $wpdb ) && is_object( $wpdb ) && ! empty( $wpdb->options ) ) {
+                    $blob = $wpdb->get_var( $wpdb->prepare(
+                        "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
+                        $key
+                    ) );
+                }
+                if ( null === $blob ) {
+                    return array(
+                        'class' => 'absent',
+                        'row'   => null,
+                        'label' => 'released',
+                    );
+                }
+                $row = is_string( $blob ) ? maybe_unserialize( $blob ) : null;
+                if ( ! is_array( $row ) ) {
+                    return array(
+                        'class' => 'anomalous',
+                        'row'   => null,
+                        'label' => 'unreadable_post_cas',
+                    );
+                }
+                if ( \AgentShell_MCP\Published_Claim::rows_equal( $row, $outer_claim ) ) {
+                    // Row still present with our bytes — the
+                    // cas should have matched; the only way it
+                    // did not is a row identity change we did
+                    // not write.
+                    return array(
+                        'class' => 'anomalous',
+                        'row'   => $row,
+                        'label' => 'cas_did_not_match',
+                    );
+                }
+                return array(
+                    'class' => 'successor',
+                    'row'   => $row,
+                    'label' => 'replaced_post_cas',
+                );
+            } );
+        }
+
+        // Anomalous or successor outcomes refuse the
+        // compensation as conflict. The op stays in
+        // STATE_COMPENSATING and the next recovery (or a
+        // recovery_administrator) can resolve the divergence.
+        if ( is_array( $claim_outcome ) && in_array( $claim_outcome['class'], array( 'anomalous', 'successor' ), true ) ) {
+            $op_name = 'successor' === $claim_outcome['class']
+                ? 'transaction_claim_released_successor_took_over_pre_publish'
+                : 'transaction_claim_release_anomaly';
+            \AgentShell_MCP\Store::record_event(
+                (string) $current_actor,
+                $op_name,
+                array(
+                    'transaction_id'   => (string) ( $tx['id'] ?? '' ),
+                    'op_id'            => (string) $op_id_str,
+                    'original_id'      => (int) $original_id,
+                    'shadow_id'        => (int) $shadow_id,
+                    'classification'   => (string) $claim_outcome['class'],
+                    'successor_tx'     => (string) ( $claim_outcome['row']['tx_id'] ?? '' ),
+                    'successor_actor'  => (string) ( $claim_outcome['row']['actor'] ?? '' ),
+                    'note'             => 'pre-publication rollback refused; the claim was '
+                        . ( 'successor' === $claim_outcome['class']
+                            ? 'replaced by a successor tx between the read and the cas_delete. '
+                            : 'still present after the cas_delete — the row identity changed. ' )
+                        . 'The shadow was deleted; the claim is preserved for the next recovery.',
+                )
+            );
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' pre-publication rollback: '
+                    . 'the claim release classified as "' . $claim_outcome['class']
+                    . '" — the cas_delete did not match the expected row bytes '
+                    . ( 'successor' === $claim_outcome['class']
+                        ? '(a successor tx has acquired the claim). The shadow was deleted; '
+                        . 'the successor\'s claim is preserved.'
+                        : '(the row identity changed since the read). The shadow was deleted; '
+                        . 'the claim is preserved for the next recovery.' )
+                    . ' A recovery_administrator must resolve the divergence.',
+            );
+        }
+
+        // The pre-publication rollback is complete. The op
+        // transitions to `compensated` outside this function
+        // (in settle_operation). The `post_id` returned is
+        // the original's id so the audit log shows what
+        // record the compensation was on behalf of.
+        //
+        // M5-audit hygiene R-4: the audit row and reason
+        // string now describe the actual steps that ran,
+        // using the local $steps flags. The 'absent' path
+        // for the claim (ours was already gone) emits
+        // `claim_already_absent` rather than the misleading
+        // 'claim released'. The 'already_gone' path for the
+        // shadow emits `shadow_already_gone` rather than
+        // 'shadow deleted'.
+        $steps['claim'] = is_array( $claim_outcome )
+            ? ( 'absent' === $claim_outcome['class']
+                ? ( isset( $claim_outcome['label'] ) ? (string) $claim_outcome['label'] : 'released' )
+                : $claim_outcome['class'] )
+            : 'unknown';
+        // The audit `reason` is the human-readable form. The
+        // machine-readable form lives in `shadow_step` and
+        // `claim_step` (so a post-hoc analysis can query the
+        // structured field rather than parsing prose).
+        $audit_reason = 'pre-publication rollback: '
+            . str_replace( '_', ' ', (string) $steps['shadow'] )
+            . ' / '
+            . str_replace( '_', ' ', (string) $steps['claim'] );
+        $reason_fragments = array();
+        if ( 'deleted' === $steps['shadow'] ) {
+            $reason_fragments[] = 'the shadow (id ' . $shadow_id . ') was deleted';
+        } elseif ( 'already_gone' === $steps['shadow'] ) {
+            $reason_fragments[] = 'the shadow (id ' . $shadow_id . ') was already gone';
+        }
+        if ( 'released' === $steps['claim'] ) {
+            $reason_fragments[] = 'the per-original claim was value-guarded released';
+        } elseif ( 'released_between_reads' === $steps['claim'] ) {
+            $reason_fragments[] = 'the per-original claim was already released between the outside-read and the inside-read';
+        } elseif ( 'already_absent' === $steps['claim'] ) {
+            $reason_fragments[] = 'the per-original claim was already absent';
+        }
+        $reason_fragments[] = 'the original is unchanged (the publication never committed)';
+        \AgentShell_MCP\Store::record_event(
+            (string) $current_actor,
+            'transaction_edit_published_pre_publication_rollback',
+            array(
+                'transaction_id' => (string) ( $tx['id'] ?? '' ),
+                'op_id'          => (string) $op_id_str,
+                'original_id'    => (int) $original_id,
+                'shadow_id'      => (int) $shadow_id,
+                'shadow_step'    => (string) $steps['shadow'],
+                'claim_step'     => (string) $steps['claim'],
+                'reason'         => $audit_reason,
+            )
+        );
+        return array(
+            'outcome' => 'compensated',
+            'post_id' => (int) $original_id,
+            'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' pre-publication rollback: '
+                . implode( '; ', $reason_fragments ) . '.',
+        );
+    }
+
+    /**
+     * Reconciliation tail for an OP_EDIT_PUBLISHED op in
+     * `publication_committed` or `reconciliation_pending` state.
+     * The publication has already committed; the recovery
+     * cannot reverse it. It runs the same per-step status check
+     * the reconcile tool runs, observing the per-step
+     * `reconciliation` record to skip steps that are already
+     * verified.
+     *
+     * The op transitions to `publication_settled` after all
+     * three steps verify. The outcome `reconciled` is a new
+     * outcome that `settle_operation()` knows to map to
+     * `STATE_PUBLICATION_SETTLED` rather than `STATE_COMPENSATED`
+     * (the publication was not undone; it was settled).
+     */
+    private static function compensate_edit_published_reconcile(
+        array $op, array $tx, $current_actor, $original_id, $shadow_id
+    ) {
+        // Re-read the op from the journal row to get the
+        // current `reconciliation` record, not the in-process
+        // payload. The per-step status is the source of truth
+        // for which steps are still owed.
+        $op_id_str = (string) $op['id'];
+        $row = (array) get_option( \AgentShell_MCP\Transaction_Manager::KEY, null );
+        $committed_op = ( is_array( $row ) && ! empty( $row['content']['ops'][ $op_id_str ] ) )
+            ? $row['content']['ops'][ $op_id_str ]
+            : $op;
+
+        $recon = \AgentShell_MCP\Tools\Publish_Edit::run_reconciliation(
+            $tx, $committed_op, (string) $current_actor, (int) $original_id, (int) $shadow_id
+        );
+        $state = (string) ( $recon['state'] ?? '' );
+        if ( \AgentShell_MCP\Content_Journal::STATE_PUBLICATION_SETTLED !== $state ) {
+            // A step refused; the op is still in
+            // `reconciliation_pending`. The settle_operation
+            // outcome handling will leave the state at
+            // reconciliation_pending on a conflict-style
+            // outcome; we return a conflict here so the row
+            // is preserved for the next recovery.
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' reconciliation step '
+                    . 'refused: ' . (string) ( $recon['reason'] ?? 'no reason recorded' )
+                    . '. The publication is durable; the next recovery (or the '
+                    . 'agentshell_publish_edit_reconcile tool) should retry the owed step(s).',
+            );
+        }
+        \AgentShell_MCP\Store::record_event(
+            (string) $current_actor,
+            'transaction_edit_published_reconciled_via_recovery',
+            array(
+                'transaction_id' => (string) ( $tx['id'] ?? '' ),
+                'op_id'          => (string) $op_id_str,
+                'original_id'    => (int) $original_id,
+                'shadow_id'      => (int) $shadow_id,
+            )
+        );
+        return array(
+            'outcome' => 'reconciled',
+            'post_id' => $original_id,
+            'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' reconciliation tail verified; '
+                . 'all three steps landed and the op is in `publication_settled`.',
+        );
     }
 
     /** The marker value a post must carry for this operation to be recognised. */

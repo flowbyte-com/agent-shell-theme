@@ -98,6 +98,18 @@ class Store {
      */
     public static function actor() {
         $user = wp_get_current_user();
+        // Documented conflation (S-6, Stage 2c M5 audit): the
+        // `actor` returned for any non-logged-in caller is the
+        // literal string 'agent'. Multiple REST-token callers (each
+        // without a logged-in user) share this single audit
+        // identity. The audit log records one 'agent' row per
+        // tool call regardless of which REST token authorised it;
+        // the token's id is recorded separately on each audit row
+        // (see the `token_id` field) and the actor field is
+        // reserved for the agent's user_login when logged in. If
+        // an operator needs to distinguish token callers, the
+        // token_id column on the audit row is the place; the
+        // actor field is the agent's identity, not the caller's.
         return ( $user instanceof \WP_User && $user->ID ) ? $user->user_login : 'agent';
     }
 

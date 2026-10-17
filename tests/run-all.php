@@ -56,6 +56,16 @@
  *                      isolates: a sandbox lives outside the checkout,
  *                      writing to it cannot change the checkout, and a change
  *                      to the checkout is detected rather than assumed away
+ *   - stage-2c-foundation  Stage 2c Milestone 1: OP_EDIT_PUBLISHED journal
+ *                      operation, strong immutable baseline, per-original
+ *                      exclusive claim
+ *   - stage-2c-shadow   Stage 2c Milestone 2: private-shadow creation,
+ *                      successive authorised edits, idempotency
+ *   - stage-2c-overlay  Stage 2c Milestone 3: secure published-content
+ *                      preview overlay — credential mint/verify, the
+ *                      overlay's verify_and_install gates, the_posts
+ *                      substitute, field-level overlay filters, permalink
+ *                      family, and template_redirect headers
  *
  * The run fingerprints the checkout before it starts and again after it ends.
  * A test that writes into the working tree turns every other suite into a
@@ -311,6 +321,51 @@ $suites = array(
     // stubs defined inline. Runs after journal-recovery so the postmeta
     // store is already in memory if it ever needs to be.
     'stage-2c-shadow'      => __DIR__ . '/stage-2c-shadow-test.php',
+    // Stage 2c Milestone 3: secure published-content preview overlay.
+    // Unit-only; covers credential mint/verify, the overlay's verify_and_install
+    // gates, the_posts substitute, field-level overlay filters, permalink
+    // family, and template_redirect headers. Live verification is in
+    // stage-2c-overlay-live-test.php and is gated on the test-bed check.
+    'stage-2c-overlay'     => __DIR__ . '/stage-2c-overlay-test.php',
+    // Stage 2c Milestone 3 live verification: the production overlay
+    // code path against a real WordPress install. Gated on the test-bed
+    // fail-closed check having passed; otherwise skipped cleanly.
+    'stage-2c-overlay-live'=> __DIR__ . '/stage-2c-overlay-live-test.php',
+    // Stage 2c Milestone 4 live verification: the publish-edit tool
+    // against a real WordPress install. Runs the same publication
+    // path the unit tests drive with a recording wpdb, but with
+    // wp_update_post against a real wp_posts row, a real advisory
+    // lock, a real per-original claim swap, and a real anonymous
+    // HTTP request that walks the permalink redirect chain.
+    'stage-2c-publish-edit-live' => __DIR__ . '/stage-2c-publish-edit-live-test.php',
+    // Stage 2c M5-s2 self-test: confirms the end-of-suite leak
+    // check reports synthetic agentshell_published_claim_* rows
+    // and synthetic _agentshell_shadow_* postmeta rows. Gated on
+    // the same test-bed fail-closed check the other destructive
+    // live suites use.
+    'stage-2c-leak-check-live' => __DIR__ . '/stage-2c-leak-check-live-test.php',
+    // Stage 2c M5-t1 race regression: two concurrent publish_edit
+    // calls (R1) and two concurrent publish_edit_reconcile calls
+    // (R2) against the same op_id. Spawns two child PHP processes
+    // per race with file-based barriers, asserts exactly one
+    // committed / reconciled and one refused. Destructive live.
+    'stage-2c-publish-edit-race-live' => __DIR__ . '/stage-2c-publish-edit-race-live-test.php',
+    // Stage 2c M5-t2 post-COMMIT recovery: spawn a pre-commit child
+    // that runs the publish SQL transaction and exits without
+    // reconciliation, then spawn a fresh-process child that calls
+    // Publish_Edit_Reconcile. Asserts publication_committed is
+    // authoritative, the post is durable, the audit count is exactly
+    // 1, the shadow and claim survive, reconciliation settles without
+    // re-publishing, and a second reconcile is mutation-free.
+    // Destructive live.
+    'stage-2c-publish-edit-recovery-live' => __DIR__ . '/stage-2c-publish-edit-recovery-live-test.php',
+    // Stage 2c M5-t3 end-to-end acceptance: the full published-edit
+    // lifecycle against a real WordPress install — page → claim →
+    // shadow → stage → preview (real HTTP) → publish → reconcile,
+    // plus retry safety, anonymous-isolation, forged / expired /
+    // wrong-actor credentials, baseline drift, and outside-the-
+    // four-fields shadow changes. Destructive live.
+    'stage-2c-end-to-end-live' => __DIR__ . '/stage-2c-end-to-end-live-test.php',
 );
 
 $total_passed   = 0;
@@ -330,6 +385,12 @@ $destructive_live_suites = array(
     'content-write-live',
     'journal-recovery-live',
     'navigation-live',
+    'stage-2c-leak-check-live',
+    'stage-2c-overlay-live',
+    'stage-2c-publish-edit-live',
+    'stage-2c-publish-edit-race-live',
+    'stage-2c-publish-edit-recovery-live',
+    'stage-2c-end-to-end-live',
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );
@@ -485,7 +546,7 @@ if ( is_array( $test_bed_cfg ) ) {
                     $total_failed++;
                 } else {
                     $leak_count = 0;
-                    foreach ( array( 'posts_with_fixture_title', 'posts_with_journal_marker', 'nav_menus_with_fixture_prefix' ) as $k ) {
+                    foreach ( array( 'posts_with_fixture_title', 'posts_with_journal_marker', 'nav_menus_with_fixture_prefix', 'claim_rows_with_fixture_prefix', 'shadow_meta_with_marker' ) as $k ) {
                         $n = (int) ( $leak[ $k ] ?? 0 );
                         $leak_count += $n;
                         echo "  $k: $n\n";
@@ -497,6 +558,12 @@ if ( is_array( $test_bed_cfg ) ) {
                         }
                         if ( ! empty( $leak['sample_menu_names'] ) ) {
                             echo "  sample menu names:  " . implode( ', ', array_slice( (array) $leak['sample_menu_names'], 0, 5 ) ) . "\n";
+                        }
+                        if ( ! empty( $leak['sample_claim_option_names'] ) ) {
+                            echo "  sample claim option names: " . implode( ', ', array_slice( (array) $leak['sample_claim_option_names'], 0, 5 ) ) . "\n";
+                        }
+                        if ( ! empty( $leak['sample_shadow_meta_rows'] ) ) {
+                            echo "  sample shadow meta rows: " . count( (array) $leak['sample_shadow_meta_rows'] ) . " of " . (int) ( $leak['shadow_meta_with_marker'] ?? 0 ) . "\n";
                         }
                         $total_failed++;
                     } else {

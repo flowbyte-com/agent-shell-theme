@@ -75,12 +75,65 @@ $sample_menu_names = $wpdb->get_col( $wpdb->prepare(
     $menu_prefix . '%'
 ) ) ?: array();
 
+// Stage 2c leak checks (M5-s2). The publish-edit lifecycle uses two
+// long-lived per-original side tables that an interrupted recovery or a
+// refuse-and-leak path can leave behind:
+//
+//   - `wp_options WHERE option_name LIKE 'agentshell_published_claim_%'`
+//     — the per-original Published_Claim row recorded when a claim is
+//     acquired. A successful reconcile releases the claim, so a
+//     surviving row after the test is a leak.
+//
+//   - `wp_postmeta WHERE meta_key IN (...)` — the per-shadow meta
+//     markers set when a published-shadow is provisioned
+//     (`_agentshell_shadow_for`, `_agentshell_shadow_tx_id`,
+//     `_agentshell_shadow_op_id`). A successful publish deletes the
+//     shadow, so a surviving row after the test is a leak. As with
+//     `_agentshell_journal_op`, the meta row can outlive a partially
+//     deleted shadow.
+$claim_prefix = 'agentshell_published_claim_%';
+$claim_rows_with_fixture_prefix = (int) $wpdb->get_var( $wpdb->prepare(
+    "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE %s",
+    $claim_prefix
+) );
+$sample_claim_names = $wpdb->get_col( $wpdb->prepare(
+    "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s LIMIT 10",
+    $claim_prefix
+) ) ?: array();
+
+$shadow_meta_keys = array(
+    '_agentshell_shadow_for',
+    '_agentshell_shadow_tx_id',
+    '_agentshell_shadow_op_id',
+);
+$shadow_meta_placeholders = implode( ',', array_fill( 0, count( $shadow_meta_keys ), '%s' ) );
+$shadow_meta_with_marker = (int) $wpdb->get_var( $wpdb->prepare(
+    "SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key IN ($shadow_meta_placeholders)",
+    $shadow_meta_keys
+) );
+$sample_shadow_meta = $wpdb->get_results( $wpdb->prepare(
+    "SELECT post_id, meta_key, meta_value FROM {$wpdb->postmeta} WHERE meta_key IN ($shadow_meta_placeholders) LIMIT 10",
+    $shadow_meta_keys
+) );
+$sample_shadow_meta_rows = array();
+foreach ( (array) $sample_shadow_meta as $row ) {
+    $sample_shadow_meta_rows[] = array(
+        'post_id'   => (int) ( $row->post_id ?? 0 ),
+        'meta_key'  => (string) ( $row->meta_key ?? '' ),
+        'meta_value' => (string) ( $row->meta_value ?? '' ),
+    );
+}
+
 $report = array(
     'posts_with_fixture_title'        => $posts_with_fixture_title,
     'posts_with_journal_marker'       => $posts_with_journal_marker,
     'nav_menus_with_fixture_prefix'   => $nav_menus_with_fixture_prefix,
+    'claim_rows_with_fixture_prefix'  => $claim_rows_with_fixture_prefix,
+    'shadow_meta_with_marker'         => $shadow_meta_with_marker,
     'sample_post_titles'              => array_values( $sample_titles ),
     'sample_menu_names'               => array_values( $sample_menu_names ),
+    'sample_claim_option_names'       => array_values( $sample_claim_names ),
+    'sample_shadow_meta_rows'         => $sample_shadow_meta_rows,
     'db_name'                         => (string) $wpdb->dbname,
     'checked_at'                      => time(),
 );

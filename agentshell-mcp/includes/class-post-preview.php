@@ -124,6 +124,16 @@ class Post_Preview {
      * replayed as another, and the post id so it cannot be pointed at
      * different content. The expiry is signed so the window cannot be stretched
      * by editing the parameter.
+     *
+     * Documented boundary (S-3, Stage 2c M5 audit): the unpublished-post
+     * preview HMAC binds (post_id, user_id, expires) but NOT a revision id.
+     * A credential for draft revision N remains valid after an autosave
+     * to N+1 within the 300-second window. This is by design — published-
+     * content credentials (sign_published_hmac below) already bind (oid, sid,
+     * tx, op, actor, exp), and the unpublished path serves a single draft
+     * the agent just wrote, not a versioned one. If a future change wants
+     * autosave-immune unpublished previews, add a revision id to the
+     * signature and reject credentials whose bound revision has moved.
      */
     private static function sign( $post_id, $user_id, $expires, $secret ) {
         return hash_hmac(
@@ -241,5 +251,207 @@ class Post_Preview {
      */
     public static function redact( $url ) {
         return remove_query_arg( array( self::KEY_ARG ), (string) $url );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    //  Published-content preview credentials (Stage 2c Commit 2)
+    // ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * Query argument carrying the published-content preview credential.
+     *
+     * NOT registered as a wp_query_var. The overlay reads it from $_GET
+     * directly so WP_Query and any persistent cache that buckets by query
+     * vars does not differentiate preview URLs by their credential. The
+     * public boolean (agentshell_preview) IS a wp_query_var, so the theme
+     * loader can detect the request.
+     */
+    const PUB_PREVIEW_CRED_ARG = 'agentshell_pub_cred';
+
+    /**
+     * The public flag the overlay registers as a wp_query_var.
+     *
+     * Set to '1' on every preview URL. The actual credential travels in
+     * PUB_PREVIEW_CRED_ARG as a base64-encoded JSON blob.
+     */
+    const PUB_PREVIEW_FLAG_ARG = 'agentshell_preview';
+
+    /**
+     * Same window as the unpublished post preview. A URL-riding capability
+     * that lives in browser history and server access logs deserves the
+     * same short lifespan.
+     */
+    const PUB_PREVIEW_TTL_SECONDS = 300;
+
+    /**
+     * Mint a credential for rendering one PUBLISHED post with its staged
+     * shadow overlaid. Bound to (original_id, shadow_id, tx_id, op_id,
+     * actor, expires) so a credential issued for one staging cannot be
+     * replayed against another, cannot be replayed across actors, cannot
+     * outlive its window, and cannot be replayed after the shadow's head
+     * has advanced past the op the credential was minted for.
+     *
+     * The op_id binding is the head-pointer gate: a credential minted at
+     * shadow.op_id=C1 is not a valid preview of the shadow after
+     * C1 has been advanced to C2. A new credential must be issued for
+     * each shadow revision. This is the documented contract — the
+     * M2 design treats the shadow's META_OP_ID as the authoritative
+     * head pointer and the credential follows it.
+     *
+     * Returns the base64-encoded JSON blob that goes into the URL.
+     *
+     * @param int    $original_id Published post being previewed.
+     * @param int    $shadow_id   Private shadow carrying the four staged fields.
+     * @param string $tx_id       Open transaction id (from the journal).
+     * @param string $op_id       Current shadow head pointer (Published_Shadow::META_OP_ID).
+     * @param int    $actor_id    MCP caller (the editor, not the browser).
+     * @return string Base64-encoded JSON blob.
+     * @throws \InvalidArgumentException when no signing secret is available.
+     */
+    public static function preview_args_for_published( $original_id, $shadow_id, $tx_id, $op_id, $actor_id ) {
+        $secret = self::preview_secret();
+        if ( '' === $secret ) {
+            throw new \InvalidArgumentException(
+                'Cannot authorise a published-content preview: neither AGENTSHELL_REST_TOKEN nor '
+                . 'AUTH_SALT is defined. Without a signing secret the credential could be forged, '
+                . 'so no preview is offered.'
+            );
+        }
+        $oid   = (int) $original_id;
+        $sid   = (int) $shadow_id;
+        $actor = (int) $actor_id;
+        $tx    = (string) $tx_id;
+        $op    = (string) $op_id;
+        $exp   = time() + self::PUB_PREVIEW_TTL_SECONDS;
+        $cred  = array(
+            'oid'   => $oid,
+            'sid'   => $sid,
+            'tx'    => $tx,
+            'op'    => $op,
+            'actor' => $actor,
+            'exp'   => $exp,
+            'key'   => self::sign_published_hmac( $oid, $sid, $tx, $op, $actor, $exp, $secret ),
+        );
+        return base64_encode( wp_json_encode( $cred ) );
+    }
+
+    /**
+     * URL arguments for a published-content preview request.
+     *
+     * Two query parameters: the public boolean flag and the credential
+     * blob. The flag is registered as a wp_query_var; the credential is
+     * NOT (read from $_GET directly) so a persistent cache bucketed by
+     * query vars cannot differentiate URLs by their credential content.
+     *
+     * @return array<string,string>  query arguments to add to the URL.
+     */
+    public static function published_preview_url_args( $original_id, $shadow_id, $tx_id, $op_id, $actor_id ) {
+        return array(
+            self::PUB_PREVIEW_FLAG_ARG => '1',
+            self::PUB_PREVIEW_CRED_ARG => self::preview_args_for_published(
+                $original_id, $shadow_id, $tx_id, $op_id, $actor_id
+            ),
+        );
+    }
+
+    /**
+     * HMAC over (oid, sid, tx, op, actor, exp). Bound to the
+     * (original, shadow, op) tuple so a credential for one staging
+     * cannot preview a different original's shadow, a different
+     * shadow's original, an earlier op's shadow content, or be
+     * replayed across actors, or outlive its window.
+     */
+    public static function sign_published_hmac( $oid, $sid, $tx, $op, $actor, $exp, $secret ) {
+        return hash_hmac(
+            'sha256',
+            'agentshell-published-edit-preview|'
+                . (int) $oid . '|'
+                . (int) $sid . '|'
+                . (string) $tx . '|'
+                . (string) $op . '|'
+                . (int) $actor . '|'
+                . (int) $exp,
+            $secret
+        );
+    }
+
+    /**
+     * Verify a published-content preview credential's HMAC and basic shape.
+     * Returns the decoded credential array on success, null on any failure.
+     *
+     * Does NOT consult the journal or check op-state — the overlay does
+     * that separately to reject state-terminal ops and stale head pointers.
+     * This is just the cryptographic gate.
+     *
+     * @param string $raw_cred The base64-encoded JSON blob from the URL.
+     * @param string $secret   Override the resolved preview secret (used by tests).
+     * @return array{oid:int,sid:int,tx:string,op:string,actor:int,exp:int}|null
+     */
+    public static function verify_published_hmac( $raw_cred, $secret = '' ) {
+        if ( '' === $secret ) {
+            $secret = self::preview_secret();
+        }
+        if ( '' === $secret || ! is_string( $raw_cred ) || '' === $raw_cred ) {
+            return null;
+        }
+        $blob = base64_decode( $raw_cred, true );
+        if ( false === $blob ) {
+            return null;
+        }
+        $decoded = json_decode( $blob, true );
+        if ( ! is_array( $decoded ) ) {
+            return null;
+        }
+        foreach ( array( 'oid', 'sid', 'tx', 'op', 'actor', 'exp', 'key' ) as $required ) {
+            if ( ! array_key_exists( $required, $decoded ) ) {
+                return null;
+            }
+        }
+        $oid   = (int) $decoded['oid'];
+        $sid   = (int) $decoded['sid'];
+        $actor = (int) $decoded['actor'];
+        $exp   = (int) $decoded['exp'];
+        // Zero or non-numeric ids are caught by these < 1 checks. A zero or
+        // negative exp casts from a string passes (int) and would compare
+        // < time() too, but the < 1 catch is a clearer failure.
+        if ( $oid < 1 || $sid < 1 || $actor < 1 || $exp < time() ) {
+            return null;
+        }
+        if ( ! is_string( $decoded['tx'] ) || '' === $decoded['tx'] ) {
+            return null;
+        }
+        if ( ! is_string( $decoded['op'] ) || '' === $decoded['op'] ) {
+            return null;
+        }
+        if ( ! is_string( $decoded['key'] ) || '' === $decoded['key'] ) {
+            return null;
+        }
+        $expected = self::sign_published_hmac(
+            $oid, $sid, (string) $decoded['tx'], (string) $decoded['op'], $actor, $exp, $secret
+        );
+        if ( ! hash_equals( $expected, $decoded['key'] ) ) {
+            return null;
+        }
+        return array(
+            'oid'   => $oid,
+            'sid'   => $sid,
+            'tx'    => (string) $decoded['tx'],
+            'op'    => (string) $decoded['op'],
+            'actor' => $actor,
+            'exp'   => $exp,
+        );
+    }
+
+    /**
+     * Remove published-preview credentials from a URL destined for a caller.
+     *
+     * The transaction id and expiry survive — useless without the signature
+     * — so a returned URL stays diagnosable.
+     */
+    public static function strip_published_args( $url ) {
+        return remove_query_arg(
+            array( self::PUB_PREVIEW_FLAG_ARG, self::PUB_PREVIEW_CRED_ARG ),
+            (string) $url
+        );
     }
 }
