@@ -97,8 +97,9 @@
     let trigger    = null;
     let initDone   = false;
     let liveState  = {};
-    let availableWidgets = []; // agent-defined widgets from blocks plugin
-    let coreComponents   = []; // WP core components (site_title, nav_menu, etc.)
+    let availableWidgets     = []; // agent-defined widgets from blocks plugin
+    let coreComponents       = []; // WP core components (site_title, nav_menu, etc.)
+    let availableWidgetAreas = []; // registered WP sidebars for the wp_widget_area dropdown
     let txState    = 'idle';   // mirror of the pure state model
     let txInfo     = null;    // payload from GET /wp/v2/agentshell/transaction
 
@@ -308,7 +309,33 @@
         const typeLabel = BLOCK_TYPES.find(t => t.value === block.type) || { label: block.type };
         let blockLabel = typeLabel.label;
         let detail = '';
-        if (block.type === 'widget' || block.type === 'wp_widget_area') {
+        let areaSelect = '';
+        const zone = liveState.zones[zoneIdx];
+        if (block.type === 'wp_widget_area') {
+            // Build a select listing the registered areas. The saved id is
+            // preserved even when the area is no longer registered — a
+            // synthetic "(unavailable)" option is appended so the value is
+            // never silently erased.
+            const registered = (availableWidgetAreas || []).filter(a => a && a.id);
+            const savedId    = block.id || '';
+            const savedKnown = registered.some(a => a.id === savedId);
+            const areaSelId  = `zb-area-${zoneIdx}-${slotKey || 'c'}-${blockIdx}`;
+            const zoneLabel  = zone ? (zone.label || zone.id) : 'zone';
+            const slotLabel  = slotKey || 'composition';
+            const opts = registered.map(a =>
+                `<option value="${escAttr(a.id)}"${a.id === savedId ? ' selected' : ''}>${escHtml(a.name || a.id)}</option>`
+            ).join('');
+            const missing = (savedId && !savedKnown)
+                ? `<option value="${escAttr(savedId)}" selected>${escHtml(savedId)} (unavailable)</option>`
+                : '';
+            areaSelect = `<label class="zb-area-label" for="${areaSelId}">Widget area</label>` +
+                `<select id="${areaSelId}" class="zb-area-select" ` +
+                `aria-label="Widget area for ${escAttr(zoneLabel)} ${escAttr(slotLabel)} block ${blockIdx + 1}" ` +
+                `data-zone-idx="${zoneIdx}" data-slot="${slotKey || ''}" data-block-idx="${blockIdx}">` +
+                `<option value="">— select area —</option>` +
+                opts + missing +
+                `</select>`;
+        } else if (block.type === 'widget') {
             detail = escHtml(block.id || '');
         } else if (block.type === 'json_block') {
             detail = block.content ? escHtml(block.content.substring(0, 30)) + (block.content.length > 30 ? '…' : '') : '';
@@ -318,15 +345,16 @@
             detail = block.id || '';
         }
 
-        const zone = liveState.zones[zoneIdx];
-        const slotArr = slotKey ? (zone.slots?.[slotKey] || []) : (zone.composition || []);
+        const slotArr = slotKey ? (zone?.slots?.[slotKey] || []) : (zone?.composition || []);
         const canMoveUp   = blockIdx > 0;
         const canMoveDown = blockIdx < (slotArr.length - 1);
 
         let html = `<div class="zone-block-item" data-zone-idx="${zoneIdx}" data-slot="${slotKey || ''}" data-block-idx="${blockIdx}">`;
         html += `<div class="zone-block-info">`;
         html += `<span class="zone-block-type">${escHtml(blockLabel)}</span>`;
-        if (detail) {
+        if (areaSelect) {
+            html += `<div class="zone-block-area">${areaSelect}</div>`;
+        } else if (detail) {
             html += `<span class="zone-block-detail">${detail}</span>`;
         }
         html += `</div>`;
@@ -530,6 +558,31 @@
             });
         });
 
+        // ── Edit a wp_widget_area block's id (select stays visible inline) ──
+        // The change handler updates the block's id to whatever the user
+        // picked, including the empty string for the placeholder — the
+        // displayed and saved values stay consistent. Picking the
+        // "(unavailable)" option keeps the saved id (its value IS the
+        // saved id), so the synthetic option re-renders selected.
+        panel.querySelectorAll('.zb-area-select').forEach(sel => {
+            sel.addEventListener('change', e => {
+                const zoneIdx  = parseInt(sel.dataset.zoneIdx, 10);
+                const slotKey  = sel.dataset.slot || null;
+                const blockIdx = parseInt(sel.dataset.blockIdx, 10);
+                const zone     = liveState.zones[zoneIdx];
+                if (!zone) return;
+                const targetArr = slotKey
+                    ? (zone.slots?.[slotKey] || [])
+                    : (zone.composition || []);
+                if (!targetArr[blockIdx]) return;
+                targetArr[blockIdx].id = sel.value;
+                // Re-render so the synthetic (unavailable) option is
+                // re-inserted when needed, and the select reflects the
+                // just-saved value across reloads.
+                renderPanel();
+            });
+        });
+
         // Save button
         panel.querySelector('#agentshell-save')?.addEventListener('click', saveConfig);
 
@@ -585,8 +638,9 @@
             if (!configResp.ok) throw new Error('Failed to load config: ' + configResp.status);
             const data = await configResp.json();
             liveState = buildState(data);
-            availableWidgets = data.available_widgets || [];
-            coreComponents   = data.core_components || [];
+            availableWidgets     = data.available_widgets     || [];
+            coreComponents       = data.core_components       || [];
+            availableWidgetAreas = data.available_widget_areas || [];
             if (txResp.ok) {
                 txInfo = await txResp.json();
                 if (window.AgentshellConfigState) {

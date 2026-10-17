@@ -283,6 +283,11 @@ $suites = array(
     'inject-block'         => __DIR__ . '/inject-block-test.php',
     'widget-registry'      => __DIR__ . '/widget-registry-test.php',
     'render-block'         => __DIR__ . '/render-block-test.php',
+    // Live HTTP regression for the WordPress on-demand block-style pipeline.
+    // Reads the rendered home page and asserts that WP's own template
+    // enhancement output buffer ran to completion (no placeholder stubs
+    // survive in <head>). Skips cleanly when no runtime is reachable.
+    'block-style-pipeline' => __DIR__ . '/block-style-pipeline-test.php',
     'flatten'              => __DIR__ . '/flatten-test.php',
     'doctor'               => __DIR__ . '/doctor-test.php',
     'audit-log'            => __DIR__ . '/audit-log-test.php',

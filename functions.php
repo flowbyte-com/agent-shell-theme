@@ -72,23 +72,23 @@ add_action( 'after_switch_theme', 'agentshell_theme_activation' );
  * Enqueue theme assets
  */
 function agentshell_enqueue_assets() {
-    // Deregister WordPress core styles that conflict with agent shell
-    wp_deregister_style( 'wp-block-library' );
-    wp_deregister_style( 'wp-block-library-theme' );
-    wp_deregister_style( 'wp-block-style' );
+    // Deregister only the admin-only styles whose CSS is not for the
+    // front end. WordPress core decides which front-end block-library
+    // styles to load (wp-block-library, wp-block-library-theme,
+    // wp-block-style, wp-emoji-styles, wp-img-autosizes,
+    // classic-theme-styles, global-styles) — we no longer pre-empt
+    // core's loading, so Gutenberg content picks up its WP-default
+    // styling while custom theme tokens (loaded after, via
+    // agentshell_inject_saved_styles) still win the cascade.
     wp_deregister_style( 'wp-components' );
     wp_deregister_style( 'wp-editor' );
     wp_deregister_style( 'wp-format-library' );
     wp_deregister_style( 'wp-nux' );
     wp_deregister_style( 'wp-list-reusable-blocks' );
-    wp_deregister_style( 'wp-emoji-styles' );
-    wp_deregister_style( 'wp-img-autosizes' );
-    wp_deregister_style( 'classic-theme-styles' );
-    wp_deregister_style( 'global-styles' );
 
-    // Remove the wp-img-autosizes inline style that gets printed separately
-    remove_action( 'wp_enqueue_scripts', 'wp_enqueue_global_styles' );
-    remove_action( 'wp_enqueue_scripts', 'wp_enqueue_block_template_styles' );
+    // Legacy deprecated printer that double-loads older stylesheets.
+    // Front-end block / global / template actions are no longer
+    // suppressed — let core decide what is needed.
     remove_action( 'wp_enqueue_scripts', 'wp_print_styles' );
     add_filter( 'wp_resource_hints', function( $urls, $relation_type ) {
         if ( 'dns-prefetch' === $relation_type ) {
@@ -710,6 +710,18 @@ function agentshell_inject_saved_styles() {
         echo "<style id='agentshell-custom-css'>\n" . $css . "\n</style>\n";
     }
 
+    // Configurable layout — only emitted when agentshell_set_layout has
+    // actually stored something the renderer should respect (grid_areas,
+    // grid_gap, or grid_padding). Without this gate, the original
+    // behaviour — flex-column default from style.css Section 3 — is
+    // preserved verbatim. This is the fix for the false-success defect:
+    // the tool used to return success without any CSS being emitted; the
+    // root cause was that nothing read config['layout'].
+    $layout_css = agentshell_layout_css();
+    if ( '' !== $layout_css ) {
+        echo "<style id='agentshell-layout-css'>\n" . $layout_css . "</style>\n";
+    }
+
     // Theme profile preview: ?agentshell_preview=<profile> renders a saved
     // profile's design tokens as :root overrides — read-only and never
     // persisted. Authorized either by a logged-in browser session, or by an
@@ -750,6 +762,11 @@ function agentshell_inject_saved_styles() {
 
     // Structural prohibition: prevent agents from breaking the FSE layout
     // with position: fixed or absolute on zone containers.
+    // Also collapse empty zone slots so an empty registered widget area
+    // (header-extra / footer-extra / primary-sidebar) does not paint an
+    // empty decorative container. Replaces the plan's edit to
+    // template-parts/shell-render.php (protected file) with a CSS rule
+    // that achieves the same outcome.
     echo "<style id='agentshell-grid-fix'>
 #zone-header, #zone-main, #zone-footer {
     position: relative !important;
@@ -759,41 +776,111 @@ function agentshell_inject_saved_styles() {
     bottom: auto !important;
     z-index: auto !important;
 }
+.zone-slot:empty {
+    display: none;
+}
 </style>\n";
 }
 // Priority 100 ensures this prints AFTER style.css
 add_action( 'wp_head', 'agentshell_inject_saved_styles', 100 );
 
+/**
+ * Register the default WordPress widget areas available to AgentShell slots.
+ *
+ * Three areas ship by default — header-extra, footer-extra, and primary-sidebar.
+ * They are *available*, not auto-assigned: the default header keeps its
+ * site_logo / nav_menu / search_form arrangement and the default footer keeps
+ * its site_title / nav_menu / empty arrangement. Operators (or a transaction)
+ * place an area into a slot through the existing configurator. An empty
+ * registered area renders no visible content — the slot wrapper is collapsed
+ * by the `:empty` rule in agentshell-grid-fix below.
+ *
+ * The `agentshell_widget_areas` filter lets child themes and plugins add,
+ * remove, or reorder areas. The default list is the only starting point;
+ * removing an entry from the filtered list is the supported way to omit
+ * an area. A buggy filter that returns a non-array falls back to the
+ * defaults — silent failure of widget registration is unacceptable.
+ * A valid empty array `[]` is intentional and is respected (zero areas
+ * register). Each entry must be an array with a scalar id and name;
+ * malformed entries are silently skipped. Duplicate ids keep the first.
+ *
+ * @return void
+ */
+function agentshell_register_widget_areas() {
+    $defaults = array(
+        array(
+            'id'            => 'header-extra',
+            'name'          => __( 'Header — Extra', 'agentshell' ),
+            'description'   => __( 'Optional header slot. Operator assigns via the AgentShell configurator.', 'agentshell' ),
+            'before_widget' => '<div id="%1$s" class="widget %2$s">',
+            'after_widget'  => '</div>',
+            'before_title'  => '<h2 class="widget-title">',
+            'after_title'   => '</h2>',
+        ),
+        array(
+            'id'            => 'footer-extra',
+            'name'          => __( 'Footer — Extra', 'agentshell' ),
+            'description'   => __( 'Optional footer slot. Operator assigns via the AgentShell configurator.', 'agentshell' ),
+            'before_widget' => '<div id="%1$s" class="widget %2$s">',
+            'after_widget'  => '</div>',
+            'before_title'  => '<h2 class="widget-title">',
+            'after_title'   => '</h2>',
+        ),
+        array(
+            'id'            => 'primary-sidebar',
+            'name'          => __( 'Primary Sidebar', 'agentshell' ),
+            'description'   => __( 'Standard primary sidebar. Operator assigns via the AgentShell configurator.', 'agentshell' ),
+            'before_widget' => '<aside id="%1$s" class="widget %2$s">',
+            'after_widget'  => '</aside>',
+            'before_title'  => '<h2 class="widget-title">',
+            'after_title'   => '</h2>',
+        ),
+    );
+    /** Allow child themes and plugins to add / remove / reorder widget areas. */
+    $areas = apply_filters( 'agentshell_widget_areas', $defaults );
+
+    // A buggy filter that returns a non-array must NOT silently disable
+    // widget registration — fall back to the defaults. A valid empty array
+    // is intentional and is respected: zero areas will register.
+    if ( ! is_array( $areas ) ) {
+        $areas = $defaults;
+    }
+
+    // Defensive validation: each entry must be an array with scalar id
+    // and name. Bad entries are silently skipped, no PHP warning.
+    // Duplicate IDs keep the first.
+    $seen_ids = array();
+    foreach ( $areas as $area ) {
+        if ( ! is_array( $area ) ) {
+            continue;
+        }
+        $id   = isset( $area['id'] )   && is_scalar( $area['id'] )   ? sanitize_key( (string) $area['id'] ) : '';
+        $name = isset( $area['name'] ) && is_scalar( $area['name'] ) ? (string) $area['name']               : '';
+        if ( '' === $id || '' === $name ) {
+            continue;
+        }
+        if ( isset( $seen_ids[ $id ] ) ) {
+            continue;
+        }
+        $seen_ids[ $id ] = true;
+        $area['id']      = $id;
+        register_sidebar( $area );
+    }
+}
+add_action( 'widgets_init', 'agentshell_register_widget_areas' );
+
 // Strip unwanted WordPress inline styles from head - runs last at wp_head
 function agentshell_cleanup_wp_head() {
-    remove_action( 'wp_head', 'wp_enqueue_global_styles' );
-    remove_action( 'wp_head', 'wp_enqueue_block_template_styles' );
+    // The deprecated wp_print_styles printer double-loads legacy styles.
+    // wp_print_font_measure_styles is also a redundant printer.
+    // The wp_enqueue_global_styles and wp_enqueue_block_template_styles
+    // actions are no longer suppressed — they are the supported
+    // mechanism for theme.json and block-template CSS, and WordPress
+    // core decides when each fires.
     remove_action( 'wp_head', 'wp_print_styles' );
     remove_action( 'wp_head', 'wp_print_font_measure_styles' );
 }
 add_action( 'init', 'agentshell_cleanup_wp_head', 100 );
-
-// Output buffer to strip persistent inline styles that bypass deregister.
-// By wp_head (priority 99999), template rendering is complete so there should
-// be exactly one buffer (ours). We use ob_end_flush to close it properly
-// instead of ob_get_clean which only retrieves content without closing.
-function agentshell_ob_strip_inline_styles() {
-    if ( is_admin() || did_action( 'wp_head' ) ) {
-        return;
-    }
-    ob_start();
-}
-add_action( 'wp', 'agentshell_ob_strip_inline_styles', 1 );
-
-function agentshell_ob_flush() {
-    if ( ob_get_level() ) {
-        $html = ob_get_clean();
-        $html = preg_replace( '/<style id=["\']wp-img-auto-sizes[^>]*>.*?<\/style>\s*/is', '', $html );
-        echo $html;
-    }
-}
-add_action( 'wp_head', 'agentshell_ob_flush', 99999 );
-
 
 /**
  * @deprecated v2.0 — sidebar removed. Keeping stub to prevent fatals on upgrade.
@@ -1303,13 +1390,42 @@ function agentshell_get_core_components() {
 function agentshell_render_core_component( $id ) {
     switch ( $id ) {
         case 'site_title':
-            return get_bloginfo( 'name' ) ?: '';
+            $blog_name = get_bloginfo( 'name' );
+            if ( '' === (string) $blog_name ) {
+                return '';
+            }
+            /* Render as a link to home so the title is a navigable
+             * wordmark in either the header or the footer, matching
+             * the site_logo fallback. Plain text only renders when
+             * home_url() is unavailable. */
+            return sprintf(
+                '<a class="wp-core-site-title-link" href="%1$s" rel="home">%2$s</a>',
+                esc_url( home_url( '/' ) ),
+                esc_html( $blog_name )
+            );
         case 'site_tagline':
             return get_bloginfo( 'description' ) ?: '';
         case 'site_logo':
+            // the_custom_logo() prints nothing when no custom logo is set,
+            // leaving the slot visually empty. Fall back to a site-title
+            // wordmark link so the slot always carries a link to home.
+            // The wordmark uses the blog name, not a hardcoded string, so
+            // every site shows its own identity without the theme
+            // hardcoding any brand.
             ob_start();
             the_custom_logo();
-            return ob_get_clean();
+            $logo_markup = ob_get_clean();
+            if ( '' === trim( (string) $logo_markup ) ) {
+                $blog_name = get_bloginfo( 'name' );
+                if ( '' !== (string) $blog_name ) {
+                    $logo_markup = sprintf(
+                        '<a class="wp-core-site-logo-fallback" href="%1$s" rel="home">%2$s</a>',
+                        esc_url( home_url( '/' ) ),
+                        esc_html( $blog_name )
+                    );
+                }
+            }
+            return $logo_markup;
         case 'nav_menu':
             $nav = wp_nav_menu(array(
                 'echo'           => false,
@@ -1385,8 +1501,72 @@ function agentshell_get_widget_assets() {
 }
 
 /**
+ * Build the <style id='agentshell-widget-css'> block for the page head.
+ *
+ * Pure function returning a CSS string. The bilateral widget registry
+ * (file-based + config-registered) declares per-widget `css` and
+ * `init_js`; the renderer was never wired up to actually emit them, so
+ * `agentshell_register_widget` with `css` was silently inert. This
+ * function returns the concatenation of all widget CSS, ready to drop
+ * into <head> via the wp_head hook registered just below.
+ *
+ * Returns an empty string when no widget has CSS, so the wp_head hook
+ * can skip emission and not bloat the page with an empty <style>.
+ */
+function agentshell_widget_assets_head_css() {
+    return agentshell_get_widget_assets()['css'];
+}
+
+/**
+ * Build the <script id='agentshell-widget-init-js'> block for the footer.
+ *
+ * Same bilateral-registry pipeline as the head CSS, but for init_js.
+ * The original `template-parts/widgets.php` claimed footer.php renders
+ * the JS, but footer.php never did; this function plus the wp_footer
+ * hook restores the intended behaviour without touching the protected
+ * footer template.
+ */
+function agentshell_widget_assets_footer_js() {
+    return agentshell_get_widget_assets()['init_js'];
+}
+
+/**
+ * wp_head hook: emit the widget CSS block.
+ *
+ * The <style id='agentshell-widget-css'> wrapper matches the original
+ * `template-parts/widgets.php` markup so existing widget CSS continues
+ * to scope correctly. No edits to header.php / footer.php / the
+ * widgets template are required — the emission moves into functions.php
+ * (which is not on the protected list) and is dispatched by WordPress's
+ * own wp_head / wp_footer pipeline.
+ */
+function agentshell_emit_widget_assets_head() {
+    $css = agentshell_widget_assets_head_css();
+    if ( '' !== $css ) {
+        echo "<style id='agentshell-widget-css'>\n" . $css . "\n</style>\n";
+    }
+}
+add_action( 'wp_head', 'agentshell_emit_widget_assets_head', 102 );
+
+/**
+ * wp_footer hook: emit the widget init JS block.
+ */
+function agentshell_emit_widget_assets_footer() {
+    $js = agentshell_widget_assets_footer_js();
+    if ( '' !== $js ) {
+        echo "<script id='agentshell-widget-init-js'>\n" . $js . "\n</script>\n";
+    }
+}
+add_action( 'wp_footer', 'agentshell_emit_widget_assets_footer', 102 );
+
+/**
  * Get layout configuration (breakpoints, grid areas, gap, padding).
  * Deep-merges user config over hard defaults so partial configs work.
+ *
+ * grid_areas, grid_gap, grid_padding pass through what the user has set —
+ * there is no sensible default for layout areas. breakspoints default to
+ * mobile-first values matching the existing 768px / 1024px breakpoints in
+ * style.css Section 9.
  *
  * @return array
  */
@@ -1402,7 +1582,7 @@ function agentshell_get_layout_config() {
         ),
     );
 
-    // Deep-merge user config over defaults
+    // Deep-merge user config over defaults for the keys with defaults.
     foreach ( $defaults as $key => $default ) {
         if ( ! isset( $layout[ $key ] ) ) {
             $layout[ $key ] = $default;
@@ -1412,6 +1592,106 @@ function agentshell_get_layout_config() {
     }
 
     return $layout;
+}
+
+/**
+ * Build the layout CSS string for the current config['layout'].
+ *
+ * Pure function: returns the CSS that, when emitted into <head>, makes
+ * agentshell_set_layout's stored values actually take effect on the page.
+ * Before this function existed, the MCP tool reported success but no
+ * renderer read its output — a UI lie that the layout-versatility
+ * assessment surfaced. The grid-template-areas rules honor the AGENTS.md
+ * §5 quoted-rows protocol: each row of the agent-supplied array becomes
+ * one "row" cell in the grid-template-areas value, so a 3-row array
+ * like ["hd hd", "mn mn", "ft ft"] is emitted verbatim as
+ * "hd hd" "mn mn" "ft ft".
+ *
+ * Returns an empty string when no layout-affecting key is set, so the
+ * caller can skip emission and the existing flex-column default in
+ * style.css Section 3 stays the rendered behaviour.
+ *
+ * @return string
+ */
+function agentshell_layout_css() {
+    $layout = agentshell_get_layout_config();
+
+    // Per-breakpoint: grid-template-areas (mobile is the base; tablet and
+    // desktop wrap in @media). grid_areas.mobile applies to all viewports
+    // until the first matching @media overrides it.
+    $areas_by_bp = array();
+    foreach ( array( 'mobile', 'tablet', 'desktop' ) as $bp ) {
+        $rows = $layout['grid_areas'][ $bp ] ?? null;
+        if ( is_array( $rows ) && ! empty( $rows ) ) {
+            $quoted = array();
+            foreach ( $rows as $row ) {
+                if ( is_string( $row ) && '' !== trim( $row ) ) {
+                    $quoted[] = '"' . $row . '"';
+                }
+            }
+            if ( ! empty( $quoted ) ) {
+                $areas_by_bp[ $bp ] = $quoted;
+            }
+        }
+    }
+
+    // Global: grid_gap and grid_padding are not breakpoint-scoped.
+    $global_rules = array();
+    if ( ! empty( $layout['grid_gap'] ) && is_string( $layout['grid_gap'] ) ) {
+        $global_rules[] = 'gap: ' . $layout['grid_gap'] . ';';
+    }
+    if ( ! empty( $layout['grid_padding'] ) && is_string( $layout['grid_padding'] ) ) {
+        $global_rules[] = 'padding: ' . $layout['grid_padding'] . ';';
+    }
+
+    // No configurable layout at all → no emission; the existing flex-column
+    // default in style.css Section 3 stays the rendered behaviour.
+    if ( empty( $areas_by_bp ) && empty( $global_rules ) ) {
+        return '';
+    }
+
+    $css = '';
+
+    if ( ! empty( $areas_by_bp ) ) {
+        // Per-breakpoint grid-template-areas forces display: grid, which
+        // overrides the flex-column default in style.css Section 3. The
+        // override is intentional: an agent that sets grid_areas is opting
+        // into grid layout for the root container.
+        $css .= "#agentshell-root {\n";
+        $css .= "    display: grid;\n";
+        $css .= "    grid-template-rows: auto 1fr auto;\n";
+        if ( isset( $areas_by_bp['mobile'] ) ) {
+            $css .= "    grid-template-areas: " . implode( ' ', $areas_by_bp['mobile'] ) . ";\n";
+        }
+        foreach ( $global_rules as $rule ) {
+            $css .= '    ' . $rule . "\n";
+        }
+        $css .= "}\n";
+        // Map the three shell zones onto the named grid areas.
+        $css .= "#zone-header { grid-area: header; }\n";
+        $css .= "#zone-main { grid-area: main; }\n";
+        $css .= "#zone-footer { grid-area: footer; }\n";
+
+        foreach ( array( 'tablet', 'desktop' ) as $bp ) {
+            if ( ! isset( $areas_by_bp[ $bp ] ) ) { continue; }
+            $bp_value = $layout['breakpoints'][ $bp ] ?? ( 'tablet' === $bp ? '768px' : '1024px' );
+            $css .= "@media (min-width: " . $bp_value . ") {\n";
+            $css .= "    #agentshell-root {\n";
+            $css .= "        grid-template-areas: " . implode( ' ', $areas_by_bp[ $bp ] ) . ";\n";
+            $css .= "    }\n";
+            $css .= "}\n";
+        }
+    } else {
+        // Only global rules (gap / padding) — apply to whichever display
+        // mode style.css Section 3 already chose. Do not force grid.
+        $css .= "#agentshell-root {\n";
+        foreach ( $global_rules as $rule ) {
+            $css .= '    ' . $rule . "\n";
+        }
+        $css .= "}\n";
+    }
+
+    return $css;
 }
 
 /**
@@ -1849,6 +2129,19 @@ function agentshell_validate_config( $config ) {
         return new WP_Error( 'invalid_layout', 'Layout must be an array.' );
     }
 
+    // Top-level config['layout'] is the configurable grid system surfaced
+    // by agentshell_set_layout. Allowlist the four known keys so a typo
+    // or future-incompatible payload fails explicitly rather than silently
+    // landing in storage and never being read.
+    if ( isset( $config['layout'] ) && is_array( $config['layout'] ) ) {
+        $allowed_layout_top = array( 'breakpoints', 'grid_areas', 'grid_gap', 'grid_padding' );
+        foreach ( $config['layout'] as $key => $val ) {
+            if ( ! in_array( $key, $allowed_layout_top, true ) ) {
+                return new WP_Error( 'invalid_layout_key', "Unknown layout key: {$key}" );
+            }
+        }
+    }
+
     if ( isset( $config['custom_css'] ) && ! is_string( $config['custom_css'] ) ) {
         return new WP_Error( 'invalid_custom_css', 'custom_css must be a string.' );
     }
@@ -1897,6 +2190,142 @@ function agentshell_harden_custom_css( $value ) {
 }
 
 /**
+ * Build the response payload for GET /wp/v2/agentshell/config.
+ *
+ * Extracted from the rest_api_init closure so it can be unit-tested
+ * without spinning up a full WP REST stack. The fix for the
+ * custom_css round-trip defect lives here: prior to the fix, the GET
+ * response omitted custom_css and custom_js, so an agent reading the
+ * current config via GET could not see what was stored, and an
+ * agent updating only some other field (e.g. zones) had no way to
+ * confirm its custom_css was not silently lost. Surfacing the
+ * strings plus a byte counter closes that gap.
+ *
+ * Layout is also surfaced: the agentshell_set_layout tool writes to
+ * config['layout'] and the agent may want to read the stored value
+ * back (e.g. to verify a tool call landed before re-emitting CSS).
+ */
+function agentshell_build_config_get_response() {
+    $config = agentshell_get_config();
+    $flat   = agentshell_flatten_config( $config );
+
+    // Pull widgets from the merged bilateral registry, not the
+    // legacy agentshell_widgets option. This means the configurator
+    // sees widgets written via agentshell_register_widget (main
+    // plugin) as well as widgets written via the blocks plugin's
+    // legacy tool. Migration is handled by
+    // agentshell_migrate_legacy_widgets_option() on plugin activation.
+    $available_widgets = array();
+    $registry          = agentshell_get_widget_registry();
+    foreach ( $registry as $widget ) {
+        $available_widgets[] = array(
+            'id'     => $widget['id'],
+            'name'   => $widget['name'] ?? $widget['id'],
+            'source' => $widget['source'] ?? 'config',
+            'status' => $widget['status'] ?? 'active',
+        );
+    }
+
+    // Core WP components — now served by the same function used at render time
+    $core_components = agentshell_get_core_components();
+
+    // Available widget areas — snapshot of $wp_registered_sidebars at
+    // request time. Surfaces child-theme and mu-plugin-registered
+    // areas alongside AgentShell's defaults so the configurator
+    // can present a single dropdown. The configurator preserves
+    // saved ids even when the area is no longer registered.
+    //
+    // Read the global directly: WP core exposes the global but
+    // older releases (e.g. 6.5) do not export a wrapper function.
+    // Newer releases add wp_registered_sidebars() — fall through
+    // to that if present.
+    $available_widget_areas = array();
+    $registered = ( function_exists( 'wp_registered_sidebars' ) )
+        ? wp_registered_sidebars()
+        : ( $GLOBALS['wp_registered_sidebars'] ?? array() );
+    if ( ! is_array( $registered ) ) {
+        $registered = array();
+    }
+    foreach ( $registered as $area_id => $area ) {
+        if ( ! is_string( $area_id ) ) {
+            continue;
+        }
+        $available_widget_areas[] = array(
+            'id'   => $area_id,
+            'name' => ( is_array( $area ) && isset( $area['name'] ) ) ? (string) $area['name'] : $area_id,
+        );
+    }
+
+    $schema = array(
+        'zones'           => array(
+            'type'  => 'array',
+            'items' => array(
+                'type'       => 'object',
+                'properties' => array(
+                    'id'          => array( 'type' => 'string' ),
+                    'label'       => array( 'type' => 'string' ),
+                    'composition' => array( 'type' => 'array' ),
+                    'slots'      => array(
+                        'type'       => 'object',
+                        'properties' => array(
+                            'left'   => array( 'type' => 'array' ),
+                            'center' => array( 'type' => 'array' ),
+                            'right'  => array( 'type' => 'array' ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        'custom_css' => array( 'type' => 'string', 'maxLength' => 10000 ),
+        'custom_js'  => array( 'type' => 'string', 'maxLength' => 10000 ),
+        'design'     => array( 'type' => 'object' ),
+        'layout'     => array( 'type' => 'object' ),
+    );
+
+    // Ensure zones and compositions are always proper sequential arrays
+    $zones = $config['zones'] ?? array();
+    if ( is_array( $zones ) ) {
+        $zones = array_values( $zones );
+        foreach ( $zones as &$zone ) {
+            if ( isset( $zone['composition'] ) && is_array( $zone['composition'] ) ) {
+                $zone['composition'] = array_values( $zone['composition'] );
+            }
+            // Normalize slot arrays to sequential arrays
+            if ( isset( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
+                foreach ( array( 'left', 'center', 'right' ) as $slot_key ) {
+                    if ( isset( $zone['slots'][ $slot_key ] ) && is_array( $zone['slots'][ $slot_key ] ) ) {
+                        $zone['slots'][ $slot_key ] = array_values( $zone['slots'][ $slot_key ] );
+                    } else {
+                        $zone['slots'][ $slot_key ] = array();
+                    }
+                }
+            }
+        }
+        unset( $zone );
+    } else {
+        $zones = array();
+    }
+
+    $custom_css = (string) ( $config['custom_css'] ?? '' );
+    $custom_js  = (string) ( $config['custom_js']  ?? '' );
+
+    return array(
+        'schema'                => $schema,
+        'defaults'              => $flat,
+        'config'                => $flat,
+        'zones'                 => $zones,
+        'available_widgets'     => $available_widgets,
+        'core_components'       => $core_components,
+        'available_widget_areas'=> $available_widget_areas,
+        'custom_css'            => $custom_css,
+        'custom_js'             => $custom_js,
+        'custom_css_bytes'      => strlen( $custom_css ),
+        'custom_js_bytes'       => strlen( $custom_js ),
+        'layout'                => is_array( $config['layout'] ?? null ) ? $config['layout'] : array(),
+    );
+}
+
+/**
  * REST API: GET/PUT /wp/v2/agentshell/config
  * GET returns schema metadata + defaults + config for agent introspection.
  * PUT accepts flat key-value pairs, merges into nested config, persists.
@@ -1904,89 +2333,7 @@ function agentshell_harden_custom_css( $value ) {
 add_action( 'rest_api_init', function() {
     register_rest_route( 'wp/v2', '/agentshell/config', array(
         'methods'  => 'GET',
-        'callback' => function() {
-            $config = agentshell_get_config();
-            $flat   = agentshell_flatten_config( $config );
-
-            // Pull widgets from the merged bilateral registry, not the
-            // legacy agentshell_widgets option. This means the configurator
-            // sees widgets written via agentshell_register_widget (main
-            // plugin) as well as widgets written via the blocks plugin's
-            // legacy tool. Migration is handled by
-            // agentshell_migrate_legacy_widgets_option() on plugin activation.
-            $available_widgets = array();
-            $registry          = agentshell_get_widget_registry();
-            foreach ( $registry as $widget ) {
-                $available_widgets[] = array(
-                    'id'     => $widget['id'],
-                    'name'   => $widget['name'] ?? $widget['id'],
-                    'source' => $widget['source'] ?? 'config',
-                    'status' => $widget['status'] ?? 'active',
-                );
-            }
-
-            // Core WP components — now served by the same function used at render time
-            $core_components = agentshell_get_core_components();
-
-            $schema = array(
-                'zones'           => array(
-                    'type'  => 'array',
-                    'items' => array(
-                        'type'       => 'object',
-                        'properties' => array(
-                            'id'          => array( 'type' => 'string' ),
-                            'label'       => array( 'type' => 'string' ),
-                            'composition' => array( 'type' => 'array' ),
-                            'slots'      => array(
-                                'type'       => 'object',
-                                'properties' => array(
-                                    'left'   => array( 'type' => 'array' ),
-                                    'center' => array( 'type' => 'array' ),
-                                    'right'  => array( 'type' => 'array' ),
-                                ),
-                            ),
-                        ),
-                    ),
-                ),
-                'custom_css' => array( 'type' => 'string', 'maxLength' => 10000 ),
-                'custom_js'  => array( 'type' => 'string', 'maxLength' => 10000 ),
-                'design'     => array( 'type' => 'object' ),
-                'layout'     => array( 'type' => 'object' ),
-            );
-
-            // Ensure zones and compositions are always proper sequential arrays
-            $zones = $config['zones'] ?? array();
-            if ( is_array( $zones ) ) {
-                $zones = array_values( $zones );
-                foreach ( $zones as &$zone ) {
-                    if ( isset( $zone['composition'] ) && is_array( $zone['composition'] ) ) {
-                        $zone['composition'] = array_values( $zone['composition'] );
-                    }
-                    // Normalize slot arrays to sequential arrays
-                    if ( isset( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
-                        foreach ( array( 'left', 'center', 'right' ) as $slot_key ) {
-                            if ( isset( $zone['slots'][ $slot_key ] ) && is_array( $zone['slots'][ $slot_key ] ) ) {
-                                $zone['slots'][ $slot_key ] = array_values( $zone['slots'][ $slot_key ] );
-                            } else {
-                                $zone['slots'][ $slot_key ] = array();
-                            }
-                        }
-                    }
-                }
-                unset( $zone );
-            } else {
-                $zones = array();
-            }
-
-            return array(
-                'schema'             => $schema,
-                'defaults'           => $flat,
-                'config'             => $flat,
-                'zones'              => $zones,
-                'available_widgets'  => $available_widgets,
-                'core_components'    => $core_components,
-            );
-        },
+        'callback' => 'agentshell_build_config_get_response',
         'permission_callback' => 'agentshell_rest_auth_callback',
     ) );
 

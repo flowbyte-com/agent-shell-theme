@@ -290,7 +290,43 @@ if ( ! function_exists( 'remove_query_arg' ) ) {
 }
 function esc_js( $text ) { return $text; }
 function __( $text, $domain = null ) { return $text; }
-function dynamic_sidebar( $id ) {}
+
+/**
+ * Widget sidebar registry stubs.
+ *
+ * WordPress owns widget content; the test bootstrap mirrors the global
+ * $wp_registered_sidebars shape so widgets_init callbacks and the
+ * is_registered_sidebar() / is_active_sidebar() checks used by the
+ * doctor validator can be exercised without a live WP install.
+ */
+$GLOBALS['_agentshell_test_sidebars'] = array();
+$GLOBALS['_agentshell_test_sidebar_widgets'] = array();
+$GLOBALS['_agentshell_test_dynamic_sidebar_calls'] = array();
+
+function register_sidebar( $args ) {
+    if ( ! is_array( $args ) || empty( $args['id'] ) ) {
+        return;
+    }
+    $GLOBALS['_agentshell_test_sidebars'][ $args['id'] ] = $args;
+}
+function wp_registered_sidebars() {
+    return $GLOBALS['_agentshell_test_sidebars'];
+}
+function is_registered_sidebar( $id ) {
+    return is_string( $id ) && isset( $GLOBALS['_agentshell_test_sidebars'][ $id ] );
+}
+function is_active_sidebar( $id ) {
+    if ( ! is_string( $id ) || ! isset( $GLOBALS['_agentshell_test_sidebars'][ $id ] ) ) {
+        return false;
+    }
+    return ! empty( $GLOBALS['_agentshell_test_sidebar_widgets'][ $id ] );
+}
+function dynamic_sidebar( $id ) {
+    $GLOBALS['_agentshell_test_dynamic_sidebar_calls'][] = (string) $id;
+    if ( is_string( $id ) && ! empty( $GLOBALS['_agentshell_test_sidebar_widgets'][ $id ] ) ) {
+        echo '<div class="widget-rendered">' . esc_html( $id ) . '</div>';
+    }
+}
 
 $GLOBALS['_agentshell_test_captured_headers'] = array();
 $GLOBALS['_agentshell_test_headers_already_sent'] = false;
@@ -806,6 +842,9 @@ function agentshell_test_reset() {
     $GLOBALS['_agentshell_test_cas_write_fail_after'] = -1;
     $GLOBALS['_agentshell_test_cas_write_calls']  = 0;
     $GLOBALS['_agentshell_test_cas_snapshot']     = null;
+    $GLOBALS['_agentshell_test_sidebars'] = array();
+    $GLOBALS['_agentshell_test_sidebar_widgets'] = array();
+    $GLOBALS['_agentshell_test_dynamic_sidebar_calls'] = array();
 }
 
 /**

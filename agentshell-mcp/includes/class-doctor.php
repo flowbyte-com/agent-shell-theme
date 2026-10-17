@@ -198,8 +198,8 @@ class Doctor {
                         self::warn( $warnings, 'WIDGET_REFERENCE_DISABLED', "Zone {$id} references disabled widget '{$block['id']}' — it renders nothing.", array( 'zone' => $id, 'widget' => $block['id'] ) );
                     }
                 }
-                if ( 'wp_widget_area' === $type && ! empty( $block['id'] ) && function_exists( 'is_active_sidebar' ) && ! is_active_sidebar( $block['id'] ) ) {
-                    self::warn( $warnings, 'WIDGET_AREA_UNREGISTERED', "Widget area '{$block['id']}' is not registered or empty.", array( 'area' => $block['id'] ) );
+                if ( 'wp_widget_area' === $type && ! empty( $block['id'] ) && function_exists( 'is_registered_sidebar' ) && ! is_registered_sidebar( $block['id'] ) ) {
+                    self::warn( $warnings, 'WIDGET_AREA_UNREGISTERED', "Widget area '{$block['id']}' is not registered.", array( 'area' => $block['id'] ) );
                 }
                 if ( 'json_block' === $type && ! empty( $block['content'] ) && is_string( $block['content'] ) ) {
                     if ( preg_match( '/<script\b|<style\b|\son\w+\s*=/i', $block['content'] ) ) {
