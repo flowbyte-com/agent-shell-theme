@@ -275,20 +275,30 @@ class Post_Preview {
 
     /**
      * Mint a credential for rendering one PUBLISHED post with its staged
-     * shadow overlaid. Bound to (original_id, shadow_id, tx_id, actor,
-     * expires) so a credential issued for one staging cannot be replayed
-     * against another, and cannot be replayed across actors.
+     * shadow overlaid. Bound to (original_id, shadow_id, tx_id, op_id,
+     * actor, expires) so a credential issued for one staging cannot be
+     * replayed against another, cannot be replayed across actors, cannot
+     * outlive its window, and cannot be replayed after the shadow's head
+     * has advanced past the op the credential was minted for.
+     *
+     * The op_id binding is the head-pointer gate: a credential minted at
+     * shadow.op_id=C1 is not a valid preview of the shadow after
+     * C1 has been advanced to C2. A new credential must be issued for
+     * each shadow revision. This is the documented contract — the
+     * M2 design treats the shadow's META_OP_ID as the authoritative
+     * head pointer and the credential follows it.
      *
      * Returns the base64-encoded JSON blob that goes into the URL.
      *
      * @param int    $original_id Published post being previewed.
      * @param int    $shadow_id   Private shadow carrying the four staged fields.
      * @param string $tx_id       Open transaction id (from the journal).
+     * @param string $op_id       Current shadow head pointer (Published_Shadow::META_OP_ID).
      * @param int    $actor_id    MCP caller (the editor, not the browser).
      * @return string Base64-encoded JSON blob.
      * @throws \InvalidArgumentException when no signing secret is available.
      */
-    public static function preview_args_for_published( $original_id, $shadow_id, $tx_id, $actor_id ) {
+    public static function preview_args_for_published( $original_id, $shadow_id, $tx_id, $op_id, $actor_id ) {
         $secret = self::preview_secret();
         if ( '' === $secret ) {
             throw new \InvalidArgumentException(
@@ -301,14 +311,16 @@ class Post_Preview {
         $sid   = (int) $shadow_id;
         $actor = (int) $actor_id;
         $tx    = (string) $tx_id;
+        $op    = (string) $op_id;
         $exp   = time() + self::PUB_PREVIEW_TTL_SECONDS;
         $cred  = array(
             'oid'   => $oid,
             'sid'   => $sid,
             'tx'    => $tx,
+            'op'    => $op,
             'actor' => $actor,
             'exp'   => $exp,
-            'key'   => self::sign_published_hmac( $oid, $sid, $tx, $actor, $exp, $secret ),
+            'key'   => self::sign_published_hmac( $oid, $sid, $tx, $op, $actor, $exp, $secret ),
         );
         return base64_encode( wp_json_encode( $cred ) );
     }
@@ -323,28 +335,30 @@ class Post_Preview {
      *
      * @return array<string,string>  query arguments to add to the URL.
      */
-    public static function published_preview_url_args( $original_id, $shadow_id, $tx_id, $actor_id ) {
+    public static function published_preview_url_args( $original_id, $shadow_id, $tx_id, $op_id, $actor_id ) {
         return array(
             self::PUB_PREVIEW_FLAG_ARG => '1',
             self::PUB_PREVIEW_CRED_ARG => self::preview_args_for_published(
-                $original_id, $shadow_id, $tx_id, $actor_id
+                $original_id, $shadow_id, $tx_id, $op_id, $actor_id
             ),
         );
     }
 
     /**
-     * HMAC over (oid, sid, tx, actor, exp). Bound to the (original, shadow)
-     * pair so a credential for one staging cannot preview a different
-     * original's shadow, or a different shadow's original, or be replayed
-     * across actors, or outlive its window.
+     * HMAC over (oid, sid, tx, op, actor, exp). Bound to the
+     * (original, shadow, op) tuple so a credential for one staging
+     * cannot preview a different original's shadow, a different
+     * shadow's original, an earlier op's shadow content, or be
+     * replayed across actors, or outlive its window.
      */
-    public static function sign_published_hmac( $oid, $sid, $tx, $actor, $exp, $secret ) {
+    public static function sign_published_hmac( $oid, $sid, $tx, $op, $actor, $exp, $secret ) {
         return hash_hmac(
             'sha256',
             'agentshell-published-edit-preview|'
                 . (int) $oid . '|'
                 . (int) $sid . '|'
                 . (string) $tx . '|'
+                . (string) $op . '|'
                 . (int) $actor . '|'
                 . (int) $exp,
             $secret
@@ -355,12 +369,13 @@ class Post_Preview {
      * Verify a published-content preview credential's HMAC and basic shape.
      * Returns the decoded credential array on success, null on any failure.
      *
-     * Does NOT consult the journal — the overlay does that separately to
-     * reject state-terminal ops. This is just the cryptographic gate.
+     * Does NOT consult the journal or check op-state — the overlay does
+     * that separately to reject state-terminal ops and stale head pointers.
+     * This is just the cryptographic gate.
      *
      * @param string $raw_cred The base64-encoded JSON blob from the URL.
      * @param string $secret   Override the resolved preview secret (used by tests).
-     * @return array{oid:int,sid:int,tx:string,actor:int,exp:int}|null
+     * @return array{oid:int,sid:int,tx:string,op:string,actor:int,exp:int}|null
      */
     public static function verify_published_hmac( $raw_cred, $secret = '' ) {
         if ( '' === $secret ) {
@@ -377,7 +392,7 @@ class Post_Preview {
         if ( ! is_array( $decoded ) ) {
             return null;
         }
-        foreach ( array( 'oid', 'sid', 'tx', 'actor', 'exp', 'key' ) as $required ) {
+        foreach ( array( 'oid', 'sid', 'tx', 'op', 'actor', 'exp', 'key' ) as $required ) {
             if ( ! array_key_exists( $required, $decoded ) ) {
                 return null;
             }
@@ -395,11 +410,14 @@ class Post_Preview {
         if ( ! is_string( $decoded['tx'] ) || '' === $decoded['tx'] ) {
             return null;
         }
+        if ( ! is_string( $decoded['op'] ) || '' === $decoded['op'] ) {
+            return null;
+        }
         if ( ! is_string( $decoded['key'] ) || '' === $decoded['key'] ) {
             return null;
         }
         $expected = self::sign_published_hmac(
-            $oid, $sid, (string) $decoded['tx'], $actor, $exp, $secret
+            $oid, $sid, (string) $decoded['tx'], (string) $decoded['op'], $actor, $exp, $secret
         );
         if ( ! hash_equals( $expected, $decoded['key'] ) ) {
             return null;
@@ -408,6 +426,7 @@ class Post_Preview {
             'oid'   => $oid,
             'sid'   => $sid,
             'tx'    => (string) $decoded['tx'],
+            'op'    => (string) $decoded['op'],
             'actor' => $actor,
             'exp'   => $exp,
         );

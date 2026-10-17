@@ -171,6 +171,17 @@ class Published_Shadow {
      * still has the shadow; recovery wants to find it
      * without knowing the transaction.
      *
+     * The query keys on `post_parent` only; the shadow's
+     * META_SHADOW_FOR is the authoritative ground truth and
+     * MUST also match. The Q3 review found that without
+     * the meta check, a shadow whose post_parent was
+     * reassigned to a different original (e.g. by a
+     * misdirected wp_update_post) would be returned as
+     * the recovery candidate for a different original.
+     * That is a recovery gap, not a single-edit gap —
+     * `update()` enforces the CAS, but find_for_original
+     * must also enforce the triangle.
+     *
      * @param int $original_id
      * @return int|null The shadow id, or null when no
      *                  shadow for this original exists.
@@ -188,7 +199,19 @@ class Published_Shadow {
         );
         $ids = self::query_shadows_for_tx( $args, null, $original_id );
         if ( empty( $ids ) ) { return null; }
-        return (int) $ids[0];
+        // Walk the candidates and keep only the one whose
+        // META_SHADOW_FOR still matches. The first match wins
+        // (the same single-shadow invariant recovery relies
+        // on). When none match, return null — the candidate
+        // is a stale or orphaned shadow and must not be
+        // picked up as the original's recovery target.
+        foreach ( $ids as $candidate_id ) {
+            $shadow_for = (int) get_post_meta( (int) $candidate_id, self::META_SHADOW_FOR, true );
+            if ( $shadow_for === $original_id ) {
+                return (int) $candidate_id;
+            }
+        }
+        return null;
     }
 
     /**

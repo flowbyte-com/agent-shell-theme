@@ -200,7 +200,7 @@ update_option( Tx::KEY, $tx_row );
 $orig_path = '/ovr-parent-slug/ovr-orig-slug/';
 $anon_url  = $SITE . $orig_path;
 
-$cred_args = Post_Preview::published_preview_url_args( $orig_id, $shadow_id, $tx_id, $actor );
+$cred_args = Post_Preview::published_preview_url_args( $orig_id, $shadow_id, $tx_id, $op_id, $actor );
 $cred_url  = $anon_url . '?' . http_build_query( $cred_args );
 
 // Tampered credential: change one hex char of the key.
@@ -219,6 +219,7 @@ $decoded['key'] = hash_hmac( 'sha256',
     . (int) $orig_id . '|'
     . (int) $shadow_id . '|'
     . $tx_id . '|'
+    . $op_id . '|'
     . (int) $actor . '|'
     . (int) $decoded['exp'],
     defined( 'AGENTSHELL_REST_TOKEN' ) ? AGENTSHELL_REST_TOKEN : ( defined( 'AUTH_SALT' ) ? AUTH_SALT : ( defined( 'LOGGED_IN_KEY' ) ? LOGGED_IN_KEY : '' ) )
@@ -231,7 +232,7 @@ $expired_url = $anon_url . '?' . http_build_query( $expired_args );
 
 // Wrong-actor credential.
 $wrong_actor_url = $anon_url . '?' . http_build_query(
-    Post_Preview::published_preview_url_args( $orig_id, $shadow_id, $tx_id, 7 /* not the op's actor */ )
+    Post_Preview::published_preview_url_args( $orig_id, $shadow_id, $tx_id, $op_id, 7 /* not the op's actor */ )
 );
 
 // Refused-state credential: re-stage the transaction with state=compensated.
@@ -247,7 +248,7 @@ $comp_tx_row = $tx_row;
 $comp_tx_row['content'] = $comp_content;
 update_option( Tx::KEY, $comp_tx_row );
 $comp_url = $anon_url . '?' . http_build_query(
-    Post_Preview::published_preview_url_args( $orig_id, $shadow_id, $tx_id, $actor )
+    Post_Preview::published_preview_url_args( $orig_id, $shadow_id, $tx_id, $op_id, $actor )
 );
 // NOTE: the tx row is left in the compensated state here. The (m) probe
 // fires below against the refused-state row. The staged state is only

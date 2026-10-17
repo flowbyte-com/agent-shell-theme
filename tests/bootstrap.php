@@ -760,8 +760,12 @@ function apply_filters( $tag, $value, ...$args ) {
     return $value;
 }
 function do_action() {}
-function remove_filter() {}
-function remove_action() {}
+if ( ! function_exists( 'remove_filter' ) ) {
+    function remove_filter() {}
+}
+if ( ! function_exists( 'remove_action' ) ) {
+    function remove_action() {}
+}
 
 /**
  * Invoke every recorded callback for $tag, threading $value through.

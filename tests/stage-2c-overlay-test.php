@@ -186,6 +186,19 @@ function s2co_seed_meta( $id, $key, $value ) {
 }
 
 /**
+ * Plant the three shadow identity meta values together. The overlay
+ * requires all three to match: META_SHADOW_FOR is the original, META_TX_ID
+ * is the open transaction, META_OP_ID is the shadow's current head
+ * pointer (so a credential minted at an earlier op cannot preview the
+ * shadow after the head has advanced).
+ */
+function s2co_seed_shadow( $sid, $oid, $tx_id, $op_id ) {
+    s2co_seed_meta( (int) $sid, Published_Shadow::META_SHADOW_FOR, (int) $oid );
+    s2co_seed_meta( (int) $sid, Published_Shadow::META_TX_ID, (string) $tx_id );
+    s2co_seed_meta( (int) $sid, Published_Shadow::META_OP_ID, (string) $op_id );
+}
+
+/**
  * Plant a transaction row directly. Bypasses Tx::begin() because
  * begin() generates its own tx id (tx_<time>_<random>); the test
  * wants a deterministic tx id and a chosen actor.
@@ -252,11 +265,11 @@ echo "\n--- §A credential mint and verify ---\n";
 $secret = AUTH_SALT;
 
 // A.1 — sign produces 64-char hex.
-$sig = Post_Preview::sign_published_hmac( 11, 22, 'tx-A', 1, S2CO_T0 + 100, $secret );
+$sig = Post_Preview::sign_published_hmac( 11, 22, 'tx-A', 'op-A', 1, S2CO_T0 + 100, $secret );
 s2co_check( 'A.1 sign_published_hmac returns 64-char hex', is_string( $sig ) && 64 === strlen( $sig ) && ctype_xdigit( $sig ) );
 
 // A.2 — verify accepts a valid signature.
-$blob = Post_Preview::preview_args_for_published( 11, 22, 'tx-A', 1 );
+$blob = Post_Preview::preview_args_for_published( 11, 22, 'tx-A', 'op-A', 1 );
 $decoded = Post_Preview::verify_published_hmac( $blob, $secret );
 s2co_check( 'A.2 verify_published_hmac accepts a valid credential', is_array( $decoded )
     && 11 === $decoded['oid'] && 22 === $decoded['sid'] && 'tx-A' === $decoded['tx'] && 1 === $decoded['actor'] );
@@ -272,7 +285,7 @@ s2co_check( 'A.3 verify rejects a tampered signature', null === Post_Preview::ve
 // the signer reads would be a seam that could stretch a bearer
 // capability's window (see class-transactions.php:185-189).
 $past_exp = time() - 60;
-$expired_sig = Post_Preview::sign_published_hmac( 11, 22, 'tx-A', 1, $past_exp, $secret );
+$expired_sig = Post_Preview::sign_published_hmac( 11, 22, 'tx-A', 'op-A', 1, $past_exp, $secret );
 $blob_arr2 = json_decode( base64_decode( $blob, true ), true );
 $blob_arr2['exp'] = $past_exp;
 $blob_arr2['key'] = $expired_sig;
@@ -290,7 +303,7 @@ foreach ( $zero_cases as $zc ) {
     $arr['oid']   = $zc['oid'];
     $arr['sid']   = $zc['sid'];
     $arr['actor'] = $zc['actor'];
-    $arr['key']   = Post_Preview::sign_published_hmac( $zc['oid'], $zc['sid'], $zc['tx'], $zc['actor'], $arr['exp'], $secret );
+    $arr['key']   = Post_Preview::sign_published_hmac( $zc['oid'], $zc['sid'], $zc['tx'], 'op-A', $zc['actor'], $arr['exp'], $secret );
     $bad = base64_encode( wp_json_encode( $arr ) );
     s2co_check( 'A.5 verify rejects zero oid/sid/actor', null === Post_Preview::verify_published_hmac( $bad, $secret ) );
 }
@@ -313,23 +326,25 @@ s2co_check( 'A.8 verify rejects an empty credential', null === Post_Preview::ver
 s2co_check( 'A.9 verify rejects a different-secret signature', null === Post_Preview::verify_published_hmac( $blob, 'different-secret' ) );
 
 // A.10 — sign is deterministic for the same inputs.
-$sig2 = Post_Preview::sign_published_hmac( 11, 22, 'tx-A', 1, S2CO_T0 + 100, $secret );
+$sig2 = Post_Preview::sign_published_hmac( 11, 22, 'tx-A', 'op-A', 1, S2CO_T0 + 100, $secret );
 s2co_check( 'A.10 sign_published_hmac is deterministic', $sig === $sig2 );
 
 // A.11 — sign changes when any input changes.
-$sig_oid = Post_Preview::sign_published_hmac( 12, 22, 'tx-A', 1, S2CO_T0 + 100, $secret );
-$sig_sid = Post_Preview::sign_published_hmac( 11, 23, 'tx-A', 1, S2CO_T0 + 100, $secret );
-$sig_tx  = Post_Preview::sign_published_hmac( 11, 22, 'tx-B', 1, S2CO_T0 + 100, $secret );
-$sig_act = Post_Preview::sign_published_hmac( 11, 22, 'tx-A', 2, S2CO_T0 + 100, $secret );
-$sig_exp = Post_Preview::sign_published_hmac( 11, 22, 'tx-A', 1, S2CO_T0 + 200, $secret );
+$sig_oid = Post_Preview::sign_published_hmac( 12, 22, 'tx-A', 'op-A', 1, S2CO_T0 + 100, $secret );
+$sig_sid = Post_Preview::sign_published_hmac( 11, 23, 'tx-A', 'op-A', 1, S2CO_T0 + 100, $secret );
+$sig_tx  = Post_Preview::sign_published_hmac( 11, 22, 'tx-B', 'op-A', 1, S2CO_T0 + 100, $secret );
+$sig_act = Post_Preview::sign_published_hmac( 11, 22, 'tx-A', 'op-A', 2, S2CO_T0 + 100, $secret );
+$sig_exp = Post_Preview::sign_published_hmac( 11, 22, 'tx-A', 'op-A', 1, S2CO_T0 + 200, $secret );
+$sig_op  = Post_Preview::sign_published_hmac( 11, 22, 'tx-A', 'op-B', 1, S2CO_T0 + 100, $secret );
 s2co_check( 'A.11 sign changes when oid changes',   $sig !== $sig_oid );
 s2co_check( 'A.11 sign changes when sid changes',   $sig !== $sig_sid );
 s2co_check( 'A.11 sign changes when tx changes',    $sig !== $sig_tx );
 s2co_check( 'A.11 sign changes when actor changes', $sig !== $sig_act );
 s2co_check( 'A.11 sign changes when exp changes',   $sig !== $sig_exp );
+s2co_check( 'A.11 sign changes when op changes',    $sig !== $sig_op );
 
 // A.12 — published_preview_url_args returns the flag + the credential blob.
-$args = Post_Preview::published_preview_url_args( 11, 22, 'tx-A', 1 );
+$args = Post_Preview::published_preview_url_args( 11, 22, 'tx-A', 'op-A', 1 );
 s2co_check( 'A.12 url args include agentshell_preview=1', isset( $args[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] )
     && '1' === $args[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] );
 s2co_check( 'A.12 url args include the credential blob', isset( $args[ Post_Preview::PUB_PREVIEW_CRED_ARG ] )
@@ -365,8 +380,9 @@ s2co_seed_post( 50, array( 'post_title' => 'Original', 'post_content' => 'orig-c
 s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
 s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
 s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
+s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
 
-$blob = Post_Preview::preview_args_for_published( 50, 51, 'tx-OVR-1', 1 );
+$blob = Post_Preview::preview_args_for_published( 50, 51, 'tx-OVR-1', 'op_OVR_1', 1 );
 $_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
 $_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $blob;
 
@@ -393,6 +409,7 @@ s2co_seed_post( 50, array( 'post_title' => 'Original', 'post_content' => 'orig-c
 s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
 s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
 s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
+s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
 $_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
 $_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $blob;
 Published_Preview_Overlay::init_to_global();
@@ -408,6 +425,7 @@ s2co_seed_post( 50, array( 'post_title' => 'Original', 'post_content' => 'orig-c
 s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
 s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
 s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
+s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
 $query3 = new WP_Query_Stub();
 Published_Preview_Overlay::verify_and_install( $query3 );
 s2co_check( 'B.4 verify_and_install is a no-op without a credential', null === Published_Preview_Overlay::get_overlay() );
@@ -419,6 +437,7 @@ s2co_seed_post( 50, array( 'post_title' => 'Original', 'post_content' => 'orig-c
 s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
 s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
 s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
+s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
 $arr = json_decode( base64_decode( $blob, true ), true );
 $arr['key'] = 'a' . substr( $arr['key'], 1 );
 $bad = base64_encode( wp_json_encode( $arr ) );
@@ -435,10 +454,11 @@ s2co_seed_post( 50, array( 'post_title' => 'Original', 'post_content' => 'orig-c
 s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
 s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
 s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
+s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
 $past = time() - 60;
 $arr = json_decode( base64_decode( $blob, true ), true );
 $arr['exp'] = $past;
-$arr['key'] = Post_Preview::sign_published_hmac( 50, 51, 'tx-OVR-1', 1, $past, AUTH_SALT );
+$arr['key'] = Post_Preview::sign_published_hmac( 50, 51, 'tx-OVR-1', 'op_OVR_1', 1, $past, AUTH_SALT );
 $expired = base64_encode( wp_json_encode( $arr ) );
 $_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
 $_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $expired;
@@ -453,7 +473,8 @@ s2co_seed_post( 50, array( 'post_title' => 'Original', 'post_content' => 'orig-c
 s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
 s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
 s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
-$other_blob = Post_Preview::preview_args_for_published( 50, 51, 'tx-OTHER', 1 );
+s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
+$other_blob = Post_Preview::preview_args_for_published( 50, 51, 'tx-OTHER', 'op_OVR_1', 1 );
 $_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
 $_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $other_blob;
 Published_Preview_Overlay::init_to_global();
@@ -467,7 +488,8 @@ s2co_seed_post( 50, array( 'post_title' => 'Original', 'post_content' => 'orig-c
 s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
 s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
 s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
-$wrong_pair = Post_Preview::preview_args_for_published( 99, 51, 'tx-OVR-1', 1 );
+s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
+$wrong_pair = Post_Preview::preview_args_for_published( 99, 51, 'tx-OVR-1', 'op_OVR_1', 1 );
 $_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
 $_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $wrong_pair;
 Published_Preview_Overlay::init_to_global();
@@ -481,7 +503,8 @@ s2co_seed_post( 50, array( 'post_title' => 'Original', 'post_content' => 'orig-c
 s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
 s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
 s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
-$wrong_actor = Post_Preview::preview_args_for_published( 50, 51, 'tx-OVR-1', 7 );
+s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
+$wrong_actor = Post_Preview::preview_args_for_published( 50, 51, 'tx-OVR-1', 'op_OVR_1', 7 );
 $_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
 $_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $wrong_actor;
 Published_Preview_Overlay::init_to_global();
@@ -495,6 +518,7 @@ s2co_seed_post( 50, array( 'post_title' => 'Original', 'post_content' => 'orig-c
 s2co_seed_post( 51, array( 'post_status' => 'draft', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
 s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
 s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
+s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
 $_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
 $_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $blob;
 Published_Preview_Overlay::init_to_global();
@@ -509,6 +533,7 @@ s2co_seed_post( 50, array( 'post_title' => 'Original', 'post_content' => 'orig-c
 s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
 s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 99 );
 s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
+s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
 $_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
 $_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $blob;
 Published_Preview_Overlay::init_to_global();
@@ -525,6 +550,7 @@ foreach ( Published_Preview_Overlay::REFUSED_STATES as $refused_state ) {
     s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
     s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
     s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
+    s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
     $_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
     $_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $blob;
     Published_Preview_Overlay::init_to_global();
@@ -542,12 +568,53 @@ foreach ( Published_Preview_Overlay::PREVIEWABLE_STATES as $live_state ) {
     s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
     s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
     s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
+    s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
     $_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
     $_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $blob;
     Published_Preview_Overlay::init_to_global();
     Published_Preview_Overlay::verify_and_install( new WP_Query_Stub() );
     s2co_check( "B.13 verify_and_install accepts state={$live_state}", is_array( Published_Preview_Overlay::get_overlay() ) );
 }
+
+// B.14 — verify_and_install refuses when the shadow's META_OP_ID has
+// advanced past the credential's op (the head-pointer gate from Q2).
+// The shadow's META_OP_ID is the authoritative head pointer; a
+// credential minted at op C1 must NOT preview the shadow after C1 has
+// been advanced to C2.
+s2co_reset();
+$op = s2co_seed_op( 'op_OVR_1', 50, 51, 1, Content_Journal::STATE_STAGED,
+    array( 'post_title' => 'STAGED', 'post_content' => 'STAGED-C', 'post_excerpt' => 'STAGED-E', 'post_name' => 'staged-slug' ) );
+s2co_plant_tx( 'tx-OVR-1', 1, array( $op['id'] => $op ) );
+s2co_seed_post( 50, array( 'post_title' => 'Original', 'post_content' => 'orig-c', 'post_excerpt' => 'orig-e', 'post_name' => 'orig-slug' ) );
+s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
+s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
+s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
+// Shadow has advanced past the credential's op: META_OP_ID = 'op_OVR_2'.
+s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_2' );
+$stale_blob = Post_Preview::preview_args_for_published( 50, 51, 'tx-OVR-1', 'op_OVR_1', 1 );
+$_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
+$_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $stale_blob;
+Published_Preview_Overlay::init_to_global();
+Published_Preview_Overlay::verify_and_install( new WP_Query_Stub() );
+s2co_check( 'B.14 verify_and_install refuses a credential minted at an earlier op (head-pointer gate)',
+    null === Published_Preview_Overlay::get_overlay() );
+
+// B.15 — verify_and_install refuses when the credential's op does not
+// match an empty META_OP_ID (a missing meta is a hard refusal — the
+// shadow is not in a valid head-pointer state).
+s2co_reset();
+s2co_plant_tx( 'tx-OVR-1', 1, array( $op['id'] => $op ) );
+s2co_seed_post( 50, array( 'post_title' => 'Original', 'post_content' => 'orig-c', 'post_excerpt' => 'orig-e', 'post_name' => 'orig-slug' ) );
+s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow', 'post_content' => 'shadow-c', 'post_excerpt' => 'shadow-e', 'post_name' => 'shadow-slug' ) );
+s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
+s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
+// No META_OP_ID planted.
+$_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
+$_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $blob;
+Published_Preview_Overlay::init_to_global();
+Published_Preview_Overlay::verify_and_install( new WP_Query_Stub() );
+s2co_check( 'B.15 verify_and_install refuses a credential when the shadow has no META_OP_ID',
+    null === Published_Preview_Overlay::get_overlay() );
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §C — the_posts substitute overlay

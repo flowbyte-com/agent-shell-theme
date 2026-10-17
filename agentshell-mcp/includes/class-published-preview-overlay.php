@@ -171,10 +171,22 @@ class Published_Preview_Overlay {
             return;
         }
 
+        // The shadow's META_OP_ID is the head pointer: a credential
+        // minted at op C1 must NOT preview the shadow after C1 has
+        // been advanced to C2. The credential is rebound to the
+        // shadow's current op by the caller; if they disagree, refuse
+        // — the new op (or no new op) gets a fresh credential, not
+        // a replay of the old one.
+        $shadow_op = (string) \get_post_meta( $cred['sid'], Published_Shadow::META_OP_ID, true );
+        if ( '' === $shadow_op || $shadow_op !== $cred['op'] ) {
+            return;
+        }
+
         $GLOBALS[ self::STATE_GLOBAL ] = array(
             'oid'    => $cred['oid'],
             'sid'    => $cred['sid'],
             'tx'     => $cred['tx'],
+            'op'     => $cred['op'],
             'actor'  => $cred['actor'],
             'shadow' => $shadow,
             'state'  => $op['state'],
