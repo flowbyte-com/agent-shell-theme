@@ -710,6 +710,18 @@ function agentshell_inject_saved_styles() {
         echo "<style id='agentshell-custom-css'>\n" . $css . "\n</style>\n";
     }
 
+    // Configurable layout — only emitted when agentshell_set_layout has
+    // actually stored something the renderer should respect (grid_areas,
+    // grid_gap, or grid_padding). Without this gate, the original
+    // behaviour — flex-column default from style.css Section 3 — is
+    // preserved verbatim. This is the fix for the false-success defect:
+    // the tool used to return success without any CSS being emitted; the
+    // root cause was that nothing read config['layout'].
+    $layout_css = agentshell_layout_css();
+    if ( '' !== $layout_css ) {
+        echo "<style id='agentshell-layout-css'>\n" . $layout_css . "</style>\n";
+    }
+
     // Theme profile preview: ?agentshell_preview=<profile> renders a saved
     // profile's design tokens as :root overrides — read-only and never
     // persisted. Authorized either by a logged-in browser session, or by an
@@ -1485,6 +1497,11 @@ function agentshell_get_widget_assets() {
  * Get layout configuration (breakpoints, grid areas, gap, padding).
  * Deep-merges user config over hard defaults so partial configs work.
  *
+ * grid_areas, grid_gap, grid_padding pass through what the user has set —
+ * there is no sensible default for layout areas. breakspoints default to
+ * mobile-first values matching the existing 768px / 1024px breakpoints in
+ * style.css Section 9.
+ *
  * @return array
  */
 function agentshell_get_layout_config() {
@@ -1499,7 +1516,7 @@ function agentshell_get_layout_config() {
         ),
     );
 
-    // Deep-merge user config over defaults
+    // Deep-merge user config over defaults for the keys with defaults.
     foreach ( $defaults as $key => $default ) {
         if ( ! isset( $layout[ $key ] ) ) {
             $layout[ $key ] = $default;
@@ -1509,6 +1526,106 @@ function agentshell_get_layout_config() {
     }
 
     return $layout;
+}
+
+/**
+ * Build the layout CSS string for the current config['layout'].
+ *
+ * Pure function: returns the CSS that, when emitted into <head>, makes
+ * agentshell_set_layout's stored values actually take effect on the page.
+ * Before this function existed, the MCP tool reported success but no
+ * renderer read its output — a UI lie that the layout-versatility
+ * assessment surfaced. The grid-template-areas rules honor the AGENTS.md
+ * §5 quoted-rows protocol: each row of the agent-supplied array becomes
+ * one "row" cell in the grid-template-areas value, so a 3-row array
+ * like ["hd hd", "mn mn", "ft ft"] is emitted verbatim as
+ * "hd hd" "mn mn" "ft ft".
+ *
+ * Returns an empty string when no layout-affecting key is set, so the
+ * caller can skip emission and the existing flex-column default in
+ * style.css Section 3 stays the rendered behaviour.
+ *
+ * @return string
+ */
+function agentshell_layout_css() {
+    $layout = agentshell_get_layout_config();
+
+    // Per-breakpoint: grid-template-areas (mobile is the base; tablet and
+    // desktop wrap in @media). grid_areas.mobile applies to all viewports
+    // until the first matching @media overrides it.
+    $areas_by_bp = array();
+    foreach ( array( 'mobile', 'tablet', 'desktop' ) as $bp ) {
+        $rows = $layout['grid_areas'][ $bp ] ?? null;
+        if ( is_array( $rows ) && ! empty( $rows ) ) {
+            $quoted = array();
+            foreach ( $rows as $row ) {
+                if ( is_string( $row ) && '' !== trim( $row ) ) {
+                    $quoted[] = '"' . $row . '"';
+                }
+            }
+            if ( ! empty( $quoted ) ) {
+                $areas_by_bp[ $bp ] = $quoted;
+            }
+        }
+    }
+
+    // Global: grid_gap and grid_padding are not breakpoint-scoped.
+    $global_rules = array();
+    if ( ! empty( $layout['grid_gap'] ) && is_string( $layout['grid_gap'] ) ) {
+        $global_rules[] = 'gap: ' . $layout['grid_gap'] . ';';
+    }
+    if ( ! empty( $layout['grid_padding'] ) && is_string( $layout['grid_padding'] ) ) {
+        $global_rules[] = 'padding: ' . $layout['grid_padding'] . ';';
+    }
+
+    // No configurable layout at all → no emission; the existing flex-column
+    // default in style.css Section 3 stays the rendered behaviour.
+    if ( empty( $areas_by_bp ) && empty( $global_rules ) ) {
+        return '';
+    }
+
+    $css = '';
+
+    if ( ! empty( $areas_by_bp ) ) {
+        // Per-breakpoint grid-template-areas forces display: grid, which
+        // overrides the flex-column default in style.css Section 3. The
+        // override is intentional: an agent that sets grid_areas is opting
+        // into grid layout for the root container.
+        $css .= "#agentshell-root {\n";
+        $css .= "    display: grid;\n";
+        $css .= "    grid-template-rows: auto 1fr auto;\n";
+        if ( isset( $areas_by_bp['mobile'] ) ) {
+            $css .= "    grid-template-areas: " . implode( ' ', $areas_by_bp['mobile'] ) . ";\n";
+        }
+        foreach ( $global_rules as $rule ) {
+            $css .= '    ' . $rule . "\n";
+        }
+        $css .= "}\n";
+        // Map the three shell zones onto the named grid areas.
+        $css .= "#zone-header { grid-area: header; }\n";
+        $css .= "#zone-main { grid-area: main; }\n";
+        $css .= "#zone-footer { grid-area: footer; }\n";
+
+        foreach ( array( 'tablet', 'desktop' ) as $bp ) {
+            if ( ! isset( $areas_by_bp[ $bp ] ) ) { continue; }
+            $bp_value = $layout['breakpoints'][ $bp ] ?? ( 'tablet' === $bp ? '768px' : '1024px' );
+            $css .= "@media (min-width: " . $bp_value . ") {\n";
+            $css .= "    #agentshell-root {\n";
+            $css .= "        grid-template-areas: " . implode( ' ', $areas_by_bp[ $bp ] ) . ";\n";
+            $css .= "    }\n";
+            $css .= "}\n";
+        }
+    } else {
+        // Only global rules (gap / padding) — apply to whichever display
+        // mode style.css Section 3 already chose. Do not force grid.
+        $css .= "#agentshell-root {\n";
+        foreach ( $global_rules as $rule ) {
+            $css .= '    ' . $rule . "\n";
+        }
+        $css .= "}\n";
+    }
+
+    return $css;
 }
 
 /**
@@ -1944,6 +2061,19 @@ function agentshell_validate_config( $config ) {
 
     if ( isset( $config['layout'] ) && ! is_array( $config['layout'] ) ) {
         return new WP_Error( 'invalid_layout', 'Layout must be an array.' );
+    }
+
+    // Top-level config['layout'] is the configurable grid system surfaced
+    // by agentshell_set_layout. Allowlist the four known keys so a typo
+    // or future-incompatible payload fails explicitly rather than silently
+    // landing in storage and never being read.
+    if ( isset( $config['layout'] ) && is_array( $config['layout'] ) ) {
+        $allowed_layout_top = array( 'breakpoints', 'grid_areas', 'grid_gap', 'grid_padding' );
+        foreach ( $config['layout'] as $key => $val ) {
+            if ( ! in_array( $key, $allowed_layout_top, true ) ) {
+                return new WP_Error( 'invalid_layout_key', "Unknown layout key: {$key}" );
+            }
+        }
     }
 
     if ( isset( $config['custom_css'] ) && ! is_string( $config['custom_css'] ) ) {
