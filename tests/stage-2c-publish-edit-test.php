@@ -1236,6 +1236,123 @@ s2cs_check( '9.2 refused publish leaves the original unchanged', $GLOBALS['_agen
 s2cs_drop_transaction();
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §10 — R-1: repeat recovery against a settled op short-circuits
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// M5-audit defect R-1 (CRITICAL). settle_operation() at
+// class-content-recovery.php:409-413 short-circuits
+// STATE_COMPENSATED and STATE_CONFLICT, but not
+// STATE_PUBLICATION_SETTLED. A repeat recovery against a settled
+// op falls through to claim_or_refresh, writes
+// `state: STATE_COMPENSATING`, the per-tx advisory lock, and
+// the STATUS_PARTIAL branch keeps the transaction row
+// indefinitely. Every subsequent recovery repeats the same
+// corruption. The M5 fix adds STATE_PUBLICATION_SETTLED to the
+// short-circuit; this section asserts the fixed contract.
+
+echo "\n--- §10 R-1: repeat recovery against a settled op ---\n";
+
+s2cs_reset_state();
+$tx = Tx::instance()->begin( 'agent-1', 'R-1 test' );
+s2cs_seed_original( 10001, 'Original Title', 'Original content.', '', 'orig-10001' );
+$op = s2cs_stage_edit_published( 10001, 15001, array( 'post_title' => 'Staged Title' ) );
+s2cs_seed_shadow( 15001, 10001, $op['id'], array( 'post_title' => 'Staged Title' ) );
+
+// Drive the op to publication_committed, then call recover()
+// once. The op should settle to publication_settled.
+s2cs_update_op( $op['id'], function ( $op_row ) {
+    $op_row['state'] = Content_Journal::STATE_PUBLICATION_COMMITTED;
+    return $op_row;
+} );
+
+$first = \AgentShell_MCP\Content_Recovery::recover( Tx::instance()->payload(), \AgentShell_MCP\Store::actor(), false, true, true );
+$first_status = is_array( $first ) ? ( $first['status'] ?? '' ) : '';
+$first_outcome = '';
+foreach ( (array) ( $first['operations'] ?? array() ) as $r ) {
+    if ( isset( $r['id'] ) && $r['id'] === $op['id'] ) {
+        $first_outcome = (string) ( $r['outcome'] ?? '' );
+        break;
+    }
+}
+s2cs_check( '10.1 first recover settles the op (sanity)', $first_status === \AgentShell_MCP\Content_Recovery::STATUS_RECOVERED, 'status=' . $first_status );
+s2cs_check( '10.2 first recover outcome is reconciled', $first_outcome === 'reconciled', 'outcome=' . $first_outcome );
+
+// Snapshot the audit count BEFORE the second recovery so we
+// can prove the second recovery did not write any new audit
+// rows (it is a true no-op).
+$audit_log_before = (array) \AgentShell_MCP\Store::audit_log();
+$audit_count_before = count( $audit_log_before );
+$tx_snapshot = Tx::instance()->payload();
+$row_before = (array) get_option( Tx::KEY, null );
+
+// Now run recovery a SECOND time. The op is in
+// publication_settled, so the M5 fix should short-circuit
+// (return outcome: already_settled) without entering
+// claim_or_refresh, without writing `state: compensating`,
+// and without writing any audit rows.
+$second = \AgentShell_MCP\Content_Recovery::recover( $tx_snapshot, \AgentShell_MCP\Store::actor(), false, true, true );
+$second_status = is_array( $second ) ? ( $second['status'] ?? '' ) : '';
+$second_outcome = '';
+foreach ( (array) ( $second['operations'] ?? array() ) as $r ) {
+    if ( isset( $r['id'] ) && $r['id'] === $op['id'] ) {
+        $second_outcome = (string) ( $r['outcome'] ?? '' );
+        break;
+    }
+}
+s2cs_check( '10.3 second recover short-circuits (status=RECOVERED)', $second_status === \AgentShell_MCP\Content_Recovery::STATUS_RECOVERED, 'status=' . $second_status );
+s2cs_check( '10.4 second recover outcome is already_settled', $second_outcome === 'already_settled', 'outcome=' . $second_outcome );
+
+// The op's state on disk must STILL be publication_settled.
+// (Without the R-1 fix, the second recover would write
+// `state: STATE_COMPENSATING`, corrupting the state machine.)
+$row_after = (array) get_option( Tx::KEY, null );
+$disk_op_after = $row_after['content']['ops'][ $op['id'] ] ?? null;
+s2cs_check( '10.5 op on disk is still publication_settled (state not corrupted)', is_array( $disk_op_after ) && ( $disk_op_after['state'] ?? '' ) === Content_Journal::STATE_PUBLICATION_SETTLED, 'state=' . ( $disk_op_after['state'] ?? 'null' ) );
+
+// The recovery's summary audit row (operation:
+// `transaction_recovery`) is written on every successful
+// recovery call. The R-1 fix prevents the op-level
+// compensation from running a second time, so the only new
+// audit row MUST be the recovery summary, never an op-level
+// compensation row (transaction_edit_published_reconciled_via_recovery
+// or similar).
+$audit_log_after = (array) \AgentShell_MCP\Store::audit_log();
+$audit_count_after = count( $audit_log_after );
+s2cs_check( '10.6 second recover wrote exactly one summary audit row', $audit_count_after === $audit_count_before + 1, 'delta=' . ( $audit_count_after - $audit_count_before ) );
+
+// The newly-prepended audit row (index 0) must be the
+// recovery summary, not an op-level compensation.
+$newest_audit = $audit_log_after[0] ?? array();
+$newest_op    = (string) ( $newest_audit['operation'] ?? '' );
+s2cs_check( '10.7 newest audit is the recovery summary, not op-level compensation', 'transaction_recovery' === $newest_op, 'op=' . $newest_op );
+// And no row in the new audit has the op-level
+// compensation operation.
+$op_level_audit_count = 0;
+foreach ( $audit_log_after as $row ) {
+    if ( 'transaction_edit_published_reconciled_via_recovery' === (string) ( $row['operation'] ?? '' ) ) {
+        $op_level_audit_count++;
+    }
+}
+s2cs_check( '10.8 exactly one op-level compensation audit row (from the first recover)', $op_level_audit_count === 1, 'count=' . $op_level_audit_count );
+
+// Third call — same as second. The repeatability must hold
+// for an arbitrary number of retries.
+$third = \AgentShell_MCP\Content_Recovery::recover( $tx_snapshot, \AgentShell_MCP\Store::actor(), false, true, true );
+$third_outcome = '';
+foreach ( (array) ( $third['operations'] ?? array() ) as $r ) {
+    if ( isset( $r['id'] ) && $r['id'] === $op['id'] ) {
+        $third_outcome = (string) ( $r['outcome'] ?? '' );
+        break;
+    }
+}
+s2cs_check( '10.9 third recover also short-circuits', $third_outcome === 'already_settled', 'outcome=' . $third_outcome );
+$row_after_third = (array) get_option( Tx::KEY, null );
+$disk_op_third = $row_after_third['content']['ops'][ $op['id'] ] ?? null;
+s2cs_check( '10.10 op on disk is still publication_settled after third recover', is_array( $disk_op_third ) && ( $disk_op_third['state'] ?? '' ) === Content_Journal::STATE_PUBLICATION_SETTLED );
+
+s2cs_drop_transaction();
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Summary
 // ─────────────────────────────────────────────────────────────────────────────
 

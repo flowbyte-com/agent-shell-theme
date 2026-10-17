@@ -406,9 +406,19 @@ class Content_Recovery {
         // Already terminal: a repeat recovery says so and touches nothing.
         // This is what makes recovery repeatable, and it is why the "already
         // compensated" case needs no special handling anywhere above.
-        if ( Content_Journal::STATE_COMPENSATED === $op['state'] ) {
+        // STATE_PUBLICATION_SETTLED is a terminal outcome of the
+        // reconciliation tail (the publication is durable; the shadow
+        // and the claim were released in a prior recovery). Without
+        // this short-circuit, a repeat recovery falls through to
+        // claim_or_refresh, writes `state: compensating`, and the
+        // STATUS_PARTIAL branch at line ~308 keeps the transaction
+        // row indefinitely, repeatedly corrupting the same op.
+        if ( Content_Journal::STATE_COMPENSATED === $op['state']
+            || Content_Journal::STATE_PUBLICATION_SETTLED === $op['state'] ) {
             $base['outcome'] = 'already_settled';
-            $base['detail']  = 'already compensated — nothing done';
+            $base['detail']  = Content_Journal::STATE_PUBLICATION_SETTLED === $op['state']
+                ? 'already settled (publication_settled) — nothing done'
+                : 'already compensated — nothing done';
             return array( 'tx' => $tx, 'report' => $base, 'conflict' => null, 'status' => self::STATUS_RECOVERED );
         }
 
