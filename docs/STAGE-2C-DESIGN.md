@@ -2787,6 +2787,43 @@ should sign off before implementation:
    in the claim row), but no UI exposes it; the default is 60
    minutes. Flag if you want a different default.
 
+**§7 status (Stage 2c M5 closeout):** the five open decisions above
+were taken on the design's defaults and the implementation followed:
+
+1. Slug representation in the preview uses the staged `post_name` (option a);
+   the overlay's permalink family carries the staged slug for the request's
+   lifetime and `apply_response_headers` disables `redirect_canonical` so
+   the canonical does not 301 to a non-existent URL.
+2. Author change is out of scope; `post_author` is on the
+   `PROTECTED_PRESERVED_FIELDS` list and is never read from the shadow.
+3. Status transitions remain out of scope; the publish path only accepts
+   `post_status=publish` on the target side. Private and draft are refused
+   by name at the staging boundary.
+4. Single published original per transaction: enforced. The publish and
+   reconcile tools refuse multi-op transactions with
+   `transaction_publish_refused_multiple_ops` /
+   `transaction_reconcile_refused_multiple_ops`.
+5. Claim TTL: 60 minutes default, recorded in the claim row, no UI.
+
+**Audit and known limitations (§7 supplement, M5):** four findings from
+the M5 security audit are documented as class-level contract, not as
+defects to be fixed:
+
+- S-3: the unpublished-post preview HMAC binds `(post_id, user_id, exp)`
+  only; a credential for revision N is still valid after autosave to N+1
+  within the 300s window. The published-content credential already binds
+  `(oid, sid, tx, op, actor, exp)` (see §3.1.2), so the M5 audit limits
+  the S-3 finding to the unpublished-post path.
+- S-4: the shadow's `post_author` is hardcoded to user 1. Test fixtures
+  and `agentshell-test-bed.php`'s preflight provision user 1.
+- S-5: journal CAS writes do not consult `Content_Journal::verify()`. The
+  integrity gate is downstream at the destructive boundary
+  (`class-content-recovery.php::compensate()`), not at every CAS — CAS
+  provides atomicity; verify provides integrity at destruction.
+- S-6: `Store::actor()` returns `'agent'` for any non-logged-in caller;
+  multiple REST-token callers share one audit identity. The token id is
+  recorded separately on each audit row.
+
 ---
 
 ## 8. Implementation sequence (testable milestones)

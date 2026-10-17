@@ -905,6 +905,17 @@ class Content_Journal {
      * "durable before it depends on it" rule is enforced in: it returns true
      * only when the row on disk is the row it just built.
      *
+     * Documented boundary (S-5, Stage 2c M5 audit): the CAS write in this
+     * method does NOT consult `self::verify()`. The integrity gate is
+     * downstream at the destructive boundary
+     * (`class-content-recovery.php::compensate()`'s `verify_post` call),
+     * not at every CAS. This is the layered-gating contract: CAS provides
+     * atomicity, verify provides integrity at destruction. Verifying on
+     * every read would make the journal a single point of contention and
+     * would force every tool call to validate the whole `content` blob.
+     * The destructive engine reads, verifies, and acts — the read path
+     * reads and trusts, because the read path cannot destroy.
+     *
      * @return bool False when the row moved underneath the caller, or the
      *         write failed. The caller must treat that as "nothing was
      *         recorded" and not perform the operation it was journalling for.

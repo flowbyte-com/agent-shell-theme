@@ -124,6 +124,16 @@ class Post_Preview {
      * replayed as another, and the post id so it cannot be pointed at
      * different content. The expiry is signed so the window cannot be stretched
      * by editing the parameter.
+     *
+     * Documented boundary (S-3, Stage 2c M5 audit): the unpublished-post
+     * preview HMAC binds (post_id, user_id, expires) but NOT a revision id.
+     * A credential for draft revision N remains valid after an autosave
+     * to N+1 within the 300-second window. This is by design — published-
+     * content credentials (sign_published_hmac below) already bind (oid, sid,
+     * tx, op, actor, exp), and the unpublished path serves a single draft
+     * the agent just wrote, not a versioned one. If a future change wants
+     * autosave-immune unpublished previews, add a revision id to the
+     * signature and reject credentials whose bound revision has moved.
      */
     private static function sign( $post_id, $user_id, $expires, $secret ) {
         return hash_hmac(

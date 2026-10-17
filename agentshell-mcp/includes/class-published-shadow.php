@@ -287,6 +287,17 @@ class Published_Shadow {
             'post_content' => $fields['post_content'],
             'post_excerpt' => $fields['post_excerpt'],
             'post_name'    => $fields['post_name'],
+            // Documented assumption (S-4, Stage 2c M5 audit): the
+            // shadow's `post_author` is hardcoded to user 1 (the
+            // site administrator). If user 1 is deleted, the shadow
+            // becomes unreachable to any non-administrator (including
+            // the agent). Test fixtures and the agentshell-test.local
+            // preflight both provision user 1; production sites that
+            // delete user 1 should configure a different actor and
+            // update this constant. The choice is by design: the
+            // shadow is internal scaffolding, not author-attributed
+            // content, and a fixed author keeps the post-conditions
+            // independent of the original's author changes.
             'post_author'  => 1,
             'meta_input'   => array(
                 self::META_SHADOW_FOR => (int) $original_id,
