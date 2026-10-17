@@ -2430,17 +2430,26 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
-    'L7: rollback with an intended op refuses without invoking recovery',
+    'L7: rollback with an intended op that left no work in the database settles via recovery and closes the row',
     function () {
+        // Pre-M4 the rollback gate refused an `intended` op outright (no
+        // applied work, no recovery, audit `transaction_rollback_refused`).
+        // M4's `has_applied_or_unsettled_work` predicate includes `intended`
+        // so recovery IS invoked; the recovery engine's no-marker-no-lookalike
+        // branch returns `compensated` because there is no evidence the write
+        // ever happened, and the rollback closes cleanly. This is the safer
+        // end state — the journal is removed and the operator is not left
+        // with an entry they have to clean up by hand.
         jr_reset();
         $op = jr_op( 'intended', 0 );
         jr_seed( jr_live_row( array( $op ), array( 'actor' => 'agent' ) ) );
         $GLOBALS['_agentshell_test_login'] = 'agent';
 
-        $threw = jr_refuse( function () { Tx::instance()->rollback(); } );
-        Agentshell_Test::assert_true( $threw, 'rollback refuses' );
-        Agentshell_Test::assert_equals( 1, count( jr_audit_for( 'transaction_rollback_refused' ) ), 'and the refusal is audited' );
-        Agentshell_Test::assert_equals( 0, count( jr_audit_for( 'transaction_recovery' ) ), 'recovery was not invoked' );
+        $result = Tx::instance()->rollback();
+        Agentshell_Test::assert_true( $result['rolled_back'] ?? false, 'rollback reports success' );
+        Agentshell_Test::assert_equals( null, jr_row_on_disk(), 'and the option row is deleted' );
+        Agentshell_Test::assert_equals( 0, count( jr_audit_for( 'transaction_rollback_refused' ) ), 'and there is no refusal audit (recovery settled the op)' );
+        Agentshell_Test::assert_equals( 1, count( jr_audit_for( 'transaction_recovery' ) ), 'and recovery was invoked' );
     }
 );
 
