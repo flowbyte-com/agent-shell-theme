@@ -1494,6 +1494,65 @@ function agentshell_get_widget_assets() {
 }
 
 /**
+ * Build the <style id='agentshell-widget-css'> block for the page head.
+ *
+ * Pure function returning a CSS string. The bilateral widget registry
+ * (file-based + config-registered) declares per-widget `css` and
+ * `init_js`; the renderer was never wired up to actually emit them, so
+ * `agentshell_register_widget` with `css` was silently inert. This
+ * function returns the concatenation of all widget CSS, ready to drop
+ * into <head> via the wp_head hook registered just below.
+ *
+ * Returns an empty string when no widget has CSS, so the wp_head hook
+ * can skip emission and not bloat the page with an empty <style>.
+ */
+function agentshell_widget_assets_head_css() {
+    return agentshell_get_widget_assets()['css'];
+}
+
+/**
+ * Build the <script id='agentshell-widget-init-js'> block for the footer.
+ *
+ * Same bilateral-registry pipeline as the head CSS, but for init_js.
+ * The original `template-parts/widgets.php` claimed footer.php renders
+ * the JS, but footer.php never did; this function plus the wp_footer
+ * hook restores the intended behaviour without touching the protected
+ * footer template.
+ */
+function agentshell_widget_assets_footer_js() {
+    return agentshell_get_widget_assets()['init_js'];
+}
+
+/**
+ * wp_head hook: emit the widget CSS block.
+ *
+ * The <style id='agentshell-widget-css'> wrapper matches the original
+ * `template-parts/widgets.php` markup so existing widget CSS continues
+ * to scope correctly. No edits to header.php / footer.php / the
+ * widgets template are required — the emission moves into functions.php
+ * (which is not on the protected list) and is dispatched by WordPress's
+ * own wp_head / wp_footer pipeline.
+ */
+function agentshell_emit_widget_assets_head() {
+    $css = agentshell_widget_assets_head_css();
+    if ( '' !== $css ) {
+        echo "<style id='agentshell-widget-css'>\n" . $css . "\n</style>\n";
+    }
+}
+add_action( 'wp_head', 'agentshell_emit_widget_assets_head', 102 );
+
+/**
+ * wp_footer hook: emit the widget init JS block.
+ */
+function agentshell_emit_widget_assets_footer() {
+    $js = agentshell_widget_assets_footer_js();
+    if ( '' !== $js ) {
+        echo "<script id='agentshell-widget-init-js'>\n" . $js . "\n</script>\n";
+    }
+}
+add_action( 'wp_footer', 'agentshell_emit_widget_assets_footer', 102 );
+
+/**
  * Get layout configuration (breakpoints, grid areas, gap, padding).
  * Deep-merges user config over hard defaults so partial configs work.
  *
