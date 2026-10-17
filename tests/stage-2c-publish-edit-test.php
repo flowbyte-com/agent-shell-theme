@@ -1353,6 +1353,128 @@ s2cs_check( '10.10 op on disk is still publication_settled after third recover',
 s2cs_drop_transaction();
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §11 — R-2: a crashed compensation (op left in STATE_COMPENSATING) is
+//      resumed on the next recovery
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// M5-audit defect R-2 (HIGH). A recovery that crashed
+// mid-compensation leaves the op in STATE_COMPENSATING. The
+// pre-fix dispatch treated STATE_COMPENSATING as "unexpected
+// state" and refused as conflict, wedging the transaction
+// slot. The R-2 fix records the pre-claim state in
+// `claim.pre_state` and the dispatch uses that as the
+// authoritative discriminator. This section asserts the
+// fixed contract: a compensation can crash and be resumed.
+
+echo "\n--- §11 R-2: compensation is crash-resumable ---\n";
+
+// 11.1: a crashed reconcile-tail compensation (pre_state was
+//       publication_committed) is resumed and settled.
+s2cs_reset_state();
+$tx = Tx::instance()->begin( 'agent-1', 'R-2 reconcile test' );
+s2cs_seed_original( 11001, 'Original Title', 'Original content.', '', 'orig-11001' );
+$op = s2cs_stage_edit_published( 11001, 16001, array( 'post_title' => 'Staged Title' ) );
+s2cs_seed_shadow( 16001, 11001, $op['id'], array( 'post_title' => 'Staged Title' ) );
+
+// Simulate: the publish SQL transaction committed, the claim
+// step ran and transitioned the op to STATE_COMPENSATING, and
+// then the process crashed BEFORE the reconcile tail could
+// complete. The op is left in STATE_COMPENSATING with the
+// claim held and a partial reconciliation record (audit row
+// written; no other steps verified). pre_state =
+// STATE_PUBLICATION_COMMITTED is the canonical pre-claim
+// state, as recorded by the claim step. The actor matches
+// Store::actor() so the recovery's claim refresh succeeds.
+$now = S2C_T0 + 5;
+$recovery_actor = (string) \AgentShell_MCP\Store::actor();
+s2cs_update_op( $op['id'], function ( $op_row ) use ( $now, $recovery_actor ) {
+    $op_row['state'] = Content_Journal::STATE_COMPENSATING;
+    $op_row['claim'] = array(
+        'actor'     => $recovery_actor,
+        'at'        => $now,
+        'pre_state' => Content_Journal::STATE_PUBLICATION_COMMITTED,
+    );
+    $op_row['reconciliation'] = array(
+        'shadow_deleted'    => array( 'status' => 'pending' ),
+        'caches_invalidated' => array( 'status' => 'pending' ),
+        'claim_released'     => array( 'status' => 'pending' ),
+        'audit_written'     => true,
+    );
+    return $op_row;
+} );
+
+// Resume: the next recovery should pick the op up in
+// STATE_COMPENSATING, read pre_state from `claim.pre_state`,
+// dispatch to the reconcile tail, and settle to
+// publication_settled.
+$resumed = \AgentShell_MCP\Content_Recovery::recover( Tx::instance()->payload(), \AgentShell_MCP\Store::actor(), false, true, true );
+$resumed_status = is_array( $resumed ) ? ( $resumed['status'] ?? '' ) : '';
+$resumed_outcome = '';
+foreach ( (array) ( $resumed['operations'] ?? array() ) as $r ) {
+    if ( isset( $r['id'] ) && $r['id'] === $op['id'] ) {
+        $resumed_outcome = (string) ( $r['outcome'] ?? '' );
+        break;
+    }
+}
+s2cs_check( '11.1 resume settles a crashed reconcile-tail (status=RECOVERED)', $resumed_status === \AgentShell_MCP\Content_Recovery::STATUS_RECOVERED, 'status=' . $resumed_status . ' reason=' . ( $resumed['reason'] ?? '' ) );
+s2cs_check( '11.2 resume outcome is reconciled', $resumed_outcome === 'reconciled', 'outcome=' . $resumed_outcome );
+$row_after_resume = (array) get_option( Tx::KEY, null );
+$disk_op_resume = $row_after_resume['content']['ops'][ $op['id'] ] ?? null;
+s2cs_check( '11.3 op on disk is in publication_settled after resume', is_array( $disk_op_resume ) && ( $disk_op_resume['state'] ?? '' ) === Content_Journal::STATE_PUBLICATION_SETTLED );
+s2cs_check( '11.4 shadow deleted by resume', ! isset( $GLOBALS['_agentshell_test_posts'][ 16001 ] ) );
+s2cs_check( '11.5 claim released by resume', null === Published_Claim::read( 11001 ) );
+
+s2cs_drop_transaction();
+
+// 11.6: a crashed staged-rollback compensation (pre_state was
+//       staged) is resumed and settled to compensated.
+s2cs_reset_state();
+$tx = Tx::instance()->begin( 'agent-1', 'R-2 staged test' );
+s2cs_seed_original( 11002, 'Original Title', 'Original content.', '', 'orig-11002' );
+$op = s2cs_stage_edit_published( 11002, 16002, array( 'post_title' => 'Staged Title' ) );
+s2cs_seed_shadow( 16002, 11002, $op['id'], array( 'post_title' => 'Staged Title' ) );
+
+// Simulate: the claim step ran and transitioned the op to
+// STATE_COMPENSATING, then the staged rollback crashed
+// BEFORE the shadow was deleted. pre_state = STATE_STAGED.
+// The actor matches Store::actor() so the recovery's claim
+// refresh succeeds.
+$now = S2C_T0 + 5;
+$recovery_actor = (string) \AgentShell_MCP\Store::actor();
+s2cs_update_op( $op['id'], function ( $op_row ) use ( $now, $recovery_actor ) {
+    $op_row['state'] = Content_Journal::STATE_COMPENSATING;
+    $op_row['claim'] = array(
+        'actor'     => $recovery_actor,
+        'at'        => $now,
+        'pre_state' => Content_Journal::STATE_STAGED,
+    );
+    return $op_row;
+} );
+
+// Resume: the next recovery should pick the op up, read
+// pre_state = STATE_STAGED, dispatch to staged rollback,
+// delete the shadow, release the claim, and settle to
+// compensated.
+$resumed2 = \AgentShell_MCP\Content_Recovery::recover( Tx::instance()->payload(), \AgentShell_MCP\Store::actor(), false, true, true );
+$resumed2_status = is_array( $resumed2 ) ? ( $resumed2['status'] ?? '' ) : '';
+$resumed2_outcome = '';
+foreach ( (array) ( $resumed2['operations'] ?? array() ) as $r ) {
+    if ( isset( $r['id'] ) && $r['id'] === $op['id'] ) {
+        $resumed2_outcome = (string) ( $r['outcome'] ?? '' );
+        break;
+    }
+}
+s2cs_check( '11.6 resume settles a crashed staged-rollback (status=RECOVERED)', $resumed2_status === \AgentShell_MCP\Content_Recovery::STATUS_RECOVERED, 'status=' . $resumed2_status );
+s2cs_check( '11.7 resume outcome is compensated', $resumed2_outcome === 'compensated', 'outcome=' . $resumed2_outcome );
+$row_after_resume2 = (array) get_option( Tx::KEY, null );
+$disk_op_resume2 = $row_after_resume2['content']['ops'][ $op['id'] ] ?? null;
+s2cs_check( '11.8 op on disk is in compensated after resume', is_array( $disk_op_resume2 ) && ( $disk_op_resume2['state'] ?? '' ) === Content_Journal::STATE_COMPENSATED );
+s2cs_check( '11.9 shadow deleted by resume', ! isset( $GLOBALS['_agentshell_test_posts'][ 16002 ] ) );
+s2cs_check( '11.10 claim released by resume', null === Published_Claim::read( 11002 ) );
+
+s2cs_drop_transaction();
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Summary
 // ─────────────────────────────────────────────────────────────────────────────
 

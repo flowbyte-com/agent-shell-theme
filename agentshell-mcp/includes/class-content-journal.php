@@ -1394,6 +1394,13 @@ class Content_Journal {
             self::STATE_PUBLICATION_COMMITTED,
             self::STATE_RECONCILIATION_PENDING,
             self::STATE_PUBLICATION_SETTLED,
+            // STATE_COMPENSATING is set by the claim step and is
+            // valid on disk if a prior recovery crashed
+            // mid-compensation. The recovery engine reads
+            // `claim.pre_state` to resume the correct compensation
+            // (M5-audit R-2 fix). The validator permits it so the
+            // recovery does not refuse the journal as "unreadable".
+            self::STATE_COMPENSATING,
             self::STATE_COMPENSATED,
             self::STATE_CONFLICT,
             self::STATE_ABANDONED,

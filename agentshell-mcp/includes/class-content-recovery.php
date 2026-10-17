@@ -469,9 +469,21 @@ class Content_Recovery {
         if ( 'refreshed' === $claim_result ) {
             // Refresh: the claim was ours, the `at` is now. Write the refreshed
             // claim with the same CAS so a concurrent swap (e.g. takeover
-            // between settle calls) cannot be silently overridden.
+            // between settle calls) cannot be silently overridden. The
+            // `pre_state` recorded at the original claim time is preserved
+            // — it is the canonical signal for the compensation's dispatch
+            // (R-2 fix: STATE_COMPENSATING on re-entry has no other source
+            // of "what was this op's pre-claim state").
+            $existing_claim          = is_array( $op['claim'] ?? null ) ? $op['claim'] : array();
+            $existing_pre_state      = (string) ( $existing_claim['pre_state'] ?? '' );
             $claimed_content                       = $content;
-            $claimed_content['ops'][ $op_id ]['claim']       = array( 'actor' => $actor, 'at' => $now );
+            $claimed_content['ops'][ $op_id ]['claim']       = array(
+                'actor'     => $actor,
+                'at'        => $now,
+                'pre_state' => '' !== $existing_pre_state
+                    ? $existing_pre_state
+                    : (string) ( $op['state'] ?? '' ),
+            );
             $claimed_content['ops'][ $op_id ]['updated_at'] = $now;
             $claimed_content['sig']                = Content_Journal::sign( $claimed_content );
             $claimed                 = $tx;
@@ -483,9 +495,17 @@ class Content_Recovery {
                 ) ) );
             }
         } else {
+            // Fresh claim: capture the pre-claim state in `claim.pre_state`
+            // so a crashed compensation (which leaves the op in
+            // STATE_COMPENSATING) can be resumed on the next recovery.
+            $pre_claim_state         = (string) ( $op['state'] ?? '' );
             $claimed_content                       = $content;
             $claimed_content['ops'][ $op_id ]['state']       = Content_Journal::STATE_COMPENSATING;
-            $claimed_content['ops'][ $op_id ]['claim']       = array( 'actor' => $actor, 'at' => $now );
+            $claimed_content['ops'][ $op_id ]['claim']       = array(
+                'actor'     => $actor,
+                'at'        => $now,
+                'pre_state' => $pre_claim_state,
+            );
             $claimed_content['ops'][ $op_id ]['updated_at'] = $now;
             $claimed_content['sig']                = Content_Journal::sign( $claimed_content );
 
@@ -1435,9 +1455,21 @@ class Content_Recovery {
         // determines which compensation contract runs (staged →
         // pre-publication rollback, publication_committed /
         // reconciliation_pending → reconcile tail).
-        $state       = is_array( $pre_claim_op ) && isset( $pre_claim_op['state'] )
-            ? (string) $pre_claim_op['state']
-            : (string) ( $op['state'] ?? '' );
+        //
+        // M5-audit defect R-2 (HIGH). When a prior recovery
+        // crashed mid-compensation, the op is left in
+        // STATE_COMPENSATING and `$pre_claim_op['state']`
+        // reflects the crashed state — which is uninformative.
+        // The canonical pre-claim state is recorded in
+        // `claim.pre_state` by the claim step. Prefer that.
+        $claim_record = is_array( $op['claim'] ?? null ) ? $op['claim'] : array();
+        $pre_state    = (string) ( $claim_record['pre_state'] ?? '' );
+        if ( '' === $pre_state ) {
+            $pre_state = is_array( $pre_claim_op ) && isset( $pre_claim_op['state'] )
+                ? (string) $pre_claim_op['state']
+                : (string) ( $op['state'] ?? '' );
+        }
+        $state       = $pre_state;
         $original_id = (int) ( $op['target']['original_id'] ?? 0 );
         $shadow_id   = (int) ( $op['target']['shadow_id']   ?? 0 );
 
