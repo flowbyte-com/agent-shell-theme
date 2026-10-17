@@ -361,8 +361,18 @@ class Content_Journal {
      * somebody still has to decide what to do about the post that diverged, and
      * discarding the journal to free the transaction slot would destroy the
      * record of that decision being needed. So only `compensated` frees the row.
+     *
+     * For OP_EDIT_PUBLISHED, the terminal state is `publication_settled`
+     * (the publication committed and all three reconciliation steps
+     * verified), not `compensated` — there is no post to delete, only
+     * a shadow that should already be gone. Including it here makes
+     * the close-gate logic treat a settled edit as settled, the same
+     * way it treats a compensated create op.
      */
-    const SETTLED_STATES = array( self::STATE_COMPENSATED );
+    const SETTLED_STATES = array(
+        self::STATE_COMPENSATED,
+        self::STATE_PUBLICATION_SETTLED,
+    );
 
     /**
      * Post meta that ties a post to the journal operation that created it.
@@ -606,6 +616,27 @@ class Content_Journal {
             self::STATE_CONFLICT,
             self::STATE_PARTIAL_APPLIED,
             self::STATE_CLAIMED,
+            // OP_EDIT_PUBLISHED in flight: the shadow holds the
+            // staged values, the claim holds the original; the
+            // op is "in progress" the way STATE_INTENDED is for
+            // a create or update. Closing the transaction
+            // without processing it would leave the shadow and
+            // the claim with no owner.
+            self::STATE_STAGED,
+            // OP_EDIT_PUBLISHED with the publication committed
+            // but the reconciliation tail unfinished. The
+            // original carries the staged fields; the shadow
+            // and claim remain. Closing the transaction
+            // without processing it would leave the
+            // reconciliation owed forever (or until a recovery
+            // finds the journal, which is its own race).
+            self::STATE_PUBLICATION_COMMITTED,
+            self::STATE_RECONCILIATION_PENDING,
+            // The transaction's lease has expired. The
+            // recovery engine owns the op; closing the
+            // transaction row without settling it would lose
+            // the reference to the original.
+            self::STATE_ABANDONED,
         );
         foreach ( $content[ self::OPS_KEY ] as $op ) {
             if ( ! is_array( $op ) || ! isset( $op['state'] ) ) {
@@ -639,6 +670,17 @@ class Content_Journal {
             self::STATE_CONFLICT,
             self::STATE_PARTIAL_APPLIED,
             self::STATE_CLAIMED,
+            // OP_EDIT_PUBLISHED live states — see
+            // has_unsettled_work() for the rationale. The
+            // rollback gate's auto-recovery path needs to
+            // process these so a transaction that holds an
+            // OP_EDIT_PUBLISHED op is not left with the
+            // shadow and the claim dangling when the
+            // operator rolls back.
+            self::STATE_STAGED,
+            self::STATE_PUBLICATION_COMMITTED,
+            self::STATE_RECONCILIATION_PENDING,
+            self::STATE_ABANDONED,
         );
         foreach ( $content[ self::OPS_KEY ] as $op ) {
             if ( ! is_array( $op ) || ! isset( $op['state'] ) ) {

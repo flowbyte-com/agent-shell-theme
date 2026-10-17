@@ -961,14 +961,22 @@ class Transaction_Manager {
             // released. The recovery engine handles the per-post advisory
             // lock, the per-post delete_post cap, and the six-field evidence
             // check.
-            $has_applied = false;
-            foreach ( $content['ops'] as $op ) {
-                if ( is_array( $op ) && Content_Journal::STATE_APPLIED === ( $op['state'] ?? '' ) ) {
-                    $has_applied = true;
-                    break;
-                }
-            }
-            if ( $has_applied ) {
+            //
+            // For OP_EDIT_PUBLISHED, the "applied" analog is the M4
+            // live-state set (staged / publication_committed /
+            // reconciliation_pending / abandoned). A rollback against
+            // any of these runs the recovery engine: a `staged` op
+            // goes through pre-publication rollback (advisory lock,
+            // identity-validated shadow delete, value-guarded claim
+            // release, transition to `compensated`); an op in a
+            // committed-state goes through the reconciliation tail
+            // (not a destructive inverse — the publication cannot
+            // be reversed). The `has_applied_or_unsettled_work`
+            // helper now includes those M4 states; the rollback
+            // gate uses the helper rather than a STATE_APPLIED-only
+            // check.
+            $has_live_work = Content_Journal::has_applied_or_unsettled_work( $content );
+            if ( $has_live_work ) {
                 // The auto-compensate rollback runs the per-op settlement
                 // loop on the owner's live transaction. We pass
                 // $allow_live = true so the expiry precondition (which is

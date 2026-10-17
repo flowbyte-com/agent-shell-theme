@@ -519,6 +519,17 @@ class Content_Recovery {
         if ( 'compensated' === $result['outcome'] ) {
             $done_content['ops'][ $op_id ]['state'] = Content_Journal::STATE_COMPENSATED;
             $base['deleted_post_id'] = (int) $result['post_id'];
+        } elseif ( 'reconciled' === $result['outcome'] ) {
+            // OP_EDIT_PUBLISHED reconciliation tail verified.
+            // The publication committed and the three
+            // reconciliation steps landed; the op is fully
+            // settled, just not by way of compensation. The
+            // audit row recorded below uses the
+            // `transaction_published_reconciled` event so a
+            // post-hoc audit log shows the recovery path
+            // distinctly from the publish-time path.
+            $done_content['ops'][ $op_id ]['state'] = Content_Journal::STATE_PUBLICATION_SETTLED;
+            $base['deleted_post_id'] = 0;
         } elseif ( 'conflict' === $result['outcome'] ) {
             $done_content['ops'][ $op_id ]['state'] = Content_Journal::STATE_CONFLICT;
             $done_content['ops'][ $op_id ]['notes'][] = $result['reason'];
@@ -549,6 +560,20 @@ class Content_Recovery {
                 'operation_type' => (string) $claimed_op['op'],
                 'post_id'        => (int) $result['post_id'],
                 'post_type'      => (string) ( $claimed_op['target']['post_type'] ?? '' ),
+            ) );
+        }
+
+        if ( 'reconciled' === $result['outcome'] ) {
+            // OP_EDIT_PUBLISHED reconciliation tail verified via
+            // the recovery engine. The audit row uses a distinct
+            // event so post-hoc analysis can tell the recovery
+            // path from the publish-time path (the publish-time
+            // path records `transaction_published_reconciled`).
+            Store::record_event( $actor, 'transaction_recovery_reconciled', array(
+                'transaction_id' => $report['transaction_id'],
+                'operation'      => $op_id,
+                'operation_type' => (string) $claimed_op['op'],
+                'post_id'        => (int) $result['post_id'],
             ) );
         }
 
@@ -749,6 +774,10 @@ class Content_Recovery {
 
         if ( Content_Journal::OP_EDIT_EXISTING_DRAFT === $type ) {
             return self::compensate_edit_existing( $op, $tx, $current_actor, $explicitly_authorized );
+        }
+
+        if ( Content_Journal::OP_EDIT_PUBLISHED === $type ) {
+            return self::compensate_edit_published( $op, $tx, $current_actor, $explicitly_authorized );
         }
 
         if ( ! in_array( $type, Content_Journal::SUPPORTED_OPERATIONS, true ) ) {
@@ -1293,6 +1322,336 @@ class Content_Recovery {
         } finally {
             Recovery_Advisory_Lock::release( $post_id );
         }
+    }
+
+    /**
+     * Compensate an OP_EDIT_PUBLISHED op, or settle its
+     * reconciliation tail.
+     *
+     * Stage 2c Milestone 4. The compensation shape depends on
+     * the op's `state`:
+     *
+     *   - `staged` (or `abandoned` whose last live state was
+     *     `staged`): PRE-PUBLICATION ROLLBACK. The publication
+     *     has not committed. Acquire the per-tx advisory lock,
+     *     identity-validate the shadow against the op's
+     *     `target.original_id` and `target.shadow_id`, delete
+     *     the shadow, value-guarded release the claim, and
+     *     return `compensated`. The original is NOT touched
+     *     (the publication never landed). The outcome's
+     *     `post_id` is the original's id, not the shadow's —
+     *     the operator reads the original, not the shadow.
+     *
+     *   - `publication_committed` or `reconciliation_pending`:
+     *     RECONCILIATION TAIL. The publication has already
+     *     landed. Recovery cannot reverse it (the contract
+     *     says "never reverse a committed publication"). The
+     *     recovery runs the same per-step status check the
+     *     reconcile tool runs, and only the steps that have
+     *     not been verified run again. The op transitions to
+     *     `publication_settled`; the outcome is `reconciled`,
+     *     a new outcome that `settle_operation()` knows to
+     *     map to `STATE_PUBLICATION_SETTLED`.
+     *
+     *   - `publication_settled` or `compensated`: terminal.
+     *     `settle_operation()` short-circuits this before
+     *     calling compensate(), so this branch is defensive.
+     *
+     *   - `conflict`: terminal-for-recovery. The recovery
+     *     engine does not try to resolve a conflict; a
+     *     recovery_administrator must. The state is preserved.
+     *
+     * The per-tx advisory lock is acquired and released in
+     * `finally`, the same way the create-op and claim-edit
+     * compensations do. A NULL or contended `GET_LOCK`
+     * refuses as `conflict`; the shadow and the claim are
+     * preserved for the next recovery.
+     *
+     * @return array{outcome: string, post_id: int, reason: string}
+     */
+    private static function compensate_edit_published( array $op, array $tx, $current_actor = '', $explicitly_authorized = false ) {
+        $op_id_str   = (string) ( $op['id'] ?? '' );
+        $state       = (string) ( $op['state'] ?? '' );
+        $original_id = (int) ( $op['target']['original_id'] ?? 0 );
+        $shadow_id   = (int) ( $op['target']['shadow_id']   ?? 0 );
+
+        // Per-tx advisory lock. The same lock the publish and
+        // reconcile tools acquire; the lock name is keyed by
+        // the tx id so a single transaction's compensation is
+        // serialised against any other path that might touch
+        // the shadow or the claim.
+        $tx_id = (string) ( $tx['id'] ?? '' );
+        if ( '' === $tx_id ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => 'the OP_EDIT_PUBLISHED op ' . $op_id_str . ' has no transaction id on its '
+                    . 'parent row; the per-tx advisory lock cannot be derived. The shadow and the '
+                    . 'claim are preserved.',
+            );
+        }
+        if ( ! Recovery_Advisory_Lock::available() ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => 'MySQL/MariaDB named advisory locks are unavailable on this database. '
+                    . 'The OP_EDIT_PUBLISHED op ' . $op_id_str . ' cannot be safely compensated '
+                    . 'without the lock; the shadow and the claim are preserved.',
+            );
+        }
+        $acquired = false;
+        try {
+            $acquired = Recovery_Advisory_Lock::acquire( 'tx_' . $tx_id );
+        } catch ( \RuntimeException $e ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => $e->getMessage() . ' The shadow and the claim are preserved for the '
+                    . 'next recovery on an engine that supports advisory locks.',
+            );
+        }
+        if ( ! $acquired ) {
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => 'another connection holds the per-tx advisory lock for transaction '
+                    . $tx_id . '; a publish or reconcile is in flight, or another recovery is '
+                    . 'running. The shadow and the claim are preserved.',
+            );
+        }
+
+        try {
+            // Already-settled short-circuits.
+            if ( Content_Journal::STATE_PUBLICATION_SETTLED === $state
+                || Content_Journal::STATE_COMPENSATED === $state ) {
+                return array(
+                    'outcome' => 'already_settled',
+                    'post_id' => $original_id,
+                    'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' is in terminal state "' . $state
+                        . '"; nothing to do.',
+                );
+            }
+            if ( Content_Journal::STATE_CONFLICT === $state ) {
+                return array(
+                    'outcome' => 'conflict',
+                    'post_id' => $original_id,
+                    'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' is in conflict; the '
+                        . 'recovery engine does not retry conflicts. A recovery_administrator '
+                        . 'must resolve it.',
+                );
+            }
+
+            // Staged or abandoned (whose last live state was staged):
+            // pre-publication rollback. The publication never
+            // committed; the destructive inverse is the shadow
+            // and the claim, not the original.
+            if ( Content_Journal::STATE_STAGED === $state
+                || Content_Journal::STATE_ABANDONED === $state ) {
+                return self::compensate_edit_published_staged(
+                    $op, $tx, $current_actor, $original_id, $shadow_id, $op_id_str
+                );
+            }
+
+            // Publication committed or reconciliation pending:
+            // reconciliation tail. The publication cannot be
+            // reversed; recovery runs the same per-step code
+            // the reconcile tool runs.
+            if ( Content_Journal::STATE_PUBLICATION_COMMITTED === $state
+                || Content_Journal::STATE_RECONCILIATION_PENDING === $state ) {
+                return self::compensate_edit_published_reconcile(
+                    $op, $tx, $current_actor, $original_id, $shadow_id
+                );
+            }
+
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' is in unexpected state "'
+                    . $state . '"; the recovery engine has no compensation contract for it.',
+            );
+        } finally {
+            Recovery_Advisory_Lock::release( 'tx_' . $tx_id );
+        }
+    }
+
+    /**
+     * Pre-publication rollback for an OP_EDIT_PUBLISHED op in
+     * `staged` (or `abandoned`) state. The publication has not
+     * committed; the destructive inverse is the shadow and the
+     * claim, not the original.
+     *
+     * The shadow delete is identity-validated: the pre-delete
+     * check reads the shadow's META_SHADOW_FOR and META_OP_ID
+     * and refuses to delete if either has been retargeted.
+     * The claim release is value-guarded: the cas_delete uses
+     * the row bytes that were present at the read; a row that
+     * has been replaced (by a successor staging) is not
+     * deleted.
+     */
+    private static function compensate_edit_published_staged(
+        array $op, array $tx, $current_actor, $original_id, $shadow_id, $op_id_str
+    ) {
+        // 1. Identity-validated shadow delete.
+        $shadow = get_post( $shadow_id );
+        if ( $shadow ) {
+            $shadow_for = (int) get_post_meta(
+                $shadow_id, \AgentShell_MCP\Published_Shadow::META_SHADOW_FOR, true
+            );
+            $shadow_op = (string) get_post_meta(
+                $shadow_id, \AgentShell_MCP\Published_Shadow::META_OP_ID, true
+            );
+            if ( $shadow_for !== (int) $original_id ) {
+                return array(
+                    'outcome' => 'conflict',
+                    'post_id' => $original_id,
+                    'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' has a shadow (id '
+                        . $shadow_id . ') whose META_SHADOW_FOR is ' . $shadow_for
+                        . ', not the op\'s original id ' . $original_id . '. The shadow has '
+                        . 'been retargeted; the pre-publication rollback refuses. A '
+                        . 'recovery_administrator must resolve the divergence.',
+                );
+            }
+            if ( $shadow_op !== (string) $op_id_str ) {
+                return array(
+                    'outcome' => 'conflict',
+                    'post_id' => $original_id,
+                    'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' has a shadow (id '
+                        . $shadow_id . ') whose META_OP_ID is "' . $shadow_op . '", not the '
+                        . 'op\'s id "' . $op_id_str . '". A newer authorised edit has '
+                        . 'advanced the head pointer; the pre-publication rollback refuses. '
+                        . 'A recovery_administrator must resolve the divergence.',
+                );
+            }
+            $deleted = wp_delete_post( (int) $shadow_id, true );
+            if ( false === $deleted || ( is_object( $deleted ) && method_exists( $deleted, 'get_error_code' ) ) ) {
+                $reason = is_object( $deleted ) && method_exists( $deleted, 'get_error_code' )
+                    ? (string) $deleted->get_error_code() . ' — ' . (string) $deleted->get_error_message()
+                    : 'wp_delete_post returned false';
+                return array(
+                    'outcome' => 'conflict',
+                    'post_id' => $original_id,
+                    'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' could not have its '
+                        . 'shadow (id ' . $shadow_id . ') deleted during pre-publication '
+                        . 'rollback: ' . $reason . '. The shadow and the claim are preserved '
+                        . 'for the next recovery.',
+                );
+            }
+        }
+
+        // 2. Value-guarded claim release. Uses the same
+        //    cas_delete_row that Publish_Edit::run_reconciliation()
+        //    uses for the post-COMMIT path. The per-step status
+        //    marker is recorded in the op's `comp` so a retry
+        //    that sees a half-released claim can resume.
+        $claim = \AgentShell_MCP\Published_Claim::read( $original_id );
+        if ( null !== $claim ) {
+            $expected = maybe_serialize( $claim );
+            $released = \AgentShell_MCP\Content_Write_Guard::run( function () use ( $claim, $expected, $original_id ) {
+                global $wpdb;
+                $key = \AgentShell_MCP\Published_Claim::key( $original_id );
+                if ( isset( $wpdb ) && is_object( $wpdb ) && ! empty( $wpdb->options ) ) {
+                    $wpdb->query( $wpdb->prepare(
+                        "DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+                        $key, $expected
+                    ) );
+                }
+                if ( function_exists( 'wp_cache_delete' ) ) {
+                    wp_cache_delete( $key, 'options' );
+                }
+                return null;
+            } );
+        }
+
+        // The pre-publication rollback is complete. The op
+        // transitions to `compensated` outside this function
+        // (in settle_operation). The `post_id` returned is
+        // the original's id so the audit log shows what
+        // record the compensation was on behalf of.
+        \AgentShell_MCP\Store::record_event(
+            (string) $current_actor,
+            'transaction_edit_published_pre_publication_rollback',
+            array(
+                'transaction_id' => (string) ( $tx['id'] ?? '' ),
+                'op_id'          => (string) $op_id_str,
+                'original_id'    => (int) $original_id,
+                'shadow_id'      => (int) $shadow_id,
+                'reason'         => 'pre-publication rollback: shadow deleted, claim released',
+            )
+        );
+        return array(
+            'outcome' => 'compensated',
+            'post_id' => (int) $original_id,
+            'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' pre-publication rollback: '
+                . 'the shadow (id ' . $shadow_id . ') was deleted, the per-original claim was '
+                . 'value-guarded released, and the original is unchanged (the publication never '
+                . 'committed).',
+        );
+    }
+
+    /**
+     * Reconciliation tail for an OP_EDIT_PUBLISHED op in
+     * `publication_committed` or `reconciliation_pending` state.
+     * The publication has already committed; the recovery
+     * cannot reverse it. It runs the same per-step status check
+     * the reconcile tool runs, observing the per-step
+     * `reconciliation` record to skip steps that are already
+     * verified.
+     *
+     * The op transitions to `publication_settled` after all
+     * three steps verify. The outcome `reconciled` is a new
+     * outcome that `settle_operation()` knows to map to
+     * `STATE_PUBLICATION_SETTLED` rather than `STATE_COMPENSATED`
+     * (the publication was not undone; it was settled).
+     */
+    private static function compensate_edit_published_reconcile(
+        array $op, array $tx, $current_actor, $original_id, $shadow_id
+    ) {
+        // Re-read the op from the journal row to get the
+        // current `reconciliation` record, not the in-process
+        // payload. The per-step status is the source of truth
+        // for which steps are still owed.
+        $op_id_str = (string) $op['id'];
+        $row = (array) get_option( \AgentShell_MCP\Transaction_Manager::KEY, null );
+        $committed_op = ( is_array( $row ) && ! empty( $row['content']['ops'][ $op_id_str ] ) )
+            ? $row['content']['ops'][ $op_id_str ]
+            : $op;
+
+        $recon = \AgentShell_MCP\Tools\Publish_Edit::run_reconciliation(
+            $tx, $committed_op, (string) $current_actor, (int) $original_id, (int) $shadow_id
+        );
+        $state = (string) ( $recon['state'] ?? '' );
+        if ( \AgentShell_MCP\Content_Journal::STATE_PUBLICATION_SETTLED !== $state ) {
+            // A step refused; the op is still in
+            // `reconciliation_pending`. The settle_operation
+            // outcome handling will leave the state at
+            // reconciliation_pending on a conflict-style
+            // outcome; we return a conflict here so the row
+            // is preserved for the next recovery.
+            return array(
+                'outcome' => 'conflict',
+                'post_id' => $original_id,
+                'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' reconciliation step '
+                    . 'refused: ' . (string) ( $recon['reason'] ?? 'no reason recorded' )
+                    . '. The publication is durable; the next recovery (or the '
+                    . 'agentshell_publish_edit_reconcile tool) should retry the owed step(s).',
+            );
+        }
+        \AgentShell_MCP\Store::record_event(
+            (string) $current_actor,
+            'transaction_edit_published_reconciled_via_recovery',
+            array(
+                'transaction_id' => (string) ( $tx['id'] ?? '' ),
+                'op_id'          => (string) $op_id_str,
+                'original_id'    => (int) $original_id,
+                'shadow_id'      => (int) $shadow_id,
+            )
+        );
+        return array(
+            'outcome' => 'reconciled',
+            'post_id' => $original_id,
+            'reason'  => 'OP_EDIT_PUBLISHED op ' . $op_id_str . ' reconciliation tail verified; '
+                . 'all three steps landed and the op is in `publication_settled`.',
+        );
     }
 
     /** The marker value a post must carry for this operation to be recognised. */
