@@ -149,6 +149,43 @@ $tpl_src     = '<?php' . "\n"
     . '    </footer>' . "\n"
     . '</article>' . "\n";
 $tpl_dst = $WP_ROOT . '/wp-content/themes/agent-shell-theme/' . $orig_template;
+
+// Housekeeping guard: the test bed's theme dir is a symlink into the
+// worktree, so a template file written here is checked in to the
+// working tree until the child unlinks it on the happy path. The
+// HAL 9001 review asked: "interruption and crash cleanup cannot
+// silently leave an unsafe stale template or overwrite a pre-existing
+// file." Two answers:
+//
+//  1. OVERWRITE: the original_id is auto-incremented from wp_posts and
+//     so is unique per run. We never target a pre-existing template
+//     that came from a different run. As a defensive guard, if a file
+//     at $tpl_dst already exists AND its content is not this run's
+//     $tpl_src, refuse to clobber it — surface the conflict instead
+//     of overwriting. (Same-content overwrite is a no-op, allowed.)
+if ( is_file( $tpl_dst ) ) {
+    $existing = file_get_contents( $tpl_dst );
+    if ( $existing !== $tpl_src ) {
+        fwrite( STDERR, "refusing to clobber pre-existing template: {$tpl_dst}\n" );
+        fwrite( STDERR, "  (different content from this run's template; run a cleanup pass first)\n" );
+        exit( 7 );
+    }
+}
+
+// 2. CRASH CLEANUP: register a shutdown handler that unlinks the
+//    per-run template on ANY exit path — normal completion, an
+//    uncaught exception, a fatal error, or a SIGKILL after the
+//    handler is registered. (Pre-register cases: file_get_contents
+//    failure, the clobber-guard above, the DB connection failure —
+//    those are exit paths taken BEFORE the handler is registered,
+//    so they correctly leave no template behind.)
+$tpl_dst_for_cleanup = $tpl_dst;
+register_shutdown_function( function() use ( $tpl_dst_for_cleanup ) {
+    if ( is_file( $tpl_dst_for_cleanup ) ) {
+        @unlink( $tpl_dst_for_cleanup );
+    }
+} );
+
 file_put_contents( $tpl_dst, $tpl_src );
 
 // ── 6. Stage a transaction row with one OP_EDIT_PUBLISHED op ──────────
