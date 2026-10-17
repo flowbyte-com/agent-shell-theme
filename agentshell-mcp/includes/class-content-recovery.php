@@ -1614,7 +1614,11 @@ class Content_Recovery {
                 if ( function_exists( 'wp_cache_delete' ) ) {
                     wp_cache_delete( $key, 'options' );
                 }
-                return null;
+                // Return true so the guard commits. The cas DELETE
+                // above is the success signal; returning null/false
+                // would trip `is_failure` and roll the transaction
+                // back, leaving the claim in place.
+                return true;
             } );
         }
 

@@ -873,7 +873,12 @@ class Publish_Edit extends Base_Tool {
             $row['content']['ops'][ $op['id'] ]['notes'][]     = (string) $refused->reason;
             $row['content']['sig'] = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
             \AgentShell_MCP\Transaction_Manager::cas_write_row( $expected, $row );
-            return null;
+            // The cas write is the success signal; return true so the
+            // guard's failure heuristic does not roll the transaction
+            // back. The guard's `is_failure` returns true for null/false
+            // and false for everything else, so any non-empty value
+            // commits.
+            return true;
         } );
         // 2. Refusal audit, outside the SQL transaction.
         \AgentShell_MCP\Store::record_event(
@@ -1177,7 +1182,12 @@ class Publish_Edit extends Base_Tool {
             );
             $row['content']['sig'] = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
             \AgentShell_MCP\Transaction_Manager::cas_write_row( $expected, $row );
-            return null;
+            // The cas write is the success signal; return true so the
+            // guard's failure heuristic does not roll the transaction
+            // back. The guard's `is_failure` returns true for null/false
+            // and false for everything else, so any non-empty value
+            // commits.
+            return true;
         } );
     }
 
@@ -1532,7 +1542,12 @@ class Publish_Edit extends Base_Tool {
             );
             $row['content']['sig'] = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
             \AgentShell_MCP\Transaction_Manager::cas_write_row( $expected, $row );
-            return null;
+            // The cas write is the success signal; return true so the
+            // guard's failure heuristic does not roll the transaction
+            // back. The guard's `is_failure` returns true for null/false
+            // and false for everything else, so any non-empty value
+            // commits.
+            return true;
         } );
         if ( ! is_array( $row ) || empty( $row['content']['ops'][ $op_id_str ] ) ) {
             return $committed_op;
@@ -1573,7 +1588,12 @@ class Publish_Edit extends Base_Tool {
             $row['content']['ops'][ $op_id_str ]['updated_at']      = (int) $now;
             $row['content']['sig'] = \AgentShell_MCP\Content_Journal::sign( $row['content'] );
             \AgentShell_MCP\Transaction_Manager::cas_write_row( $expected, $row );
-            return null;
+            // The cas write is the success signal; return true so the
+            // guard's failure heuristic does not roll the transaction
+            // back. The guard's `is_failure` returns true for null/false
+            // and false for everything else, so any non-empty value
+            // commits.
+            return true;
         } );
         if ( ! is_array( $row ) || empty( $row['content']['ops'][ $op_id_str ] ) ) {
             return $committed_op;
