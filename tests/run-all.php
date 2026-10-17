@@ -56,6 +56,16 @@
  *                      isolates: a sandbox lives outside the checkout,
  *                      writing to it cannot change the checkout, and a change
  *                      to the checkout is detected rather than assumed away
+ *   - stage-2c-foundation  Stage 2c Milestone 1: OP_EDIT_PUBLISHED journal
+ *                      operation, strong immutable baseline, per-original
+ *                      exclusive claim
+ *   - stage-2c-shadow   Stage 2c Milestone 2: private-shadow creation,
+ *                      successive authorised edits, idempotency
+ *   - stage-2c-overlay  Stage 2c Milestone 3: secure published-content
+ *                      preview overlay — credential mint/verify, the
+ *                      overlay's verify_and_install gates, the_posts
+ *                      substitute, field-level overlay filters, permalink
+ *                      family, and template_redirect headers
  *
  * The run fingerprints the checkout before it starts and again after it ends.
  * A test that writes into the working tree turns every other suite into a
@@ -306,6 +316,16 @@ $suites = array(
     // stubs defined inline. Runs after journal-recovery so the postmeta
     // store is already in memory if it ever needs to be.
     'stage-2c-shadow'      => __DIR__ . '/stage-2c-shadow-test.php',
+    // Stage 2c Milestone 3: secure published-content preview overlay.
+    // Unit-only; covers credential mint/verify, the overlay's verify_and_install
+    // gates, the_posts substitute, field-level overlay filters, permalink
+    // family, and template_redirect headers. Live verification is in
+    // stage-2c-overlay-live-test.php and is gated on the test-bed check.
+    'stage-2c-overlay'     => __DIR__ . '/stage-2c-overlay-test.php',
+    // Stage 2c Milestone 3 live verification: the production overlay
+    // code path against a real WordPress install. Gated on the test-bed
+    // fail-closed check having passed; otherwise skipped cleanly.
+    'stage-2c-overlay-live'=> __DIR__ . '/stage-2c-overlay-live-test.php',
 );
 
 $total_passed   = 0;
@@ -325,6 +345,7 @@ $destructive_live_suites = array(
     'content-write-live',
     'journal-recovery-live',
     'navigation-live',
+    'stage-2c-overlay-live',
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );

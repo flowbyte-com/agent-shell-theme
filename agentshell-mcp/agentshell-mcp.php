@@ -37,7 +37,16 @@ require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content-recovery.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot-store.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-post-preview.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-shadow.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-preview-overlay.php';
 \AgentShell_MCP\Transaction_Manager::instance();
+
+// Stage 2c Commit 2 — published-content preview overlay. Hooks init
+// (priority 9), pre_get_posts, the_posts, the_title, the_content, the_excerpt,
+// the permalink family, and template_redirect (priority 1). The overlay
+// refuses silently on any failure: without the verified global, every
+// filter is a pass-through and the main query resolves the original.
+\AgentShell_MCP\Published_Preview_Overlay::register_hooks();
 
 // Screenshot retention. Expired captures are swept hourly; correctness does not
 // depend on this firing, because every read re-checks the expiry itself — but
