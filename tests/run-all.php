@@ -339,6 +339,12 @@ $suites = array(
     // the same test-bed fail-closed check the other destructive
     // live suites use.
     'stage-2c-leak-check-live' => __DIR__ . '/stage-2c-leak-check-live-test.php',
+    // Stage 2c M5-t1 race regression: two concurrent publish_edit
+    // calls (R1) and two concurrent publish_edit_reconcile calls
+    // (R2) against the same op_id. Spawns two child PHP processes
+    // per race with file-based barriers, asserts exactly one
+    // committed / reconciled and one refused. Destructive live.
+    'stage-2c-publish-edit-race-live' => __DIR__ . '/stage-2c-publish-edit-race-live-test.php',
 );
 
 $total_passed   = 0;
@@ -361,6 +367,7 @@ $destructive_live_suites = array(
     'stage-2c-leak-check-live',
     'stage-2c-overlay-live',
     'stage-2c-publish-edit-live',
+    'stage-2c-publish-edit-race-live',
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );
