@@ -435,6 +435,32 @@ p  { margin: 0 0 var(--space-4, 1rem); }
 /* ── SECTION 6: CONTENT ── */
 .u-full-width { width: 100%; }
 
+/* Minimal Gutenberg block defaults. The modernized theme suppresses
+ * the WP block-library enqueue (see agentshell_enqueue_assets()) so
+ * core block styles are not loaded by default; instead the theme
+ * provides only the small set of defaults that the page content
+ * itself does not override via inline styles. The agent (or operator)
+ * is expected to set the visual contract on each block via the
+ * post_content styles (font-size, line-height, color, spacing), so
+ * these rules are deliberately conservative — they only fill in
+ * what is missing for the blocks that need it to read at all. */
+.wp-block-separator {
+    background: transparent !important;
+    border: 0;
+    border-top: 1px solid var(--theme-border, #e7e5e4);
+    margin: 1.5rem 0;
+    height: 0;
+    width: 100%;
+    max-width: var(--theme-content-width, 1200px);
+}
+.wp-block-separator.is-style-wide {
+    border-top-width: 1px;
+}
+.wp-block-separator.is-style-dots {
+    border: 0;
+    background: none !important;
+}
+
 /* ── SECTION 7: WP CORE COMPONENTS ── */
 /*
  * The nav_menu rules live in Section 5 (where the .shell-nav and
@@ -457,6 +483,31 @@ p  { margin: 0 0 var(--space-4, 1rem); }
     color: var(--theme-header-text, var(--theme-text));
 }
 
+/* Site-title link — when the wp_core site_title component renders,
+ * it wraps the blog name in an <a rel="home"> so the title is a
+ * navigable wordmark in either header or footer. The existing
+ * header/footer link rule sets `color: inherit; text-decoration: none`,
+ * so the anchor just needs to carry the same font / weight as the
+ * bare text it replaced, plus a hover/focus state. */
+.wp-core-site_title a,
+.wp-core-site_title .wp-core-site-title-link {
+    font-weight: 700;
+    font-size: 1.25rem;
+    letter-spacing: -0.02em;
+    color: inherit;
+    text-decoration: none;
+    transition: color 150ms ease;
+}
+.wp-core-site_title a:hover,
+.wp-core-site_title a:focus-visible {
+    color: var(--theme-header-accent, var(--theme-accent));
+    outline: none;
+}
+.wp-core-site_title a:focus-visible {
+    box-shadow: var(--focus-ring-width, 2px) 0 0 0 var(--focus-ring-color, var(--theme-accent));
+    border-radius: 2px;
+}
+
 /* Site Tagline */
 .wp-core-site_tagline {
     font-size: 0.875rem;
@@ -474,23 +525,61 @@ p  { margin: 0 0 var(--space-4, 1rem); }
     /* No forced fill; transparent backgrounds per illustration brief. */
 }
 
+/* Site-logo fallback — when no custom logo is set, the wp_core
+ * site_logo component renders a wordmark link to home. The wordmark
+ * is the blog name (not a hardcoded brand), styled as a header
+ * wordmark so the slot always carries the site identity. */
+.wp-core-site_logo .wp-core-site-logo-fallback {
+    display: inline-block;
+    font-family: var(--font-base);
+    font-weight: 700;
+    font-size: 1.35rem;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    color: var(--theme-header-text, var(--theme-text));
+    text-decoration: none;
+    padding: 0.15rem 0;
+    transition: color 150ms ease;
+}
+.wp-core-site_logo .wp-core-site-logo-fallback:hover,
+.wp-core-site_logo .wp-core-site-logo-fallback:focus-visible {
+    color: var(--theme-header-accent, var(--theme-accent));
+    outline: none;
+}
+.wp-core-site_logo .wp-core-site-logo-fallback:focus-visible {
+    box-shadow: var(--focus-ring-width, 2px) 0 0 0 var(--focus-ring-color, var(--theme-accent));
+    border-radius: 2px;
+}
+
 /* Search Form — inline, light, single line. Works on the new flat
- * header background. */
+ * header background.
+ *
+ * WordPress's get_search_form() emits a native <input type="submit">
+ * by default; the previous rule targeted <button>, which never
+ * matched, leaving the submit unstyled. The rules below cover both
+ * <button> and <input type="submit"> so the form looks right
+ * regardless of which WP emits (or which a child theme provides
+ * via a searchform.php template). */
 .wp-core-search_form form {
     display: flex;
     gap: var(--space-2, 0.5rem);
     align-items: center;
+    flex-wrap: nowrap;
 }
 
 .wp-core-search_form input[type="search"] {
     background: var(--theme-bg, #fafaf9);
     border: 1px solid var(--theme-border, #e7e5e4);
     border-radius: var(--radius-sm, 6px);
-    padding: 0.4rem 0.75rem;
+    padding: 0.45rem 0.75rem;
     color: var(--theme-text, #1f2937);
     font-size: 0.95rem;
     font-family: inherit;
     min-width: 0;
+    /* Make the input shrink first on narrow widths; the button
+     * keeps a sensible minimum width so the label doesn't wrap. */
+    flex: 1 1 10rem;
+    max-width: 14rem;
     transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
@@ -506,7 +595,9 @@ p  { margin: 0 0 var(--space-4, 1rem); }
     box-shadow: 0 0 0 2px var(--theme-accent);
 }
 
-.wp-core-search_form button {
+.wp-core-search_form button,
+.wp-core-search_form input[type="submit"].search-submit,
+.wp-core-search_form input.search-submit[type="submit"] {
     padding: 0.45rem 0.9rem;
     background: var(--theme-accent, #e87a3e);
     color: #fff;
@@ -515,17 +606,38 @@ p  { margin: 0 0 var(--space-4, 1rem); }
     cursor: pointer;
     font-size: 0.95rem;
     font-family: inherit;
-    transition: background-color 150ms ease, border-color 150ms ease;
+    font-weight: 500;
+    line-height: 1.2;
+    /* Keep the button from collapsing on narrow viewports. */
+    flex: 0 0 auto;
+    min-height: 2.2rem;
+    /* Reset native <input> button chrome (padding, font, line-height)
+     * so the orange style applies consistently. */
+    -webkit-appearance: none;
+    appearance: none;
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
 }
 
-.wp-core-search_form button:hover {
+.wp-core-search_form button:hover,
+.wp-core-search_form input[type="submit"].search-submit:hover,
+.wp-core-search_form input.search-submit[type="submit"]:hover {
     background: var(--theme-accent-strong, #d4622a);
     border-color: var(--theme-accent-strong, #d4622a);
 }
 
-.wp-core-search_form button:focus-visible {
+.wp-core-search_form button:focus-visible,
+.wp-core-search_form input[type="submit"].search-submit:focus-visible,
+.wp-core-search_form input.search-submit[type="submit"]:focus-visible {
     outline: var(--focus-ring-width, 2px) solid var(--focus-ring-color, var(--theme-accent));
     outline-offset: var(--focus-ring-offset, 2px);
+}
+
+/* On narrow viewports the search input should fill its slot; the
+ * button keeps its label. */
+@media (max-width: 480px) {
+    .wp-core-search_form input[type="search"] {
+        max-width: 100%;
+    }
 }
 
 /* Empty state — used by wp_core components that have no content. */

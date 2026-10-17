@@ -1390,13 +1390,42 @@ function agentshell_get_core_components() {
 function agentshell_render_core_component( $id ) {
     switch ( $id ) {
         case 'site_title':
-            return get_bloginfo( 'name' ) ?: '';
+            $blog_name = get_bloginfo( 'name' );
+            if ( '' === (string) $blog_name ) {
+                return '';
+            }
+            /* Render as a link to home so the title is a navigable
+             * wordmark in either the header or the footer, matching
+             * the site_logo fallback. Plain text only renders when
+             * home_url() is unavailable. */
+            return sprintf(
+                '<a class="wp-core-site-title-link" href="%1$s" rel="home">%2$s</a>',
+                esc_url( home_url( '/' ) ),
+                esc_html( $blog_name )
+            );
         case 'site_tagline':
             return get_bloginfo( 'description' ) ?: '';
         case 'site_logo':
+            // the_custom_logo() prints nothing when no custom logo is set,
+            // leaving the slot visually empty. Fall back to a site-title
+            // wordmark link so the slot always carries a link to home.
+            // The wordmark uses the blog name, not a hardcoded string, so
+            // every site shows its own identity without the theme
+            // hardcoding any brand.
             ob_start();
             the_custom_logo();
-            return ob_get_clean();
+            $logo_markup = ob_get_clean();
+            if ( '' === trim( (string) $logo_markup ) ) {
+                $blog_name = get_bloginfo( 'name' );
+                if ( '' !== (string) $blog_name ) {
+                    $logo_markup = sprintf(
+                        '<a class="wp-core-site-logo-fallback" href="%1$s" rel="home">%2$s</a>',
+                        esc_url( home_url( '/' ) ),
+                        esc_html( $blog_name )
+                    );
+                }
+            }
+            return $logo_markup;
         case 'nav_menu':
             $nav = wp_nav_menu(array(
                 'echo'           => false,
