@@ -30,10 +30,13 @@ $report_path = $argv[2] ?? '';
 ini_set( 'display_errors', 'stderr' );
 error_reporting( E_ALL );
 
-if ( ! is_file( $wp_root . '/wp-load.php' ) ) {
-    fwrite( STDERR, "no wp-load.php at {$wp_root}\n" );
-    exit( 2 );
-}
+// Fail-closed identity guard — refuses the script if the wp_root
+// does not match the test-bed profile. The guard itself checks
+// wp-load.php existence plus the full identity chain (DB name,
+// server_uuid, sentinel, siteurl, grants, open-transaction guard),
+// so the legacy `is_file(wp-load.php)` check is no longer needed.
+require_once __DIR__ . '/agentshell-test-bed.php';
+agentshell_destructive_child_identity_guard( $wp_root, __FILE__ );
 
 define( 'ABSPATH', rtrim( $wp_root, '/' ) . '/' );
 define( 'WP_USE_THEMES', false );

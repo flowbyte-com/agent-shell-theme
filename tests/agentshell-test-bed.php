@@ -898,3 +898,373 @@ function agentshell_test_bed_preflight( array $cfg ) {
         'detail'       => 'crash-window leak (' . $marker_count . ' marker(s)) cleared by baseline restore; 0 markers, 0 transactions after',
     );
 }
+
+/**
+ * Fail-closed identity guard for directly-executable destructive child scripts.
+ *
+ * Why this exists
+ * ---------------
+ * The test infrastructure has two halves:
+ *
+ *   - the parent runner `tests/run-all.php`, which calls
+ *     `agentshell_test_bed_check()` (15 fingerprint checks) and refuses to
+ *     run when the live environment is not the expected test bed;
+ *
+ *   - the standalone destructive child scripts in `tests/*-live-child.php`,
+ *     each of which can also be invoked directly with a `wp_root` argument.
+ *     The parent passes the test-bed's `wp_root`; the child loads it and
+ *     mutates the database. The child never ran the parent's 15-check
+ *     fail-closed gate.
+ *
+ * Gate 3 §2 surfaced exactly this gap: a `test-bed.json` that pointed at the
+ * integration site passed the parent check (because the integration site
+ * matches the *integration* profile, when the config names that profile), and
+ * the integration site's content was used to overwrite the test bed's local
+ * SQL baseline. The parent refused the next run, but a standalone child
+ * invocation would have proceeded without checking anything.
+ *
+ * Contract
+ * --------
+ * The guard is called at the top of every destructive child script, BEFORE
+ * the child calls `require_once wp-load.php`. It accepts the `wp_root` the
+ * child was about to load and verifies that the actual connected WordPress
+ * install and database match the selected test-bed profile.
+ *
+ * The guard refuses (returns ok=false) on any of:
+ *
+ *   - missing or unparseable test-bed config (no profile to verify against)
+ *   - the supplied $wp_root does not contain a wp-load.php
+ *   - the wp-config at $wp_root does not name the expected database
+ *   - the actual connected database is on the wrong server (server_uuid,
+ *     datadir, port differ from the profile)
+ *   - the actual wp_options.agentshell_site_mode does not match the
+ *     expected sentinel
+ *   - the actual wp_options.siteurl / home does not match the expected siteurl
+ *   - the wp_options.agentshell_transaction row has a non-live label and
+ *     applied ops (a real user transaction must not be discarded)
+ *
+ * The guard is fail-closed: when any check cannot run (no mysqli extension,
+ * unreadable wp-config, etc.), it refuses. The caller should treat
+ * `ok=false` as "do not load this WordPress install".
+ *
+ * The guard does NOT itself load WordPress. It parses the wp-config directly
+ * (define() extraction) and connects via the resulting credentials. This
+ * keeps the child from running side-effectful WordPress init before the
+ * identity check passes.
+ *
+ * @param string        $wp_root  The WordPress root the child is about to load.
+ * @param array|null    $cfg      The test-bed config (or null to load it here).
+ * @param string        $label    Optional operator label, surfaced in messages.
+ * @return array {
+ *     @type bool   $ok           True iff every check passed.
+ *     @type array  $checks       Per-check name => { ok, detail }.
+ *     @type string $refusal      Human-readable refusal when $ok is false.
+ *     @type string $db_name      The actual database name.
+ *     @type string $sentinel     Observed agentshell_site_mode.
+ *     @type string $siteurl      Observed siteurl.
+ * }
+ */
+function agentshell_destructive_identity_guard( $wp_root, $cfg = null, $label = '' ) {
+    $checks  = array();
+    $refusal = '';
+    $ok      = true;
+
+    $fail = function ( $name, $detail ) use ( &$checks, &$ok, &$refusal ) {
+        $checks[ $name ] = array( 'ok' => false, 'detail' => $detail );
+        $ok = false;
+        if ( '' === $refusal ) {
+            $refusal = $name . ': ' . $detail;
+        }
+    };
+    $pass = function ( $name, $detail = '' ) use ( &$checks ) {
+        $checks[ $name ] = array( 'ok' => true, 'detail' => $detail );
+    };
+
+    // 1. config present
+    if ( ! is_array( $cfg ) ) {
+        $cfg = agentshell_test_bed_load();
+    }
+    if ( ! is_array( $cfg ) ) {
+        $fail( 'test_bed_config', 'no tests/config/test-bed.json and no AGENTSHELL_TEST_BED_CONFIG' );
+        return array(
+            'ok' => false, 'checks' => $checks, 'refusal' => $refusal,
+            'db_name' => '', 'sentinel' => '', 'siteurl' => '',
+        );
+    }
+    $pass( 'test_bed_config', isset( $cfg['_config_path'] ) ? (string) $cfg['_config_path'] : '(inline)' );
+
+    // 2. wp_root contains a wp-load.php
+    $wp_root = is_string( $wp_root ) ? $wp_root : '';
+    if ( '' === $wp_root || ! is_file( $wp_root . '/wp-load.php' ) ) {
+        $fail( 'wp_root', 'wp-load.php not found at ' . $wp_root );
+        return array(
+            'ok' => false, 'checks' => $checks, 'refusal' => $refusal,
+            'db_name' => '', 'sentinel' => '', 'siteurl' => '',
+        );
+    }
+    $pass( 'wp_root', $wp_root );
+
+    // 3. parse wp-config for DB credentials. We do this with regex
+    //    rather than requiring the file, because requiring wp-config
+    //    has side effects (calls wp_initial_constants, sets $table_prefix,
+    //    etc.). The guard must be side-effect free.
+    $cfg_path = rtrim( $wp_root, '/' ) . '/wp-config.php';
+    $raw      = @file_get_contents( $cfg_path );
+    if ( ! is_string( $raw ) || '' === $raw ) {
+        $fail( 'wp_config_read', 'cannot read ' . $cfg_path );
+        return array(
+            'ok' => false, 'checks' => $checks, 'refusal' => $refusal,
+            'db_name' => '', 'sentinel' => '', 'siteurl' => '',
+        );
+    }
+    $db = array();
+    foreach ( array( 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_HOST' ) as $k ) {
+        if ( preg_match( "/define\\(\\s*['\"]" . preg_quote( $k, '/' ) . "['\"]\\s*,\\s*['\"]?([^'\")]+)['\"]?\\s*\\)/", $raw, $m ) ) {
+            $db[ $k ] = $m[1];
+        } else {
+            $db[ $k ] = '';
+        }
+    }
+    if ( '' === $db['DB_NAME'] || '' === $db['DB_USER'] ) {
+        $fail( 'wp_config_db', 'DB_NAME or DB_USER not found in wp-config.php' );
+        return array(
+            'ok' => false, 'checks' => $checks, 'refusal' => $refusal,
+            'db_name' => '', 'sentinel' => '', 'siteurl' => '',
+        );
+    }
+    $pass( 'wp_config_db', $db['DB_NAME'] . ' as ' . $db['DB_USER'] );
+
+    // 4. The DB name parsed from wp-config must match the config's
+    //    expected db.name. This is the load-bearing check: a child
+    //    that loads the integration site's wp-config while the
+    //    profile expects the test bed fails here.
+    $expected_db = isset( $cfg['db']['name'] ) ? (string) $cfg['db']['name'] : '';
+    if ( '' !== $expected_db && $db['DB_NAME'] !== $expected_db ) {
+        $fail(
+            'db_name',
+            'wp-config DB_NAME "' . $db['DB_NAME'] . '" does not match the profile\'s expected db.name "' . $expected_db . '"'
+        );
+    } else {
+        $pass( 'db_name', $db['DB_NAME'] );
+    }
+
+    // 5. connect to the actual database. The connection uses the
+    //    credentials parsed from wp-config — NOT the profile's
+    //    credentials — so a wp-config that points at the wrong
+    //    database fails this check (and the next).
+    if ( ! class_exists( 'mysqli' ) ) {
+        $fail( 'mysqli', 'mysqli extension is not available; cannot verify identity' );
+        return array(
+            'ok' => false, 'checks' => $checks, 'refusal' => $refusal,
+            'db_name' => $db['DB_NAME'], 'sentinel' => '', 'siteurl' => '',
+        );
+    }
+    $db_host = $db['DB_HOST'];
+    $socket  = '';
+    if ( strpos( $db_host, ':' ) !== false ) {
+        list( $db_host, $socket ) = explode( ':', $db_host, 2 );
+    }
+    if ( '' === $db_host ) { $db_host = 'localhost'; }
+    $mysqli = @new mysqli( $db_host, $db['DB_USER'], $db['DB_PASSWORD'], $db['DB_NAME'], 0, $socket );
+    if ( ! ( $mysqli instanceof mysqli ) || $mysqli->connect_errno ) {
+        $fail( 'db_connect', 'cannot connect to ' . $db['DB_USER'] . '@' . $db['DB_HOST'] . ' / ' . $db['DB_NAME'] . ': ' . ( $mysqli instanceof mysqli ? $mysqli->connect_error : 'mysqli ctor failed' ) );
+        return array(
+            'ok' => false, 'checks' => $checks, 'refusal' => $refusal,
+            'db_name' => $db['DB_NAME'], 'sentinel' => '', 'siteurl' => '',
+        );
+    }
+    $pass( 'db_connect', $db['DB_USER'] . '@' . $db_host );
+
+    // 6. server identity (the load-bearing "wrong instance" check).
+    $expected_uuid = isset( $cfg['expect']['server_uuid'] ) ? (string) $cfg['expect']['server_uuid'] : '';
+    $row = $mysqli->query( "SELECT @@server_uuid" )->fetch_row();
+    $observed_uuid = is_array( $row ) ? (string) $row[0] : '';
+    if ( '' !== $expected_uuid && $observed_uuid !== $expected_uuid ) {
+        $fail( 'server_uuid', 'expected ' . $expected_uuid . ' observed ' . $observed_uuid );
+    } else {
+        $pass( 'server_uuid', $observed_uuid );
+    }
+
+    $expected_dd = isset( $cfg['expect']['expected_datadir'] ) ? (string) $cfg['expect']['expected_datadir'] : '';
+    $row = $mysqli->query( "SELECT @@datadir" )->fetch_row();
+    $observed_dd = is_array( $row ) ? (string) $row[0] : '';
+    $norm = function ( $p ) { return rtrim( (string) $p, '/' ); };
+    if ( '' !== $expected_dd && $norm( $observed_dd ) !== $norm( $expected_dd ) ) {
+        $fail( 'datadir', 'expected ' . $expected_dd . ' observed ' . $observed_dd );
+    } else {
+        $pass( 'datadir', $observed_dd );
+    }
+
+    $expected_port = isset( $cfg['expect']['expected_port'] ) ? (int) $cfg['expect']['expected_port'] : 0;
+    $row = $mysqli->query( "SELECT @@port" )->fetch_row();
+    $observed_port = is_array( $row ) ? (int) $row[0] : 0;
+    if ( 0 !== $expected_port && $observed_port !== $expected_port ) {
+        $fail( 'port', 'expected ' . $expected_port . ' observed ' . $observed_port );
+    } else {
+        $pass( 'port', (string) $observed_port );
+    }
+
+    // 7. site_mode sentinel — the actual content check. A wp-config
+    //    that points at the integration DB would pass the connection
+    //    and server checks (same MySQL instance); only the sentinel
+    //    catches it.
+    $expected_sentinel = isset( $cfg['expect']['site_mode_sentinel'] ) ? (string) $cfg['expect']['site_mode_sentinel'] : '';
+    $row = $mysqli->query( "SELECT option_value FROM wp_options WHERE option_name='agentshell_site_mode'" );
+    $observed_sentinel = ( $row instanceof mysqli_result && $r = $row->fetch_row() ) ? (string) $r[0] : '';
+    if ( '' !== $expected_sentinel && $observed_sentinel !== $expected_sentinel ) {
+        $fail(
+            'site_mode_sentinel',
+            'expected "' . $expected_sentinel . '" observed "' . $observed_sentinel . '"'
+        );
+    } else {
+        $pass( 'site_mode_sentinel', $observed_sentinel );
+    }
+
+    // 8. siteurl — a siteurl of "http://127.0.0.1:10011" when the
+    //    profile expects "http://127.0.0.1:10009" means the wrong
+    //    WordPress is mounted at this wp_root.
+    $row = $mysqli->query( "SELECT option_value FROM wp_options WHERE option_name='siteurl'" );
+    $observed_siteurl = ( $row instanceof mysqli_result && $r = $row->fetch_row() ) ? (string) $r[0] : '';
+    $expected_url = isset( $cfg['url_http'] ) ? (string) $cfg['url_http'] : ( isset( $cfg['url_https'] ) ? (string) $cfg['url_https'] : '' );
+    if ( '' !== $expected_url && '' !== $observed_siteurl && 0 !== strpos( $observed_siteurl, $expected_url ) ) {
+        $fail(
+            'siteurl',
+            'expected siteurl to start with "' . $expected_url . '" observed "' . $observed_siteurl . '"'
+        );
+    } else {
+        $pass( 'siteurl', $observed_siteurl );
+    }
+
+    // 9. user grants. The restricted user (test-bed's
+    //    agentshell_test) has grants only on the test bed DB; the
+    //    integration user has grants only on the integration DB. A
+    //    cross-grant is impossible by grant structure, so a passing
+    //    grants check is additional proof that the correct user is
+    //    connecting to the correct database.
+    $row = $mysqli->query( "SHOW GRANTS FOR CURRENT_USER()" );
+    $grants_blob = '';
+    if ( $row instanceof mysqli_result ) {
+        while ( $r = $row->fetch_row() ) { $grants_blob .= (string) $r[0] . "\n"; }
+    }
+    $expected_db_escaped = str_replace( array( '`', '.' ), array( '``', '\\.' ), (string) $db['DB_NAME'] );
+    if ( '' === $grants_blob || false === strpos( $grants_blob, 'GRANT' ) ) {
+        $fail( 'db_user_grants', 'no grants found for current user' );
+    } elseif ( false === strpos( $grants_blob, '`' . $expected_db_escaped . '`' ) ) {
+        $fail(
+            'db_user_grants',
+            'current user has no grant on the expected database `' . $expected_db_escaped . '`; grants: ' . trim( $grants_blob )
+        );
+    } else {
+        $pass( 'db_user_grants', 'current user has a grant on `' . $expected_db_escaped . '`' );
+    }
+
+    // 10. protection against a real user transaction. The
+    //     pre-existing protection in agentshell_test_bed_preflight
+    //     refuses to run when the agentshell_transaction option has
+    //     a non-`live` label and applied ops; the guard mirrors that
+    //     protection so a child invoked mid-recovery refuses rather
+    //     than overwriting the recovery work.
+    $row = $mysqli->query( "SELECT option_value FROM wp_options WHERE option_name='agentshell_transaction'" );
+    if ( $row instanceof mysqli_result && $tx_row = $row->fetch_row() ) {
+        $tx = json_decode( (string) $tx_row[0], true );
+        if ( is_array( $tx ) ) {
+            $tx_label = isset( $tx['label'] ) ? (string) $tx['label'] : '';
+            if ( 0 !== strpos( $tx_label, 'live ' ) ) {
+                $fail(
+                    'real_user_tx',
+                    'open transaction with non-test label "' . $tx_label . '" is preserved; the guard refuses to overwrite it'
+                );
+            } else {
+                $ops = isset( $tx['content']['ops'] ) && is_array( $tx['content']['ops'] ) ? $tx['content']['ops'] : array();
+                $applied = 0;
+                foreach ( $ops as $op ) {
+                    if ( is_array( $op ) && ( $op['state'] ?? '' ) === 'applied' ) {
+                        $applied++;
+                    }
+                }
+                if ( $applied > 0 ) {
+                    $fail(
+                        'active_recovery',
+                        'open test transaction "' . $tx_label . '" has ' . $applied . ' applied op(s); recovery in progress, guard refuses'
+                    );
+                } else {
+                    $pass( 'transaction_slot', 'test transaction "' . $tx_label . '" with no applied work' );
+                }
+            }
+        } else {
+            $pass( 'transaction_slot', 'agentshell_transaction option present but unparseable' );
+        }
+    } else {
+        $pass( 'transaction_slot', 'no open transaction' );
+    }
+
+    $mysqli->close();
+
+    return array(
+        'ok'       => $ok,
+        'checks'   => $checks,
+        'refusal'  => $refusal,
+        'db_name'  => $db['DB_NAME'],
+        'sentinel' => $observed_sentinel,
+        'siteurl'  => $observed_siteurl,
+    );
+}
+
+/**
+ * Print a structured refusal report and exit 7. The exit code 7 is
+ * distinct from the runner's exit codes (2 = check failed, 3 = lock held,
+ * 4 = preflight refused, 5 = baseline restore failed) and from generic
+ * fatal codes (1, 2). A child that exits 7 means "identity guard refused;
+ * the operator must investigate the wp_root that was supplied".
+ *
+ * @param array  $result  The result returned by agentshell_destructive_identity_guard().
+ * @param string $label   Optional operator label for the message.
+ * @return never
+ */
+function agentshell_destructive_identity_guard_refuse( $result, $label = '' ) {
+    fwrite( STDERR, "\n[identity-guard] REFUSED — refusing to mutate the database\n" );
+    if ( '' !== $label ) {
+        fwrite( STDERR, "[identity-guard] label: " . $label . "\n" );
+    }
+    if ( ! empty( $result['refusal'] ) ) {
+        fwrite( STDERR, "[identity-guard] refusal: " . $result['refusal'] . "\n" );
+    }
+    if ( ! empty( $result['checks'] ) && is_array( $result['checks'] ) ) {
+        foreach ( $result['checks'] as $name => $r ) {
+            fwrite( STDERR, "[identity-guard]   $name: " . ( $r['ok'] ? 'ok' : 'FAIL' ) . ' ' . $r['detail'] . "\n" );
+        }
+    }
+    fwrite( STDERR, "\n[identity-guard] the destructive guard does not delete any data; it either\n" );
+    fwrite( STDERR, "[identity-guard] returns ok=true (and the caller may proceed) or refuses with\n" );
+    fwrite( STDERR, "[identity-guard] a clear reason. The child script exits 7.\n\n" );
+    exit( 7 );
+}
+
+/**
+ * Thin convenience wrapper for destructive child scripts.
+ *
+ * Each `tests/*-live-child.php` script begins with:
+ *
+ *     $wp_root = $argv[1] ?? '';
+ *     require_once __DIR__ . '/agentshell-test-bed.php';
+ *     agentshell_destructive_child_identity_guard( $wp_root, __FILE__ );
+ *
+ * The wrapper auto-loads the test-bed config, runs the full guard, and
+ * either returns silently (caller may proceed) or prints the structured
+ * refusal and exits 7. The child never gets to `require_once wp-load.php`
+ * when the guard refuses.
+ *
+ * The `$label` parameter is recorded in the refusal so the operator can
+ * see which child refused; convention is to pass `__FILE__` so the path
+ * identifies the refusing script.
+ *
+ * @param string $wp_root  The WordPress root the child is about to load.
+ * @param string $label    Optional operator label (e.g. __FILE__).
+ * @return void
+ */
+function agentshell_destructive_child_identity_guard( $wp_root, $label = '' ) {
+    $result = agentshell_destructive_identity_guard( $wp_root, null, $label );
+    if ( empty( $result['ok'] ) ) {
+        agentshell_destructive_identity_guard_refuse( $result, $label );
+    }
+}

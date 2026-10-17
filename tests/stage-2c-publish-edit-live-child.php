@@ -61,10 +61,15 @@ if ( '' === $WP_ROOT || '' === $RESULT ) {
     exit( 2 );
 }
 
-if ( ! is_file( $WP_ROOT . '/wp-load.php' ) ) {
-    fwrite( STDERR, "no wp-load.php at {$WP_ROOT}\n" );
-    exit( 2 );
-}
+// Fail-closed identity guard — refuses the script if the wp_root
+// does not match the test-bed profile. The guard itself checks
+// wp-load.php existence plus the full identity chain (DB name,
+// server_uuid, sentinel, siteurl, grants, open-transaction guard),
+// and prints a structured refusal + exits 7 on any mismatch. The
+// legacy `is_file(wp-load.php)` check that used to sit here is now
+// redundant: the guard runs it as the very first check.
+require_once __DIR__ . '/agentshell-test-bed.php';
+agentshell_destructive_child_identity_guard( $WP_ROOT, __FILE__ );
 
 define( 'ABSPATH', rtrim( $WP_ROOT, '/' ) . '/' );
 define( 'WP_USE_THEMES', false );

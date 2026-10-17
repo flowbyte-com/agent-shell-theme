@@ -313,6 +313,15 @@ $suites = array(
     // the plugin source and exercises the filter via the test
     // bootstrap, no WordPress install required.
     'mcp-execute-tool-dispatch' => __DIR__ . '/mcp-execute-tool-dispatch-test.php',
+    // Gate 3 §3: every destructive child script (`tests/*-live-child.php`)
+    // must call agentshell_destructive_child_identity_guard() before
+    // require_once wp-load.php and exit 7 when the wp_root does not match
+    // the test-bed profile. The parent runner's agentshell_test_bed_check()
+    // runs once before any suite; the guard runs in the standalone child
+    // even when the parent is bypassed. Negative cases (bad wp_root,
+    // integration site's wp_root, wrong sentinel) refuse; the contaminated
+    // test bed refuses until Phase 4 restores it.
+    'destructive-identity-guard' => __DIR__ . '/destructive-identity-guard-test.php',
     'security-headers'     => __DIR__ . '/security-headers-test.php',
     'daemon-version'       => __DIR__ . '/daemon-version-test.php',
     'navigation'           => __DIR__ . '/navigation-test.php',
