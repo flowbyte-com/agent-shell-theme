@@ -304,6 +304,15 @@ $suites = array(
     'static-token-auth'    => __DIR__ . '/static-token-auth-test.php',
     'app-password-auth'    => __DIR__ . '/app-password-auth-test.php',
     'tool-schema'          => __DIR__ . '/tool-schema-test.php',
+    // Section E regression: agentshell_mcp_execute_tool filter must have
+    // an accepted_args that matches its callback's parameter count. The
+    // pre-fix source had a 4-parameter callback registered with
+    // accepted_args=3, which turned every unknown tool name into an
+    // uncaught ArgumentCountError → HTTP 500 instead of the JSON-RPC
+    // METHOD_NOT_FOUND the dispatcher wants. Non-destructive: reads
+    // the plugin source and exercises the filter via the test
+    // bootstrap, no WordPress install required.
+    'mcp-execute-tool-dispatch' => __DIR__ . '/mcp-execute-tool-dispatch-test.php',
     'security-headers'     => __DIR__ . '/security-headers-test.php',
     'daemon-version'       => __DIR__ . '/daemon-version-test.php',
     'navigation'           => __DIR__ . '/navigation-test.php',

@@ -108,7 +108,13 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
  * elsewhere, so they are still delegated here — over a registry that now reads
  * the canonical store.
  */
-add_filter( 'agentshell_mcp_execute_tool', function( $response, $tool_name, $arguments, $tool_registry ) {
+add_filter( 'agentshell_mcp_execute_tool', function( $response, $tool_name, $arguments ) {
+    // Section E fix: the previous closure declared 4 parameters but the
+    // dispatcher in class-server.php:104 calls apply_filters() with three
+    // arguments (null, $tool_name, $arguments). The fourth parameter,
+    // $tool_registry, was never read in the body — and was never passed by
+    // the dispatcher either — so the only way to reconcile the two was
+    // to drop the parameter. The body is unchanged.
     $widget_tools = array( 'agentshell_unregister_widget', 'agentshell_get_widget' );
     if ( ! in_array( $tool_name, $widget_tools, true ) ) {
         return $response; // Not ours — pass through
