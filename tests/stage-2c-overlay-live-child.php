@@ -19,16 +19,29 @@
  * No curl. The HTTP probe uses `file_get_contents` + `stream_context_create`,
  * with the credential riding in the query string (no Authorization
  * header) — the same pattern the spike uses.
+ *
+ * argv: 1 WordPress root  2 result file path
+ * The WordPress root MUST be passed as argv[1]. The legacy hardcoded
+ * default was removed because it prevented the destructive-child
+ * identity guard from being exercised against a wrong root — the
+ * hardcoded value matched the test-bed profile, so the guard
+ * accepted it and the require_only step then failed for unrelated
+ * reasons (exit 255 from a missing wp-load.php) rather than the
+ * structured refusal the guard is designed to produce (exit 7).
  */
 
-$WP_ROOT  = '/home/v/local/agentshell-test/app/public';
+$WP_ROOT  = (string) ( $argv[1] ?? '' );
+$RESULT   = (string) ( $argv[2] ?? '' );
+if ( '' === $WP_ROOT ) {
+    fwrite( STDERR, "stage-2c-overlay-live-child: argv[1] (WordPress root) is required\n" );
+    exit( 7 );
+}
 $SITE     = 'http://agentshell-test.local';
 $DB_SOCK  = '/home/v/.config/Local/run/JcloZdmY7/mysql/mysqld.sock';
 $DB_USER  = 'root';
 $DB_PASS  = 'root';
 $DB_NAME  = 'agentshell_test_bed';
 $MARKER   = 'STAGE2C_OVR_LIVE';
-$RESULT   = sys_get_temp_dir() . '/stage-2c-overlay-live-result.json';
 
 ini_set( 'display_errors', 'stderr' );
 error_reporting( E_ALL );
