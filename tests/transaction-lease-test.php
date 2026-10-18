@@ -65,6 +65,7 @@ require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-base-too
 require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-begin-transaction.php';
 require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-get-transaction.php';
 
+use AgentShell_MCP\Content_Journal;
 use AgentShell_MCP\Store;
 use AgentShell_MCP\Transaction_Manager as Tx;
 use AgentShell_MCP\Tools\Begin_Transaction;
@@ -278,6 +279,68 @@ Agentshell_Test::run(
         Agentshell_Test::assert_equals( 3600, $out['transaction']['lease']['seconds_remaining'] );
         Agentshell_Test::assert_false( $out['transaction']['lease']['expired'] );
         unset( $out, $tx );
+    }
+);
+
+Agentshell_Test::run(
+    'get_transaction reports has_staged_changes=true for an OP_EDIT_PUBLISHED op staged in the journal',
+    function () {
+        // Contract regression (§4 of the final verification pass): the
+        // tx's `staged` field is the config-token diff and stays null for
+        // OP_EDIT_PUBLISHED ops; the journal under `tx[content]` is where
+        // the staged edit lives. has_staged_changes must reflect either
+        // path, otherwise a tx with a staged edit silently reports
+        // "nothing to publish" to the agent.
+        lease_reset();
+        $tx = Tx::instance()->begin( 'edit-published-staged' );
+
+        // Attach a minimal OP_EDIT_PUBLISHED op in the `staged` state.
+        $op = Content_Journal::record_intent(
+            Content_Journal::OP_EDIT_PUBLISHED,
+            array(
+                'post_type'   => 'page',
+                'post_status' => 'publish',
+                'original_id' => 101,
+                'shadow_id'   => 202,
+            ),
+            array(
+                'post_title'   => 'Staged',
+                'post_content' => 'Staged body.',
+                'post_excerpt' => '',
+                'post_name'    => 'staged',
+            ),
+            'agent'
+        );
+        // attach() returns bool (the cas result), not the next tx array.
+        // Re-read the row to obtain the post-attach state.
+        Content_Journal::attach( $tx, $op );
+        $tx_post = lease_row();
+
+        // Tx.staged is null because the op went through the journal,
+        // not the config-token diff path.
+        Agentshell_Test::assert_true( ! is_array( $tx_post['staged'] ) );
+
+        $out = ( new Get_Transaction() )->execute( array() );
+        Agentshell_Test::assert_true( $out['open'] );
+        Agentshell_Test::assert_true(
+            $out['transaction']['has_staged_changes'],
+            'has_staged_changes must be true for an OP_EDIT_PUBLISHED op in the journal'
+        );
+
+        // Round-trip: a settled op makes the flag false.
+        $settled = $op;
+        $settled['state'] = Content_Journal::STATE_PUBLICATION_SETTLED;
+        Content_Journal::attach( $tx_post, $settled );
+        // The attach() above replaces the prior op in the journal by id,
+        // so the journal now has a settled op and has_unsettled_work
+        // returns false.
+        $out2 = ( new Get_Transaction() )->execute( array() );
+        Agentshell_Test::assert_false(
+            $out2['transaction']['has_staged_changes'],
+            'has_staged_changes must be false once the journal op is settled'
+        );
+
+        Tx::instance()->rollback();
     }
 );
 

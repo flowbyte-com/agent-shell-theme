@@ -44,6 +44,18 @@ class Get_Transaction extends Base_Tool {
             );
         }
 
+        // OP_EDIT_PUBLISHED ops stage into the journal, not into
+        // `payload['staged']` (which carries config-token diffs).
+        // `has_staged_changes` must therefore reflect either path,
+        // otherwise a tx that has a staged edit reports
+        // has_staged_changes=false even though the staged shadow
+        // and claim are live. See §4 of the final verification
+        // pass; this is the contract defect the audit exposed.
+        $content = isset( $payload[ \AgentShell_MCP\Content_Journal::CONTENT_KEY ] )
+            ? $payload[ \AgentShell_MCP\Content_Journal::CONTENT_KEY ]
+            : null;
+        $has_journal_unsettled = \AgentShell_MCP\Content_Journal::has_unsettled_work( $content );
+
         return array(
             'open'        => true,
             'transaction' => array(
@@ -52,7 +64,7 @@ class Get_Transaction extends Base_Tool {
                 'actor'       => $payload['actor'],
                 'timestamp'   => $payload['timestamp'],
                 'lease'       => \AgentShell_MCP\Transaction_Manager::describe( $payload ),
-                'has_staged_changes' => is_array( $payload['staged'] ),
+                'has_staged_changes' => is_array( $payload['staged'] ) || $has_journal_unsettled,
                 'staged_tokens' => $payload['staged']
                     ? \AgentShell_MCP\Store::diff_token_keys( $payload['before'], $payload['staged'] )
                     : array(),
