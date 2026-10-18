@@ -856,22 +856,91 @@ function agentshell_test_bed_preflight( array $cfg ) {
     // by semicolons; the default single-statement query() would
     // execute only the first one. The connection is closed on
     // error; on success we close it cleanly.
+    //
+    // The drain loop below is the load-bearing piece: the first
+    // statement of a multi_query may succeed (so `multi_query`
+    // returns `true`) and a later statement may fail. The failure
+    // is surfaced in two ways:
+    //
+    //   (a) `next_result()` throws `mysqli_sql_exception` for a
+    //       queued statement that hit, e.g., a duplicate-key error
+    //       (when `MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT` is
+    //       in effect, which is the default on PHP 8.1+);
+    //   (b) `next_result()` returns `false` and sets `$mysqli->error`
+    //       for a queued statement that failed silently.
+    //
+    // Both cases must produce a structured `restore_failed` return
+    // with the MySQL error and a safe statement context. The pre-fix
+    // code only handled the "multi_query returned false" path
+    // (line 859) and the silent-success path: a `next_result()`
+    // throw killed the runner via uncaught exception, and a
+    // `next_result()` returning false with `$mysqli->error` set
+    // was discarded by the while-loop condition `$mysqli->more_results()
+    // && $mysqli->next_result()`. The result was a `restore_failed`
+    // return on the *verification* step ("baseline restored but
+    // verification shows N marker(s)") that named the symptom, not
+    // the cause.
+    $restore_errors  = array();
+    $restore_context = array();
     if ( ! $mysqli->multi_query( $sql ) ) {
-        $reason = $mysqli->error;
+        $restore_errors[]  = 'multi_query submission failed: ' . $mysqli->error;
+        $restore_context[] = 'multi_query';
+    } else {
+        // Drain the result sets multi_query queues up. Catch
+        // `mysqli_sql_exception` (path a) and inspect `$mysqli->error`
+        // after every iteration (path b). The catch is the primary
+        // fix; the post-loop error check is the secondary
+        // defence-in-depth.
+        try {
+            $stmt_index = 0;
+            while ( $mysqli->more_results() ) {
+                $advance = $mysqli->next_result();
+                $stmt_index++;
+                if ( ! $advance ) {
+                    if ( '' !== $mysqli->error ) {
+                        $restore_errors[]  = 'queued statement ' . $stmt_index . ' failed: ' . $mysqli->error;
+                        $restore_context[] = 'drain stmt#' . $stmt_index;
+                    }
+                    break;
+                }
+                $extra = $mysqli->store_result();
+                if ( $extra instanceof mysqli_result ) {
+                    $extra->free();
+                }
+            }
+            // Belt-and-braces: if no exception fired but a queued
+            // statement silently failed on a path that returned
+            // `true` from `next_result()` (some PHP/MySQL combos),
+            // `$mysqli->error` is set. Surface it now.
+            if ( '' === implode( '', $restore_errors ) && '' !== $mysqli->error ) {
+                $restore_errors[]  = 'drain completed with pending error: ' . $mysqli->error;
+                $restore_context[] = 'drain-post';
+            }
+        } catch ( \mysqli_sql_exception $e ) {
+            $restore_errors[]  = 'drain-loop mysqli_sql_exception: ' . $e->getMessage();
+            $restore_context[] = 'drain-exception';
+            // Best-effort: drain any remaining queued results so the
+            // connection can close cleanly. We do NOT retry the
+            // import — HAL 9001 directive: "Do not retry a partially
+            // completed import automatically."
+            while ( $mysqli->more_results() ) {
+                @$mysqli->next_result();
+            }
+        }
+    }
+    if ( ! empty( $restore_errors ) ) {
+        // A failed restore must not be retried automatically. The
+        // caller (the runner's pre-run crash-window check) sees a
+        // structured `restore_failed` action and refuses to spawn
+        // any destructive child. Partial state may remain on disk;
+        // that is the operator's recovery path, not the runner's.
         $mysqli->close();
         return array(
             'ok'           => false,
             'action'       => 'restore_failed',
             'marker_count' => $marker_count,
-            'detail'       => 'multi_query failed: ' . $reason,
+            'detail'       => implode( '; ', $restore_errors ) . ' [context: ' . implode( ',', $restore_context ) . ']',
         );
-    }
-    // Drain the result sets multi_query queues up.
-    while ( $mysqli->more_results() && $mysqli->next_result() ) {
-        $extra = $mysqli->store_result();
-        if ( $extra instanceof mysqli_result ) {
-            $extra->free();
-        }
     }
     // Verify the restore took: zero markers, zero open transaction.
     $r = $mysqli->query( "SELECT COUNT(*) FROM {$pmeta} WHERE meta_key = '_agentshell_journal_op'" );

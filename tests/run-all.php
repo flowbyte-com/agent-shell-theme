@@ -414,6 +414,15 @@ $suites = array(
     // the shadow META_OP_ID invariant, the head-map CAS, and the
     // no-orphan teardown. Destructive live.
     'edit-published-live' => __DIR__ . '/edit-published-live-test.php',
+    // Phase 3 regression: the preflight's `multi_query` + drain
+    // sequence must catch queued-statement failures (a duplicate-key
+    // collision surfaced by `next_result()` after the first
+    // statement succeeded) and return a structured `restore_failed`
+    // action — not propagate the `mysqli_sql_exception` to the
+    // caller. The child constructs an in-process poison baseline so
+    // the failure is deterministic. Destructive live: gated on the
+    // same fail-closed check the other destructive suites use.
+    'agentshell-test-bed-preflight-live' => __DIR__ . '/agentshell-test-bed-preflight-live-test.php',
     // audit_written contract regression: the
     // `reconciliation.audit_written` field is now an honest,
     // independently-verified boolean response. Covers the
@@ -455,6 +464,7 @@ $destructive_live_suites = array(
     'create-draft-cas-persistent-live',
     'create-draft-cas-refusal-live',
     'edit-published-live',
+    'agentshell-test-bed-preflight-live',
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );
