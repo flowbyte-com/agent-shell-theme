@@ -399,6 +399,14 @@ $suites = array(
     // plus a no-orphan teardown, all through a real WordPress install
     // with the journal and the option cache. Destructive live.
     'create-draft-cas-persistent-live' => __DIR__ . '/create-draft-cas-persistent-live-test.php',
+    // Gate 3 Task 5 regression: the new `agentshell_edit_published`
+    // staging tool. Exercised through the same real WordPress install
+    // the other destructive live suites use, against a per-run
+    // `page-{orig_id}.php`-style seeded original. Covers the 6-step
+    // refusal cascade, the 5 idempotency cases, the per-original claim,
+    // the shadow META_OP_ID invariant, the head-map CAS, and the
+    // no-orphan teardown. Destructive live.
+    'edit-published-live' => __DIR__ . '/edit-published-live-test.php',
 );
 
 $total_passed   = 0;
@@ -426,6 +434,7 @@ $destructive_live_suites = array(
     'stage-2c-end-to-end-live',
     'journal-only-commit-live',
     'create-draft-cas-persistent-live',
+    'edit-published-live',
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );

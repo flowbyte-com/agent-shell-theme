@@ -133,6 +133,7 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-create-draft.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-update-draft.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-claim-existing-draft.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-edit-published.php';
 
     // Screenshot loop (v1.3)
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-screenshot.php';
@@ -213,6 +214,7 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     $tools[] = new AgentShell_MCP\Tools\Create_Draft();
     $tools[] = new AgentShell_MCP\Tools\Update_Draft();
     $tools[] = new AgentShell_MCP\Tools\Claim_Existing_Draft();
+    $tools[] = new AgentShell_MCP\Tools\Edit_Published();
 
     // Screenshot loop (v1.3)
     $tools[] = new AgentShell_MCP\Tools\Screenshot();
