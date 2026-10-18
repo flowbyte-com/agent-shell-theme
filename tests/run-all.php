@@ -399,6 +399,13 @@ $suites = array(
     // plus a no-orphan teardown, all through a real WordPress install
     // with the journal and the option cache. Destructive live.
     'create-draft-cas-persistent-live' => __DIR__ . '/create-draft-cas-persistent-live-test.php',
+    // Phase 1 port of the integration worktree's F7/F8 refusal
+    // scenarios (tampered-signature journal, stuck intended op) as a
+    // separate destructive-live suite, leaving the development
+    // create-draft-cas-persistent-live F0–F9 (stress + idempotency
+    // resume) intact. Destructive live: gated on the same fail-closed
+    // check the other destructive suites use.
+    'create-draft-cas-refusal-live' => __DIR__ . '/create-draft-cas-refusal-live-test.php',
     // Gate 3 Task 5 regression: the new `agentshell_edit_published`
     // staging tool. Exercised through the same real WordPress install
     // the other destructive live suites use, against a per-run
@@ -446,6 +453,7 @@ $destructive_live_suites = array(
     'stage-2c-end-to-end-live',
     'journal-only-commit-live',
     'create-draft-cas-persistent-live',
+    'create-draft-cas-refusal-live',
     'edit-published-live',
 );
 $verification_unverified = $test_bed_unverified;
