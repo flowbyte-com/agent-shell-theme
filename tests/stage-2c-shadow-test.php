@@ -368,11 +368,17 @@ s2cs_check(
     'the shadow has post_parent=5001 (the original)',
     (int) $shadow_post->post_parent === 5001
 );
+// The shadow's WP `post_name` column holds a non-colliding
+// placeholder for `post_type=post` originals (see
+// Published_Shadow::apply_placeholder_slug). The canonical
+// staged `post_name` lives in META_STAGED_POST_NAME. Title
+// and content still live on the post columns.
+$staged_post_name_3 = (string) get_post_meta( $shadow_id, Published_Shadow::META_STAGED_POST_NAME, true );
 s2cs_check(
     'the shadow carries the four staged fields',
     $shadow_post->post_title   === 'Staged Title'
     && $shadow_post->post_content === 'Staged content.'
-    && $shadow_post->post_name    === 'staged-slug'
+    && $staged_post_name_3    === 'staged-slug'
     // post_excerpt is asserted separately where the stub under test
     // records it; the shared journal-recovery apply helper used in
     // the run-all context discards excerpt (its OP_UPDATE_DRAFT path
@@ -429,11 +435,14 @@ s2cs_check(
     count( $GLOBALS['_agentshell_test_insert_calls'] ) === 1
 );
 $reused_post = $GLOBALS['_agentshell_test_posts'][ $shadow_id ];
+// See note in §3: the canonical staged `post_name` lives in
+// META_STAGED_POST_NAME, not on the WP `post_name` column.
+$staged_post_name_5 = (string) get_post_meta( $shadow_id, Published_Shadow::META_STAGED_POST_NAME, true );
 s2cs_check(
     'the shadow still carries the FIRST op\'s fields, not the second call\'s',
     $reused_post->post_title   === 'Staged Title'
     && $reused_post->post_content === 'Staged content.'
-    && $reused_post->post_name    === 'staged-slug'
+    && $staged_post_name_5    === 'staged-slug'
 );
 
 // A second tx for the same original is a different (tx, original)
@@ -485,11 +494,14 @@ s2cs_check(
     $updated['status'] === 'updated'
 );
 $updated_post = $GLOBALS['_agentshell_test_posts'][ $shadow_id ];
+// See note in §3: the canonical staged `post_name` lives in
+// META_STAGED_POST_NAME, not on the WP `post_name` column.
+$staged_post_name_6 = (string) get_post_meta( $shadow_id, Published_Shadow::META_STAGED_POST_NAME, true );
 s2cs_check(
     'update() wrote the new after-image fields',
     $updated_post->post_title   === 'Staged Title v2'
     && $updated_post->post_content === 'Staged content v2.'
-    && $updated_post->post_name    === 'staged-slug-v2'
+    && $staged_post_name_6    === 'staged-slug-v2'
     // post_excerpt: see the create_or_get() assertion note; the
     // shared stub does not carry excerpt on update, but the
     // round-trip via read_after() does.

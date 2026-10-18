@@ -452,13 +452,22 @@ class Published_Shadow {
         $shadow_id = (int) $shadow_id;
         $post = get_post( $shadow_id );
         if ( null === $post ) { return null; }
+        // The staged `post_name` lives in META_STAGED_POST_NAME
+        // (the WP `post_name` column holds a non-colliding
+        // placeholder for `post_type=post` originals — see
+        // `apply_placeholder_slug`). Fall back to the column for
+        // legacy shadows written before the placeholder change.
+        $staged_post_name = (string) get_post_meta( $shadow_id, self::META_STAGED_POST_NAME, true );
+        if ( '' === $staged_post_name ) {
+            $staged_post_name = (string) $post->post_name;
+        }
         return array(
             'post_type'     => (string) $post->post_type,
             'post_status'   => (string) $post->post_status,
             'post_title'    => (string) $post->post_title,
             'post_content'  => (string) $post->post_content,
             'post_excerpt'  => (string) $post->post_excerpt,
-            'post_name'     => (string) $post->post_name,
+            'post_name'     => (string) $staged_post_name,
             'op_meta_value' => (string) get_post_meta( $shadow_id, self::META_OP_ID, true ),
         );
     }
