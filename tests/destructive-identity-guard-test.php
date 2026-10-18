@@ -127,33 +127,66 @@ Agentshell_Test::run(
     }
 );
 
-// ── 4. The guard refuses when the live test bed is contaminated
-//      (sentinel mismatch). The test bed is currently in
-//      agentshell_site_mode = "integration" per Gate 3 §2; the guard
-//      catches that and refuses. This is the contaminated-state proof.
+// ── 4. The live test bed must carry the expected sentinel
+//      (agentshell_site_mode = "disposable_test_bed"), AND the guard
+//      must refuse a profile whose expected sentinel disagrees with
+//      the live test bed. The two halves of this single test cover
+//      the sentinel check end-to-end:
+//        (a) positive: live test bed has the expected sentinel,
+//            guard accepts;
+//        (b) negative: a synthetic profile whose expected sentinel
+//            is wrong is refused at the sentinel gate before any
+//            other check runs.
+//      The previous form of this test asserted only the negative
+//      case, which made sense before the Phase E restore when the
+//      live test bed was contaminated (sentinel = "integration").
+//      After the restore, the live test bed has the legitimate
+//      sentinel, so the positive leg is the load-bearing assertion
+//      and the negative leg proves the check is still in the chain
+//      and fires first.
 Agentshell_Test::run(
-    'guard refuses when agentshell_site_mode differs from the profile',
+    'guard enforces site_mode_sentinel on both positive (match) and negative (mismatch) paths',
     function () {
         $cfg      = agentshell_test_bed_load();
         $wp_root  = $cfg['wp_root'] ?? '';
-        $result   = agentshell_destructive_identity_guard( $wp_root, $cfg );
+        $expected_sentinel = isset( $cfg['expect']['site_mode_sentinel'] )
+            ? (string) $cfg['expect']['site_mode_sentinel']
+            : '';
+        Agentshell_Test::assert_true(
+            '' !== $expected_sentinel,
+            'test bed profile must declare expect.site_mode_sentinel'
+        );
         Agentshell_Test::assert_true(
             is_file( $wp_root . '/wp-load.php' ),
-            'test bed wp_root must exist for this negative test'
+            'test bed wp_root must exist for this test'
         );
+
+        // (a) positive: live test bed matches the profile.
+        $accept = agentshell_destructive_identity_guard( $wp_root, $cfg );
+        Agentshell_Test::assert_true(
+            $accept['ok'],
+            'live test bed with the expected sentinel must be accepted; got refusal: ' . $accept['refusal']
+        );
+        Agentshell_Test::assert_equals(
+            $expected_sentinel,
+            $accept['sentinel'],
+            'observed sentinel must equal the profile sentinel'
+        );
+
+        // (b) negative: a profile whose expected sentinel disagrees
+        // with the live test bed refuses at the sentinel gate.
+        $contaminated_cfg           = $cfg;
+        $contaminated_cfg['expect'] = is_array( $cfg['expect'] ?? null ) ? $cfg['expect'] : array();
+        $contaminated_cfg['expect']['site_mode_sentinel'] = 'contaminated_marker';
+        $refuse = agentshell_destructive_identity_guard( $wp_root, $contaminated_cfg );
         Agentshell_Test::assert_false(
-            $result['ok'],
-            'contaminated test bed must refuse'
+            $refuse['ok'],
+            'a profile whose sentinel disagrees with the live test bed must refuse'
         );
         Agentshell_Test::assert_equals(
             'site_mode_sentinel',
-            substr( $result['refusal'], 0, 18 ),
-            'the sentinel check must be the first to fail; got: ' . $result['refusal']
-        );
-        Agentshell_Test::assert_equals(
-            'integration',
-            $result['sentinel'],
-            'observed sentinel must be surfaced in the report so the operator can see why'
+            substr( $refuse['refusal'], 0, 18 ),
+            'the sentinel check must be the first to fail; got: ' . $refuse['refusal']
         );
     }
 );
