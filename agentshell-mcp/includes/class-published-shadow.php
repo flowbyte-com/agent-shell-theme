@@ -93,6 +93,32 @@ class Published_Shadow {
     const META_OP_ID = '_agentshell_shadow_op_id';
 
     /**
+     * post_meta key whose value is the staged `post_name`
+     * (the slug the publish step will write to the
+     * original). Carried on every shadow so the overlay
+     * and the publish step can read the staged slug
+     * without depending on the shadow's WP `post_name`
+     * column. The WP column holds a non-colliding
+     * placeholder (see `placeholder_slug_for`); the
+     * canonical staged slug lives in this meta.
+     *
+     * Why a meta and not the column: for a `post_type=post`
+     * original, the shadow shares the `post` post-type
+     * namespace, and `wp_unique_post_slug` for posts does
+     * not filter by `post_parent`. If the shadow's
+     * `post_name` column were the staged slug, then when
+     * the publish step writes the staged slug to the
+     * original, `wp_update_post` would see the shadow in
+     * the same flat namespace and append `-2` — the
+     * publish step's write-and-verify-C would then refuse
+     * the write as a hook-overwrite. The placeholder in
+     * the column removes the collision; the meta carries
+     * the staged slug for the overlay and any other
+     * slug-reading code.
+     */
+    const META_STAGED_POST_NAME = '_agentshell_shadow_staged_post_name';
+
+    /**
      * Find the shadow for a (tx, original), or null when
      * none exists. The lookup is by the post_meta
      * `_agentshell_shadow_for` — one shadow per (tx,
@@ -300,9 +326,10 @@ class Published_Shadow {
             // independent of the original's author changes.
             'post_author'  => 1,
             'meta_input'   => array(
-                self::META_SHADOW_FOR => (int) $original_id,
-                self::META_TX_ID      => (string) $tx_id,
-                self::META_OP_ID      => (string) $op_id,
+                self::META_SHADOW_FOR         => (int) $original_id,
+                self::META_TX_ID              => (string) $tx_id,
+                self::META_OP_ID              => (string) $op_id,
+                self::META_STAGED_POST_NAME   => (string) $fields['post_name'],
             ),
         );
         $shadow_id = wp_insert_post( $postarr, true );
@@ -314,12 +341,46 @@ class Published_Shadow {
                 'created'   => false,
             );
         }
+        // The shadow's WP `post_name` column must hold a non-colliding
+        // placeholder, not the staged slug. For a `post_type=post`
+        // original the shadow shares the same flat namespace as the
+        // original and `wp_unique_post_slug` (in `wp_update_post`) does
+        // not filter by `post_parent`, so the staged slug in the
+        // column would collide with the publish step's write to the
+        // original and trigger a hook-overwrite refusal. The
+        // canonical staged slug is preserved in META_STAGED_POST_NAME;
+        // the overlay and any other slug reader use that meta, not
+        // the column.
+        self::apply_placeholder_slug( (int) $shadow_id, (int) $original_id );
         $post = get_post( $shadow_id );
         return array(
             'status'    => 'created',
             'shadow_id' => (int) $shadow_id,
             'post'      => $post,
             'created'   => true,
+        );
+    }
+
+    /**
+     * Overwrite the shadow's WP `post_name` column with a
+     * non-colliding placeholder derived from
+     * `__as_shadow_{original_id}_{shadow_id}`. The placeholder
+     * is unique by id, so it can never collide with the
+     * original's staged-after slug or with any other post
+     * the publish step might write.
+     *
+     * Called from `create_or_get` (right after insert) and
+     * from `update` (right after update). The staged slug
+     * itself is preserved in META_STAGED_POST_NAME.
+     */
+    private static function apply_placeholder_slug( int $shadow_id, int $original_id ) : void {
+        $placeholder = '__as_shadow_' . (int) $original_id . '_' . (int) $shadow_id;
+        wp_update_post(
+            array(
+                'ID'        => (int) $shadow_id,
+                'post_name' => $placeholder,
+            ),
+            true
         );
     }
 
@@ -367,6 +428,11 @@ class Published_Shadow {
             return array( 'status' => 'database_error', 'post' => $post );
         }
         update_post_meta( $shadow_id, self::META_OP_ID, $new_op_id );
+        update_post_meta( $shadow_id, self::META_STAGED_POST_NAME, (string) $fields['post_name'] );
+        // Re-apply the placeholder in the WP `post_name` column so the
+        // publish step's `wp_update_post` of the original does not
+        // see the staged slug in the same flat namespace.
+        self::apply_placeholder_slug( $shadow_id, (int) $post->post_parent );
         return array( 'status' => 'updated', 'post' => get_post( $shadow_id ) );
     }
 

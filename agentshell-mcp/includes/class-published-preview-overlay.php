@@ -286,11 +286,20 @@ class Published_Preview_Overlay {
 
         $shadow = $tuple['shadow'];
         $overlay = clone $original;
-        // The four staged fields come from the shadow.
+        // The four staged fields come from the shadow. The
+        // staged `post_name` is read from the META_STAGED_POST_NAME
+        // meta when present, falling back to the shadow's WP
+        // `post_name` column for legacy shadows written before
+        // the placeholder-slug change (the column used to hold
+        // the staged slug; now it holds a non-colliding
+        // placeholder).
+        $staged_post_name = get_post_meta( (int) $shadow->ID, Published_Shadow::META_STAGED_POST_NAME, true );
         $overlay->post_title   = $shadow->post_title;
         $overlay->post_content = $shadow->post_content;
         $overlay->post_excerpt = $shadow->post_excerpt;
-        $overlay->post_name    = $shadow->post_name;
+        $overlay->post_name    = ( is_string( $staged_post_name ) && '' !== $staged_post_name )
+            ? $staged_post_name
+            : $shadow->post_name;
         // Every identity field is preserved from the original (cloned
         // object), including post_type=page, post_status=publish,
         // post_parent, post_date, post_date_gmt, post_modified,
@@ -370,7 +379,14 @@ class Published_Preview_Overlay {
         if ( ! $tuple ) { return $permalink; }
         if ( ! $post || (int) $post->ID !== $tuple['oid'] ) { return $permalink; }
         $original_slug = (string) $post->post_name;
-        $shadow_slug   = (string) $tuple['shadow']->post_name;
+        $shadow = $tuple['shadow'];
+        // The staged slug lives in the shadow's META_STAGED_POST_NAME
+        // meta (the WP `post_name` column holds a non-colliding
+        // placeholder). For legacy shadows written before the
+        // placeholder-slug change, the column may still hold the
+        // staged slug; the meta is absent, so we fall back.
+        $staged_meta = (string) get_post_meta( (int) $shadow->ID, Published_Shadow::META_STAGED_POST_NAME, true );
+        $shadow_slug = ( '' !== $staged_meta ) ? $staged_meta : (string) $shadow->post_name;
         if ( '' === $shadow_slug || $shadow_slug === $original_slug ) {
             return $permalink;
         }
