@@ -811,6 +811,20 @@ class Publish_Edit extends Base_Tool {
             // shadow / claim, not by reading the transaction
             // row). We return a marker-only result here; the
             // operator runs reconcile.
+            //
+            // The `audit_written` field is NOT a placeholder
+            // `false` — it is an independent verification
+            // against the `agentshell_audit_log` ring buffer.
+            // The other three step flags stay `false` because
+            // the journal row carries the authoritative
+            // per-step state, and that row is missing here;
+            // the audit log is the one place we can answer
+            // honestly without the row. If the audit log shows
+            // a matching row, `audit_written` is `true` and
+            // the operator knows the settlement evidence is
+            // durable; if not, the field is `false` and a
+            // reconcile will re-attempt.
+            $audit_written = self::verify_audit_status_from_log( $tx, $op_id_str );
             return array(
                 'id'      => $op_id_str,
                 'state'   => \AgentShell_MCP\Content_Journal::STATE_PUBLICATION_COMMITTED,
@@ -823,11 +837,13 @@ class Publish_Edit extends Base_Tool {
                     'shadow_deleted'     => false,
                     'caches_invalidated' => false,
                     'claim_released'     => false,
-                    'audit_written'      => false,
+                    'audit_written'      => $audit_written,
                 ),
                 'note' => 'row was reclaimed between COMMIT and the post-COMMIT re-read; '
                     . 'the publication is durable; call agentshell_publish_edit_reconcile to '
-                    . 'complete reconciliation.',
+                    . 'complete reconciliation. audit_written reflects an independent '
+                    . 'verification against the agentshell_audit_log ring buffer (operation + '
+                    . 'transaction_id + op_id match).',
             );
         }
         return $final['content']['ops'][ $op_id_str ];
@@ -1097,33 +1113,167 @@ class Publish_Edit extends Base_Tool {
             ) );
         }
 
-        // 3. Claim release + journal settlement, with the crash-
-        //    safe 3a/3b/3c/3d ordering. The release is the only
-        //    step that has a three-outcome classification; the
-        //    others are simple before/after.
+        // 3. Claim release. The release is the only step that
+        //    has a three-outcome classification; the others are
+        //    simple before/after.
         if ( ! $claim_done ) {
             $claim_result = self::reconcile_claim_release( $tx, $committed_op, $actor, $original_id, $now );
             if ( 'verified' !== $claim_result['status'] ) {
                 return $claim_result;
             }
-            // Journal settlement: the op transitions to
-            // `publication_settled` after the claim release and
-            // the audit. Idempotent (a re-run on an op already
-            // settled is a no-op).
-            $committed_op = self::settle_publication( $tx, $committed_op, $actor, $now );
         }
 
-        // If every step was already done (re-entrant call from
-        // reconcile tool), settle the publication on the way out.
-        if ( \AgentShell_MCP\Content_Journal::STATE_PUBLICATION_COMMITTED === (string) ( $committed_op['state'] ?? '' ) ) {
-            $committed_op = self::settle_publication( $tx, $committed_op, $actor, $now );
+        // Write the `transaction_published_reconciled` audit row and
+        // independently verify it is present in the audit log BEFORE
+        // the state transition. If verification fails, the op stays
+        // in `reconciliation_pending` and a retry can re-attempt. The
+        // publication is durable; only the settlement evidence is
+        // incomplete. See `write_and_verify_settlement_audit` for
+        // the matching discipline (operation + transaction_id + op_id
+        // — never the first vaguely-matching historical row).
+        $audit_result = self::write_and_verify_settlement_audit( $tx, $committed_op, $actor );
+        if ( empty( $audit_result['verified'] ) ) {
+            return array(
+                'status'         => 'audit_unverified',
+                'state'          => \AgentShell_MCP\Content_Journal::STATE_RECONCILIATION_PENDING,
+                'reason'         => 'transaction_published_reconciled audit row could not be verified',
+                'reconciliation' => is_array( $committed_op['reconciliation'] ?? null ) ? $committed_op['reconciliation'] : array(),
+            );
         }
+
+        // Mark audit_written verified in the op's reconciliation
+        // record. This is the persistent marker an external reader
+        // (operator, recovery, get_journal) uses to know the
+        // settlement evidence is durable. Idempotent.
+        $committed_op = self::mark_reconciliation_step( $tx, $committed_op, $actor, 'audit_written', $now, array(
+            'status'      => 'verified',
+            'verified_at' => (int) $now,
+        ) );
+
+        // Settle: state -> publication_settled. Idempotent. The
+        // audit row is already written and verified at this point;
+        // the state transition is the final observation an external
+        // reader makes of "this op is fully done".
+        $committed_op = self::settle_publication( $tx, $committed_op, $actor, $now );
 
         return array(
             'status' => 'verified',
             'state'  => (string) ( $committed_op['state'] ?? '' ),
             'reconciliation' => is_array( $committed_op['reconciliation'] ?? null ) ? $committed_op['reconciliation'] : array(),
         );
+    }
+
+    /**
+     * Write the `transaction_published_reconciled` audit row and
+     * independently verify it is durably present in the audit log.
+     *
+     * The settlement audit row is the canonical "the publication
+     * is settled" evidence in the `agentshell_audit_log` ring
+     * buffer. The previous implementation wrote this row inside
+     * `settle_publication`, AFTER the state transition to
+     * `publication_settled` had already committed, and never
+     * updated the `reconciliation.audit_written` field. The result
+     * was a contract defect: the field was always `false` and
+     * carried no information.
+     *
+     * This implementation:
+     *   1. Checks the log for an existing matching row (idempotent
+     *      on retry — never write a duplicate).
+     *   2. If not found, writes a new row via `Store::record_event`.
+     *      A write that throws (e.g. the test seam at
+     *      `_agentshell_test_audit_fail_for`) is caught and
+     *      reported as unverified; the helper does NOT propagate
+     *      the exception, because the reconciliation flow has a
+     *      well-defined "audit_unverified" return path that
+     *      preserves the in-`reconciliation_pending` state and
+     *      lets the operator retry.
+     *   3. Re-reads the log and looks for a row matching
+     *      (operation='transaction_published_reconciled',
+     *      changed.transaction_id, changed.op_id). The triple
+     *      match is specific enough to reject historical rows from
+     *      other transactions; a vague "any audit row" match would
+     *      be a real defect.
+     *   4. Returns `{ verified: bool, audit_index: int|null }`.
+     *
+     * A write that the read does not see is treated as
+     * unverified. A row that the read sees is verified. The
+     * `audit_index` is the position in the ring buffer where the
+     * matching row was found, for diagnostics.
+     */
+    private static function write_and_verify_settlement_audit( $tx, $committed_op, $actor ) {
+        $op_id_str   = (string) $committed_op['id'];
+        $tx_id       = (string) $tx['id'];
+        $original_id = (int) ( $committed_op['target']['original_id'] ?? 0 );
+
+        $log = \AgentShell_MCP\Store::audit_log();
+        foreach ( $log as $idx => $entry ) {
+            if ( ! is_array( $entry ) ) { continue; }
+            if ( 'transaction_published_reconciled' !== (string) ( $entry['operation'] ?? '' ) ) { continue; }
+            $changed = is_array( $entry['changed'] ?? null ) ? $entry['changed'] : array();
+            if ( (string) ( $changed['transaction_id'] ?? '' ) !== $tx_id ) { continue; }
+            if ( (string) ( $changed['op_id'] ?? '' ) !== $op_id_str ) { continue; }
+            return array( 'verified' => true, 'audit_index' => (int) $idx );
+        }
+
+        // No matching row — write one. Catch any exception from
+        // the audit write (the test seam in `Store::record_event`
+        // throws to simulate a transient write failure) and
+        // report the result as unverified. The publication is
+        // durable; the settlement evidence is not; the operator
+        // can retry.
+        try {
+            \AgentShell_MCP\Store::record_event(
+                $actor,
+                'transaction_published_reconciled',
+                array(
+                    'transaction_id' => $tx_id,
+                    'op_id'          => $op_id_str,
+                    'original_id'    => $original_id,
+                )
+            );
+        } catch ( \Throwable $write_error ) {
+            return array( 'verified' => false, 'audit_index' => null );
+        }
+
+        // Re-read and re-verify. A write that does not appear in
+        // the read is unverified; the caller must NOT transition
+        // the op to `publication_settled`.
+        $log = \AgentShell_MCP\Store::audit_log();
+        foreach ( $log as $idx => $entry ) {
+            if ( ! is_array( $entry ) ) { continue; }
+            if ( 'transaction_published_reconciled' !== (string) ( $entry['operation'] ?? '' ) ) { continue; }
+            $changed = is_array( $entry['changed'] ?? null ) ? $entry['changed'] : array();
+            if ( (string) ( $changed['transaction_id'] ?? '' ) !== $tx_id ) { continue; }
+            if ( (string) ( $changed['op_id'] ?? '' ) !== $op_id_str ) { continue; }
+            return array( 'verified' => true, 'audit_index' => (int) $idx );
+        }
+        return array( 'verified' => false, 'audit_index' => null );
+    }
+
+    /**
+     * Independent audit verification for the marker-only return
+     * path. When the journal row was reclaimed between COMMIT and
+     * the post-COMMIT re-read, the tool cannot reconstruct the
+     * op's reconciliation record from the missing row — but the
+     * audit log is still present. This helper reads the ring
+     * buffer and reports whether a `transaction_published_reconciled`
+     * row exists for the given (transaction_id, op_id). The
+     * `audit_written` field on the marker-only return is set to
+     * the result, so the operator gets an honest independent
+     * verification rather than a placeholder `false`.
+     */
+    private static function verify_audit_status_from_log( $tx, $op_id_str ) {
+        $tx_id = (string) $tx['id'];
+        $log   = \AgentShell_MCP\Store::audit_log();
+        foreach ( $log as $entry ) {
+            if ( ! is_array( $entry ) ) { continue; }
+            if ( 'transaction_published_reconciled' !== (string) ( $entry['operation'] ?? '' ) ) { continue; }
+            $changed = is_array( $entry['changed'] ?? null ) ? $entry['changed'] : array();
+            if ( (string) ( $changed['transaction_id'] ?? '' ) !== $tx_id ) { continue; }
+            if ( (string) ( $changed['op_id'] ?? '' ) !== $op_id_str ) { continue; }
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -1507,7 +1657,18 @@ class Publish_Edit extends Base_Tool {
 
     /**
      * Step 3d: the op transitions to `publication_settled` in a
-     * separate short SQL transaction after the audit. Idempotent.
+     * separate short SQL transaction. The `transaction_published_reconciled`
+     * audit row is NOT written here — it is written and verified
+     * by `write_and_verify_settlement_audit` in `run_reconciliation`
+     * BEFORE this transition runs. The previous implementation
+     * wrote the audit row here, after the state transition had
+     * already committed, which meant (a) a crash between the
+     * state transition and the audit write left the op in
+     * `publication_settled` with no audit row, contradicting the
+     * invariant, and (b) the `reconciliation.audit_written` field
+     * was never written back to `true`. The new ordering — write
+     * and verify first, then transition — keeps both invariant
+     * and field honest. Idempotent.
      */
     private static function settle_publication( $tx, $committed_op, $actor, $now ) {
         $op_id_str = (string) $committed_op['id'];
@@ -1552,14 +1713,6 @@ class Publish_Edit extends Base_Tool {
         if ( ! is_array( $row ) || empty( $row['content']['ops'][ $op_id_str ] ) ) {
             return $committed_op;
         }
-        \AgentShell_MCP\Store::record_event(
-            $actor, 'transaction_published_reconciled',
-            array(
-                'transaction_id' => (string) $tx['id'],
-                'op_id'          => (string) $op_id_str,
-                'original_id'    => (int) ( $committed_op['target']['original_id'] ?? 0 ),
-            )
-        );
         return $row['content']['ops'][ $op_id_str ];
     }
 
