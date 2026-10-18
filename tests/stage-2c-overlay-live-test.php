@@ -50,14 +50,18 @@
 
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/agentshell-test-bed.php';
+require_once __DIR__ . '/wp-live.php';
 
 echo "Stage 2c overlay live tests (Milestone 3: live overlay against the test site)\n";
 
 // Destructive integration. Skip cleanly when the runner is unverified
 // (the local PHP has no mysqli) or the fail-closed check has not
-// passed, the same gate the existing live suites use.
-$cfg = agentshell_test_bed_load();
-if ( ! is_array( $cfg ) ) {
+// passed, the same gate the existing live suites use. The strict
+// wp_live_config_destructive() refuses to fall back to LocalWP
+// auto-discovery, so a dev site on the same workstation can never
+// be reached by accident.
+$config = agentshell_wp_live_config_destructive();
+if ( null === $config ) {
     echo "  SKIPPED: no test-bed config — destructive integration suite requires a real test site\n";
     Agentshell_Test::run(
         'stage-2c-overlay-live: no test-bed config',
@@ -73,6 +77,7 @@ if ( ! class_exists( 'mysqli' ) ) {
     );
     return;
 }
+$cfg   = $config['cfg'];
 $check = agentshell_test_bed_check( $cfg );
 if ( ! $check['ok'] ) {
     echo "  SKIPPED: test-bed fail-closed check failed (" . $check['refusal'] . ")\n";
@@ -84,42 +89,22 @@ if ( ! $check['ok'] ) {
 }
 
 $child  = __DIR__ . '/stage-2c-overlay-live-child.php';
-$php_bin = is_array( $cfg['php'] ?? null )
-    ? (string) ( $cfg['php']['binary'] ?? '' )
-    : (string) ( $cfg['php'] ?? '' );
-$cmd    = sprintf(
-    '%s %s 2>&1',
-    escapeshellarg( '' !== $php_bin ? $php_bin : 'php' ),
-    escapeshellarg( $child )
-);
+$json_path = sys_get_temp_dir() . '/stage-2c-overlay-live-result-' . getmypid() . '.json';
+@unlink( $json_path );
 
-$descriptors = array(
-    0 => array( 'pipe', 'r' ),
-    1 => array( 'pipe', 'w' ),
-    2 => array( 'pipe', 'w' ),
+$run = agentshell_wp_live_run(
+    $config,
+    $child,
+    array( $config['wp_root'], $json_path )
 );
-$proc = proc_open( $cmd, $descriptors, $pipes );
-if ( ! is_resource( $proc ) ) {
-    Agentshell_Test::run(
-        'stage-2c-overlay-live: child process could be launched',
-        function () { Agentshell_Test::assert_true( false, 'proc_open failed' ); }
-    );
-    return;
-}
-fclose( $pipes[0] );
-$stdout = stream_get_contents( $pipes[1] );
-fclose( $pipes[1] );
-$stderr = stream_get_contents( $pipes[2] );
-fclose( $pipes[2] );
-$exit   = proc_close( $proc );
+$stdout = $run['output'];
+$exit   = $run['status'];
 
 echo $stdout;
-if ( '' !== $stderr ) { fwrite( STDERR, $stderr ); }
 
-// The child writes its structured results to a JSON file before
-// exiting. Read it back and convert each line into an Agentshell_Test
-// assertion.
-$json_path = sys_get_temp_dir() . '/stage-2c-overlay-live-result.json';
+// The child writes its structured results to the JSON file passed
+// as argv[2] before exiting. Read it back and convert each line
+// into an Agentshell_Test assertion.
 if ( ! is_file( $json_path ) ) {
     Agentshell_Test::run(
         'stage-2c-overlay-live: child wrote structured result file',
@@ -128,6 +113,7 @@ if ( ! is_file( $json_path ) ) {
     return;
 }
 $raw  = file_get_contents( $json_path );
+@unlink( $json_path );
 $data = json_decode( (string) $raw, true );
 if ( ! is_array( $data ) || ! isset( $data['results'] ) || ! is_array( $data['results'] ) ) {
     Agentshell_Test::run(
