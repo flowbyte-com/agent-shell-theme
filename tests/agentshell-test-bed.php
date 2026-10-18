@@ -49,10 +49,6 @@
  * `no_test_bed_config` and the live suite skips.
  */
 
-if ( ! defined( 'ABSPATH' ) ) {
-    define( 'ABSPATH', __DIR__ . '/' );
-}
-
 /**
  * Locate the test-bed config file. Returns the absolute path or null when
  * neither the env-var override nor tests/config/test-bed.json exists.
