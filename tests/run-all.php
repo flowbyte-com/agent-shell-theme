@@ -322,6 +322,7 @@ $suites = array(
     // integration site's wp_root, wrong sentinel) refuse; the contaminated
     // test bed refuses until Phase 4 restores it.
     'destructive-identity-guard' => __DIR__ . '/destructive-identity-guard-test.php',
+    'destructive-identity-guard-siteurl' => __DIR__ . '/destructive-identity-guard-siteurl-test.php',
     'security-headers'     => __DIR__ . '/security-headers-test.php',
     'daemon-version'       => __DIR__ . '/daemon-version-test.php',
     'navigation'           => __DIR__ . '/navigation-test.php',
