@@ -129,9 +129,25 @@ class Create_Draft extends Base_Tool {
         }
 
         // ── Inside a transaction: journalled, idempotent, recoverable. ──
-        $tx          = $tx_mgr->payload();
+        // Re-read the transaction row at the start of every in-tx call.
+        // $tx_mgr->payload() returns the row as it was when the request
+        // started, and a previous create_draft (or update_draft, or
+        // claim_existing_draft) in the same request will have already
+        // advanced the row by the time we get here. Passing that stale
+        // row to attach() makes its cas_write_row() refuse, because the
+        // byte-serialised row no longer matches the on-disk value. The
+        // same fix was applied to the head CAS at line ~183 in commit
+        // 0314499; the mirror here closes the second-and-subsequent-op
+        // case so a single tx can host more than one create.
+        $tx          = (array) get_option( \AgentShell_MCP\Transaction_Manager::KEY, null );
+        if ( empty( $tx ) || empty( $tx['id'] ) ) {
+            throw new \InvalidArgumentException(
+                'create_draft inside a transaction requires an open transaction row; got '
+                . ( empty( $tx ) ? 'none' : 'a row with no id' ) . '. Begin a transaction first.'
+            );
+        }
         $tx_id       = (string) $tx['id'];
-        $tx_actor    = (string) $tx['actor'];
+        $tx_actor    = (string) ( $tx['actor'] ?? '' );
         $content     = \AgentShell_MCP\Content_Journal::of( $tx );
 
         // 1. Idempotency check. Find an op in this journal with the same key.

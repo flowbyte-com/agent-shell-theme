@@ -392,6 +392,13 @@ $suites = array(
     // Destructive live: gated on the same fail-closed check the other
     // destructive suites use.
     'journal-only-commit-live' => __DIR__ . '/journal-only-commit-live-test.php',
+    // Gate 3 Task 4 regression: create_draft must not refuse the second
+    // and subsequent creates in a single transaction, must not refuse on
+    // a site with prior journal state, and must fail closed on a
+    // tampered-signature journal or a stuck-intended tx. Eight scenarios
+    // plus a no-orphan teardown, all through a real WordPress install
+    // with the journal and the option cache. Destructive live.
+    'create-draft-cas-persistent-live' => __DIR__ . '/create-draft-cas-persistent-live-test.php',
 );
 
 $total_passed   = 0;
@@ -418,6 +425,7 @@ $destructive_live_suites = array(
     'stage-2c-publish-edit-recovery-live',
     'stage-2c-end-to-end-live',
     'journal-only-commit-live',
+    'create-draft-cas-persistent-live',
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );
