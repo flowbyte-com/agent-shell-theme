@@ -407,6 +407,18 @@ $suites = array(
     // the shadow META_OP_ID invariant, the head-map CAS, and the
     // no-orphan teardown. Destructive live.
     'edit-published-live' => __DIR__ . '/edit-published-live-test.php',
+    // audit_written contract regression: the
+    // `reconciliation.audit_written` field is now an honest,
+    // independently-verified boolean response. Covers the
+    // happy path, audit-persistence failure (test seam),
+    // COMMIT+re-read race (marker-only return path with
+    // independent log verification), repeated reconciliation
+    // idempotency, rejection of historical rows from other
+    // transactions, rejection of vaguely-matching rows
+    // (same tx_id, different op_id; same (tx_id, op_id),
+    // wrong operation), and existing staging/rollback
+    // preservation. Non-destructive unit suite.
+    'audit-written' => __DIR__ . '/audit-written-test.php',
 );
 
 $total_passed   = 0;
