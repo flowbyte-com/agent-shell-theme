@@ -964,6 +964,114 @@ function agentshell_test_bed_preflight( array $cfg ) {
  *     @type string $siteurl      Observed siteurl.
  * }
  */
+
+/**
+ * Validate a WordPress siteurl against the test-bed's expected transport URL.
+ *
+ * Why this exists
+ * ---------------
+ * The test-bed profile's `url_http` (or `url_https`) is the *transport*
+ * endpoint — the URL the LocalWP listener serves on, e.g.
+ *   http://agentshell-test.local:10008
+ * WordPress's stored `siteurl`, by contrast, is the *canonical* site
+ * identity — the URL WordPress thinks of itself as — and is conventionally
+ * port-less, e.g.
+ *   http://agentshell-test.local
+ * The two are different concepts that share a host. A guard that
+ * required the observed siteurl to be a prefix of the transport URL
+ * (the previous strpos()-based check) rejected the canonical siteurl
+ * of the restored test-bed baseline.
+ *
+ * What this checks
+ * ----------------
+ * The helper derives the canonical expectation from the configured
+ * transport URL by stripping any port. It then compares strictly on
+ * scheme, host, and path (with trailing-slash normalisation). It
+ * REJECTS an observed siteurl that has:
+ *   - an explicit port (e.g. http://...:10011, http://...:10008)
+ *   - a different scheme (e.g. https when http is configured)
+ *   - a different host (e.g. lookalikes, IP literals, userinfo tricks)
+ *   - a non-empty path (e.g. /wp/ or /wordpress/)
+ *   - a query, fragment, or userinfo component
+ *   - a malformed URL (no scheme, no host)
+ *
+ * The check is intentionally stricter than a host-only parse_url
+ * comparison: a host-only check would silently accept
+ * http://agentshell-test.local:10011 (wrong port) and
+ * http://agentshell-test.local/wp/ (wrong path). Strpos() prefix
+ * matching is never used; comparison is on parsed components only.
+ *
+ * @param string $observed_siteurl        The siteurl from wp_options.
+ * @param string $expected_url_with_port   The transport URL from the test-bed profile.
+ * @return array { ok: bool, reason: string }
+ */
+function agentshell_siteurl_validate( $observed_siteurl, $expected_url_with_port ) {
+    if ( ! is_string( $observed_siteurl ) || '' === $observed_siteurl ) {
+        return array( 'ok' => false, 'reason' => 'observed siteurl is empty' );
+    }
+    if ( ! is_string( $expected_url_with_port ) || '' === $expected_url_with_port ) {
+        return array( 'ok' => false, 'reason' => 'expected transport URL is not configured' );
+    }
+
+    $exp = parse_url( $expected_url_with_port );
+    if ( ! is_array( $exp ) || ! isset( $exp['scheme'] ) || ! is_string( $exp['scheme'] ) || '' === $exp['scheme'] ) {
+        return array( 'ok' => false, 'reason' => 'expected transport URL is malformed (no scheme)' );
+    }
+    if ( ! isset( $exp['host'] ) || ! is_string( $exp['host'] ) || '' === $exp['host'] ) {
+        return array( 'ok' => false, 'reason' => 'expected transport URL has no host' );
+    }
+    $exp_scheme = $exp['scheme'];
+    $exp_host   = $exp['host'];
+    $exp_path   = isset( $exp['path'] ) && is_string( $exp['path'] ) && '' !== $exp['path'] ? $exp['path'] : '/';
+    $exp_path_norm = rtrim( $exp_path, '/' );
+    if ( '' === $exp_path_norm ) { $exp_path_norm = '/'; }
+
+    $obs = parse_url( $observed_siteurl );
+    if ( ! is_array( $obs ) || ! isset( $obs['scheme'] ) || ! is_string( $obs['scheme'] ) || '' === $obs['scheme'] ) {
+        return array( 'ok' => false, 'reason' => 'observed siteurl is malformed (no scheme): "' . $observed_siteurl . '"' );
+    }
+    if ( ! isset( $obs['host'] ) || ! is_string( $obs['host'] ) || '' === $obs['host'] ) {
+        return array( 'ok' => false, 'reason' => 'observed siteurl is malformed (no host): "' . $observed_siteurl . '"' );
+    }
+
+    // Reject any explicit port. WordPress's canonical siteurl does not
+    // include a transport port; an explicit port in the observed value
+    // is either a contamination (e.g. http://...:10011) or a copy-paste
+    // of the transport URL into siteurl (e.g. http://...:10008).
+    if ( isset( $obs['port'] ) ) {
+        return array( 'ok' => false, 'reason' => 'observed siteurl must not contain an explicit port: "' . $observed_siteurl . '"' );
+    }
+
+    // Reject userinfo (http://user:pass@host/) — used in URL-spoofing
+    // tricks where a victim sees the trusted host but the request lands
+    // on the attacker's host. parse_url populates `user` and `pass`.
+    if ( isset( $obs['user'] ) || isset( $obs['pass'] ) ) {
+        return array( 'ok' => false, 'reason' => 'observed siteurl must not contain userinfo: "' . $observed_siteurl . '"' );
+    }
+
+    if ( $obs['scheme'] !== $exp_scheme ) {
+        return array( 'ok' => false, 'reason' => 'scheme mismatch: expected "' . $exp_scheme . '" observed "' . $obs['scheme'] . '"' );
+    }
+    if ( $obs['host'] !== $exp_host ) {
+        return array( 'ok' => false, 'reason' => 'host mismatch: expected "' . $exp_host . '" observed "' . $obs['host'] . '"' );
+    }
+
+    $obs_path = isset( $obs['path'] ) && is_string( $obs['path'] ) ? rtrim( $obs['path'], '/' ) : '/';
+    if ( '' === $obs_path ) { $obs_path = '/'; }
+    if ( $obs_path !== $exp_path_norm ) {
+        return array( 'ok' => false, 'reason' => 'path mismatch: expected "' . $exp_path_norm . '" observed "' . $obs_path . '"' );
+    }
+
+    if ( isset( $obs['query'] ) && '' !== $obs['query'] ) {
+        return array( 'ok' => false, 'reason' => 'observed siteurl must not contain a query string: "' . $observed_siteurl . '"' );
+    }
+    if ( isset( $obs['fragment'] ) && '' !== $obs['fragment'] ) {
+        return array( 'ok' => false, 'reason' => 'observed siteurl must not contain a fragment: "' . $observed_siteurl . '"' );
+    }
+
+    return array( 'ok' => true, 'reason' => '' );
+}
+
 function agentshell_destructive_identity_guard( $wp_root, $cfg = null, $label = '' ) {
     $checks  = array();
     $refusal = '';
@@ -1120,17 +1228,24 @@ function agentshell_destructive_identity_guard( $wp_root, $cfg = null, $label = 
         $pass( 'site_mode_sentinel', $observed_sentinel );
     }
 
-    // 8. siteurl — a siteurl of "http://127.0.0.1:10011" when the
-    //    profile expects "http://127.0.0.1:10009" means the wrong
-    //    WordPress is mounted at this wp_root.
+    // 8. siteurl — the canonical WordPress siteurl must match the
+    //    test-bed profile's transport URL on scheme, host, and path.
+    //    The transport URL's port is intentionally NOT part of the
+    //    comparison: WordPress's siteurl is conventionally port-less,
+    //    and the transport URL's port (e.g. :10008) is a property of
+    //    the LocalWP listener, not of site identity. An explicit
+    //    port on the observed siteurl (e.g. :10011) is rejected —
+    //    that is the contamination shape we are guarding against.
     $row = $mysqli->query( "SELECT option_value FROM wp_options WHERE option_name='siteurl'" );
     $observed_siteurl = ( $row instanceof mysqli_result && $r = $row->fetch_row() ) ? (string) $r[0] : '';
     $expected_url = isset( $cfg['url_http'] ) ? (string) $cfg['url_http'] : ( isset( $cfg['url_https'] ) ? (string) $cfg['url_https'] : '' );
-    if ( '' !== $expected_url && '' !== $observed_siteurl && 0 !== strpos( $observed_siteurl, $expected_url ) ) {
-        $fail(
-            'siteurl',
-            'expected siteurl to start with "' . $expected_url . '" observed "' . $observed_siteurl . '"'
-        );
+    if ( '' !== $expected_url && '' !== $observed_siteurl ) {
+        $v = agentshell_siteurl_validate( $observed_siteurl, $expected_url );
+        if ( $v['ok'] ) {
+            $pass( 'siteurl', $observed_siteurl );
+        } else {
+            $fail( 'siteurl', $v['reason'] );
+        }
     } else {
         $pass( 'siteurl', $observed_siteurl );
     }
