@@ -66,6 +66,24 @@ The plugin ships **66 `agentshell_*` tools** (62 in `agentshell-mcp` + 4 in `age
   Retrieval is authorised by **capture ownership**, not merely by authentication — a second administrator
   passing `manage_options` is refused. Never treat a returned retrieval URL as deliverable without fetching
   it. Full contract: [`docs/SCREENSHOT-PRIVACY-DESIGN.md`](docs/SCREENSHOT-PRIVACY-DESIGN.md).
+
+  **The reported dimensions are the ones the image has, not the ones that were asked
+  for.** Headless Chrome enforces a minimum window width (around 485 CSS pixels on the
+  hosts this was measured on), so a narrow viewport is laid out wider than it was
+  requested and the PNG is a crop of that wider layout. The capture reads the PNG's own
+  header and reports what it got, reports the requested dimensions beside it, and sets
+  `viewport_adjusted` with a note when the two differ. A "mobile" screenshot that was
+  really a 485-pixel layout is a finding an agent must be able to see.
+
+  **`published_preview: true` captures the staged edit of a published page.** The page
+  stays published and stays what visitors see; the capture is served with the staged
+  title, body, excerpt and slug through the published-preview overlay, under a credential
+  bound to the staging — it carries the original, the shadow, the transaction and the
+  op, it expires, and it stops working the moment the transaction is committed or rolled
+  back. It is a capability for one request, not a publication, and the credential never
+  appears in the response. Refusals are explicit: no post id, a page that is not
+  published, no open transaction holding a staged edit for that page, or a caller who
+  may not edit the page.
   Each capture runs in its own throwaway browser profile with `HOME` and `TMPDIR` inside it, so a site
   on a private certificate authority must name that authority in `wp-config.php` as
   `AGENTSHELL_TRUSTED_CA_FILES` (a path, a list of paths, or a directory of certificates). Certificate
