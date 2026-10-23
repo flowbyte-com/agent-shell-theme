@@ -86,6 +86,13 @@ The count is the number of tools an agent can **call**: the registry is keyed by
   appears in the response. Refusals are explicit: no post id, a page that is not
   published, no open transaction holding a staged edit for that page, or a caller who
   may not edit the page.
+  **A staged edit may only be previewed by the actor whose transaction holds it.**
+  The staging is another actor's uncommitted work, and the gate for reading it is the
+  transaction's ownership, not the page's edit permission: an editor who can edit the
+  page can publish their own version of it, but that is not a reason to be shown
+  somebody else's draft. The credential is signed with the caller's own identity, so
+  once minted it is the caller's to use — which is why the minting step is the gate and
+  not the later verification. A refusal names both actors.
   Each capture runs in its own throwaway browser profile with `HOME` and `TMPDIR` inside it, so a site
   on a private certificate authority must name that authority in `wp-config.php` as
   `AGENTSHELL_TRUSTED_CA_FILES` (a path, a list of paths, or a directory of certificates). Certificate

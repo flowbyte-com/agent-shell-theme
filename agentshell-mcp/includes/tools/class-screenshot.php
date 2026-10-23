@@ -46,12 +46,43 @@ class Screenshot extends Base_Tool {
      *
      * @param int $original_id
      * @return array{tx_id:string, op_id:string, shadow_id:int}|null
+     * @throws \InvalidArgumentException when the open transaction belongs to
+     *                                  another actor.
      */
     private static function published_staging_for( $original_id ) {
         $tx_mgr = \AgentShell_MCP\Transaction_Manager::instance();
         $row    = $tx_mgr->payload();
         if ( ! is_array( $row ) ) {
             return null;
+        }
+        // The staging belongs to the actor whose transaction holds it.
+        //
+        // A transaction is leased to the actor that opened it, and the
+        // rest of the system treats that boundary as real: a peer may
+        // READ a transaction, but only its owner may act on it, and
+        // reading another's journal requires an explicit opt-in.
+        //
+        // The published-preview path was reading the journal with no
+        // ownership check at all, so any actor who could edit the page
+        // could obtain a credential for — and therefore READ — another
+        // actor's unpublished staged edit of it. The edit is bound to the
+        // page, so the actor could publish their own version of that
+        // page regardless; but the content they would have been shown is
+        // somebody else's uncommitted work, and a transaction's contents
+        // are not that actor's to read just because they can edit the
+        // page the edit targets.
+        //
+        // The credential is signed with the caller's own identity, so
+        // once minted it is the caller's to use — which is exactly why
+        // the minting step has to be the gate, not the verification.
+        $owner = isset( $row['actor'] ) ? (string) $row['actor'] : '';
+        $actor = (string) \AgentShell_MCP\Store::actor();
+        if ( '' !== $owner && $owner !== $actor ) {
+            throw new \InvalidArgumentException(
+                "The staged edit for post {$original_id} belongs to a transaction opened by '{$owner}', "
+                . "and you are '{$actor}'. A staged edit can only be previewed by the actor whose transaction "
+                . 'holds it.'
+            );
         }
         $content = \AgentShell_MCP\Content_Journal::of( $row );
         foreach ( (array) ( $content['ops'] ?? array() ) as $op ) {

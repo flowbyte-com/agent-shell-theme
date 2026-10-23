@@ -490,6 +490,7 @@ $suites = array(
     // Destructive live: gated on the same fail-closed check the other
     // destructive suites use.
     'published-preview-live' => __DIR__ . '/published-preview-live-test.php',
+    'published-preview-ownership-live' => __DIR__ . '/published-preview-ownership-live-test.php',
     'edit-published-live' => __DIR__ . '/edit-published-live-test.php',
     // Phase 3 regression: the preflight's `multi_query` + drain
     // sequence must catch queued-statement failures (a duplicate-key
