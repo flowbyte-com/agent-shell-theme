@@ -471,6 +471,13 @@ $suites = array(
     // the transaction never authorised. Destructive live: gated on the
     // same fail-closed check the other destructive suites use.
     'edit-published-preservation-live' => __DIR__ . '/edit-published-preservation-live-test.php',
+    // HAL 9001 remediation regression: the MCP route to a staged edit of
+    // a published page. The published-preview overlay credential existed
+    // but no tool exposed it, so the only way to see a staged edit was to
+    // capture the shadow row's id by hand, on an undocumented route.
+    // Destructive live: gated on the same fail-closed check the other
+    // destructive suites use.
+    'published-preview-live' => __DIR__ . '/published-preview-live-test.php',
     'edit-published-live' => __DIR__ . '/edit-published-live-test.php',
     // Phase 3 regression: the preflight's `multi_query` + drain
     // sequence must catch queued-statement failures (a duplicate-key
@@ -523,6 +530,7 @@ $destructive_live_suites = array(
     'create-draft-cas-refusal-live',
     'edit-published-live',
     'edit-published-preservation-live',
+    'published-preview-live',
     'agentshell-test-bed-preflight-live',
 );
 $verification_unverified = $test_bed_unverified;

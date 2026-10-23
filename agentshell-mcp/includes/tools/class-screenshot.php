@@ -28,9 +28,52 @@ class Screenshot extends Base_Tool {
                 'profile'  => array( 'type' => 'string', 'description' => 'Optional theme profile name — the screenshot renders its design tokens as preview overrides (requires AGENTSHELL_REST_TOKEN)' ),
                 'transaction' => array( 'type' => 'boolean', 'description' => 'Capture the open transaction\'s staged design instead of the committed one. Requires an open transaction; the staged config is rendered for this request only and is never persisted. Ordinary visitors continue to see the committed config until you commit.' ),
                 'post_id'    => array( 'type' => 'integer', 'description' => 'Capture an unpublished post (draft, pending, private or scheduled) without publishing it. Requires permission to read or edit that post. WordPress\' own per-post capability rules stay authoritative; the credential only restores your identity for that one request. Combine with transaction=true to see uncommitted design on a draft.' ),
+                'published_preview' => array( 'type' => 'boolean', 'description' => 'Capture the STAGED edit of a published page (post_id required): the page is served with the staged title, body, excerpt and slug, so an agent can see the edit before it is published. Requires an open transaction holding a staged edit for that page. The credential is bound to that staging, expires, and stops working the moment the transaction is committed or rolled back. Visitors still see the published page.' ),
                 'inline'   => array( 'type' => 'boolean', 'description' => 'Default true: return the image in this tool result and write nothing to disk. Set false to store the capture in private, expiring storage and receive an id instead.' ),
             ),
         );
+    }
+
+    /**
+     * The open transaction's staged edit of a published page.
+     *
+     * Returns null when there is no open transaction, when it holds no
+     * OP_EDIT_PUBLISHED for that page, or when the op is in a state that
+     * is no longer a previewable staging (published, compensated,
+     * conflicted). A credential for a settled op would preview nothing,
+     * and one for a conflicted op would preview something the transaction
+     * has already given up on.
+     *
+     * @param int $original_id
+     * @return array{tx_id:string, op_id:string, shadow_id:int}|null
+     */
+    private static function published_staging_for( $original_id ) {
+        $tx_mgr = \AgentShell_MCP\Transaction_Manager::instance();
+        $row    = $tx_mgr->payload();
+        if ( ! is_array( $row ) ) {
+            return null;
+        }
+        $content = \AgentShell_MCP\Content_Journal::of( $row );
+        foreach ( (array) ( $content['ops'] ?? array() ) as $op ) {
+            if ( ! is_array( $op ) ) { continue; }
+            $target = isset( $op['target']['original_id'] ) ? (int) $op['target']['original_id'] : 0;
+            if ( $target !== (int) $original_id ) { continue; }
+            if ( \AgentShell_MCP\Content_Journal::OP_EDIT_PUBLISHED !== (string) ( $op['op'] ?? '' ) ) { continue; }
+            $state = (string) ( $op['state'] ?? '' );
+            if ( ! in_array( $state, array( 'staged', 'intended', 'applied', 'partial-applied' ), true ) ) {
+                continue;
+            }
+            $shadow_id = (int) ( $op['target']['shadow_id'] ?? 0 );
+            if ( $shadow_id <= 0 ) {
+                continue;
+            }
+            return array(
+                'tx_id'     => (string) ( $row['id'] ?? '' ),
+                'op_id'     => (string) ( $op['id'] ?? '' ),
+                'shadow_id' => $shadow_id,
+            );
+        }
+        return null;
     }
 
     /**
@@ -94,6 +137,71 @@ class Screenshot extends Base_Tool {
         // the restored identity.
         $post_preview_args = array();
         $post_preview = isset( $arguments['post_id'] ) && '' !== $arguments['post_id'] && null !== $arguments['post_id'];
+
+        // The staged edit of a published page.
+        //
+        // A published page cannot be previewed through the ordinary post
+        // credential — it is already public, and the credential exists for
+        // content that is not. The staged edit of a published page is a
+        // different thing: the page is public and stays public, and what
+        // the caller wants to see is the edit that has not been published
+        // yet. The published-preview overlay serves exactly that, and the
+        // credential for it is bound to the staging — it expires, and it
+        // stops working the moment the transaction is committed or rolled
+        // back — so it is a capability and not a published URL.
+        if ( ! empty( $arguments['published_preview'] ) ) {
+            if ( ! $post_preview ) {
+                throw new \InvalidArgumentException(
+                    'published_preview requires post_id: it previews the staged edit of a specific published page.'
+                );
+            }
+            if ( ! class_exists( '\AgentShell_MCP\Content_Journal' ) || ! class_exists( '\AgentShell_MCP\Post_Preview' ) ) {
+                throw new \InvalidArgumentException(
+                    'A published-content preview requires the agentshell-mcp plugin, which is not active.'
+                );
+            }
+            $published_id = (int) $arguments['post_id'];
+            $post         = get_post( $published_id );
+            if ( ! $post || 'publish' !== $post->post_status ) {
+                throw new \InvalidArgumentException(
+                    "Post {$published_id} is not published, so there is no published edit to preview. "
+                    . 'Use post_id alone to preview an unpublished post.'
+                );
+            }
+            if ( ! current_user_can( 'edit_post', $published_id ) ) {
+                throw new \InvalidArgumentException(
+                    "You do not have permission to edit post {$published_id}, so its staged edit cannot be previewed."
+                );
+            }
+            $staging = self::published_staging_for( $published_id );
+            if ( null === $staging ) {
+                throw new \InvalidArgumentException(
+                    "There is no open transaction staging an edit for post {$published_id}. "
+                    . 'Stage one with agentshell_edit_published, then capture it.'
+                );
+            }
+            $url = get_permalink( $published_id );
+            if ( ! is_string( $url ) || '' === $url ) {
+                throw new \InvalidArgumentException( "Post {$published_id} has no permalink to capture." );
+            }
+            $url = add_query_arg(
+                \AgentShell_MCP\Post_Preview::published_preview_url_args(
+                    $published_id,
+                    (int) $staging['shadow_id'],
+                    (string) $staging['tx_id'],
+                    (string) $staging['op_id'],
+                    (int) get_current_user_id()
+                ),
+                $url
+            );
+            $post_preview = false;
+            $published_preview_args = array(
+                'original_id' => $published_id,
+                'shadow_id'   => (int) $staging['shadow_id'],
+                'op_id'       => (string) $staging['op_id'],
+            );
+        }
+
         if ( $post_preview ) {
             if ( ! class_exists( '\AgentShell_MCP\Post_Preview' ) ) {
                 throw new \InvalidArgumentException(
@@ -227,6 +335,13 @@ class Screenshot extends Base_Tool {
             ),
             'tip' => 'Evaluate the screenshot, then iterate: adjust design tokens, re-screenshot. Use agentshell_list_theme_profiles + agentshell_screenshot(profile=...) to compare profiles side by side.',
         );
+
+        if ( isset( $published_preview_args ) ) {
+            $summary['screenshot']['previewed_published_edit'] = $published_preview_args;
+            $summary['preview_note'] = 'Rendered the STAGED edit of a published page: the page was served with the '
+                . 'staged title, body, excerpt and slug. Visitors still see the published page, and the credential '
+                . 'stops working the moment the transaction is committed or rolled back.';
+        }
 
         if ( ! empty( $shot['viewport_adjusted'] ) ) {
             $summary['screenshot']['viewport_adjusted'] = true;
