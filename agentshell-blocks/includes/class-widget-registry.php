@@ -280,9 +280,20 @@ class Widget_Registry {
         }
 
         if ( ! empty( $widget['template'] ) ) {
-            return wp_kses_post( $widget['template'] );
+            $html = wp_kses_post( $widget['template'] );
+        } else {
+            $html = '<div data-widget-id="' . esc_attr( $id ) . '"></div>';
         }
-        return '<div data-widget-id="' . esc_attr( $id ) . '"></div>';
+
+        // The rendered widget must have exactly one marked root, or the
+        // widget runtime never finds it and its init function is never
+        // called — silently. The theme owns the rule (it is the base of
+        // the pair); this plugin delegates to it and keeps its own
+        // behaviour when the theme is absent.
+        if ( function_exists( 'agentshell_mark_widget_root' ) ) {
+            return agentshell_mark_widget_root( $html, $id );
+        }
+        return $html;
     }
 
     /**

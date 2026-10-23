@@ -1501,7 +1501,73 @@ function agentshell_render_widget( $widget_id ) {
         $html = "<div data-widget-id=\"{$widget_id}\"></div>";
     }
 
-    return $html;
+    return agentshell_mark_widget_root( $html, $widget_id );
+}
+
+/**
+ * Guarantee that a rendered widget has exactly one marked root element.
+ *
+ * The failure this exists to prevent
+ * ----------------------------------
+ * The widget runtime finds widget elements by their marker attribute —
+ * `data-widget` or `data-widget-id` — and calls the matching `init`
+ * function on each. The renderer that produces a widget WITHOUT a
+ * template emits `<div data-widget-id="…">`, so it is marked.
+ *
+ * The renderer that produces a widget WITH a template emitted the
+ * template verbatim. If the author had not put a marker on the
+ * template's root — and nothing requires them to, and no warning says
+ * so — the widget rendered, looked fine, and was NEVER INITIALISED: no
+ * `init(el)` call, no error, no warning. The widget's JavaScript simply
+ * did not run.
+ *
+ * Measured live against the disposable test bed: a registered widget
+ * whose template lacked the marker produced zero marked elements on the
+ * page and zero initialiser calls, while the tool reported the
+ * registration as successful.
+ *
+ * The rule
+ * ---------
+ *   - a template that already carries a marker is emitted verbatim: the
+ *     author's markup is theirs, and re-marking it could produce two
+ *     marked elements and two initialiser calls for one widget;
+ *   - otherwise the marker is added to the template's root element, so
+ *     `init(el)` receives the element the author wrote; and
+ *   - a template with no element at all is wrapped, which is the same
+ *     shape the no-template path has always produced.
+ *
+ * @param string $html      The rendered widget markup.
+ * @param string $widget_id The widget's id.
+ * @return string
+ */
+function agentshell_mark_widget_root( $html, $widget_id ) {
+    $html = (string) $html;
+    if ( '' === trim( $html ) ) {
+        return '<div data-widget-id="' . esc_attr( $widget_id ) . '"></div>';
+    }
+    // Already marked somewhere: the author's markup is authoritative.
+    if ( preg_match( '/\bdata-widget(-id)?\s*=/i', $html ) ) {
+        return $html;
+    }
+    // The first element, allowing leading whitespace and comments. The
+    // attribute pattern accepts a '>' inside a quoted attribute value,
+    // which a naive '<[^>]*>' would cut short.
+    $pattern = '/^((?:\s*<!--.*?-->)*\s*)(<[a-zA-Z][a-zA-Z0-9:_-]*)((?:"[^"]*"|\'[^\']*\'|[^>"\'])*)(\/?>)/s';
+    $marked = preg_replace_callback(
+        $pattern,
+        function ( $m ) use ( $widget_id ) {
+            return $m[1] . $m[2] . ' data-widget-id="' . esc_attr( $widget_id ) . '"' . $m[3] . $m[4];
+        },
+        $html,
+        1,
+        $count
+    );
+    if ( $count > 0 && is_string( $marked ) ) {
+        return $marked;
+    }
+    // No element to mark: wrap it, which is the shape the no-template
+    // path has always produced.
+    return '<div data-widget-id="' . esc_attr( $widget_id ) . '">' . $html . '</div>';
 }
 
 /**

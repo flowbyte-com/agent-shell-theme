@@ -311,6 +311,7 @@ $suites = array(
     // runtime the theme emits recognises the attribute the renderers
     // emit. Non-destructive unit suite.
     'widget-init'          => __DIR__ . '/widget-init-test.php',
+    'widget-root-marker'  => __DIR__ . '/widget-root-marker-test.php',
     'render-block'         => __DIR__ . '/render-block-test.php',
     // Live HTTP regression for the WordPress on-demand block-style pipeline.
     // Reads the rendered home page and asserts that WP's own template

@@ -765,9 +765,31 @@ Agentshell_Test::run(
     function () {
         cc_reset();
         $html = BlocksRegistry::get_instance()->render_widget( 'existing' );
+        // The point of the assertion is that the renderer produced the
+        // widget's own markup rather than the "Widget not found"
+        // placeholder. The markup now also carries the marker the widget
+        // runtime looks for — a widget rendered without one is never
+        // initialised — so the content check is on the content, and the
+        // marker is checked separately below.
         Agentshell_Test::assert_true(
-            str_contains( $html, '<div>existing</div>' ),
+            str_contains( $html, 'existing' ),
             "got: $html"
+        );
+        Agentshell_Test::assert_false(
+            str_contains( $html, 'Widget not found' ),
+            "got: $html"
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'the blocks plugin renderer marks the widget so the runtime can find it',
+    function () {
+        cc_reset();
+        $html = BlocksRegistry::get_instance()->render_widget( 'existing' );
+        Agentshell_Test::assert_true(
+            str_contains( $html, 'data-widget-id="existing"' ),
+            "the rendered widget must carry the marker the runtime looks for: $html"
         );
     }
 );
