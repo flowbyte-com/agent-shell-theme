@@ -449,7 +449,19 @@ add_action( 'template_redirect', 'agentshell_bind_post_preview_to_query', 0 );
  */
 function agentshell_is_preview_request() {
     return ! empty( $GLOBALS['agentshell_post_preview'] )
-        || ! empty( $GLOBALS['agentshell_transaction_preview'] );
+        || ! empty( $GLOBALS['agentshell_transaction_preview'] )
+        // The published-content preview overlay. It installs this global
+        // only after the credential has actually verified — the same
+        // property the two globals above have — so it cannot be used as a
+        // "is this a preview" oracle by an anonymous request.
+        //
+        // The published preview needs to be in this list because the two
+        // things this function gates are what stop its credential from
+        // being written into the rendered page: the admin bar (whose
+        // "Customise" link is built from REQUEST_URI) and the scrub that
+        // clears REQUEST_URI itself. Without them, the credential ended up
+        // in the HTML body of a page that was merely being previewed.
+        || ! empty( $GLOBALS['agentshell_pub_preview_overlay'] );
 }
 
 /**
@@ -530,6 +542,13 @@ function agentshell_scrub_preview_credentials_from_request() {
         'agentshell_post', 'agentshell_post_key', 'agentshell_post_exp', 'agentshell_post_user',
         'agentshell_tx', 'agentshell_tx_key', 'agentshell_tx_exp',
         'agentshell_preview', 'agentshell_preview_key',
+        // The published-content preview credential. The same reasoning as
+        // the two above: the credential is a bearer capability, and
+        // REQUEST_URI is what core's admin bar reads to build its
+        // "Customise" link — so a credential left in REQUEST_URI is written
+        // into the rendered page body. Its public flag
+        // (agentshell_preview) is already in this list.
+        'agentshell_pub_cred',
     );
 
     if ( ! isset( $_SERVER['REQUEST_URI'] ) ) {
@@ -608,6 +627,7 @@ function agentshell_block_preview_redirects( $redirect_url, $requested_url = '' 
         'agentshell_tx', 'agentshell_tx_key', 'agentshell_tx_exp',
         'agentshell_post', 'agentshell_post_key', 'agentshell_post_exp', 'agentshell_post_user',
         'agentshell_preview', 'agentshell_preview_key',
+        'agentshell_pub_cred',
     ) as $arg ) {
         if ( array_key_exists( $arg, $params ) ) {
             return false;
