@@ -302,7 +302,15 @@ class Widget_Registry {
 
     /**
      * Get consolidated init_js for all widgets.
-     * Returns the window.AgentshellWidgets registry + MutationObserver init.
+     * Returns the window.AgentshellWidgets registry + the widget runtime.
+     *
+     * The runtime — the code that actually calls a widget's init function —
+     * belongs to the theme, which is the base of this pair (this plugin
+     * declares a dependency on the theme). It used to have a second copy
+     * here, and that copy called `AgentshellWidgets.initWidget(el, id)`,
+     * a function it never defined, while selecting `[data-widget]` where
+     * every renderer in this repository emits `data-widget-id`. Two broken
+     * copies of the same responsibility; one of them is now enough.
      *
      * @return string
      */
@@ -319,6 +327,9 @@ class Widget_Registry {
         }
 
         $registry_js = "/* agentshell-widgets v" . $this->get_version() . " */\n";
+        if ( function_exists( 'agentshell_widget_runtime_js' ) ) {
+            $registry_js .= agentshell_widget_runtime_js() . "\n";
+        }
         $registry_js .= "window.AgentshellWidgets = window.AgentshellWidgets || {};\n";
         $registry_js .= "window.AgentshellWidgets.version = " . $this->get_version() . ";\n";
         foreach ( $inits as $idx => $init ) {
@@ -330,30 +341,6 @@ class Widget_Registry {
             $registry_js .= "})();\n";
         }
 
-        // MutationObserver to init [data-widget] elements
-        $registry_js .= <<<'JS'
-document.addEventListener('DOMContentLoaded', function() {
-    var observer = new MutationObserver(function(mutations) {
-        mutations.forEach(function(mutation) {
-            mutation.addedNodes.forEach(function(node) {
-                if (node.nodeType === 1) {
-                    if (node.hasAttribute('data-widget')) {
-                        AgentshellWidgets.initWidget(node, node.getAttribute('data-widget'));
-                    }
-                    node.querySelectorAll('[data-widget]').forEach(function(el) {
-                        AgentshellWidgets.initWidget(el, el.getAttribute('data-widget'));
-                    });
-                }
-            });
-        });
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    // Init any pre-existing data-widget elements
-    document.querySelectorAll('[data-widget]').forEach(function(el) {
-        AgentshellWidgets.initWidget(el, el.getAttribute('data-widget'));
-    });
-});
-JS;
         return $registry_js;
     }
 }

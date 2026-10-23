@@ -1477,8 +1477,150 @@ function agentshell_render_widget( $widget_id ) {
 }
 
 /**
+ * The widget runtime: the code that actually calls a widget's init function.
+ *
+ * The failure this exists to prevent
+ * ----------------------------------
+ * A widget's `init_js` *registers* an initialiser —
+ * `window.AgentshellWidgets['<id>'] = { init: function(el) { … } }` — and
+ * something has to call it. Nothing did. The theme emitted each widget's
+ * registration script into the footer and stopped there, so every widget
+ * that needed to run any JavaScript at all rendered as an empty element: the
+ * `init` function was defined, never invoked, and the page showed the
+ * widget's shell with nothing in it.
+ *
+ * The blocks plugin carried a second, also-broken copy of the missing half:
+ * a MutationObserver that called `AgentshellWidgets.initWidget(el, id)` —
+ * a function it never defined — and selected `[data-widget]` while every
+ * renderer in this repository emits `data-widget-id`. Two copies of the
+ * same responsibility, neither of them working, is how the defect survived.
+ *
+ * So the runtime lives here, once. The theme is the base of the pair (the
+ * blocks plugin declares a dependency on it), the plugin delegates to this
+ * function, and there is one implementation of "what does a widget's init
+ * function get called with".
+ *
+ * The contract the runtime implements:
+ *
+ *   - `init(el)` is called once per element, with the element itself.
+ *   - An element is initialised at most once, however many times the
+ *     observer, a caller or a page transition asks.
+ *   - One widget's failure is contained: a widget whose init throws is
+ *     logged, and every other widget still initialises.
+ *   - Elements added after load are initialised too.
+ *   - Both `data-widget` and `data-widget-id` mark a widget element,
+ *     because both spellings exist in the wild — a widget's own template
+ *     may use either.
+ *
+ * @return string
+ */
+function agentshell_widget_runtime_js() {
+    static $js = null;
+    if ( null !== $js ) {
+        return $js;
+    }
+    $js = <<<'JS'
+/* agentshell-widget-runtime — calls each widget's registered init function. */
+(function(){
+    var registry = window.AgentshellWidgets = window.AgentshellWidgets || {};
+    var INITIALISED = '__agentshellWidgetInitialised';
+
+    function idOf(el) {
+        if (!el || el.nodeType !== 1) { return ''; }
+        return el.getAttribute('data-widget') || el.getAttribute('data-widget-id') || '';
+    }
+
+    function isWidgetElement(el) {
+        return !!(el && el.nodeType === 1 &&
+            (el.hasAttribute('data-widget') || el.hasAttribute('data-widget-id')));
+    }
+
+    function report(id, e) {
+        if (typeof console !== 'undefined' && console.error) {
+            console.error('Agentshell widget init error (' + id + '):', e);
+        }
+    }
+
+    /**
+     * Initialise one element. Returns true when the widget's init ran.
+     */
+    registry.initWidget = function(el, id) {
+        if (!el || el.nodeType !== 1) { return false; }
+        id = id || idOf(el);
+        if (!id) { return false; }
+        if (el[INITIALISED]) { return false; }
+        var entry = registry[id];
+        var init = null;
+        if (typeof entry === 'function') {
+            init = entry;
+        } else if (entry && typeof entry.init === 'function') {
+            init = entry.init;
+        }
+        if (!init) {
+            // The widget has not registered (yet). Leave the element
+            // unmarked so a later call can still initialise it.
+            return false;
+        }
+        el[INITIALISED] = true;
+        try {
+            var result = init(el);
+            if (result && typeof result.catch === 'function') {
+                result.catch(function(e) { report(id, e); });
+            }
+        } catch (e) {
+            report(id, e);
+        }
+        return true;
+    };
+
+    /**
+     * Initialise every widget element in a scope, including the scope
+     * itself when it is one. Returns the number of elements considered.
+     */
+    registry.initAll = function(root) {
+        var scope = root || document;
+        var nodes = [];
+        if (isWidgetElement(scope)) { nodes.push(scope); }
+        if (typeof scope.querySelectorAll === 'function') {
+            var found = scope.querySelectorAll('[data-widget], [data-widget-id]');
+            for (var i = 0; i < found.length; i++) { nodes.push(found[i]); }
+        }
+        for (var j = 0; j < nodes.length; j++) {
+            registry.initWidget(nodes[j], idOf(nodes[j]));
+        }
+        return nodes.length;
+    };
+
+    if (typeof document !== 'undefined' && document.addEventListener) {
+        document.addEventListener('DOMContentLoaded', function() {
+            registry.initAll(document);
+            if (typeof MutationObserver === 'function' && document.body) {
+                var observer = new MutationObserver(function(mutations) {
+                    for (var i = 0; i < mutations.length; i++) {
+                        var added = mutations[i].addedNodes || [];
+                        for (var j = 0; j < added.length; j++) {
+                            if (added[j] && added[j].nodeType === 1) {
+                                registry.initAll(added[j]);
+                            }
+                        }
+                    }
+                });
+                observer.observe(document.body, { childList: true, subtree: true });
+            }
+        });
+    }
+})();
+JS;
+    return $js;
+}
+
+/**
  * Get all widget init scripts and scoped CSS for footer injection.
  * Returns array with 'init_js' and 'css' keys.
+ *
+ * The init_js block carries the runtime first and the widgets'
+ * registrations after it. The runtime is what calls a widget's init
+ * function; without it the registrations are inert.
  *
  * @return array
  */
@@ -1495,6 +1637,12 @@ function agentshell_get_widget_assets() {
         if ( ! empty( $widget['css'] ) ) {
             $css .= "\n/* Widget: {$widget['id']} */\n" . $widget['css'];
         }
+    }
+
+    if ( '' !== $init_js ) {
+        // The runtime goes first: it establishes window.AgentshellWidgets
+        // and the initialiser the registrations below plug into.
+        $init_js = agentshell_widget_runtime_js() . "\n" . $init_js;
     }
 
     return array( 'init_js' => $init_js, 'css' => $css );

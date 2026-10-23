@@ -292,6 +292,14 @@ $suites = array(
     'hardening'            => __DIR__ . '/hardening-test.php',
     'inject-block'         => __DIR__ . '/inject-block-test.php',
     'widget-registry'      => __DIR__ . '/widget-registry-test.php',
+    // HAL 9001 remediation regression: a widget's init function must
+    // actually be called. A widget's init_js only *registers* an
+    // initialiser, and nothing invoked it, so every widget that needed
+    // JavaScript rendered as an empty element. The behavioural half runs
+    // in Node against a small DOM stub; the PHP half checks that the
+    // runtime the theme emits recognises the attribute the renderers
+    // emit. Non-destructive unit suite.
+    'widget-init'          => __DIR__ . '/widget-init-test.php',
     'render-block'         => __DIR__ . '/render-block-test.php',
     // Live HTTP regression for the WordPress on-demand block-style pipeline.
     // Reads the rendered home page and asserts that WP's own template
