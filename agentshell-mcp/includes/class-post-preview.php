@@ -235,10 +235,19 @@ class Post_Preview {
      * The screenshot tool mints its own, so anything arriving in a `url`
      * argument is stale or borrowed — and the audit log records arguments
      * verbatim, so a key pasted into a URL would otherwise be persisted there.
+     *
+     * The published-content credential (PUB_PREVIEW_CRED_ARG) and its public
+     * flag are stripped here too. They are capabilities of exactly the same
+     * kind, and a caller that pasted one into a `url` argument would
+     * otherwise have it ride along into the capture and into the audit log
+     * — the very thing this function exists to prevent.
      */
     public static function strip_args( $url ) {
         return remove_query_arg(
-            array( self::POST_ARG, self::USER_ARG, self::KEY_ARG, self::EXP_ARG ),
+            array(
+                self::POST_ARG, self::USER_ARG, self::KEY_ARG, self::EXP_ARG,
+                self::PUB_PREVIEW_CRED_ARG, self::PUB_PREVIEW_FLAG_ARG,
+            ),
             (string) $url
         );
     }
@@ -248,9 +257,20 @@ class Post_Preview {
      *
      * The post id and expiry survive — useless without the signature — so a
      * returned URL stays diagnosable.
+     *
+     * The published-content credential is removed as well. It is a bearer
+     * capability: it authorises one request to render one published page
+     * with its staged (unpublished) edit. Leaving it in a URL that reaches
+     * a transcript, a log or a page body hands that capability to whoever
+     * reads the transcript, for as long as the credential's window lasts.
+     * The other two credential types are redacted for exactly this reason;
+     * the third has to be treated the same way.
      */
     public static function redact( $url ) {
-        return remove_query_arg( array( self::KEY_ARG ), (string) $url );
+        return remove_query_arg(
+            array( self::KEY_ARG, self::PUB_PREVIEW_CRED_ARG ),
+            (string) $url
+        );
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -300,12 +320,22 @@ class Post_Preview {
      *
      * Returns the base64-encoded JSON blob that goes into the URL.
      *
+     * The encoding is base64**url**: standard base64 contains `+`, `/`
+     * and `=` padding, and none of those survive a query string intact.
+     * `+` is decoded as a space by every query-string parser, and the
+     * trailing `=` is stripped by `add_query_arg()` — which is exactly
+     * how this credential is put into the URL. A standard-base64 blob
+     * was therefore corrupt for most post ids, and the overlay refused
+     * it: the published preview rendered the PUBLISHED page while the
+     * tool reported success. base64url uses only `A-Za-z0-9-_`, so the
+     * blob is byte-identical wherever it is carried.
+     *
      * @param int    $original_id Published post being previewed.
      * @param int    $shadow_id   Private shadow carrying the four staged fields.
      * @param string $tx_id       Open transaction id (from the journal).
      * @param string $op_id       Current shadow head pointer (Published_Shadow::META_OP_ID).
      * @param int    $actor_id    MCP caller (the editor, not the browser).
-     * @return string Base64-encoded JSON blob.
+     * @return string Base64url-encoded JSON blob.
      * @throws \InvalidArgumentException when no signing secret is available.
      */
     public static function preview_args_for_published( $original_id, $shadow_id, $tx_id, $op_id, $actor_id ) {
@@ -332,7 +362,52 @@ class Post_Preview {
             'exp'   => $exp,
             'key'   => self::sign_published_hmac( $oid, $sid, $tx, $op, $actor, $exp, $secret ),
         );
-        return base64_encode( wp_json_encode( $cred ) );
+        return self::base64url_encode( wp_json_encode( $cred ) );
+    }
+
+    /**
+     * Encode a string as base64url (RFC 4648 §5), without padding.
+     *
+     * The alphabet is `A-Za-z0-9-_` plus optional `=` padding. The
+     * padding is omitted here because `add_query_arg()` strips a
+     * trailing `=`, and the characters `+` and `/` of standard base64
+     * are not safe in a query string.
+     *
+     * @param string $raw
+     * @return string
+     */
+    public static function base64url_encode( $raw ) {
+        return rtrim( strtr( base64_encode( (string) $raw ), '+/', '-_' ), '=' );
+    }
+
+    /**
+     * Decode a base64url string.
+     *
+     * Accepts padded and unpadded input, and standard base64 as well —
+     * a credential minted by an older build must still verify for the
+     * remainder of its window rather than becoming a second failure
+     * mode on top of the one being fixed.
+     *
+     * The empty string decodes to the empty string: this is the exact
+     * inverse of base64url_encode() for every input, which is what
+     * makes the pair testable as a round trip.
+     *
+     * @param string $raw
+     * @return string|false The decoded bytes, or false when the input is not valid base64.
+     */
+    public static function base64url_decode( $raw ) {
+        if ( ! is_string( $raw ) ) {
+            return false;
+        }
+        if ( '' === $raw ) {
+            return '';
+        }
+        $normalised = strtr( $raw, '-_', '+/' );
+        $padding    = strlen( $normalised ) % 4;
+        if ( $padding ) {
+            $normalised .= str_repeat( '=', 4 - $padding );
+        }
+        return base64_decode( $normalised, true );
     }
 
     /**
@@ -394,7 +469,7 @@ class Post_Preview {
         if ( '' === $secret || ! is_string( $raw_cred ) || '' === $raw_cred ) {
             return null;
         }
-        $blob = base64_decode( $raw_cred, true );
+        $blob = self::base64url_decode( $raw_cred );
         if ( false === $blob ) {
             return null;
         }

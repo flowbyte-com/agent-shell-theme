@@ -29,6 +29,15 @@
  *                      HTML; the admin bar is suppressed only for an authorised
  *                      preview; expiry, invalidation and the combined draft +
  *                      transaction preview still hold
+ *   - published-preview-credential-hygiene  the THIRD preview credential — the
+ *                      one that renders a published page with its staged edit
+ *                      overlaid — is redacted out of reported URLs, stripped
+ *                      from caller-supplied ones, scrubbed from REQUEST_URI and
+ *                      refused by the canonical-redirect guard, exactly like
+ *                      the other two
+ *   - published-preview-transport  the published-preview credential survives
+ *                      the query string it travels in: base64url encoding, and
+ *                      a URL builder that does not truncate its padding
  *   - transaction-lease   the inactivity lease and stale recovery: expiry is
  *                          effective, recovery is audited and never silently
  *                          destroys journalled work, and the option row is
@@ -266,6 +275,8 @@ $suites = array(
     // Shares the fixture globals with post-preview above, so it must run in the
     // same process and after it.
     'preview-credential-hygiene' => __DIR__ . '/preview-credential-hygiene-test.php',
+    'published-preview-credential-hygiene' => __DIR__ . '/published-preview-credential-hygiene-test.php',
+    'published-preview-transport' => __DIR__ . '/published-preview-transport-test.php',
     // Loads the real Store, Doctor and Transaction_Manager and reads the
     // preview gate's credential, so it belongs beside the suites that have
     // already put those in memory.

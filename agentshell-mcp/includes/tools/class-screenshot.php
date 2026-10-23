@@ -184,14 +184,12 @@ class Screenshot extends Base_Tool {
             if ( ! is_string( $url ) || '' === $url ) {
                 throw new \InvalidArgumentException( "Post {$published_id} has no permalink to capture." );
             }
-            $url = add_query_arg(
-                \AgentShell_MCP\Post_Preview::published_preview_url_args(
-                    $published_id,
-                    (int) $staging['shadow_id'],
-                    (string) $staging['tx_id'],
-                    (string) $staging['op_id'],
-                    (int) get_current_user_id()
-                ),
+            $url = self::published_preview_url(
+                $published_id,
+                (int) $staging['shadow_id'],
+                (string) $staging['tx_id'],
+                (string) $staging['op_id'],
+                (int) get_current_user_id(),
                 $url
             );
             $post_preview = false;
@@ -448,6 +446,74 @@ class Screenshot extends Base_Tool {
         );
 
         return $summary;
+    }
+
+    /**
+     * Build the URL that renders a published page with its staged edit
+     * overlaid.
+     *
+     * The credential is a bearer capability, so a URL that mangles it
+     * produces a capture of the PUBLISHED page while the tool reports
+     * success — an agent asking to see a staged edit is shown the old
+     * content and told it has been shown the new one. That is exactly
+     * what happened when this used `add_query_arg()`: that function
+     * re-encodes the whole query string, leaves a '+' unencoded (every
+     * query-string parser reads it as a space), and strips a trailing
+     * '=' — which truncated the credential's base64 padding for most
+     * post ids.
+     *
+     * `http_build_query()` encodes each key and value with
+     * `urlencode()`, which a query-string parser reverses exactly.
+     *
+     * Public, and used by the live preview suite, because the defect
+     * this method's predecessor had was in the URL construction itself:
+     * a test that built the URL its own way could not have seen it.
+     *
+     * @param int    $original_id
+     * @param int    $shadow_id
+     * @param string $tx_id
+     * @param string $op_id
+     * @param int    $actor_id
+     * @param string $permalink
+     * @return string
+     */
+    public static function published_preview_url( $original_id, $shadow_id, $tx_id, $op_id, $actor_id, $permalink ) {
+        return self::append_query(
+            $permalink,
+            \AgentShell_MCP\Post_Preview::published_preview_url_args(
+                $original_id, $shadow_id, $tx_id, $op_id, $actor_id
+            )
+        );
+    }
+
+    /**
+     * Append query arguments to a URL, encoding each value correctly.
+     *
+     * Not `add_query_arg()`. That function re-encodes the whole query
+     * string, leaves a '+' unencoded (every query-string parser reads it
+     * as a space), and then strips a trailing '=' — which truncates a
+     * base64 value's padding. A preview credential is a bearer
+     * capability, so a URL that mangles it yields a capture of the wrong
+     * content while the tool reports success. `http_build_query()`
+     * encodes each key and value with `urlencode()`, which a query-string
+     * parser reverses exactly.
+     *
+     * An existing query string on the URL is preserved.
+     *
+     * @param string $url
+     * @param array  $args
+     * @return string
+     */
+    public static function append_query( $url, array $args ) {
+        if ( empty( $args ) ) {
+            return $url;
+        }
+        $query = http_build_query( $args, '', '&' );
+        if ( '' === $query ) {
+            return $url;
+        }
+        $separator = ( false === strpos( (string) $url, '?' ) ) ? '?' : '&';
+        return (string) $url . $separator . $query;
     }
 
     /**

@@ -487,7 +487,7 @@ rev_check( 'R2.1 C1 credential mints to a non-empty base64 string', '' !== $cred
 // pointer to the signed tuple. The credential carries the shadow's
 // op_id at mint time, and verify returns the op so the overlay can
 // gate on it.
-$decoded_c1 = json_decode( base64_decode( $cred_c1[ Post_Preview::PUB_PREVIEW_CRED_ARG ], true ), true );
+$decoded_c1 = json_decode( Post_Preview::base64url_decode( $cred_c1[ Post_Preview::PUB_PREVIEW_CRED_ARG ] ), true );
 $verified_c1 = Post_Preview::verify_published_hmac( $cred_c1[ Post_Preview::PUB_PREVIEW_CRED_ARG ] );
 rev_check( 'R2.2 C1 HMAC verifies (HMAC shape is correct)', is_array( $verified_c1 ) );
 rev_check( 'R2.2 C1 credential carries the op it was minted at',

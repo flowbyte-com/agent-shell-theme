@@ -296,8 +296,8 @@ s2co_check( 'A.2 verify_published_hmac accepts a valid credential', is_array( $d
     && 11 === $decoded['oid'] && 22 === $decoded['sid'] && 'tx-A' === $decoded['tx'] && 1 === $decoded['actor'] );
 
 // A.3 — verify rejects a tampered signature.
-$blob_arr = s2co_tamper_key( json_decode( base64_decode( $blob, true ), true ) );
-$bad = base64_encode( wp_json_encode( $blob_arr ) );
+$blob_arr = s2co_tamper_key( json_decode( Post_Preview::base64url_decode( $blob ), true ) );
+$bad = Post_Preview::base64url_encode( wp_json_encode( $blob_arr ) );
 s2co_check( 'A.3 verify rejects a tampered signature', null === Post_Preview::verify_published_hmac( $bad, $secret ) );
 
 // A.4 — verify rejects an expired exp. The verify path uses real time(),
@@ -306,10 +306,10 @@ s2co_check( 'A.3 verify rejects a tampered signature', null === Post_Preview::ve
 // capability's window (see class-transactions.php:185-189).
 $past_exp = time() - 60;
 $expired_sig = Post_Preview::sign_published_hmac( 11, 22, 'tx-A', 'op-A', 1, $past_exp, $secret );
-$blob_arr2 = json_decode( base64_decode( $blob, true ), true );
+$blob_arr2 = json_decode( Post_Preview::base64url_decode( $blob ), true );
 $blob_arr2['exp'] = $past_exp;
 $blob_arr2['key'] = $expired_sig;
-$blob_expired = base64_encode( wp_json_encode( $blob_arr2 ) );
+$blob_expired = Post_Preview::base64url_encode( wp_json_encode( $blob_arr2 ) );
 s2co_check( 'A.4 verify rejects an expired exp', null === Post_Preview::verify_published_hmac( $blob_expired, $secret ) );
 
 // A.5 — verify rejects zero oid/sid/actor.
@@ -319,12 +319,12 @@ $zero_cases = array(
     array( 'oid' => 11, 'sid' => 22, 'tx' => 'tx-A', 'actor' => 0 ),
 );
 foreach ( $zero_cases as $zc ) {
-    $arr = json_decode( base64_decode( $blob, true ), true );
+    $arr = json_decode( Post_Preview::base64url_decode( $blob ), true );
     $arr['oid']   = $zc['oid'];
     $arr['sid']   = $zc['sid'];
     $arr['actor'] = $zc['actor'];
     $arr['key']   = Post_Preview::sign_published_hmac( $zc['oid'], $zc['sid'], $zc['tx'], 'op-A', $zc['actor'], $arr['exp'], $secret );
-    $bad = base64_encode( wp_json_encode( $arr ) );
+    $bad = Post_Preview::base64url_encode( wp_json_encode( $arr ) );
     s2co_check( 'A.5 verify rejects zero oid/sid/actor', null === Post_Preview::verify_published_hmac( $bad, $secret ) );
 }
 
@@ -333,9 +333,9 @@ s2co_check( 'A.6 verify rejects malformed base64', null === Post_Preview::verify
 
 // A.7 — verify rejects JSON missing a required field.
 foreach ( array( 'oid', 'sid', 'tx', 'actor', 'exp', 'key' ) as $missing ) {
-    $arr = json_decode( base64_decode( $blob, true ), true );
+    $arr = json_decode( Post_Preview::base64url_decode( $blob ), true );
     unset( $arr[ $missing ] );
-    $bad = base64_encode( wp_json_encode( $arr ) );
+    $bad = Post_Preview::base64url_encode( wp_json_encode( $arr ) );
     s2co_check( "A.7 verify rejects missing {$missing}", null === Post_Preview::verify_published_hmac( $bad, $secret ) );
 }
 
@@ -458,8 +458,8 @@ s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow',
 s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
 s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
 s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
-$arr = s2co_tamper_key( json_decode( base64_decode( $blob, true ), true ) );
-$bad = base64_encode( wp_json_encode( $arr ) );
+$arr = s2co_tamper_key( json_decode( Post_Preview::base64url_decode( $blob ), true ) );
+$bad = Post_Preview::base64url_encode( wp_json_encode( $arr ) );
 $_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
 $_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $bad;
 Published_Preview_Overlay::init_to_global();
@@ -471,7 +471,7 @@ s2co_check(
     'B.5 verify_and_install refuses a tampered credential',
     null === Published_Preview_Overlay::get_overlay(),
     'tampered_key=' . substr( (string) ( $arr['key'] ?? '' ), 0, 12 )
-        . ' blob_key=' . substr( (string) ( json_decode( base64_decode( $blob, true ), true )['key'] ?? '' ), 0, 12 )
+        . ' blob_key=' . substr( (string) ( json_decode( Post_Preview::base64url_decode( $blob ), true )['key'] ?? '' ), 0, 12 )
         . ' bad_key=' . substr( (string) ( json_decode( base64_decode( $bad, true ), true )['key'] ?? '' ), 0, 12 )
         . ' expected=' . substr( (string) Post_Preview::sign_published_hmac(
             (int) $arr['oid'], (int) $arr['sid'], (string) $arr['tx'], (string) $arr['op'],
@@ -490,10 +490,10 @@ s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
 s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
 s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
 $past = time() - 60;
-$arr = json_decode( base64_decode( $blob, true ), true );
+$arr = json_decode( Post_Preview::base64url_decode( $blob ), true );
 $arr['exp'] = $past;
 $arr['key'] = Post_Preview::sign_published_hmac( 50, 51, 'tx-OVR-1', 'op_OVR_1', 1, $past, AUTH_SALT );
-$expired = base64_encode( wp_json_encode( $arr ) );
+$expired = Post_Preview::base64url_encode( wp_json_encode( $arr ) );
 $_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
 $_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $expired;
 Published_Preview_Overlay::init_to_global();

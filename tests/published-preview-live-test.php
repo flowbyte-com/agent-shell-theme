@@ -115,6 +115,47 @@ Agentshell_Test::run(
             'V5.1 the capture must have produced an image'
         );
 
+        // V5.2-V5.5: the capture must show the STAGED body, and the
+        // credential must not be in the rendered page.
+        //
+        // "An image exists" was the whole of V5 for a long time, and it
+        // was true in every run of a build whose credential was
+        // corrupted in transport: the overlay refused it, the capture
+        // rendered the PUBLISHED page, and the tool reported success.
+        // These are the assertions that would have caught it.
+        Agentshell_Test::assert_true(
+            (bool) pp_f( 'v5_published_image_captured' ),
+            'V5.2 the published page must be capturable, so the two captures can be compared'
+        );
+        Agentshell_Test::assert_true(
+            (bool) pp_f( 'v5_preview_image_captured' ),
+            'V5.3 the preview capture must exist'
+        );
+        Agentshell_Test::assert_true(
+            (bool) pp_f( 'v5_images_differ' ),
+            'V5.4 the preview capture must DIFFER from the published capture — identical images mean the credential was refused and the published page was captured'
+        );
+        Agentshell_Test::assert_true(
+            (bool) pp_f( 'v5_staged_body_rendered' ),
+            'V5.5 the preview must render the STAGED body, not the published one'
+        );
+        Agentshell_Test::assert_true(
+            (bool) pp_f( 'v5_published_body_absent' ),
+            'V5.6 the preview must not render the PUBLISHED body'
+        );
+        Agentshell_Test::assert_false(
+            (bool) pp_f( 'v5_credential_in_body' ),
+            'V5.7 the credential must not appear in the rendered page'
+        );
+        Agentshell_Test::assert_false(
+            (bool) pp_f( 'v5_cred_arg_in_body' ),
+            'V5.8 neither the credential nor its argument name may appear in the rendered page'
+        );
+        Agentshell_Test::assert_true(
+            (bool) pp_f( 'v5_construction_preserves_credential' ),
+            'V5.9 the tool\'s URL construction must preserve the credential for every post id, not only the one this fixture got (broken: ' . (string) pp_f( 'v5_construction_broken_ids', '' ) . ')'
+        );
+
         Agentshell_Test::assert_true(
             (bool) pp_f( 'v6_published_unchanged' ),
             'V6.1 the published body must be unchanged after the preview'

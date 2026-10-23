@@ -175,6 +175,121 @@ if ( '' !== $stored_id && class_exists( '\AgentShell_MCP\Screenshot_Store' ) ) {
 $f['v4_stored_id'] = $stored_id;
 $f['v5_image_captured'] = ( '' !== $image_path && is_readable( $image_path ) );
 
+// V5 must actually establish that the capture shows the STAGED body —
+// not merely that an image was produced.
+//
+// This is the assertion whose absence let a real defect through: the
+// credential was a standard-base64 blob, and WordPress's add_query_arg()
+// strips a trailing '=' — which truncated the blob's padding. The
+// overlay therefore refused the credential, the capture rendered the
+// PUBLISHED page, and the tool reported success. "An image exists" was
+// true in every one of those runs.
+//
+// The check that establishes it does not need OCR. Two captures are
+// compared:
+//
+//   - the published page, captured WITHOUT a credential, and
+//   - the same page, captured BY THE TOOL with published_preview.
+//
+// If the tool's credential reached the browser and the overlay honoured
+// it, the two images differ — the preview renders the staged body. If
+// the credential was corrupted in transport, the overlay refused it, the
+// second capture is the PUBLISHED page, and the two images are
+// byte-identical. The assertion is therefore exact: it distinguishes
+// "the preview worked" from "the preview silently did nothing", which
+// is precisely the distinction that was missing.
+$staged_marker   = 'STAGED BODY ' . $marker;
+$published_marker = 'PUBLISHED BODY ' . $marker;
+
+// The published rendering of the same page.
+$published_image = '';
+try {
+    $plain = \AgentShell_MCP\Screenshot::capture(
+        get_permalink( $post_id ),
+        1280,
+        800,
+        sys_get_temp_dir() . '/agentshell-pp-plain-' . getmypid()
+    );
+    if ( ! empty( $plain['file'] ) && is_readable( $plain['file'] ) ) {
+        $published_image = (string) $plain['file'];
+    }
+} catch ( \Throwable $e ) {
+    $published_image = '';
+}
+
+// The previewed rendering — the tool's own capture, with the tool's own
+// URL construction. This is the artefact under test.
+$preview_image = '';
+if ( '' !== $image_path && is_readable( $image_path ) ) {
+    $preview_image = $image_path;
+}
+
+$f['v5_published_image_captured'] = ( '' !== $published_image );
+$f['v5_preview_image_captured']   = ( '' !== $preview_image );
+$f['v5_images_differ'] = (
+    '' !== $published_image && '' !== $preview_image
+    && md5_file( $published_image ) !== md5_file( $preview_image )
+);
+
+// The same question asked of the rendered HTML, using the tool's own
+// URL-construction helper. The image comparison above is the
+// authoritative check; this one names the reason when it fails.
+$cred_args = \AgentShell_MCP\Post_Preview::published_preview_url_args(
+    (int) $post_id,
+    (int) ( $edit['shadow_id'] ?? 0 ),
+    (string) Tx::instance()->payload()['id'],
+    (string) ( $edit['op_id'] ?? '' ),
+    (int) get_current_user_id()
+);
+// The URL is built with the TOOL's own method — the same one the tool
+// calls. The defect this suite now guards was in the tool's URL
+// construction; a test that built the URL its own way could not have
+// seen it.
+$preview_url = Screenshot::published_preview_url(
+    (int) $post_id,
+    (int) ( $edit['shadow_id'] ?? 0 ),
+    (string) Tx::instance()->payload()['id'],
+    (string) ( $edit['op_id'] ?? '' ),
+    (int) get_current_user_id(),
+    get_permalink( $post_id )
+);
+$body        = (string) @file_get_contents( $preview_url );
+$f['v5_preview_url_has_credential'] = ( false !== strpos( $preview_url, 'agentshell_pub_cred=' ) );
+$f['v5_staged_body_rendered'] = ( false !== strpos( $body, $staged_marker ) );
+$f['v5_published_body_absent'] = ( false === strpos( $body, $published_marker ) );
+$f['v5_credential_in_body'] = ( false !== strpos( $body, (string) $cred_args[ \AgentShell_MCP\Post_Preview::PUB_PREVIEW_CRED_ARG ] ) );
+$f['v5_cred_arg_in_body'] = ( false !== strpos( $body, 'agentshell_pub_cred' ) );
+
+// The tool's URL construction must preserve the credential for EVERY
+// post id, not only for the one this fixture happened to get.
+//
+// The image comparison above is data-dependent: whether a
+// standard-base64 credential survives a given URL builder depends on
+// where the blob's padding falls, which depends on the post id. This
+// assertion is not — it checks the whole range, so a construction that
+// corrupts the credential for most ids cannot pass by luck.
+//
+// The transport unit suite (tests/published-preview-transport-test.php)
+// covers WordPress core's own add_query_arg() algorithm; this one
+// covers the helper the tool actually uses.
+$construction_broken = array();
+for ( $probe = 100; $probe < 140; $probe++ ) {
+    $probe_args = \AgentShell_MCP\Post_Preview::published_preview_url_args(
+        $probe, 207, (string) Tx::instance()->payload()['id'], (string) ( $edit['op_id'] ?? '' ), 1
+    );
+    $probe_url  = Screenshot::published_preview_url(
+        $probe, 207, (string) Tx::instance()->payload()['id'], (string) ( $edit['op_id'] ?? '' ), 1,
+        'https://example.test/page/'
+    );
+    parse_str( (string) parse_url( $probe_url, PHP_URL_QUERY ), $probe_back );
+    $probe_sent = (string) ( $probe_back[ \AgentShell_MCP\Post_Preview::PUB_PREVIEW_CRED_ARG ] ?? '' );
+    if ( $probe_sent !== (string) $probe_args[ \AgentShell_MCP\Post_Preview::PUB_PREVIEW_CRED_ARG ] ) {
+        $construction_broken[] = $probe;
+    }
+}
+$f['v5_construction_preserves_credential'] = ( array() === $construction_broken );
+$f['v5_construction_broken_ids'] = implode( ',', $construction_broken );
+
 // The published page itself must be unchanged, and an anonymous request must
 // see the published body.
 $live = get_post( $post_id );

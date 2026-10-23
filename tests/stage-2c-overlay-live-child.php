@@ -259,11 +259,11 @@ $cred_args = Post_Preview::published_preview_url_args( $orig_id, $shadow_id, $tx
 $cred_url  = $anon_url . '?' . http_build_query( $cred_args );
 
 // Tampered credential: change one hex char of the key.
-$decoded   = json_decode( base64_decode( $cred_args[ Post_Preview::PUB_PREVIEW_CRED_ARG ], true ), true );
+$decoded   = json_decode( Post_Preview::base64url_decode( $cred_args[ Post_Preview::PUB_PREVIEW_CRED_ARG ] ), true );
 $decoded['key'] = 'a' . substr( $decoded['key'], 1 );
 $tampered_args = array(
     Post_Preview::PUB_PREVIEW_FLAG_ARG => '1',
-    Post_Preview::PUB_PREVIEW_CRED_ARG => base64_encode( json_encode( $decoded ) ),
+    Post_Preview::PUB_PREVIEW_CRED_ARG => Post_Preview::base64url_encode( json_encode( $decoded ) ),
 );
 $tampered_url = $anon_url . '?' . http_build_query( $tampered_args );
 
@@ -281,7 +281,7 @@ $decoded['key'] = hash_hmac( 'sha256',
 );
 $expired_args = array(
     Post_Preview::PUB_PREVIEW_FLAG_ARG => '1',
-    Post_Preview::PUB_PREVIEW_CRED_ARG => base64_encode( json_encode( $decoded ) ),
+    Post_Preview::PUB_PREVIEW_CRED_ARG => Post_Preview::base64url_encode( json_encode( $decoded ) ),
 );
 $expired_url = $anon_url . '?' . http_build_query( $expired_args );
 

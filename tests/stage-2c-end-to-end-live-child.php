@@ -433,11 +433,11 @@ try {
 
     // E3.1: forged credential — flip one hex char of the key
     $cred_args = Post_Preview::published_preview_url_args( $orig_id, $shadow_id, $tx_id, $op_id, $agent_user_id );
-    $decoded = json_decode( base64_decode( $cred_args[ Post_Preview::PUB_PREVIEW_CRED_ARG ], true ), true );
+    $decoded = json_decode( Post_Preview::base64url_decode( $cred_args[ Post_Preview::PUB_PREVIEW_CRED_ARG ] ), true );
     $decoded['key'] = 'a' . substr( (string) ( $decoded['key'] ?? '' ), 1 );
     $tampered_args = array(
         Post_Preview::PUB_PREVIEW_FLAG_ARG => '1',
-        Post_Preview::PUB_PREVIEW_CRED_ARG => base64_encode( json_encode( $decoded ) ),
+        Post_Preview::PUB_PREVIEW_CRED_ARG => Post_Preview::base64url_encode( json_encode( $decoded ) ),
     );
     $tampered_url = $anon_url . '?' . http_build_query( $tampered_args );
     $r = e2e_http_get( $tampered_url );
@@ -459,7 +459,7 @@ try {
     );
     $expired_args = array(
         Post_Preview::PUB_PREVIEW_FLAG_ARG => '1',
-        Post_Preview::PUB_PREVIEW_CRED_ARG => base64_encode( json_encode( $decoded ) ),
+        Post_Preview::PUB_PREVIEW_CRED_ARG => Post_Preview::base64url_encode( json_encode( $decoded ) ),
     );
     $expired_url = $anon_url . '?' . http_build_query( $expired_args );
     $r = e2e_http_get( $expired_url );
