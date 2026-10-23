@@ -854,6 +854,12 @@ if ( $aw_fail > 0 ) {
             echo "  FAIL  " . $r['name'] . ( $r['detail'] ? '  [' . $r['detail'] . ']' : '' ) . "\n";
         }
     }
-    exit( 1 );
 }
-exit( 0 );
+
+// No exit here: run-all.php requires every suite into one process, so
+// exiting would end the aggregate run before the runner could print its
+// total — and the runner is the thing that sets the exit status. Every
+// other suite in this directory follows the same rule.
+if ( ! defined( 'AGENTSHELL_TEST_AGGREGATE' ) ) {
+    exit( $aw_fail === 0 ? 0 : 1 );
+}
