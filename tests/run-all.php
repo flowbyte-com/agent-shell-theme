@@ -413,6 +413,13 @@ $suites = array(
     // refusal cascade, the 5 idempotency cases, the per-original claim,
     // the shadow META_OP_ID invariant, the head-map CAS, and the
     // no-orphan teardown. Destructive live.
+    // HAL 9001 remediation regression: the compare-and-swap on the
+    // transaction row read MySQL's changed-row count as a verdict, so a
+    // write whose bytes equal the bytes already stored was reported as a
+    // lost race. Staging the same configuration twice inside one second
+    // failed, and so did a journal head whose compare fields had not
+    // moved. Non-destructive unit suite.
+    'transaction-cas' => __DIR__ . '/transaction-cas-test.php',
     'edit-published-live' => __DIR__ . '/edit-published-live-test.php',
     // Phase 3 regression: the preflight's `multi_query` + drain
     // sequence must catch queued-statement failures (a duplicate-key
@@ -464,6 +471,7 @@ $destructive_live_suites = array(
     'create-draft-cas-persistent-live',
     'create-draft-cas-refusal-live',
     'edit-published-live',
+    'edit-published-preservation-live',
     'agentshell-test-bed-preflight-live',
 );
 $verification_unverified = $test_bed_unverified;

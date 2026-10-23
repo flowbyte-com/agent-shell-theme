@@ -321,20 +321,79 @@ class Transaction_Manager {
      * on cannot damage anything — it simply fails its swap and learns that the
      * world moved. That is why the read path above may keep using the ordinary
      * cached get_option().
+     *
+     * Zero affected rows is ambiguous, and reading it as "lost the race" was
+     * a defect. MySQL reports 0 for an UPDATE in two different situations:
+     *
+     *   (a) the WHERE clause did not match — the row moved under us, and
+     *       the caller must re-read and act on the new world; and
+     *   (b) the WHERE clause matched, but the value being written is
+     *       byte-identical to the value already stored. MySQL then reports
+     *       0 changed rows, because nothing changed.
+     *
+     * Case (b) is not a lost race: the row holds exactly what the caller
+     * wanted to write, so the write is a success. It is also common. Two
+     * writes in the same second can produce identical lease stamps, and a
+     * head-map entry whose compare fields did not move (an edit that stages
+     * nothing the head tracks) serialises to the same bytes as the row it
+     * replaces. Both used to be reported as "a competing caller advanced the
+     * head", which turned a successful no-op into a refusal and made the
+     * caller roll back work that was already correctly staged.
+     *
+     * The two cases are told apart without guessing. A write whose bytes
+     * differ from the bytes already stored *must* change the row, so zero
+     * affected rows can only mean the guard did not match: a lost race, and
+     * the swap fails. A write whose bytes are identical to the stored ones
+     * cannot change anything, so zero affected rows means the guard matched
+     * and the desired state is already stored — and the row is re-read to
+     * confirm it still holds those bytes, because the row could have moved
+     * between the UPDATE and the re-read.
+     *
+     * The re-read is deliberately pessimistic: if the row moved, the swap
+     * fails even though the write may have been a no-op, because a caller
+     * that cannot prove the row is where it left it must not claim it wrote
+     * to it.
      */
     private static function cas( array $expected, array $next ) {
         global $wpdb;
         if ( ! isset( $wpdb ) || empty( $wpdb->options ) ) { return false; }
-        $affected = $wpdb->query(
+        $expected_bytes = maybe_serialize( $expected );
+        $next_bytes     = maybe_serialize( $next );
+        $affected       = $wpdb->query(
             $wpdb->prepare(
                 "UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
-                maybe_serialize( $next ),
+                $next_bytes,
                 self::KEY,
-                maybe_serialize( $expected )
+                $expected_bytes
             )
         );
         self::flush_option_cache();
-        return 1 === (int) $affected;
+        if ( false === $affected ) {
+            // A database error: the statement did not run to a verdict.
+            return false;
+        }
+        if ( 1 === (int) $affected ) {
+            return true;
+        }
+        if ( 0 !== (int) $affected ) {
+            return false;
+        }
+        if ( $next_bytes !== $expected_bytes ) {
+            // The write would have changed the row. It reported that it
+            // changed nothing, so the guard did not match: the row moved.
+            return false;
+        }
+        // A no-op write. Confirm the row still holds the bytes we read.
+        $current = $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
+                self::KEY
+            )
+        );
+        if ( null === $current ) {
+            return false; // the row is gone.
+        }
+        return ( (string) $current === (string) $expected_bytes );
     }
 
     /**

@@ -583,7 +583,23 @@ if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
             if ( maybe_serialize( $options[ $name ] ) !== $where['option_value'] ) { return 0; }
             if ( $is_update ) {
                 if ( ! isset( $set['option_value'] ) ) { return 0; }
-                $options[ $name ] = maybe_unserialize( $set['option_value'] );
+                $next = maybe_unserialize( $set['option_value'] );
+                // MySQL reports the number of rows *changed*, not the number
+                // of rows matched. An UPDATE that writes the bytes already
+                // stored therefore affects ZERO rows — the same value, the
+                // same guard, and the statement still reports "nothing
+                // happened".
+                //
+                // The stub honours that, because a stub that always reported 1
+                // would hide the ambiguity the compare-and-swap has to
+                // resolve: zero affected rows means either "the row moved" or
+                // "the write was a no-op", and only the database's own
+                // semantics tell the two apart. A stub that reported 1 for
+                // a no-op write made a whole class of defect invisible.
+                if ( maybe_serialize( $next ) === maybe_serialize( $options[ $name ] ) ) {
+                    return 0;
+                }
+                $options[ $name ] = $next;
             } else {
                 // Side-channel: snapshot the row at the moment the cas
                 // succeeds but before the row is unlinked. The lifecycle
@@ -613,6 +629,19 @@ if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
             }
             if ( preg_match( '/RELEASE_LOCK\s*\(/i', (string) $sql ) ) {
                 return '1';
+            }
+            // The raw bytes of a stored option. The compare-and-swap reads
+            // the row back to tell a no-op write (the guard matched, the
+            // value did not change) from a lost race (the guard did not
+            // match), and that read has to return the *serialised* bytes —
+            // the same bytes the UPDATE's WHERE clause compares against.
+            if ( preg_match( '/SELECT\s+option_value\s+FROM\s+\S*options\s+WHERE\s+option_name/i', (string) $sql ) ) {
+                $where = $this->conditions( (string) $sql );
+                $name  = isset( $where['option_name'] ) ? $where['option_name'] : null;
+                if ( null === $name || ! array_key_exists( $name, $GLOBALS['_agentshell_test_options'] ) ) {
+                    return null;
+                }
+                return maybe_serialize( $GLOBALS['_agentshell_test_options'][ $name ] );
             }
             return null;
         }
