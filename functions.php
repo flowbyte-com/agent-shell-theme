@@ -2088,6 +2088,7 @@ function agentshell_flatten_config( array $config ) {
         '--font-base'       => array( 'design', 'typography', 'fontFamily' ),
         '--font-mono'       => array( 'design', 'typography', 'mono' ),
         '--spacing-base'    => array( 'design', 'typography', 'baseSize' ),
+        '--type-scale'      => array( 'design', 'typography', 'scale' ),
         '--radius-base'     => array( 'design', 'layout', 'radius' ),
         '--zone-header-height' => array( 'design', 'layout', 'headerHeight' ),
         '--zone-footer-height' => array( 'design', 'layout', 'footerHeight' ),
@@ -2136,6 +2137,11 @@ function agentshell_unflatten_config( array $flat, array $existing ) {
         '--font-base'       => array( 'design', 'typography', 'fontFamily' ),
         '--font-mono'       => array( 'design', 'typography', 'mono' ),
         '--spacing-base'    => array( 'design', 'typography', 'baseSize' ),
+        // The type scale multiplier. It was stored by
+        // agentshell_set_typography and never applied, so the theme's
+        // headings ignored it — a configuration value that changed
+        // nothing.
+        '--type-scale'      => array( 'design', 'typography', 'scale' ),
         '--radius-base'     => array( 'design', 'layout', 'radius' ),
         '--zone-header-height' => array( 'design', 'layout', 'headerHeight' ),
         '--zone-footer-height' => array( 'design', 'layout', 'footerHeight' ),
@@ -2237,6 +2243,18 @@ function agentshell_validate_config( $config ) {
         foreach ( $config['design']['typography'] as $key => $val ) {
             if ( ! in_array( $key, $allowed_typography, true ) ) {
                 return new WP_Error( 'invalid_typography_key', "Unknown typography key: {$key}" );
+            }
+        }
+        // The type scale multiplies the heading sizes. A non-numeric or
+        // non-positive value would produce an invalid declaration, so it
+        // is refused rather than stored.
+        if ( isset( $config['design']['typography']['scale'] ) ) {
+            $scale = $config['design']['typography']['scale'];
+            if ( ! is_numeric( $scale ) || (float) $scale <= 0 ) {
+                return new WP_Error(
+                    'invalid_typography_scale',
+                    'typography.scale must be a positive number: it multiplies the heading sizes.'
+                );
             }
         }
     }

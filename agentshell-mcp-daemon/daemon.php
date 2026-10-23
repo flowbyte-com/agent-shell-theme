@@ -70,9 +70,16 @@ class Daemon {
             self::DAEMON_VERSION
         );
         // Only the loudest level writes to stderr. info is silent;
-        // notice prints once at startup; warning is the pre-fix behaviour
-        // and is reserved for cases that warrant operator attention.
+        // notice is verbose-only — it is a compatibility remark about
+        // two version numbers that are both working, and the daemon is
+        // started afresh for every connection, so an unconditional
+        // notice is a line of noise on every single connection;
+        // warning is the pre-fix behaviour and is reserved for cases
+        // that warrant operator attention.
         if ( $status['level'] === 'info' ) {
+            return;
+        }
+        if ( $status['level'] === 'notice' && ! $this->verbose ) {
             return;
         }
         $prefix = ( $status['level'] === 'warning' ) ? 'WARNING' : strtoupper( $status['level'] );

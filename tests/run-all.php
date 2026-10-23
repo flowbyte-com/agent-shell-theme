@@ -445,6 +445,17 @@ $suites = array(
     // declaration, open a rule or close the element. Non-destructive
     // unit suite.
     'css-context'           => __DIR__ . '/css-context-test.php',
+    // HAL 9001 remediation regression: a missing argument is refused by
+    // name instead of raising a PHP warning and creating something the
+    // caller never asked for. Non-destructive unit suite.
+    'argument-handling'   => __DIR__ . '/argument-handling-test.php',
+    // HAL 9001 remediation regression: the small diagnostics defects. The
+    // type scale reaches the CSS variables instead of being stored and
+    // ignored; the doctor does not warn about a widget the operator
+    // retired; the update response names the fields it wrote; the
+    // daemon's compatibility notice is verbose-only. Non-destructive unit
+    // suite.
+    'diagnostics'         => __DIR__ . '/diagnostics-test.php',
     // HAL 9001 remediation regression: the published-edit field
     // preservation contract. A partial edit must inherit every field the
     // caller did not name (title, slug, excerpt) instead of blanking it,

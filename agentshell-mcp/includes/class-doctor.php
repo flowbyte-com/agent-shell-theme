@@ -148,6 +148,17 @@ class Doctor {
                 self::err( $errors, 'INVALID_TYPO_KEY', "Unknown typography key: {$key}", array( 'key' => $key ) );
             }
         }
+        // The type scale multiplies the heading sizes, so a non-numeric or
+        // non-positive value would produce an invalid declaration and a
+        // broken heading — and the value used to be stored and ignored.
+        if ( isset( $design['typography']['scale'] ) ) {
+            $scale = $design['typography']['scale'];
+            if ( ! is_numeric( $scale ) || (float) $scale <= 0 ) {
+                self::err( $errors, 'INVALID_TYPO_SCALE',
+                    'typography.scale must be a positive number: it multiplies the heading sizes.',
+                    array( 'key' => 'scale' ) );
+            }
+        }
         foreach ( ( $design['layout'] ?? array() ) as $key => $value ) {
             if ( ! in_array( $key, self::ALLOWED_LAYOUT, true ) ) {
                 self::err( $errors, 'INVALID_LAYOUT_KEY', "Unknown design.layout key: {$key}", array( 'key' => $key ) );
@@ -282,9 +293,20 @@ class Doctor {
             }
         }
         foreach ( $registry as $id => $widget ) {
-            if ( ! isset( $referenced[ $id ] ) ) {
-                self::warn( $warnings, 'WIDGET_UNUSED', "Widget '{$id}' is registered but not referenced by any zone.", array( 'widget' => $id ) );
+            if ( isset( $referenced[ $id ] ) ) {
+                continue;
             }
+            // A widget that is registered, referenced by no zone, and
+            // disabled is a widget the operator deliberately retired. It
+            // renders nothing by design, so warning about it on every
+            // validation is noise that trains an agent to ignore the
+            // doctor. A widget that is still active and unreferenced is a
+            // different thing — it is a widget nobody placed — and that
+            // is worth saying.
+            if ( 'disabled' === ( $widget['status'] ?? 'active' ) ) {
+                continue;
+            }
+            self::warn( $warnings, 'WIDGET_UNUSED', "Widget '{$id}' is registered but not referenced by any zone.", array( 'widget' => $id ) );
         }
 
         foreach ( (array) $config_widgets as $widget ) {

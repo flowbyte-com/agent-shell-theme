@@ -141,6 +141,16 @@ class Content_Primitives {
         } );
 
         $record['atomicity'] = Content_Write_Guard::report();
+        // Which fields this call actually changed.
+        //
+        // The record carries the post's *current* state, so a title the
+        // caller never mentioned comes back as the post's title — which,
+        // for a draft with no title, is an empty string. That is
+        // accurate, and it read as misleading: the response looked like
+        // it had set the title to nothing. Naming the fields that were
+        // written removes the ambiguity without changing the record's
+        // shape.
+        $record['updated_fields'] = array_values( array_map( 'strval', array_keys( $changes ) ) );
         return $record;
     }
 
