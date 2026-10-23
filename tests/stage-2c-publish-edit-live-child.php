@@ -190,7 +190,7 @@ function pe_seed_original( $mysqli, $mark, $suffix ) {
     return (int) $mysqli->insert_id;
 }
 
-function pe_seed_shadow( $mysqli, $orig_id, $mark, $suffix, array $staged, $op_id ) {
+function pe_seed_shadow( $mysqli, $orig_id, $mark, $suffix, array $staged, $op_id, $staged_post_name = '' ) {
     $shadow_name = "{$mark}-shadow-{$suffix}";
     $esc = $mysqli->real_escape_string( $shadow_name );
     $existing = $mysqli->query( "SELECT ID FROM wp_posts WHERE post_name='{$esc}' AND post_type='page'" )->fetch_assoc();
@@ -207,6 +207,14 @@ function pe_seed_shadow( $mysqli, $orig_id, $mark, $suffix, array $staged, $op_i
     }
     update_post_meta( $shadow_id, Published_Shadow::META_SHADOW_FOR, (string) $orig_id );
     update_post_meta( $shadow_id, Published_Shadow::META_OP_ID, (string) $op_id );
+    // The staged slug lives in META_STAGED_POST_NAME, exactly as the
+    // production shadow writes it. The fixture used to leave the meta
+    // unset, which made the shadow's slug and the journal's after-image
+    // disagree about the slug — a state the production path cannot
+    // produce, and one the publish step must refuse.
+    if ( '' !== (string) $staged_post_name ) {
+        update_post_meta( $shadow_id, Published_Shadow::META_STAGED_POST_NAME, (string) $staged_post_name );
+    }
     return $shadow_id;
 }
 
@@ -236,13 +244,10 @@ function pe_read_post_row( $db, $id ) {
  * Returns [tx_id, op_id, original_id, shadow_id].
  */
 function pe_stage( $mysqli, $orig_id, $mark, $suffix, array $staged, $op_actor = null ) {
-    $shadow_id = pe_seed_shadow( $mysqli, $orig_id, $mark, $suffix, $staged, '__pending__' );
     $tx_mgr = Tx::instance();
     $active = $tx_mgr->is_active();
     if ( $GLOBALS['_pe_debug'] ) { fwrite( STDERR, "[pe_stage {$suffix}] is_active=" . ( $active ? 'true' : 'false' ) . "\n" ); }
     if ( $active ) { $tx_mgr->rollback(); }
-    $tx = $tx_mgr->begin( $op_actor ?? 'agent' );
-    $tx_id = (string) $tx['id'];
     // Default post_name to the original's current slug so the journal
     // validator's `after.post_name` requirement is satisfied when the
     // test does not explicitly stage a slug change. The unit test's
@@ -250,6 +255,9 @@ function pe_stage( $mysqli, $orig_id, $mark, $suffix, array $staged, $op_actor =
     $effective_post_name = array_key_exists( 'post_name', $staged ) && '' !== (string) ( $staged['post_name'] ?? '' )
         ? (string) $staged['post_name']
         : (string) ( $mysqli->query( "SELECT post_name FROM wp_posts WHERE ID=" . (int) $orig_id )->fetch_assoc()['post_name'] ?? "orig-{$orig_id}" );
+    $shadow_id = pe_seed_shadow( $mysqli, $orig_id, $mark, $suffix, $staged, '__pending__', $effective_post_name );
+    $tx = $tx_mgr->begin( $op_actor ?? 'agent' );
+    $tx_id = (string) $tx['id'];
     $op = Content_Journal::record_intent(
         Content_Journal::OP_EDIT_PUBLISHED,
         array(

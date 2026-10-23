@@ -510,6 +510,88 @@ class Publish_Edit extends Base_Tool {
             );
         }
 
+        // 2b. The shadow's stored fields must equal the op's
+        //     after-image. The shadow is the physical carrier of the
+        //     staged values and the journal's after-image is the
+        //     record of them; the two are written together, so a
+        //     divergence means one of them was changed out of band
+        //     and the publish would write something nobody staged.
+        $after  = is_array( $op['after'] ?? null ) ? $op['after'] : array();
+        // Read the shadow's staged fields through the shadow class's own
+        // reader, so the comparison uses the same canonical location
+        // (META_STAGED_POST_NAME, with the legacy column fallback) the
+        // rest of the system uses. Reading the column directly here
+        // would compare a placeholder slug against the staged slug and
+        // refuse every publish.
+        $shadow_after = \AgentShell_MCP\Published_Shadow::read_after( $shadow_id );
+        if ( ! is_array( $shadow_after ) ) {
+            self::refuse(
+                $actor, $tx, $op, $original_id,
+                'transaction_publish_refused_shadow_after_mismatch',
+                'the shadow is no longer readable, so its staged values cannot be '
+                    . 'compared with the op\'s after-image. The publish is refused.'
+            );
+        }
+        $shadow_fields = array(
+            'post_title'   => (string) ( $shadow_after['post_title'] ?? '' ),
+            'post_content' => (string) ( $shadow_after['post_content'] ?? '' ),
+            'post_excerpt' => (string) ( $shadow_after['post_excerpt'] ?? '' ),
+            'post_name'    => (string) ( $shadow_after['post_name'] ?? '' ),
+        );
+        foreach ( $shadow_fields as $field => $shadow_value ) {
+            $recorded = (string) ( $after[ $field ] ?? '' );
+            if ( $recorded !== $shadow_value ) {
+                self::refuse(
+                    $actor, $tx, $op, $original_id,
+                    'transaction_publish_refused_shadow_after_mismatch',
+                    'the shadow\'s "' . $field . '" is "' . $shadow_value . '" but the op\'s '
+                        . 'after-image records "' . $recorded . '". The staged values were changed '
+                        . 'out of band; the publish is refused so that neither copy is published.'
+                );
+            }
+        }
+
+        // 2c. Nothing outside the authorised change may move. The
+        //     staged after-image is complete: a field the caller did
+        //     not name inherits the value that was already published.
+        //     This check proves that, against the immutable baseline,
+        //     before the write — the destructive boundary is where the
+        //     invariant has to hold.
+        //
+        //     An op staged by a build that did not record the
+        //     authorised set is compared against a set derived from
+        //     the baseline (a field that differs from the baseline is
+        //     a change by definition). The derived set makes the
+        //     check self-consistent rather than vacuous, and the
+        //     explicit set makes it strict.
+        $staged_fields = array();
+        if ( isset( $after['staged_fields'] ) && is_array( $after['staged_fields'] ) ) {
+            $staged_fields = array_map( 'strval', $after['staged_fields'] );
+        } else {
+            $baseline = is_array( $op['before'] ?? null ) ? $op['before'] : array();
+            foreach ( self::SUPPORTED_FIELDS as $field ) {
+                if ( (string) ( $after[ $field ] ?? '' ) !== (string) ( $baseline[ $field ] ?? '' ) ) {
+                    $staged_fields[] = $field;
+                }
+            }
+        }
+        $baseline = is_array( $op['before'] ?? null ) ? $op['before'] : array();
+        foreach ( self::SUPPORTED_FIELDS as $field ) {
+            if ( in_array( $field, $staged_fields, true ) ) { continue; }
+            $staged_value = (string) ( $after[ $field ] ?? '' );
+            $base_value   = (string) ( $baseline[ $field ] ?? '' );
+            if ( $staged_value === $base_value ) { continue; }
+            self::refuse(
+                $actor, $tx, $op, $original_id,
+                'transaction_publish_refused_unstaged_field_drift',
+                'the staged "' . $field . '" is "' . $staged_value . '" but the published baseline '
+                    . 'holds "' . $base_value . '", and "' . $field . '" was not part of the '
+                    . 'authorised change. Publishing it would change a field the caller never '
+                    . 'named. The op is preserved in conflict; re-stage the edit naming every '
+                    . 'field it intends to change.'
+            );
+        }
+
         // 3. The per-original claim must be held by this transaction.
         //    A different transaction holding the claim means a
         //    competing staging is in flight; the publish is refused.

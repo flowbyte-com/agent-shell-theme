@@ -143,10 +143,48 @@ class Edit_Published extends Base_Tool {
         // ── Argument parsing + required-fields check ─────────────────────
         $original_id  = isset( $arguments['original_id'] )  ? (int)    $arguments['original_id']  : 0;
         $idem         = isset( $arguments['idempotency_key'] ) ? (string) $arguments['idempotency_key'] : '';
-        $post_title   = isset( $arguments['post_title'] )   ? (string) $arguments['post_title']   : '';
-        $post_content = isset( $arguments['post_content'] ) ? (string) $arguments['post_content'] : '';
-        $post_excerpt = isset( $arguments['post_excerpt'] ) ? (string) $arguments['post_excerpt'] : '';
-        $post_name    = isset( $arguments['post_name'] )    ? (string) $arguments['post_name']    : '';
+
+        // Presence — not emptiness — decides whether a field was supplied.
+        //
+        // The four staged fields are optional, and an omitted field must
+        // inherit the value that is already in effect. Treating "omitted"
+        // as "empty string" (the obvious `isset( ... ) ? ... : ''` shape)
+        // silently erased every field the caller did not mention: a
+        // content-only edit published an empty title, an empty excerpt
+        // and an empty slug. The distinction the contract needs is
+        // *present* versus *absent*:
+        //
+        //   - absent  → inherit the currently effective value (the
+        //               published original on a fresh staging; the
+        //               shadow's current staged value when an
+        //               authorised edit advances the head).
+        //   - present → stage exactly what was supplied, including an
+        //               empty string where an empty string is meaningful.
+        //
+        // The two fields where an empty string is never meaningful
+        // (post_title, post_content) are refused rather than staged:
+        // publishing an untitled or bodiless page destroys content, and
+        // "clear it" is not a change anybody makes by accident. An
+        // explicitly empty excerpt is allowed — clearing an excerpt is
+        // ordinary editorial work and destroys nothing.
+        $has_title   = array_key_exists( 'post_title',   $arguments );
+        $has_content = array_key_exists( 'post_content', $arguments );
+        $has_excerpt = array_key_exists( 'post_excerpt', $arguments );
+        $has_name    = array_key_exists( 'post_name',    $arguments );
+
+        $post_title   = $has_title   ? (string) $arguments['post_title']   : null;
+        $post_content = $has_content ? (string) $arguments['post_content'] : null;
+        $post_excerpt = $has_excerpt ? (string) $arguments['post_excerpt'] : null;
+        $post_name    = $has_name    ? (string) $arguments['post_name']    : null;
+
+        // The set of fields this call explicitly authorises a change to.
+        // It travels with the staged payload so the publish step can
+        // prove that nothing outside the authorised change moved.
+        $staged_fields = array();
+        if ( $has_title )   { $staged_fields[] = 'post_title'; }
+        if ( $has_content ) { $staged_fields[] = 'post_content'; }
+        if ( $has_excerpt ) { $staged_fields[] = 'post_excerpt'; }
+        if ( $has_name && '' !== $post_name ) { $staged_fields[] = 'post_name'; }
 
         // Refusal #2 (run before validate_required so an empty key
         // surfaces as `bad_idempotency_key`, not as a generic
@@ -177,15 +215,35 @@ class Edit_Published extends Base_Tool {
         }
 
         // Refusal #4: at least one of the four supported fields must be
-        // supplied. A no-field call is a no-op edit and is refused.
-        $has_fields = ( '' !== $post_title ) || ( '' !== $post_content )
-            || ( '' !== $post_excerpt ) || ( '' !== $post_name );
+        // supplied. Presence, not emptiness, decides: an explicitly
+        // empty excerpt is a real change (clear the excerpt), and a call
+        // that names no field at all is a no-op edit.
+        $has_fields = $has_title || $has_content || $has_excerpt || $has_name;
         if ( ! $has_fields ) {
             throw new \InvalidArgumentException(
                 'transaction_edit_published_refused_no_op: at least one of post_title, post_content, '
                 . 'post_excerpt, post_name must be supplied. A no-op edit is refused; the staging '
                 . 'tool creates a shadow and holds a claim, both of which must be justified by a '
                 . 'real change.'
+            );
+        }
+
+        // Refusal #4b: an explicitly empty title or body is refused.
+        // These are the two fields whose emptiness destroys content that
+        // is live. Omitting the field inherits the published value; the
+        // staging tool will not publish an untitled or bodiless page.
+        if ( $has_title && '' === $post_title ) {
+            throw new \InvalidArgumentException(
+                'transaction_edit_published_refused_empty_title: post_title was supplied as an empty '
+                . 'string. Publishing an untitled page is not a change this tool will make; omit '
+                . 'post_title to inherit the published title, or supply a real title.'
+            );
+        }
+        if ( $has_content && '' === $post_content ) {
+            throw new \InvalidArgumentException(
+                'transaction_edit_published_refused_empty_content: post_content was supplied as an '
+                . 'empty string. Publishing a bodiless page destroys the content that is live; omit '
+                . 'post_content to inherit the published body, or supply the real body.'
             );
         }
 
@@ -213,17 +271,10 @@ class Edit_Published extends Base_Tool {
             );
         }
 
-        // Resolve the effective `post_name` the staging code will store
-        // in the op's `after`: an empty `post_name` in the call means
-        // "do not change the slug", so the effective value is the
-        // original's current `post_name`. The fingerprint logic below
-        // uses the effective values, so the second call's effective
-        // post_name matches the first call's stored post_name — a
-        // retry with the same fields (including the same "leave the
-        // slug alone" intent) is a resume, not a conflict.
-        $effective_post_name = '' !== $post_name
-            ? $post_name
-            : (string) $original->post_name;
+        // The effective staged values are resolved per branch below: the
+        // fresh path inherits from the published original, the
+        // head-advancement path inherits from the shadow's current
+        // staged values. See effective_values().
 
         // Re-read the transaction row at the start of every in-tx call.
         // Same pattern as the Create_Draft fix at 87cf0cb: a previous
@@ -273,8 +324,24 @@ class Edit_Published extends Base_Tool {
             $op_id     = (string) ( $existing_op['id'] ?? '' );
             $op_idem   = (string) ( $existing_op['idempotency_key'] ?? '' );
             $op_fp     = self::staged_payload_fingerprint( $existing_op );
+
+            // The effective staged values. An omitted field inherits the
+            // shadow's CURRENT staged value — the accumulated state of
+            // this transaction's edits — not the original's published
+            // value. Inheriting from the original would silently drop
+            // the previous edit's staged body when a second authorised
+            // edit advances the head.
+            $effective = self::effective_values(
+                $original,
+                is_array( $existing_op['after'] ?? null ) ? $existing_op['after'] : array(),
+                $has_title, $post_title,
+                $has_content, $post_content,
+                $has_excerpt, $post_excerpt,
+                $has_name, $post_name
+            );
             $new_fp    = self::staged_payload_fingerprint_from_args(
-                $post_title, $post_content, $post_excerpt, $effective_post_name
+                $effective['post_title'], $effective['post_content'],
+                $effective['post_excerpt'], $effective['post_name']
             );
 
             if ( 'staged' !== $op_state ) {
@@ -299,15 +366,79 @@ class Edit_Published extends Base_Tool {
 
             return self::advance_shadow(
                 $tx, $existing_op, $original_id, $original,
-                $post_title, $post_content, $post_excerpt, $post_name,
+                $effective['post_title'], $effective['post_content'],
+                $effective['post_excerpt'], $effective['post_name'],
+                $staged_fields,
                 $idem, $actor, $tx_id
             );
         }
 
+        // Fresh staging: the effective values inherit from the published
+        // original — there is no shadow yet, so the original's current
+        // values are what is in effect.
+        $effective = self::effective_values(
+            $original, array(),
+            $has_title, $post_title,
+            $has_content, $post_content,
+            $has_excerpt, $post_excerpt,
+            $has_name, $post_name
+        );
+
         return self::fresh_stage(
             $tx, $original, $original_id,
-            $post_title, $post_content, $post_excerpt, $post_name,
+            $effective['post_title'], $effective['post_content'],
+            $effective['post_excerpt'], $effective['post_name'],
+            $staged_fields,
             $idem, $actor, $tx_id
+        );
+    }
+
+    /**
+     * Resolve the effective staged values for the four supported fields.
+     *
+     * A field the caller supplied is staged exactly as given. A field
+     * the caller omitted inherits the value that is currently in effect:
+     * `$current` — the shadow's staged after-image — when one exists, and
+     * the published original when it does not.
+     *
+     * The four values this returns are the *payload* of the staged edit:
+     * they are what the shadow stores and what the publish step writes.
+     * Because they are complete, a field the caller never mentioned is
+     * written back unchanged rather than blank.
+     *
+     * @param \WP_Post  $original The published original.
+     * @param array     $current  The shadow's current staged after-image
+     *                             (empty on a fresh staging).
+     * @return array{post_title:string, post_content:string, post_excerpt:string, post_name:string}
+     */
+    private static function effective_values(
+        \WP_Post $original, array $current,
+        $has_title, $post_title,
+        $has_content, $post_content,
+        $has_excerpt, $post_excerpt,
+        $has_name, $post_name
+    ) : array {
+        $inherit = function ( string $field, string $fallback ) use ( $current ) : string {
+            if ( array_key_exists( $field, $current ) ) {
+                return (string) $current[ $field ];
+            }
+            return (string) $fallback;
+        };
+        return array(
+            'post_title'   => $has_title
+                ? (string) $post_title
+                : $inherit( 'post_title', (string) $original->post_title ),
+            'post_content' => $has_content
+                ? (string) $post_content
+                : $inherit( 'post_content', (string) $original->post_content ),
+            'post_excerpt' => $has_excerpt
+                ? (string) $post_excerpt
+                : $inherit( 'post_excerpt', (string) $original->post_excerpt ),
+            // An empty post_name keeps its documented meaning — "leave
+            // the slug alone". A slug is never authored empty.
+            'post_name'    => ( $has_name && '' !== $post_name )
+                ? (string) $post_name
+                : $inherit( 'post_name', (string) $original->post_name ),
         );
     }
 
@@ -364,6 +495,7 @@ class Edit_Published extends Base_Tool {
     private static function fresh_stage(
         array $tx, \WP_Post $original, int $original_id,
         string $post_title, string $post_content, string $post_excerpt, string $post_name,
+        array $staged_fields,
         string $idem, string $actor, string $tx_id
     ) {
         $staged_post_name = '' !== $post_name ? $post_name : (string) $original->post_name;
@@ -371,7 +503,7 @@ class Edit_Published extends Base_Tool {
 
         $result = \AgentShell_MCP\Content_Write_Guard::run( function() use (
             $tx, $original, $original_id, $staged_post_name, $post_content_sha256,
-            $post_title, $post_content, $post_excerpt, $post_name,
+            $post_title, $post_content, $post_excerpt, $post_name, $staged_fields,
             $idem, $actor, $tx_id
         ) {
             $now = \AgentShell_MCP\Transaction_Manager::lease_now();
@@ -400,6 +532,11 @@ class Edit_Published extends Base_Tool {
                     // write-and-verify-C compares the live
                     // `post_name` against this.
                     'post_name'    => $staged_post_name,
+                    // The fields this call explicitly authorised a
+                    // change to. The publish step uses it to prove
+                    // that nothing outside the authorised change
+                    // moved between the baseline and the write.
+                    'staged_fields' => array_values( $staged_fields ),
                 ),
                 $actor,
                 $now
@@ -596,6 +733,7 @@ class Edit_Published extends Base_Tool {
     private static function advance_shadow(
         array $tx, array $existing_op, int $original_id, \WP_Post $original,
         string $post_title, string $post_content, string $post_excerpt, string $post_name,
+        array $staged_fields,
         string $idem, string $actor, string $tx_id
     ) {
         $op_id     = (string) ( $existing_op['id'] ?? '' );
@@ -611,10 +749,24 @@ class Edit_Published extends Base_Tool {
         $staged_post_name    = '' !== $post_name ? $post_name : (string) $original->post_name;
         $post_content_sha256 = hash( 'sha256', $post_content );
 
+        // The authorised change set for the *head* is the union of every
+        // field this transaction has explicitly staged for this original.
+        // The shadow accumulates edits, so the payload the publish step
+        // will write contains every staged change, not only the last
+        // call's.
+        $previous_staged = array();
+        if ( is_array( $existing_op['after']['staged_fields'] ?? null ) ) {
+            $previous_staged = array_values( array_filter(
+                array_map( 'strval', $existing_op['after']['staged_fields'] ),
+                'strlen'
+            ) );
+        }
+        $staged_fields = array_values( array_unique( array_merge( $previous_staged, $staged_fields ) ) );
+
         $result = \AgentShell_MCP\Content_Write_Guard::run( function() use (
             $tx, $existing_op, $original, $original_id, $shadow_id, $op_id,
             $staged_post_name, $post_content_sha256,
-            $post_title, $post_content, $post_excerpt, $post_name,
+            $post_title, $post_content, $post_excerpt, $post_name, $staged_fields,
             $idem, $actor, $tx_id
         ) {
             $now = \AgentShell_MCP\Transaction_Manager::lease_now();
@@ -659,6 +811,9 @@ class Edit_Published extends Base_Tool {
                     'post_content' => $post_content,
                     'post_excerpt' => $post_excerpt,
                     'post_name'    => $staged_post_name,
+                    // The union of every field this transaction has
+                    // explicitly staged for this original.
+                    'staged_fields' => array_values( $staged_fields ),
                 )
             );
             $next_op['idempotency_key']     = $idem;
@@ -838,6 +993,32 @@ class Edit_Published extends Base_Tool {
 
     // ── result builders ────────────────────────────────────────────────
 
+    /**
+     * Summarise what a staged edit changed and what it inherited.
+     *
+     * `fields` names the fields the transaction explicitly authorised a
+     * change to; `inherited` names the fields it left alone, which the
+     * publish step will write back unchanged. An agent can therefore see,
+     * without reading the journal, exactly what this edit will do to the
+     * published post.
+     *
+     * @param array $op The journal op.
+     * @return array{fields:string[], inherited:string[]}
+     */
+    private static function staged_summary( array $op ) : array {
+        $authorised = array_values( array_map(
+            'strval',
+            (array) ( $op['after']['staged_fields'] ?? array() )
+        ) );
+        return array(
+            'fields'    => $authorised,
+            'inherited' => array_values( array_diff(
+                array( 'post_title', 'post_content', 'post_excerpt', 'post_name' ),
+                $authorised
+            ) ),
+        );
+    }
+
     private static function build_fresh_result( array $op, $original_id, $actor, $tx_id, $idem ) {
         return array(
             'original_id'  => (int) $original_id,
@@ -856,6 +1037,7 @@ class Edit_Published extends Base_Tool {
                 'actor'              => (string) $actor,
                 'tx'                 => (string) $tx_id,
             ),
+            'staged'       => self::staged_summary( $op ),
             'atomicity'    => array(
                 'engine'     => (string) \AgentShell_MCP\Content_Write_Guard::engine(),
                 'on_failure' => 'rolled_back',
@@ -884,6 +1066,7 @@ class Edit_Published extends Base_Tool {
                 'actor'              => (string) ( $op['idempotency_actor'] ?? $actor ),
                 'tx'                 => (string) ( $op['idempotency_tx'] ?? $tx_id ),
             ),
+            'staged'       => self::staged_summary( $op ),
             'atomicity'    => array(
                 'engine'     => (string) \AgentShell_MCP\Content_Write_Guard::engine(),
                 'on_failure' => 'rolled_back',
@@ -912,6 +1095,7 @@ class Edit_Published extends Base_Tool {
                 'actor'              => (string) $actor,
                 'tx'                 => (string) $tx_id,
             ),
+            'staged'       => self::staged_summary( $next_op ),
             'atomicity'    => array(
                 'engine'     => (string) \AgentShell_MCP\Content_Write_Guard::engine(),
                 'on_failure' => 'rolled_back',

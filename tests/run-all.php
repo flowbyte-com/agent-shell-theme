@@ -420,6 +420,16 @@ $suites = array(
     // failed, and so did a journal head whose compare fields had not
     // moved. Non-destructive unit suite.
     'transaction-cas' => __DIR__ . '/transaction-cas-test.php',
+    // HAL 9001 remediation regression: the published-edit field
+    // preservation contract. A partial edit must inherit every field the
+    // caller did not name (title, slug, excerpt) instead of blanking it,
+    // an explicitly empty excerpt must be honoured as a deliberate clear,
+    // an explicitly empty title or body must be refused rather than
+    // published, a second staged edit must inherit the first edit's
+    // staged values, and the publish step must refuse to write a field
+    // the transaction never authorised. Destructive live: gated on the
+    // same fail-closed check the other destructive suites use.
+    'edit-published-preservation-live' => __DIR__ . '/edit-published-preservation-live-test.php',
     'edit-published-live' => __DIR__ . '/edit-published-live-test.php',
     // Phase 3 regression: the preflight's `multi_query` + drain
     // sequence must catch queued-statement failures (a duplicate-key
