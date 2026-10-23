@@ -43,9 +43,11 @@ No other document is allowed to redefine these three statements.
 
 ---
 
-## 2. MCP tools (authoritative count: **66**)
+## 2. MCP tools (authoritative count: **65**)
 
-The plugin ships **66 `agentshell_*` tools** (62 in `agentshell-mcp` + 4 in `agentshell-blocks`; growth is expected). The number is kept honest by a test — `tests/tool-count-test.php` counts the tools the plugins register and fails if it differs from the number written here — so a count that goes stale fails the build instead of misleading an agent. Earlier counts cited in other files ("10 tools", "11 tools", "12 tools") are deprecated and must not be reproduced.
+The plugin ships **65 `agentshell_*` tools** (62 in `agentshell-mcp` + 3 in `agentshell-blocks`; growth is expected). The number is kept honest by a test — `tests/tool-count-test.php` counts the tools the plugins publish and fails if it differs from the number written here — so a count that goes stale fails the build instead of misleading an agent. Earlier counts cited in other files ("10 tools", "11 tools", "12 tools") are deprecated and must not be reproduced.
+
+The count is the number of tools an agent can **call**: the registry is keyed by tool name and keeps the first registration of each name, so two plugins publishing the same name produce one tool, not two. The test counts distinct tool names for that reason, and separately asserts that no two plugins publish the same name — a duplicated name means one implementation is silently unreachable, and which of the two serves depends on a filter priority rather than on anything a reader of the code would notice.
 
 **Categories (call by category; the names below are exhaustive at the time of writing — discover additions with `agentshell_get_capabilities`):**
 

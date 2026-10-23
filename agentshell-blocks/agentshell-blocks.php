@@ -76,16 +76,35 @@ add_shortcode( 'agent_block', function( $atts ) {
 
 /**
  * Hook into agentshell_mcp_register_tools to expose widget tools.
+ *
+ * `agentshell_list_widgets` is deliberately NOT registered here.
+ *
+ * The main plugin registers a tool of that name, and the MCP registry is
+ * keyed by tool name and keeps the FIRST registration — the main plugin's
+ * filter runs at priority 5 and this one at priority 10, so the main
+ * plugin's implementation always won and this one was unreachable code.
+ *
+ * That was not merely a wasted registration. The two implementations are
+ * not equivalent: the main plugin's consults the bilateral merge (file
+ * widgets AND config-registered widgets, with lifecycle status), which is
+ * what AGENTS.md §4.1 requires of every tool that reads widgets. This
+ * plugin's reads only its own registry view and reports no status. So the
+ * shadowed copy was a version of the tool that would have violated the
+ * registry contract had it ever been the one to serve — and which of the
+ * two served depended on a filter priority rather than on anything a
+ * reader of the code would notice.
+ *
+ * Registering it once, in the plugin whose implementation is the
+ * contract-correct one, removes the ambiguity and makes the documented
+ * tool count the number of tools an agent can actually call.
  */
 add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
-    require_once AGENTSHELL_BLOCKS_PLUGIN_DIR . 'includes/tools/class-list-widgets.php';
     require_once AGENTSHELL_BLOCKS_PLUGIN_DIR . 'includes/tools/class-register-widget.php';
     require_once AGENTSHELL_BLOCKS_PLUGIN_DIR . 'includes/tools/class-unregister-widget.php';
     require_once AGENTSHELL_BLOCKS_PLUGIN_DIR . 'includes/tools/class-get-widget.php';
 
     $registry = AgentShell_Blocks\Widget_Registry::get_instance();
 
-    $tools[] = new AgentShell_Blocks\Tools\List_Widgets();
     $tools[] = new AgentShell_Blocks\Tools\Register_Widget();
     $tools[] = new AgentShell_Blocks\Tools\Unregister_Widget();
     $tools[] = new AgentShell_Blocks\Tools\Get_Widget();

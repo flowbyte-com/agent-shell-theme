@@ -35,21 +35,36 @@ echo "tool count regression tests\n";
  * runs in the unit bootstrap and does not depend on a live site. The
  * pattern is the plugin's own: a `new AgentShell_MCP\Tools\…` line
  * inside the registration filter.
+ *
+ * Returns the *tool names*, not the class names. The registry is keyed by
+ * tool name and keeps the first registration of each name, so the number
+ * an agent sees is the number of distinct names — and two plugins may
+ * register the same name. Counting classes instead would count a
+ * registration that the registry then discards, which is precisely how the
+ * documented count came to disagree with the live surface.
  */
-function tool_classes_in( $path, $namespace ) {
+function tool_names_in( $path, $namespace, $class_dir ) {
     $source = file_get_contents( $path );
     if ( ! is_string( $source ) ) {
         throw new RuntimeException( 'cannot read ' . $path );
     }
-    // The class names, as distinct names: a plugin may instantiate the
-    // same class twice — the blocks plugin does, once for the registry
-    // and once for a name-to-instance map — and the registry is keyed by
-    // tool name, so a repeated class is one tool.
     $pattern = '/new\s+' . preg_quote( $namespace, '/' ) . '\\\\Tools\\\\([A-Za-z0-9_]+)\s*\(/';
     if ( ! preg_match_all( $pattern, $source, $m ) ) {
         return array();
     }
-    return array_values( array_unique( $m[1] ) );
+    $names = array();
+    foreach ( array_unique( $m[1] ) as $class ) {
+        $file = $class_dir . '/includes/tools/class-' . strtolower( str_replace( '_', '-', $class ) ) . '.php';
+        if ( ! file_exists( $file ) ) {
+            throw new RuntimeException( 'cannot find the class file for ' . $class . ' (expected ' . $file . ')' );
+        }
+        $class_src = file_get_contents( $file );
+        if ( ! preg_match( "/function\s+get_name\s*\(\s*\)\s*\{\s*return\s+'([^']+)'/", $class_src, $nm ) ) {
+            throw new RuntimeException( 'cannot read the tool name of ' . $class );
+        }
+        $names[] = $nm[1];
+    }
+    return $names;
 }
 
 /** The number the documentation states. */
@@ -67,21 +82,41 @@ function tool_count_documented() {
 Agentshell_Test::run(
     'the documented tool count equals the number the plugins register',
     function () {
-        $mcp    = tool_classes_in( dirname( __DIR__ ) . '/agentshell-mcp/agentshell-mcp.php', 'AgentShell_MCP' );
-        $blocks = tool_classes_in( dirname( __DIR__ ) . '/agentshell-blocks/agentshell-blocks.php', 'AgentShell_Blocks' );
-        $registered = count( $mcp ) + count( $blocks );
+        $mcp    = tool_names_in( dirname( __DIR__ ) . '/agentshell-mcp/agentshell-mcp.php', 'AgentShell_MCP', dirname( __DIR__ ) . '/agentshell-mcp' );
+        $blocks = tool_names_in( dirname( __DIR__ ) . '/agentshell-blocks/agentshell-blocks.php', 'AgentShell_Blocks', dirname( __DIR__ ) . '/agentshell-blocks' );
+        // The registry is keyed by tool name and keeps the first
+        // registration of each name, so the number an agent sees is the
+        // number of DISTINCT names — not the number of registrations.
+        // Two plugins register `agentshell_list_widgets`, so counting
+        // registrations over-counts by one, and that is how the
+        // documented number came to disagree with the live surface.
+        $registered = count( array_unique( array_merge( $mcp, $blocks ) ) );
         $documented = tool_count_documented();
 
         Agentshell_Test::assert_equals(
             $documented,
             $registered,
             sprintf(
-                'AGENTS.md §2 says %d tools; the plugins register %d (%d in agentshell-mcp + %d in agentshell-blocks)',
+                'AGENTS.md §2 says %d tools; the plugins publish %d distinct tool names (%d in agentshell-mcp + %d in agentshell-blocks)',
                 $documented,
                 $registered,
-                count( $mcp ),
-                count( $blocks )
+                count( array_unique( $mcp ) ),
+                count( array_unique( $blocks ) )
             )
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'no two plugins publish the same tool name',
+    function () {
+        $mcp    = tool_names_in( dirname( __DIR__ ) . '/agentshell-mcp/agentshell-mcp.php', 'AgentShell_MCP', dirname( __DIR__ ) . '/agentshell-mcp' );
+        $blocks = tool_names_in( dirname( __DIR__ ) . '/agentshell-blocks/agentshell-blocks.php', 'AgentShell_Blocks', dirname( __DIR__ ) . '/agentshell-blocks' );
+        $clash = array_intersect( $mcp, $blocks );
+        Agentshell_Test::assert_equals(
+            array(),
+            array_values( $clash ),
+            'the registry keeps the first registration of a name, so a duplicated name means one implementation is silently unreachable'
         );
     }
 );
