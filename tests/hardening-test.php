@@ -10,7 +10,8 @@
  *      the wrapping <style> tag.
  *   3. The MCP JSON-RPC parser rejects bodies larger than a sane ceiling
  *      with a structured error rather than allocating gigabytes.
- *   4. The theme REST PUT applies the 10KB custom_js / custom_css cap
+ *   4. The theme REST PUT applies the size caps (custom_js: 10KB;
+ *      custom_css: 256 KiB — see tests/custom-css-limit-test.php)
  *      that the MCP tool schema advertises.
  */
 
@@ -104,7 +105,7 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
-    'theme REST PUT enforces custom_js / custom_css size cap',
+    'theme REST PUT enforces the custom_js size cap',
     function () {
         agentshell_test_reset();
         agentshell_test_set_user( 1, array(

@@ -428,6 +428,14 @@ $suites = array(
     // failed, and so did a journal head whose compare fields had not
     // moved. Non-destructive unit suite.
     'transaction-cas' => __DIR__ . '/transaction-cas-test.php',
+    // HAL 9001 remediation regression: the custom CSS size limit. The
+    // limit is 256 KiB (262,144 bytes), measured in bytes of the UTF-8
+    // encoding, and it is applied in the theme's validator, in the MCP
+    // staging path, in the write interceptor, in the doctor and in the
+    // theme import. The exact boundary (262,144 accepted, 262,145
+    // refused) and the byte-not-character measurement are pinned here.
+    // Non-destructive unit suite.
+    'custom-css-limit'      => __DIR__ . '/custom-css-limit-test.php',
     // HAL 9001 remediation regression: the published-edit field
     // preservation contract. A partial edit must inherit every field the
     // caller did not name (title, slug, excerpt) instead of blanking it,

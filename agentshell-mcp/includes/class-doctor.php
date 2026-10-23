@@ -50,6 +50,23 @@ class Doctor {
         $errors[] = array_merge( array( 'code' => $code, 'message' => $message ), $extra );
     }
 
+    /**
+     * The custom CSS size limit, in bytes.
+     *
+     * The theme owns the number (the theme is the base of the pair). When
+     * the theme is not loaded this falls back to the same number, so the
+     * plugin is never the reason a site cannot boot. The two are asserted
+     * to agree in tests/custom-css-limit-test.php.
+     *
+     * @return int
+     */
+    public static function max_custom_css_bytes() {
+        if ( function_exists( 'agentshell_max_custom_css_bytes' ) ) {
+            return (int) agentshell_max_custom_css_bytes();
+        }
+        return 262144;
+    }
+
     private static function warn( &$warnings, $code, $message, $extra = array() ) {
         $warnings[] = array_merge( array( 'code' => $code, 'message' => $message ), $extra );
     }
@@ -84,6 +101,22 @@ class Doctor {
         }
         if ( isset( $config['custom_css'] ) && ! is_string( $config['custom_css'] ) ) {
             self::err( $errors, 'CUSTOM_CSS_INVALID', 'custom_css must be a string.' );
+        }
+        if ( isset( $config['custom_css'] ) && is_string( $config['custom_css'] ) ) {
+            // The size limit, in bytes of the UTF-8 encoding. An error,
+            // not a warning: a stylesheet over the limit is refused by
+            // every write path, and the doctor is where a config that
+            // arrived some other way is caught — before it is committed.
+            $limit = self::max_custom_css_bytes();
+            $bytes = strlen( $config['custom_css'] );
+            if ( $bytes > $limit ) {
+                self::err( $errors, 'CUSTOM_CSS_TOO_LARGE', sprintf(
+                    'custom_css is %d bytes, which exceeds the %d byte limit (%d KiB).',
+                    $bytes,
+                    $limit,
+                    intdiv( $limit, 1024 )
+                ));
+            }
         }
         if ( isset( $config['custom_js'] ) && ! is_string( $config['custom_js'] ) ) {
             self::err( $errors, 'CUSTOM_JS_INVALID', 'custom_js must be a string.' );

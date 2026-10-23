@@ -463,15 +463,73 @@ if ( ! class_exists( 'wpdb_stub_for_tests' ) ) {
          * The literal pattern accepts backslash escapes, so a value containing
          * quotes — every serialised option, for instance — survives the round
          * trip instead of terminating the match early.
+         *
+         * The parser is hand-written rather than a regular expression
+         * because the values are not small. The transaction row carries the
+         * whole configuration, and the configuration may carry a custom
+         * stylesheet of up to 256 KiB; a regex over a literal that long
+         * exhausted PCRE's JIT stack and returned false, so the guard was
+         * never parsed and every guarded write reported "no rows matched"
+         * for a row that had not moved. A parser that walks the string once
+         * has no such ceiling.
          */
         private function conditions( $sql ) {
             $pairs = array();
-            if ( preg_match_all( "/([A-Za-z_]+)\s*=\s*'((?:[^'\\\\]|\\\\.)*)'/", $sql, $m, PREG_SET_ORDER ) ) {
-                foreach ( $m as $set ) {
-                    if ( ! array_key_exists( $set[1], $pairs ) ) {
-                        $pairs[ $set[1] ] = stripslashes( $set[2] );
-                    }
+            $len   = strlen( $sql );
+            $i     = 0;
+            while ( $i < $len ) {
+                // The name is the identifier before the '=', with any
+                // whitespace between them allowed.
+                $eq = strpos( $sql, '=', $i );
+                if ( false === $eq ) {
+                    break;
                 }
+                $j = $eq - 1;
+                while ( $j >= 0 && ctype_space( $sql[ $j ] ) ) {
+                    $j--;
+                }
+                $name = '';
+                for ( ; $j >= 0; $j-- ) {
+                    $c = $sql[ $j ];
+                    if ( ! ( ctype_alnum( $c ) || '_' === $c ) ) {
+                        break;
+                    }
+                    $name = $c . $name;
+                }
+                // Skip the whitespace and the opening quote.
+                $k = $eq + 1;
+                while ( $k < $len && ctype_space( $sql[ $k ] ) ) {
+                    $k++;
+                }
+                if ( '' === $name || $k >= $len || "'" !== $sql[ $k ] ) {
+                    $i = $eq + 1;
+                    continue;
+                }
+                $k++;
+                // Read the literal, honouring backslash escapes.
+                $value = '';
+                while ( $k < $len ) {
+                    $c = $sql[ $k ];
+                    if ( '\\' === $c && $k + 1 < $len ) {
+                        $next = $sql[ $k + 1 ];
+                        if ( '0' === $next ) {
+                            $value .= "\0";
+                        } else {
+                            $value .= $next;
+                        }
+                        $k += 2;
+                        continue;
+                    }
+                    if ( "'" === $c ) {
+                        break;
+                    }
+                    $value .= $c;
+                    $k++;
+                }
+                if ( ! array_key_exists( $name, $pairs ) ) {
+                    $pairs[ $name ] = $value;
+                }
+                $i = $k + 1;
             }
             return $pairs;
         }

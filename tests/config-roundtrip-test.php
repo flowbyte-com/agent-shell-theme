@@ -218,10 +218,14 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
-    'GET response: 10KB cap on custom_css is enforced on the validator side',
+    'GET response: the custom_css size limit is enforced on the validator side',
     function () {
         agentshell_test_reset();
-        $css = str_repeat( 'a', 10001 ); // one byte over the cap
+        // The limit is 256 KiB, measured in bytes. The boundary itself —
+        // 262144 accepted, 262145 refused — is pinned in
+        // tests/custom-css-limit-test.php; this assertion keeps the
+        // validator wired to the same limit.
+        $css = str_repeat( 'a', agentshell_max_custom_css_bytes() + 1 ); // one byte over the limit
 
         $result = agentshell_validate_config( array( 'custom_css' => $css ) );
 

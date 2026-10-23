@@ -2290,12 +2290,17 @@ function agentshell_validate_config( $config ) {
         }
     }
 
-    if ( isset( $config['custom_css'] ) && ! is_string( $config['custom_css'] ) ) {
-        return new WP_Error( 'invalid_custom_css', 'custom_css must be a string.' );
-    }
-
-    if ( isset( $config['custom_css'] ) && strlen( $config['custom_css'] ) > 10000 ) {
-        return new WP_Error( 'custom_css_too_large', 'custom_css exceeds 10KB.' );
+    if ( isset( $config['custom_css'] ) ) {
+        if ( ! is_string( $config['custom_css'] ) ) {
+            return new WP_Error( 'invalid_custom_css', 'custom_css must be a string.' );
+        }
+        // The size limit, measured in bytes of the UTF-8 encoding. The
+        // same limit and the same message as the MCP path — see
+        // agentshell_custom_css_size_error().
+        $size_error = agentshell_custom_css_size_error( $config['custom_css'] );
+        if ( $size_error ) {
+            return $size_error;
+        }
     }
 
     if ( isset( $config['custom_js'] ) && ! is_string( $config['custom_js'] ) ) {
@@ -2335,6 +2340,82 @@ function agentshell_harden_custom_js( $value ) {
 function agentshell_harden_custom_css( $value ) {
     if ( ! is_string( $value ) ) { return ''; }
     return preg_replace( '/<\//', '<\\/', $value );
+}
+
+/**
+ * The maximum size of the custom CSS, in bytes.
+ *
+ * 256 KiB (262,144 bytes). The limit is expressed in BYTES of the
+ * stylesheet's UTF-8 encoding, not in characters: a limit expressed in
+ * characters would admit a stylesheet up to four times larger than the
+ * limit when it is written in a four-byte encoding, and what is being
+ * limited is what the server sends and the browser parses.
+ *
+ * The number lives here, in the theme, because the theme is the base of
+ * the pair. The MCP plugin reads it through this function when the theme
+ * is loaded and falls back to the same number when it is not — the
+ * plugin must never be the reason a site cannot boot. The two are
+ * asserted to agree in tests/custom-css-limit-test.php, so they cannot
+ * drift apart unnoticed.
+ *
+ * @return int
+ */
+function agentshell_max_custom_css_bytes() {
+    return 262144;
+}
+
+/**
+ * Measure a stylesheet in bytes.
+ *
+ * strlen() counts bytes of the encoded string, which is what the limit
+ * counts. mb_strlen() would count characters and let a multi-byte
+ * stylesheet through at several times its size.
+ *
+ * @param mixed $css
+ * @return int
+ */
+function agentshell_css_byte_size( $css ) {
+    return strlen( (string) $css );
+}
+
+/**
+ * Is this stylesheet within the custom CSS limit?
+ *
+ * @param mixed $css
+ * @return bool
+ */
+function agentshell_custom_css_within_limit( $css ) {
+    return agentshell_css_byte_size( $css ) <= agentshell_max_custom_css_bytes();
+}
+
+/**
+ * The refusal for an oversized stylesheet, or null when it is within the
+ * limit.
+ *
+ * One message, one number, used by every path that refuses: the REST
+ * sanitiser, the MCP plugin's staging path and the doctor. A refusal
+ * that states the size, the limit and the excess is actionable; one that
+ * says "too large" is not.
+ *
+ * @param mixed $css
+ * @return WP_Error|null
+ */
+function agentshell_custom_css_size_error( $css ) {
+    $bytes = agentshell_css_byte_size( $css );
+    $limit = agentshell_max_custom_css_bytes();
+    if ( $bytes <= $limit ) {
+        return null;
+    }
+    return new WP_Error(
+        'custom_css_too_large',
+        sprintf(
+            'custom_css is %d bytes, which exceeds the %d byte limit (%d KiB). Reduce the stylesheet by %d bytes.',
+            $bytes,
+            $limit,
+            intdiv( $limit, 1024 ),
+            $bytes - $limit
+        )
+    );
 }
 
 /**
@@ -2424,7 +2505,10 @@ function agentshell_build_config_get_response() {
                 ),
             ),
         ),
-        'custom_css' => array( 'type' => 'string', 'maxLength' => 10000 ),
+        // maxLength counts characters; the limit that decides is the byte
+        // limit, and every character is at least one byte, so the schema
+        // bound can only reject what the byte limit rejects anyway.
+        'custom_css' => array( 'type' => 'string', 'maxLength' => agentshell_max_custom_css_bytes() ),
         'custom_js'  => array( 'type' => 'string', 'maxLength' => 10000 ),
         'design'     => array( 'type' => 'object' ),
         'layout'     => array( 'type' => 'object' ),

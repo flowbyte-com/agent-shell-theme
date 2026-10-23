@@ -756,6 +756,7 @@ class Transaction_Manager {
             return false;
         }
         $this->assert_owner( $live );
+        self::assert_custom_css_within_limit( $config );
         $next           = $live;
         $next['staged'] = $config;
         $next           = self::stamp_lease( $next, self::now() );
@@ -766,6 +767,56 @@ class Transaction_Manager {
             );
         }
         return true;
+    }
+
+    /**
+     * The custom CSS size limit, in bytes.
+     *
+     * The theme owns the number (the theme is the base of the pair). When
+     * the theme is not loaded this falls back to the same number, so the
+     * plugin is never the reason a site cannot boot. The two are asserted
+     * to agree in tests/custom-css-limit-test.php.
+     *
+     * @return int
+     */
+    public static function max_custom_css_bytes() {
+        if ( function_exists( 'agentshell_max_custom_css_bytes' ) ) {
+            return (int) agentshell_max_custom_css_bytes();
+        }
+        return 262144;
+    }
+
+    /**
+     * Refuse a configuration whose custom CSS is over the limit.
+     *
+     * Called at the two chokepoints every configuration write passes
+     * through — the staging path and the write interceptor — so an
+     * oversized stylesheet is refused BEFORE anything persistent changes.
+     * A stylesheet that got past both would still be caught by the
+     * doctor at commit time, but by then it would already be staged.
+     *
+     * @param array $config The configuration about to be staged or written.
+     * @throws \InvalidArgumentException when the custom CSS is too large.
+     */
+    public static function assert_custom_css_within_limit( array $config ) {
+        if ( ! isset( $config['custom_css'] ) || ! is_string( $config['custom_css'] ) ) {
+            return;
+        }
+        $limit = self::max_custom_css_bytes();
+        $bytes = strlen( $config['custom_css'] );
+        if ( $bytes <= $limit ) {
+            return;
+        }
+        throw new \InvalidArgumentException(
+            sprintf(
+                'custom_css is %d bytes, which exceeds the %d byte limit (%d KiB). Reduce the stylesheet by %d bytes. '
+                . 'Nothing was written.',
+                $bytes,
+                $limit,
+                intdiv( $limit, 1024 ),
+                $bytes - $limit
+            )
+        );
     }
 
     /**
@@ -806,6 +857,14 @@ class Transaction_Manager {
      * @return mixed
      */
     public function on_config_update( $value, $old_value ) {
+        // The custom CSS size limit, enforced here as well as in stage():
+        // this interceptor also sees the writes that are NOT staged (no
+        // transaction open), and those reach the database directly. The
+        // refusal happens before the write, so an oversized stylesheet
+        // never lands.
+        if ( is_array( $value ) ) {
+            self::assert_custom_css_within_limit( $value );
+        }
         // stage() settles the lease first, so a write arriving after the
         // owning transaction's lease ran out goes to the database instead of
         // into a transaction nobody can commit any more.
