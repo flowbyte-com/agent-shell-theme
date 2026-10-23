@@ -247,16 +247,88 @@ class Screenshot {
             self::release_lock( $lock );
         }
 
-        return array(
+        // The dimensions the capture ACTUALLY has.
+        //
+        // The requested width is what the caller asked for; it is not
+        // necessarily what the browser rendered. Headless Chrome enforces a
+        // minimum window width (around 485 CSS pixels on the hosts this was
+        // measured on), so a request for a 390-pixel mobile viewport is
+        // laid out at 485 pixels — and the PNG is a crop of that wider
+        // layout, with the right-hand side missing. Reporting the requested
+        // width told the caller it had a 390-pixel screenshot, and it did
+        // not. Reading the PNG's own header is the only measurement that
+        // cannot be wrong.
+        $actual = self::png_dimensions( $file );
+
+        $result_row = array(
             'file'    => $file,
             // No public URL. Every route to these bytes is now authenticated;
             // see Screenshot_Store.
-            'width'   => $width,
-            'height'  => $height,
+            'width'   => $actual['width'] > 0 ? $actual['width'] : $width,
+            'height'  => $actual['height'] > 0 ? $actual['height'] : $height,
+            'requested_width'  => $width,
+            'requested_height' => $height,
             'backend' => $backend['label'],
             'timed_out' => $result['timed_out'],
             'elapsed_ms' => $result['elapsed_ms'],
         );
+
+        if ( $actual['width'] > 0 && ( $actual['width'] !== $width || $actual['height'] !== $height ) ) {
+            // Say so. A caller reviewing a "mobile" screenshot has to know
+            // that it is not a 390-pixel screenshot.
+            $result_row['viewport_adjusted'] = true;
+            $result_row['note'] = sprintf(
+                'The browser rendered %d×%d, not the requested %d×%d. Headless Chrome enforces a minimum window width, '
+                . 'so a narrow viewport is laid out wider than it was asked for and the image is a crop of that layout. '
+                . 'The dimensions above are the ones the image actually has.',
+                $actual['width'],
+                $actual['height'],
+                $width,
+                $height
+            );
+        }
+
+        return $result_row;
+    }
+
+    /**
+     * The pixel dimensions of a PNG, read from its IHDR chunk.
+     *
+     * A PNG's header carries its width and height in the first bytes of the
+     * first chunk, so the measurement needs no image library and cannot be
+     * fooled by a truncated file: if the header is not there, the
+     * dimensions are reported as unknown (zero) rather than guessed.
+     *
+     * @param string $path
+     * @return array{width:int,height:int}
+     */
+    public static function png_dimensions( $path ) {
+        $out = array( 'width' => 0, 'height' => 0 );
+        if ( ! is_string( $path ) || ! is_readable( $path ) ) {
+            return $out;
+        }
+        $handle = @fopen( $path, 'rb' );
+        if ( ! $handle ) {
+            return $out;
+        }
+        $header = fread( $handle, 24 );
+        fclose( $handle );
+        if ( ! is_string( $header ) || strlen( $header ) < 24 ) {
+            return $out;
+        }
+        // The eight-byte PNG signature, then the IHDR chunk's length and
+        // type, then the width and height as two big-endian 32-bit
+        // integers. The chunk type is checked as well as the signature: a
+        // file that carries the signature but is not a PNG must report
+        // unknown dimensions, not a number read out of whatever follows.
+        if ( "\x89PNG\r\n\x1a\n" !== substr( $header, 0, 8 ) || 'IHDR' !== substr( $header, 12, 4 ) ) {
+            return $out;
+        }
+        $width  = unpack( 'N', substr( $header, 16, 4 ) );
+        $height = unpack( 'N', substr( $header, 20, 4 ) );
+        $out['width']  = (int) ( $width[1] ?? 0 );
+        $out['height'] = (int) ( $height[1] ?? 0 );
+        return $out;
     }
 
     /**

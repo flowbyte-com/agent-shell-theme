@@ -115,7 +115,7 @@ define( 'AGENTSHELL_SCREENSHOT_TIMEOUT', $timeout );
 $out = array( 'ok' => false );
 $t0 = microtime( true );
 try {
-    $shot = Screenshot::capture( $url, 800, 600, $workdir . '/shots' );
+    $shot = Screenshot::capture( $url, (int) ( $argv[9] ?? 800 ), (int) ( $argv[10] ?? 600 ), $workdir . '/shots' );
     $out = array(
         'ok'      => true,
         'file'    => $shot['file'],
@@ -124,6 +124,14 @@ try {
         'is_png'  => file_exists( $shot['file'] )
             && substr( (string) file_get_contents( $shot['file'] ), 0, 8 ) === "\x89PNG\r\n\x1a\n",
         'elapsed' => $shot['elapsed_ms'],
+        // What the capture code reports about the image it produced.
+        'width'   => $shot['width'],
+        'height'  => $shot['height'],
+        'requested_width'  => $shot['requested_width'] ?? $shot['width'],
+        'requested_height' => $shot['requested_height'] ?? $shot['height'],
+        'viewport_adjusted' => ! empty( $shot['viewport_adjusted'] ),
+        'png_width'  => \AgentShell_MCP\Screenshot::png_dimensions( $shot['file'] )['width'],
+        'png_height' => \AgentShell_MCP\Screenshot::png_dimensions( $shot['file'] )['height'],
     );
 } catch ( \AgentShell_MCP\Screenshot_Busy_Exception $e ) {
     $out = array( 'ok' => false, 'kind' => 'busy', 'message' => $e->getMessage() );
@@ -228,9 +236,9 @@ class Screenshot_Test_Case {
     }
 
     /** argv for one capture child. */
-    public function argv_for( $mode, $timeout, $url, $linger = 0, $helpers = '' ) {
+    public function argv_for( $mode, $timeout, $url, $linger = 0, $helpers = '', $width = 800, $height = 600 ) {
         return sprintf(
-            '%s %s %s %s %s %s %s %d %d %s',
+            '%s %s %s %s %s %s %s %d %d %s %d %d',
             escapeshellarg( PHP_BINARY ),
             escapeshellarg( $this->child ),
             escapeshellarg( $this->class_file ),
@@ -240,13 +248,15 @@ class Screenshot_Test_Case {
             escapeshellarg( $this->dir ),
             $timeout,
             $linger,
-            escapeshellarg( $helpers )
+            escapeshellarg( $helpers ),
+            (int) $width,
+            (int) $height
         );
     }
 
     /** Run one capture in a separate PHP process. */
-    public function run_capture( $mode = 'success', $timeout = 5, $url = 'https://example.test/', $linger = 0, $helpers = '' ) {
-        $raw = shell_exec( $this->argv_for( $mode, $timeout, $url, $linger, $helpers ) . ' 2>/dev/null' );
+    public function run_capture( $mode = 'success', $timeout = 5, $url = 'https://example.test/', $linger = 0, $helpers = '', $width = 800, $height = 600 ) {
+        $raw = shell_exec( $this->argv_for( $mode, $timeout, $url, $linger, $helpers, $width, $height ) . ' 2>/dev/null' );
         $out = json_decode( (string) $raw, true );
         if ( ! is_array( $out ) ) {
             return array( 'ok' => false, 'kind' => 'harness', 'message' => 'child produced no JSON: ' . var_export( $raw, true ) );
@@ -752,6 +762,80 @@ Agentshell_Test::run( 'timeout: enforced with neither setsid nor timeout availab
         Agentshell_Test::assert_true( $after['ok'], 'a later capture must still succeed: ' . json_encode( $after ) );
     } finally { $t->tear_down(); }
 });
+
+/**
+ * 15. The capture must report the dimensions the image has, not the ones
+ * it asked for.
+ *
+ * Headless Chrome enforces a minimum window width — around 485 CSS pixels
+ * on the host the defect was measured on — so a request for a 390-pixel
+ * mobile viewport is laid out at 485 pixels and the PNG is a crop of that
+ * wider layout. The tool reported the requested width, so an agent
+ * reviewing a "mobile" screenshot was reviewing a cropped, wider layout
+ * and had no way to know.
+ *
+ * The capture now reads the PNG's own header and reports the dimensions
+ * the image has, with the requested dimensions beside them and a note
+ * when they differ.
+ */
+Agentshell_Test::run( 'capture: the reported width is the width the image has', function () {
+    $t = new Screenshot_Test_Case();
+    $t->set_up();
+    try {
+        // The fake browser writes an image that is wider than the one the
+        // capture asked for — which is what a real browser does with a
+        // narrow window.
+        $out = $t->run_capture( 'success', 5, 'https://example.test/', 0, '', 390, 844 );
+
+        Agentshell_Test::assert_true( $out['ok'], 'the capture must succeed: ' . json_encode( $out ) );
+        Agentshell_Test::assert_equals(
+            485,
+            (int) $out['png_width'],
+            'the fake browser must have written a 485-pixel image, as a real browser does with a narrow window'
+        );
+        Agentshell_Test::assert_equals(
+            485,
+            (int) $out['width'],
+            'the capture must report the width the image has'
+        );
+        Agentshell_Test::assert_equals(
+            390,
+            (int) $out['requested_width'],
+            'the capture must also report the width it asked for'
+        );
+        Agentshell_Test::assert_true(
+            ! empty( $out['viewport_adjusted'] ),
+            'the capture must say that the viewport was not what was asked for'
+        );
+    } finally { $t->tear_down(); }
+} );
+
+Agentshell_Test::run( 'capture: the PNG dimensions are read from the header, not guessed', function () {
+    $png = "\x89PNG\r\n\x1a\n" . pack( 'N', 13 ) . 'IHDR' . pack( 'N', 390 ) . pack( 'N', 844 );
+    $path = tempnam( sys_get_temp_dir(), 'as-png' );
+    file_put_contents( $path, $png . str_repeat( 'X', 100 ) );
+
+    Agentshell_Test::assert_equals(
+        390,
+        (int) Screenshot::png_dimensions( $path )['width'],
+        'the width must come from the IHDR chunk'
+    );
+    Agentshell_Test::assert_equals(
+        844,
+        (int) Screenshot::png_dimensions( $path )['height'],
+        'the height must come from the IHDR chunk'
+    );
+
+    // A file that carries the PNG signature but is not a PNG must report
+    // unknown dimensions rather than a number read out of whatever follows.
+    file_put_contents( $path, "\x89PNG\r\n\x1a\n" . str_repeat( 'X', 100 ) );
+    Agentshell_Test::assert_equals(
+        0,
+        (int) Screenshot::png_dimensions( $path )['width'],
+        'a file without an IHDR chunk must report unknown dimensions'
+    );
+    @unlink( $path );
+} );
 
 /** 14. SSRF protection must remain effective. */
 Agentshell_Test::run( 'security: SSRF host check is still enforced', function () {

@@ -1100,8 +1100,6 @@ Agentshell_Test::run( 'tool: an inline capture returns the image and leaves no f
     putenv( 'AGENTSHELL_FAKE_PNG_BYTES=4096' );
     define( 'AGENTSHELL_CHROME_BIN', $browser );
 
-    $expected = "\x89PNG\r\n\x1a\n" . str_repeat( 'X', 4096 );
-
     $tool  = new Screenshot();
     $store = Screenshot_Store::screenshot_dir();
     $tool->execute( array() );
@@ -1130,7 +1128,15 @@ Agentshell_Test::run( 'tool: an inline capture decodes to exactly the bytes Chro
     putenv( 'AGENTSHELL_FAKE_PNG_BYTES=4096' );
     if ( ! defined( 'AGENTSHELL_CHROME_BIN' ) ) { define( 'AGENTSHELL_CHROME_BIN', $browser ); }
 
-    $expected = "\x89PNG\r\n\x1a\n" . str_repeat( 'X', 4096 );
+    // The fake browser writes a PNG whose IHDR chunk carries the window
+    // size it was launched with — 1280x800 for the default desktop
+    // viewport — followed by filler, so the expected bytes are the
+    // signature, the IHDR, and the filler.
+    $expected = "\x89PNG\r\n\x1a\n"
+        . "\x00\x00\x00\x0dIHDR"
+        . "\x00\x00\x05\x00"   // 1280
+        . "\x00\x00\x03\x20"   // 800
+        . str_repeat( 'X', 4096 - 16 );
     $tool     = new Screenshot();
     $result   = privacy_call_tool( $tool, array() );
 

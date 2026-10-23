@@ -41,12 +41,26 @@ if ( ! function_exists( 'agentshell_fake_browser_path' ) ) {
 # Fake headless browser. Parses --screenshot=<path>, behaves per mode.
 OUT=""
 PROFILE=""
+WIN_W=0
+WIN_H=0
 for a in "$@"; do
   case "$a" in
     --screenshot=*) OUT="${a#--screenshot=}" ;;
     --user-data-dir=*) PROFILE="${a#--user-data-dir=}" ;;
+    --window-size=*)
+      WIN_W="${a#--window-size=}"
+      WIN_H="${WIN_W#*,}"
+      WIN_W="${WIN_W%%,*}"
+      ;;
   esac
 done
+
+# Headless Chrome enforces a minimum window width (around 485 CSS pixels
+# on the hosts this was measured on), so a narrow window is laid out
+# wider than it was asked for and the screenshot is a crop of that wider
+# layout. The fake reproduces that, so a test can tell whether the
+# capture code reports the image it got or the size it asked for.
+CHROME_MIN_WIDTH=485
 MODE="${AGENTSHELL_FAKE_CHROME_MODE:-success}"
 SIZE="${AGENTSHELL_FAKE_PNG_BYTES:-200}"
 
@@ -87,7 +101,35 @@ if [ -n "${AGENTSHELL_FAKE_CHROME_CACHE:-}" ] && [ -n "$PROFILE" ]; then
 fi
 
 # 8-byte PNG magic + body: enough for magic validation and >100 bytes.
+#
+# AGENTSHELL_FAKE_PNG_SIZE=WxH writes a PNG whose IHDR chunk carries those
+# dimensions, so a test can tell what the capture code reports about an
+# image that is not the size it asked the browser for. A real browser clamps
+# a narrow window to its minimum width, and the capture code must report
+# the image it actually got.
+write_png_sized() {
+  local W="$1" H="$2"
+  if [ "$W" -lt "$CHROME_MIN_WIDTH" ] 2>/dev/null; then W="$CHROME_MIN_WIDTH"; fi
+  printf '\211PNG\r\n\032\n\000\000\000\015IHDR' > "$OUT"
+  # Each byte gets its own \xNN escape: bash's printf reads at most two
+  # hex digits after \x, so one escape for four bytes would write the
+  # wrong number.
+  printf "\x$(printf '%02X' $(( (W >> 24) & 255 )))\x$(printf '%02X' $(( (W >> 16) & 255 )))\x$(printf '%02X' $(( (W >> 8) & 255 )))\x$(printf '%02X' $(( W & 255 )))" >> "$OUT"
+  printf "\x$(printf '%02X' $(( (H >> 24) & 255 )))\x$(printf '%02X' $(( (H >> 16) & 255 )))\x$(printf '%02X' $(( (H >> 8) & 255 )))\x$(printf '%02X' $(( H & 255 )))" >> "$OUT"
+  # Keep the total size exactly what the size knob asked for.
+  local body=$(( SIZE - 16 ))
+  if [ "$body" -gt 0 ] 2>/dev/null; then head -c "$body" /dev/zero | tr '\0' 'X' >> "$OUT"; fi
+}
+
 write_png() {
+  if [ -n "${AGENTSHELL_FAKE_PNG_SIZE:-}" ]; then
+    write_png_sized "${AGENTSHELL_FAKE_PNG_SIZE%x*}" "${AGENTSHELL_FAKE_PNG_SIZE#*x}"
+    return
+  fi
+  if [ "$WIN_W" -gt 0 ] 2>/dev/null; then
+    write_png_sized "$WIN_W" "$WIN_H"
+    return
+  fi
   printf '\211PNG\r\n\032\n' > "$OUT"
   head -c "$SIZE" /dev/zero | tr '\0' 'X' >> "$OUT"
 }

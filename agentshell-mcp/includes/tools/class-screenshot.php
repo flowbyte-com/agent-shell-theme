@@ -206,8 +206,15 @@ class Screenshot extends Base_Tool {
         $summary = array(
             'captured'  => true,
             'screenshot' => array(
+                // The dimensions the image actually has, not the ones that
+                // were requested: headless Chrome enforces a minimum window
+                // width, so a narrow viewport is laid out wider than it was
+                // asked for. The requested dimensions are reported beside
+                // them, and a note says so when they differ.
                 'width'   => $shot['width'],
                 'height'  => $shot['height'],
+                'requested_width'  => $shot['requested_width'] ?? $shot['width'],
+                'requested_height' => $shot['requested_height'] ?? $shot['height'],
                 'backend' => $shot['backend'],
                 'inline'  => $inline,
             ),
@@ -220,6 +227,11 @@ class Screenshot extends Base_Tool {
             ),
             'tip' => 'Evaluate the screenshot, then iterate: adjust design tokens, re-screenshot. Use agentshell_list_theme_profiles + agentshell_screenshot(profile=...) to compare profiles side by side.',
         );
+
+        if ( ! empty( $shot['viewport_adjusted'] ) ) {
+            $summary['screenshot']['viewport_adjusted'] = true;
+            $summary['screenshot']['note'] = (string) $shot['note'];
+        }
 
         if ( $transaction_preview ) {
             $summary['screenshot']['previewed_transaction'] = $tx_preview_args[ \AgentShell_MCP\Transaction_Manager::PREVIEW_TX_ARG ];
