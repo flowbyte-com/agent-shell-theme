@@ -24,7 +24,7 @@ Use this skill only as a routing dispatch when the agent runtime supports skill 
 - The MCP tool list (`AGENTS.md` §2 is the only source).
 - The architecture diagram (`AGENTS.md` §1 is the only source).
 - The working pattern / transaction loop (`AGENTS.md` §6 is the only source).
-- A tool count. The count is "45+" — see `AGENTS.md` §2.
+- A tool count. The count is in `AGENTS.md` §2, and a test keeps it equal to the registry's.
 - A "wp_options is the sole source of truth" claim. The bilateral widget registry is the union source — see `AGENTS.md` §4.1.
 
 ## Hard rules (inherited by reference)
@@ -36,6 +36,6 @@ Any operative skill that runs under this namespace must inherit, without restati
 3. **No client-side `fetch()`** — absolute, no exceptions (`AGENTS.md` §4.4).
 4. **Two widget tracks** — Interactive + WordPress Decorator; snapshot is a pattern inside Interactive, not a third track (`AGENTS.md` §4.4).
 5. **Unbreakable Grid protocol** — 1fr rule, descendant scope on `<body>`, quoted rows in `grid-template-areas` (`AGENTS.md` §5).
-6. **45+ MCP tools** — the canonical count (`AGENTS.md` §2).
+6. **MCP tools** — the canonical count is in `AGENTS.md` §2.
 
 For everything else, including install, auth, plugin internals, and the historical record, see `AGENTS.md` and the docs/_archive/ subdirectory.

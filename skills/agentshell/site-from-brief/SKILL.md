@@ -5,7 +5,7 @@ description: Use when the user asks to build a website from a project brief, REA
 
 # agentshell-site-from-brief (operative skill)
 
-> **The canonical agent contract — tool surface, architecture, bilateral widget registry, the data-* / no-fetch laws, the Unbreakable Grid protocol, the 45+ tool count, the working pattern, the transaction semantics — is in [`AGENTS.md`](../../../AGENTS.md). This skill does not redefine any of those. It only specifies the task contract: build a site from a brief.**
+> **The canonical agent contract — tool surface, architecture, bilateral widget registry, the data-* / no-fetch laws, the Unbreakable Grid protocol, the tool count, the working pattern, the transaction semantics — is in [`AGENTS.md`](../../../AGENTS.md). This skill does not redefine any of those. It only specifies the task contract: build a site from a brief.**
 
 ## Inheritance by reference
 

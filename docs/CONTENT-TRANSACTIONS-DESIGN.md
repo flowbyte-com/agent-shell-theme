@@ -1140,8 +1140,16 @@ survives eviction of the log.
 
 ### 4.7 A new tool, or an argument?
 
+> **Superseded in part (HAL 9001 remediation).** The reasoning below stands —
+> a distinct capability deserves a distinct tool. The count has since been
+> made exact rather than a floor: `AGENTS.md` §2 now states the number the
+> registry actually registers, and `tests/tool-count-test.php` fails if the
+> two differ. The statements in this section that say the canonical count is
+> "45+" describe the position at the time of writing and no longer describe
+> the contract.
+
 The brief's hard rules forbid adding tools casually ("no new MCP tools in
-skills"), but the canonical count is "45+", not a fixed number — and
+skills"), but the canonical count is a number, not a ceiling — and
 `delete_content` is a gap issue #2 already identified. One new tool
 (`agentshell_delete_content`) is the honest shape: deletion is a distinct
 capability, and overloading `update_content(status='trash')` would hide a
@@ -1164,7 +1172,7 @@ and there is no `force` argument anywhere in it that bypasses the evidence and
 authority checks.
 
 The reason these two are allowed to be new tools at all is the same reason
-`delete_content` is: the canonical count is "45+", not a fixed number, and
+`delete_content` is: the canonical count is not a ceiling, and
 overloading an existing tool's name with a capability that destroys things
 hides the destruction behind a mutating-sounding word.
 
@@ -1689,7 +1697,7 @@ Before merge, per `AGENTS.md` §9:
    §2, not defined here.
 2. No duplicate architecture diagram or operation loop — §3's diagram is a
    proposal and must not be restated as the loop; §6 remains the loop.
-3. No tool-count claim other than "45+".
+3. No tool-count claim other than the one in `AGENTS.md` §2.
 4. No `wp_options`-as-source-of-truth claim.
 5. §2 and §6 amended in `AGENTS.md` **before** any dependent skill is updated,
    and the skill updated by reference — not by duplication.

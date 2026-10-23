@@ -1,6 +1,6 @@
 # agentshell-mcp (WordPress plugin)
 
-> **Pointer document.** The plugin ships **45+ `agentshell_*` MCP tools** (55 in this plugin + 4 in `agentshell-blocks` at the time of writing). The full authoritative list is in [`AGENTS.md` §2](../../AGENTS.md). Older counts ("10 tools", "11 tools", "12 tools") in any document are deprecated. This README is install + auth only; it does not redefine the tool surface.
+> **Pointer document.** The plugin ships **66 `agentshell_*` MCP tools** (62 in this plugin + 4 in `agentshell-blocks`). The full authoritative list is in [`AGENTS.md` §2](../../AGENTS.md). Older counts ("10 tools", "11 tools", "12 tools") in any document are deprecated. This README is install + auth only; it does not redefine the tool surface.
 
 ## Installation
 

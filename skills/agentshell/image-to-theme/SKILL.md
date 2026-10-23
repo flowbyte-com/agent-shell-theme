@@ -5,7 +5,7 @@ description: Use when the user provides a reference image and asks to theme thei
 
 # agentshell-image-to-theme (operative skill)
 
-> **The canonical agent contract — tool surface, architecture, bilateral widget registry, the data-* / no-fetch laws, the Unbreakable Grid protocol, the 45+ tool count, the working pattern — is in [`AGENTS.md`](../../../AGENTS.md). This skill does not redefine any of those. It only specifies the task contract: theme the site to a reference image.**
+> **The canonical agent contract — tool surface, architecture, bilateral widget registry, the data-* / no-fetch laws, the Unbreakable Grid protocol, the tool count, the working pattern — is in [`AGENTS.md`](../../../AGENTS.md). This skill does not redefine any of those. It only specifies the task contract: theme the site to a reference image.**
 
 ## Inheritance by reference
 

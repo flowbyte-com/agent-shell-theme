@@ -72,6 +72,7 @@ register_activation_hook( __FILE__, array( 'AgentShell_MCP\Activator', 'activate
 add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-get-config.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-set-css-var.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-set-custom-css.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-set-design.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-list-zones.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-update-zone-composition.php';
@@ -142,6 +143,7 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
 
     $tools[] = new AgentShell_MCP\Tools\Get_Config();
     $tools[] = new AgentShell_MCP\Tools\Set_Css_Var();
+    $tools[] = new AgentShell_MCP\Tools\Set_Custom_Css();
     $tools[] = new AgentShell_MCP\Tools\Set_Design();
     $tools[] = new AgentShell_MCP\Tools\List_Zones();
     $tools[] = new AgentShell_MCP\Tools\Update_Zone_Composition();

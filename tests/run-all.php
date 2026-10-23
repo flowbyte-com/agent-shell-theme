@@ -456,6 +456,11 @@ $suites = array(
     // daemon's compatibility notice is verbose-only. Non-destructive unit
     // suite.
     'diagnostics'         => __DIR__ . '/diagnostics-test.php',
+    // HAL 9001 remediation regression: the documented tool count must
+    // equal the number the plugins register. A count that is written
+    // down can only be kept right by remembering to change it; this one
+    // fails the build when it drifts. Non-destructive unit suite.
+    'tool-count'          => __DIR__ . '/tool-count-test.php',
     // HAL 9001 remediation regression: the published-edit field
     // preservation contract. A partial edit must inherit every field the
     // caller did not name (title, slug, excerpt) instead of blanking it,

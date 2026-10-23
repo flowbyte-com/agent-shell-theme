@@ -5,7 +5,7 @@ description: Use when the user asks to build a custom AgentShell widget — phra
 
 # agentshell-widget-builder (operative skill)
 
-> **The canonical agent contract — tool surface, architecture, bilateral widget registry, the data-* / no-fetch laws, the Unbreakable Grid protocol, the 45+ tool count, the working pattern — is in [`AGENTS.md`](../../../AGENTS.md). This skill does not redefine any of those. It only specifies the task contract: build a custom widget using the existing tool surface.**
+> **The canonical agent contract — tool surface, architecture, bilateral widget registry, the data-* / no-fetch laws, the Unbreakable Grid protocol, the tool count, the working pattern — is in [`AGENTS.md`](../../../AGENTS.md). This skill does not redefine any of those. It only specifies the task contract: build a custom widget using the existing tool surface.**
 
 ## Inheritance by reference
 

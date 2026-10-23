@@ -1,6 +1,6 @@
 # Widget Builder Skill
 
-> **Pointer document.** The operative skill is [`SKILL.md`](./SKILL.md). The canonical agent contract — tool surface, architecture, bilateral widget registry, the data-* / no-fetch laws, the Unbreakable Grid protocol, the 45+ tool count — is in [`AGENTS.md`](../../../AGENTS.md) at the theme root. This README is human orientation only.
+> **Pointer document.** The operative skill is [`SKILL.md`](./SKILL.md). The canonical agent contract — tool surface, architecture, bilateral widget registry, the data-* / no-fetch laws, the Unbreakable Grid protocol, the tool count — is in [`AGENTS.md`](../../../AGENTS.md) at the theme root. This README is human orientation only.
 
 A Claude Code skill (and any other agent runtime that supports skill files) that teaches an agent how to build a custom AgentShell widget correctly given a user's high-level description. Pure agent-side instructions — no PHP changes, no new MCP tools. The agent reads existing MCP tools and WordPress primitives, picks the right widget track, composes the result, and verifies it inside a transaction.
 
@@ -71,4 +71,4 @@ For rare cases where standard WordPress markup does not expose a needed field, t
 - **Verification inside transactions.** Build, place, screenshot-if-available, validate, commit. No live-site mutation until commit.
 - **Honest limitations.** The skill documents what it cannot do (multi-source decorators, fresh DOM diff, `<script type="application/json">`).
 
-For the canonical contracts — including the 45+ MCP tool surface, the architecture, and the Unbreakable Grid protocol — see `AGENTS.md`.
+For the canonical contracts — including the MCP tool surface, the architecture, and the Unbreakable Grid protocol — see `AGENTS.md`.

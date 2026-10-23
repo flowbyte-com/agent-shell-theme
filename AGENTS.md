@@ -43,13 +43,13 @@ No other document is allowed to redefine these three statements.
 
 ---
 
-## 2. MCP tools (authoritative count: **45+**)
+## 2. MCP tools (authoritative count: **66**)
 
-The plugin ships **45+ `agentshell_*` tools** (55 in `agentshell-mcp` + 4 in `agentshell-blocks` = 59 at the time of writing; growth is expected). Earlier counts cited in other files ("10 tools", "11 tools", "12 tools") are deprecated and must not be reproduced.
+The plugin ships **66 `agentshell_*` tools** (62 in `agentshell-mcp` + 4 in `agentshell-blocks`; growth is expected). The number is kept honest by a test — `tests/tool-count-test.php` counts the tools the plugins register and fails if it differs from the number written here — so a count that goes stale fails the build instead of misleading an agent. Earlier counts cited in other files ("10 tools", "11 tools", "12 tools") are deprecated and must not be reproduced.
 
 **Categories (call by category; the names below are exhaustive at the time of writing — discover additions with `agentshell_get_capabilities`):**
 
-- **Configuration read & write** — `agentshell_get_config`, `agentshell_get_design_system`, `agentshell_set_design`, `agentshell_set_css_var`, `agentshell_set_palette`, `agentshell_set_typography`, `agentshell_set_spacing`, `agentshell_set_shape`, `agentshell_set_layout`, `agentshell_list_zones`, `agentshell_update_zone_composition`, `agentshell_update_zone_slots`, `agentshell_inject_json_block`.
+- **Configuration read & write** — `agentshell_get_config`, `agentshell_get_design_system`, `agentshell_set_design`, `agentshell_set_css_var`, `agentshell_set_custom_css`, `agentshell_set_palette`, `agentshell_set_typography`, `agentshell_set_spacing`, `agentshell_set_shape`, `agentshell_set_layout`, `agentshell_list_zones`, `agentshell_update_zone_composition`, `agentshell_update_zone_slots`, `agentshell_inject_json_block`.
 - **Site model & observation** — `agentshell_inspect`, `agentshell_explain`, `agentshell_get_capabilities`, `agentshell_validate`, `agentshell_get_audit_log`.
 - **Revision history & diffs** — `agentshell_list_revisions`, `agentshell_diff_revisions`, `agentshell_restore_revision`.
 - **Snapshots** — `agentshell_create_snapshot`, `agentshell_list_snapshots`, `agentshell_restore_snapshot`, `agentshell_diff_snapshot`.
@@ -392,7 +392,7 @@ Every other markdown in this repository is a pointer, an archive, a non-normativ
 2. It **cannot make unimplemented behaviour normative.** A design record describes what was decided, not what exists. Anything in it that is merely planned must be marked as planned, and must point at the section of this file that governs the behaviour as it actually is.
 3. It **inherits the hard rules** below by reference and adds none of its own.
 
-A setup guide (d) documents installation and connection procedure only — it defines no contract, and cites this file by section for anything normative. No new file may redefine MCP tools, the operation loop, the bilateral widget registry, the data-* hydration law, the no-fetch boundary, the bilateral source of truth, or the 45+ tool count. New skill files inherit the widget and tool contracts by reference; they may not amend them.
+A setup guide (d) documents installation and connection procedure only — it defines no contract, and cites this file by section for anything normative. No new file may redefine MCP tools, the operation loop, the bilateral widget registry, the data-* hydration law, the no-fetch boundary, the bilateral source of truth, or the tool count. New skill files inherit the widget and tool contracts by reference; they may not amend them.
 
 ---
 
@@ -404,7 +404,7 @@ Before merging any markdown change in this repository, the change must pass thes
 2. **No duplicate architecture diagram.** Any file that draws the agent/daemon/plugin flow besides this one must either be deleted or contain only a link to Section 1.
 3. **No duplicate agent loop.** Any file that describes the observe / mutate / commit loop besides this one must either be deleted or contain only a link to Section 6.
 4. **No "wp_options is the sole source of truth" claim** anywhere in the repo. The bilateral registry in Section 4 is the only correct statement.
-5. **No "10 tools" or "11 tools" or "12 tools" count** anywhere. The canonical count is "45+ tools" (see Section 2).
+5. **No "10 tools" or "11 tools" or "12 tools" count** anywhere. The canonical count is the one in Section 2, which `tests/tool-count-test.php` keeps equal to the registry's.
 6. **No `<script type="application/json">` example or "data hydration" mention that doesn't use `data-*`.** Section 4.2 is the only pattern.
 7. **No `fetch()` example in any widget skill that isn't an explicit "FORBIDDEN" callout.** Section 4.3 is the only law.
 8. **No violation of the three grid rules** (1fr, descendant scope, quoted rows). Section 5 is the only law.
