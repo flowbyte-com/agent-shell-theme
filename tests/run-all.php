@@ -436,6 +436,15 @@ $suites = array(
     // refused) and the byte-not-character measurement are pinned here.
     // Non-destructive unit suite.
     'custom-css-limit'      => __DIR__ . '/custom-css-limit-test.php',
+    // HAL 9001 remediation regression: the saved-configuration token
+    // block is CSS, not HTML. It was emitted with esc_attr() — the HTML
+    // attribute escaper — inside a <style> element, where entities are
+    // not decoded, so a quoted font stack reached the browser as
+    // &quot;Inter&quot;. The block now uses a CSS-context escape that keeps
+    // the characters CSS needs and removes the ones that could end a
+    // declaration, open a rule or close the element. Non-destructive
+    // unit suite.
+    'css-context'           => __DIR__ . '/css-context-test.php',
     // HAL 9001 remediation regression: the published-edit field
     // preservation contract. A partial edit must inherit every field the
     // caller did not name (title, slug, excerpt) instead of blanking it,

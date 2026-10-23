@@ -694,7 +694,11 @@ function agentshell_inject_saved_styles() {
     echo "<style id='agentshell-saved-config'>\n:root {\n";
     foreach ( $flat as $key => $value ) {
         if ( strpos( $key, '--' ) === 0 && ! empty( $value ) ) {
-            echo '    ' . esc_attr( $key ) . ': ' . esc_attr( $value ) . ";\n";
+            $name = agentshell_safe_css_property_name( $key );
+            if ( '' === $name ) {
+                continue;
+            }
+            echo '    ' . $name . ': ' . agentshell_safe_css_value( $value ) . ";\n";
         }
     }
     echo "}\n</style>\n";
@@ -752,7 +756,11 @@ function agentshell_inject_saved_styles() {
                 if ( ! empty( $overrides ) ) {
                     echo "<style id='agentshell-preview-overrides'>\n:root {\n";
                     foreach ( $overrides as $key => $value ) {
-                        echo '    ' . esc_attr( $key ) . ': ' . esc_attr( $value ) . ";\n";
+                        $name = agentshell_safe_css_property_name( $key );
+                        if ( '' === $name ) {
+                            continue;
+                        }
+                        echo '    ' . $name . ': ' . agentshell_safe_css_value( $value ) . ";\n";
                     }
                     echo "}\n</style>\n";
                 }
@@ -2340,6 +2348,102 @@ function agentshell_harden_custom_js( $value ) {
 function agentshell_harden_custom_css( $value ) {
     if ( ! is_string( $value ) ) { return ''; }
     return preg_replace( '/<\//', '<\\/', $value );
+}
+
+/**
+ * The property name to emit for a design token, or '' when the name is
+ * not a usable CSS custom property.
+ *
+ * A custom property name is an identifier: it starts with `--` and
+ * contains no whitespace and no punctuation. A name that carries a
+ * colon, a semicolon or a brace would end the declaration it sits in,
+ * so such a name is refused rather than emitted.
+ *
+ * Non-ASCII characters are allowed (a CSS identifier may contain them,
+ * and a token named `--日本語` is legitimate), so the check is made
+ * byte-wise: every byte is either an ASCII identifier character or part
+ * of a UTF-8 sequence.
+ *
+ * @param mixed $name
+ * @return string The name, or '' when it is not usable.
+ */
+function agentshell_safe_css_property_name( $name ) {
+    $name = (string) $name;
+    if ( 0 !== strpos( $name, '--' ) || strlen( $name ) < 3 ) {
+        return '';
+    }
+    $len = strlen( $name );
+    for ( $i = 2; $i < $len; $i++ ) {
+        $c  = $name[ $i ];
+        $ok = ( 'a' <= $c && $c <= 'z' )
+            || ( 'A' <= $c && $c <= 'Z' )
+            || ( '0' <= $c && $c <= '9' )
+            || '_' === $c
+            || '-' === $c
+            || ord( $c ) >= 0x80;
+        if ( ! $ok ) {
+            return '';
+        }
+    }
+    return $name;
+}
+
+/**
+ * The value to emit for a design token, escaped for the CSS context it is
+ * written into.
+ *
+ * The failure this exists to prevent
+ * ----------------------------------
+ * The token block was emitted with `esc_attr()`, which is the HTML
+ * attribute escaper. Inside a `<style>` element the content is *raw text*:
+ * the HTML parser does not decode entities there, so every entity the
+ * escaper produced arrived at the CSS parser literally. A font stack
+ * written the way every font stack is written —
+ *
+ *     --font-base: "Inter", system-ui, sans-serif;
+ *
+ * — was emitted as
+ *
+ *     --font-base: &quot;Inter&quot;, system-ui, sans-serif;
+ *
+ * and the browser looked for a font called `&quot;Inter&quot;`. The same
+ * mangling hit every value containing an ampersand, a less-than sign or
+ * an apostrophe.
+ *
+ * HTML escaping is the wrong tool for a CSS context; this is the right
+ * one. It keeps the characters CSS needs — quotes above all, since a
+ * font stack is mostly quotes — and removes the characters that could
+ * end the declaration, open a block, or close the `<style>` element:
+ *
+ *   - `<` and `>` — the vector for closing the wrapping element, and
+ *     the reason `</style` cannot appear in a token value.
+ *   - `;` — the declaration terminator. A token value must not be able
+ *     to declare a second property.
+ *   - `{` and `}` — the block delimiters. A token value must not be able
+ *     to open or close a rule.
+ *   - the CSS comment delimiters — a comment can hide the end of a value
+ *     from a reader, and an unterminated comment swallows the rest of
+ *     the stylesheet.
+ *
+ * A backslash cannot be used to smuggle any of those back: the CSS
+ * parser unescapes it as part of a *value*, never as structure, so an
+ * escaped semicolon is a semicolon in the value and not a terminator.
+ *
+ * @param mixed $value
+ * @return string
+ */
+function agentshell_safe_css_value( $value ) {
+    $value = (string) $value;
+    // Comments first: removing the structural characters afterwards could
+    // otherwise leave a half-comment behind.
+    $value = preg_replace( '#/\*.*?\*/#s', '', $value );
+    $value = str_replace( array( '/*', '*/' ), '', (string) $value );
+    // Control characters have no place in a token value and confuse the
+    // parser. Tab, newline and carriage return are left alone: they are
+    // legal inside a CSS value.
+    $value = preg_replace( '/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $value );
+    $value = str_replace( array( '<', '>', ';', '{', '}' ), '', $value );
+    return trim( $value );
 }
 
 /**
