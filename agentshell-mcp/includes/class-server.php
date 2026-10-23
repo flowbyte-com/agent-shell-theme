@@ -109,6 +109,18 @@ class Server {
         }
 
         try {
+            // The tool's own schema declares what it requires. Checking it
+            // here means a missing argument is refused with a message that
+            // names it, instead of reaching the tool as an undefined array
+            // key: PHP emitted a warning, the tool carried on with an empty
+            // value, and the caller was told nothing while the tool
+            // reported success for something it was never given.
+            //
+            // Presence, not emptiness. A required argument that is present
+            // but empty is the tool's own business — a page with an empty
+            // body is valid content — and this check does not touch it.
+            self::assert_required_arguments( $tool, $arguments );
+
             $result = $tool->execute( $arguments );
 
             // A tool may return a raw MCP content array under the reserved
@@ -141,6 +153,34 @@ class Server {
             return JSON_RPC::error_response( $id, Error_Codes::INVALID_PARAMS, $e->getMessage() );
         } catch ( \Exception $e ) {
             return JSON_RPC::error_response( $id, Error_Codes::INTERNAL_ERROR, $e->getMessage() );
+        }
+    }
+
+    /**
+     * Refuse a call whose arguments do not satisfy the tool's own schema.
+     *
+     * @param mixed $tool      The tool being called.
+     * @param array $arguments The arguments the caller supplied.
+     * @throws \InvalidArgumentException when a required argument is absent.
+     */
+    private static function assert_required_arguments( $tool, array $arguments ) {
+        if ( ! is_object( $tool ) || ! method_exists( $tool, 'get_input_schema' ) ) {
+            return;
+        }
+        $schema   = $tool->get_input_schema();
+        $required = ( is_array( $schema ) && isset( $schema['required'] ) && is_array( $schema['required'] ) )
+            ? $schema['required']
+            : array();
+        $missing = array();
+        foreach ( $required as $key ) {
+            if ( ! array_key_exists( $key, $arguments ) ) {
+                $missing[] = (string) $key;
+            }
+        }
+        if ( ! empty( $missing ) ) {
+            throw new \InvalidArgumentException(
+                'Missing required parameter' . ( count( $missing ) > 1 ? 's' : '' ) . ': ' . implode( ', ', $missing )
+            );
         }
     }
 

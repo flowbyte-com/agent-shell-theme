@@ -33,10 +33,19 @@ class Create_Page extends Base_Tool {
                 . 'journal-aware.'
             );
         }
+        // Presence, not emptiness. A missing argument is not an empty
+        // argument: reading it directly raised "Undefined array key"
+        // and carried on with an empty value, so a caller who forgot the
+        // body was warned at and then told the page had been created. A
+        // missing title and a missing body together are refused by the
+        // content primitives below ("a title and content are both empty"),
+        // which is the rule AGENTS.md 6.3 states.
+        $title   = array_key_exists( 'title', $arguments ) ? (string) $arguments['title'] : '';
+        $content = array_key_exists( 'content', $arguments ) ? (string) $arguments['content'] : '';
         return \AgentShell_MCP\Content_Primitives::create(
             'page',
-            $arguments['title'],
-            $arguments['content'],
+            $title,
+            $content,
             $arguments['status'] ?? 'draft',
             array(
                 'post_name' => $arguments['slug'] ?? null,
