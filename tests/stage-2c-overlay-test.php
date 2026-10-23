@@ -150,6 +150,27 @@ function s2co_check( $name, $ok, $detail = '' ) {
     echo ( $ok ? '  ok  ' : '  FAIL' ) . '  ' . $name . ( $detail ? '  [' . $detail . ']' : '' ) . "\n";
 }
 
+/**
+ * Tamper with a credential's signature in a way that is guaranteed to
+ * change it.
+ *
+ * The obvious tamper — prefixing a character — is a NO-OP when the
+ * signature already begins with that character, and a signature is a hex
+ * string, so it begins with 'a' one time in sixteen. On those runs the
+ * "tampered" credential was the valid credential, the assertion tested
+ * nothing, and it failed at a rate of about one run in sixteen — which
+ * is how a correct implementation comes to look broken.
+ *
+ * A signature assertion has to be certain that it changed the thing it
+ * claims to change.
+ */
+function s2co_tamper_key( array $cred ) {
+    $key   = (string) ( $cred['key'] ?? '' );
+    $first = substr( $key, 0, 1 );
+    $cred['key'] = ( 'a' === $first ? 'b' : 'a' ) . substr( $key, 1 );
+    return $cred;
+}
+
 function s2co_reset() {
     $GLOBALS['_agentshell_test_options'] = array();
     $GLOBALS['_s2co_posts']             = array();
@@ -275,8 +296,7 @@ s2co_check( 'A.2 verify_published_hmac accepts a valid credential', is_array( $d
     && 11 === $decoded['oid'] && 22 === $decoded['sid'] && 'tx-A' === $decoded['tx'] && 1 === $decoded['actor'] );
 
 // A.3 — verify rejects a tampered signature.
-$blob_arr = json_decode( base64_decode( $blob, true ), true );
-$blob_arr['key'] = 'a' . substr( $blob_arr['key'], 1 );
+$blob_arr = s2co_tamper_key( json_decode( base64_decode( $blob, true ), true ) );
 $bad = base64_encode( wp_json_encode( $blob_arr ) );
 s2co_check( 'A.3 verify rejects a tampered signature', null === Post_Preview::verify_published_hmac( $bad, $secret ) );
 
@@ -438,14 +458,28 @@ s2co_seed_post( 51, array( 'post_status' => 'private', 'post_title' => 'Shadow',
 s2co_seed_meta( 51, Published_Shadow::META_SHADOW_FOR, 50 );
 s2co_seed_meta( 51, Published_Shadow::META_TX_ID, 'tx-OVR-1' );
 s2co_seed_meta( 51, Published_Shadow::META_OP_ID, 'op_OVR_1' );
-$arr = json_decode( base64_decode( $blob, true ), true );
-$arr['key'] = 'a' . substr( $arr['key'], 1 );
+$arr = s2co_tamper_key( json_decode( base64_decode( $blob, true ), true ) );
 $bad = base64_encode( wp_json_encode( $arr ) );
 $_GET[ Post_Preview::PUB_PREVIEW_FLAG_ARG ] = '1';
 $_GET[ Post_Preview::PUB_PREVIEW_CRED_ARG ] = $bad;
 Published_Preview_Overlay::init_to_global();
 Published_Preview_Overlay::verify_and_install( new WP_Query_Stub() );
-s2co_check( 'B.5 verify_and_install refuses a tampered credential', null === Published_Preview_Overlay::get_overlay() );
+// The diagnostic is carried in the failure line on purpose: this
+// assertion has been observed to fail intermittently, and a failure
+// that says only "not null" is not a failure anybody can act on.
+s2co_check(
+    'B.5 verify_and_install refuses a tampered credential',
+    null === Published_Preview_Overlay::get_overlay(),
+    'tampered_key=' . substr( (string) ( $arr['key'] ?? '' ), 0, 12 )
+        . ' blob_key=' . substr( (string) ( json_decode( base64_decode( $blob, true ), true )['key'] ?? '' ), 0, 12 )
+        . ' bad_key=' . substr( (string) ( json_decode( base64_decode( $bad, true ), true )['key'] ?? '' ), 0, 12 )
+        . ' expected=' . substr( (string) Post_Preview::sign_published_hmac(
+            (int) $arr['oid'], (int) $arr['sid'], (string) $arr['tx'], (string) $arr['op'],
+            (int) $arr['actor'], (int) $arr['exp'], Post_Preview::preview_secret()
+        ), 0, 12 )
+        . ' verified=' . ( is_array( Post_Preview::verify_published_hmac( $bad ) ) ? 'yes' : 'no' )
+        . ' overlay=' . ( null === Published_Preview_Overlay::get_overlay() ? 'null' : 'set' )
+);
 
 // B.6 — verify_and_install with an expired credential is a no-op.
 s2co_reset();
