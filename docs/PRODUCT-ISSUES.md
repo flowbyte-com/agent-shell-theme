@@ -377,9 +377,10 @@ grid protocol in Sections 3 & 4 and the structural prohibitions in
 **What it says.** Nothing claims one exists.
 
 **Why it is wrong.** Free-form CSS is first-class in the config — the REST schema
-accepts a `custom_css` string up to 10000 bytes (`functions.php:1809`) and
-`agentshell_inject_saved_styles` renders it — but the only way to set it is
-`PUT /wp-json/wp/v2/agentshell/config`. So the most expressive styling surface in
+accepts a `custom_css` string up to 262,144 bytes (256 KiB, measured in bytes
+of the UTF-8 encoding; see `agentshell_max_custom_css_bytes()` in
+`functions.php`) and `agentshell_inject_saved_styles` renders it — but the only
+way to set it is `PUT /wp-json/wp/v2/agentshell/config`. So the most expressive styling surface in
 the product is reachable only by bypassing MCP, which means it skips the
 transaction staging, the validation, the revision history and the audit log that
 every token-based path gets for free.

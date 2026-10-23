@@ -15,7 +15,7 @@ Before doing anything, read and obey `AGENTS.md` in full. In particular:
 - **Working pattern** (`AGENTS.md` §6). All mutations run inside `agentshell_begin_transaction` … `agentshell_commit_transaction` (or `rollback_transaction`).
 - **Unbreakable Grid protocol** (`AGENTS.md` §5). The skill never touches the grid; it only sets design tokens, which the protocol permits.
 - **Bilateral widget registry** (`AGENTS.md` §4.1). The skill never registers or modifies widgets; widgets are out of scope for theming.
-- **Data-* / no-fetch** (`AGENTS.md` §4.2 / §4.3). Out of scope for theming, but inherited by reference because the skill may later compose with widget code.
+- **Data-* / no-fetch** (`AGENTS.md` §4.2 / §4.4). Out of scope for theming, but inherited by reference because the skill may later compose with widget code.
 
 ## Inputs
 
@@ -159,7 +159,7 @@ When uncertain between humanist and geometric, default to humanist. Set `baseSiz
 - It does not propose new MCP tools. (`AGENTS.md` §2 is the surface.)
 - It does not modify the grid or the shell. (`AGENTS.md` §5 is the law.)
 - It does not modify widgets or compose zones. (`AGENTS.md` §4 is the contract.)
-- It does not write `<script type="application/json">` or call `fetch()`. (`AGENTS.md` §4.2 / §4.3.)
+- It does not write `<script type="application/json">` or call `fetch()`. (`AGENTS.md` §4.2 / §4.4.)
 - It does not claim `wp_options` is the sole source of truth. (`AGENTS.md` §1 and §4.1.)
 
 For everything else — including the tool list, the architecture, the bilateral widget registry, the data-* / no-fetch laws, the Unbreakable Grid protocol, and the working pattern — see `AGENTS.md`.

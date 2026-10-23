@@ -116,11 +116,38 @@ This merge is implemented by `agentshell_get_widget_registry()` in the theme and
 - `<script type="application/json">` hydration is **prohibited**. `wp_kses_post` strips it. Don't write it; don't reference it as "cleaner"; don't argue for loosening it.
 - `customElements.define` is the right primitive for interactive widgets that need Shadow DOM. Guard it with `if (!customElements.get(...))`. Use `var(--theme-*)` for theming. Prefix custom elements with `mpm-`.
 
-### 4.3 No client-side `fetch()` — absolute
+### 4.3 The widget runtime — the init function is called for you
+
+A widget's `init_js` *registers* an initialiser and nothing else:
+
+```js
+window.AgentshellWidgets['<id>'] = { init: function(el) { /* … */ } };
+```
+
+The theme's widget runtime calls it. The runtime lives in the theme
+(`agentshell_widget_runtime_js()`), and the blocks plugin delegates to it, so
+there is one implementation of "what does a widget's init function get called
+with". The contract it implements:
+
+- `init(el)` is called once per element, with the element itself.
+- An element is initialised at most once, however many times it is asked for.
+- One widget's failure is contained: a widget whose `init` throws is logged, and
+  every other widget still initialises. A rejected promise is caught the same way.
+- Elements added after load are initialised.
+- Both `data-widget` and `data-widget-id` mark a widget element, because a
+  widget's own template may use either and the renderer emits the latter.
+- An element whose widget has not registered yet is left unmarked, so a later
+  registration still initialises it.
+
+A widget that needs to initialise itself must not: the runtime already did it,
+and a self-invoking script inside a widget's template is the workaround for a
+runtime that did not exist.
+
+### 4.4 No client-side `fetch()` — absolute
 
 Widgets must not call `fetch()` for any reason. The boundary covers the WP REST API, external APIs, and any URL whatsoever. If data is required, it comes from server-rendered DOM (colocation with `wp_loop`) or from `data-*` hydration. There is no third option. This rule has no strictness knob and is not negotiable.
 
-### 4.4 Track model (when to use what)
+### 4.5 Track model (when to use what)
 
 Two tracks. Snapshot-style widgets are a **pattern inside Track 1**, not a third track.
 
@@ -129,11 +156,11 @@ Two tracks. Snapshot-style widgets are a **pattern inside Track 1**, not a third
 
 Decision rule: if the widget must stay correct as the underlying content changes between page loads, use Track 2. Otherwise, Track 1 (snapshot-seeded if point-in-time data is acceptable, plain otherwise). When ambiguous, pick the least powerful track that satisfies the requirement. Visible reasoning required (one line: "Track: X. Reason: Y.").
 
-### 4.5 Refresh anchor (snapshot-seeded Track 1)
+### 4.6 Refresh anchor (snapshot-seeded Track 1)
 
 When embedding snapshot data in `init_js`, prefix the script with a single comment `/* agentshell-snapshot-source: <description-of-where-the-data-came-from> */`. The comment is the only provenance link a future agent will have. Be specific. Terminal snapshots end the comment with `, terminal (not refreshed)`.
 
-### 4.6 Escape hatch (mu-plugin filter) — last resort only
+### 4.7 Escape hatch (mu-plugin filter) — last resort only
 
 Standard `wp_loop` markup exposes what most decorators need. When it does not, the *only* allowed PHP modification is a mu-plugin filter written to `/tmp/agentshell-widget-filter-<timestamp>.php`, linted with `php -l`, moved atomically to `wp-content/mu-plugins/`, and verified with a `curl` health check on the daemon. Recovery is a single `rm` on the file. **No `register_activation_hook`, no cron, no DB writes.** `agentshell_rollback_transaction` cannot help if the filter bricks the daemon — never rely on it for mu-plugin rollback.
 
@@ -292,6 +319,26 @@ Stage 2c extends the §6.4 journal from drafts to **published content** via a ne
 - `tests/stage-2c-publish-edit-recovery-live-test.php` — M5-t2: post-COMMIT interrupt + fresh-process recovery (18 T-cases) pass; the reconciliation tail completes the published post, deletes the shadow, releases the claim, and is mutation-free on repeat.
 - `tests/stage-2c-end-to-end-live-test.php` — M5-t3: full lifecycle against a real WordPress (19 T-cases) pass; E1 covers page → claim → shadow → stage → preview → publish → reconcile; E2 covers retry safety; E3 covers forged/expired/wrong-actor credentials, baseline drift, and outside-the-four-fields shadow changes.
 - The full regression (`tests/run-all.php`) reports 1039 passed / 0 failed; the leak check reports 0 leaked posts, 0 leaked claim rows, 0 leaked shadow meta; the checkout integrity fingerprint is untouched.
+
+### 6.6 The custom stylesheet (normative, implemented)
+
+`custom_css` is free-form CSS the author trusts. It is rendered verbatim into `<style id='agentshell-custom-css'>`, with one hardening step: a literal `</style` in the payload is rewritten to `<\/style`, so the payload cannot close the wrapping element early.
+
+**The size limit is 256 KiB — 262,144 bytes — measured in bytes of the stylesheet's UTF-8 encoding, not in characters.** A limit expressed in characters would admit a stylesheet several times larger than the limit (a quarter of a megabyte of CJK text is under 100,000 characters and nearly 300,000 bytes), and what is limited is what the server sends and the browser parses. The number lives in the theme (`agentshell_max_custom_css_bytes()`); the MCP plugin reads it from there and falls back to the same number when the theme is not loaded, and `tests/custom-css-limit-test.php` asserts that the two agree.
+
+The limit is enforced at every point a configuration can change, and always **before** anything persistent changes:
+
+| Path | Where it is refused |
+|---|---|
+| Theme REST `PUT /wp/v2/agentshell/config` | `agentshell_validate_config()` → `custom_css_too_large` |
+| MCP staging (every configuration tool) | `Transaction_Manager::stage()` — the transaction row is left byte-identical |
+| MCP writes with no transaction open | `Transaction_Manager::on_config_update()` — the write never reaches the database |
+| Theme import (`agentshell_import_theme`) | the doctor's `CUSTOM_CSS_TOO_LARGE` error, before the import is applied |
+| Commit of a staged configuration | the doctor again, at commit time |
+
+Every refusal names the size, the limit and the excess, so it is actionable.
+
+**A routine configuration read does not carry the stylesheet.** `agentshell_get_config` omits the `custom_css` body and reports `custom_css_bytes` and `custom_css_present` instead: a stylesheet can be a quarter of a megabyte, and every response that carried it would carry it into a transcript, a log and an agent's context window. The body is returned only when it is asked for by name — `agentshell_get_config( include_custom_css: true )`.
 
 ---
 

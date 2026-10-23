@@ -33,7 +33,7 @@ Any operative skill that runs under this namespace must inherit, without restati
 
 1. **Bilateral widget registry** — file-based + config-registered, merged, with config overriding file by id (`AGENTS.md` §4.1).
 2. **Data-* hydration only** — `<script type="application/json">` is forbidden (`AGENTS.md` §4.2).
-3. **No client-side `fetch()`** — absolute, no exceptions (`AGENTS.md` §4.3).
+3. **No client-side `fetch()`** — absolute, no exceptions (`AGENTS.md` §4.4).
 4. **Two widget tracks** — Interactive + WordPress Decorator; snapshot is a pattern inside Interactive, not a third track (`AGENTS.md` §4.4).
 5. **Unbreakable Grid protocol** — 1fr rule, descendant scope on `<body>`, quoted rows in `grid-template-areas` (`AGENTS.md` §5).
 6. **45+ MCP tools** — the canonical count (`AGENTS.md` §2).

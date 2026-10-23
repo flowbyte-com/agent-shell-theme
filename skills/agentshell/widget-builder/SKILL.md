@@ -13,8 +13,9 @@ Before doing anything, read and obey `AGENTS.md` in full. In particular:
 
 - **Bilateral widget registry** (`AGENTS.md` §4.1) — file-based + config-registered, merged, with config overriding file by id.
 - **Data-* hydration only** (`AGENTS.md` §4.2) — scalar fields as `data-*` attributes, structured payloads as a single `data-agentshell-data` JSON attribute. `<script type="application/json">` is forbidden.
-- **No client-side `fetch()`** (`AGENTS.md` §4.3) — absolute. Covers WP REST, external APIs, and any URL.
-- **Two tracks** (`AGENTS.md` §4.4) — Interactive and WordPress Decorator. Snapshot is a pattern inside Interactive, not a third track.
+- **No client-side `fetch()`** (`AGENTS.md` §4.4) — absolute. Covers WP REST, external APIs, and any URL.
+- **The widget runtime** (`AGENTS.md` §4.3) — the theme calls the widget's `init(el)` for every widget element, once each, with the element itself. A widget never initialises itself, and a self-invoking script inside a widget's template is a workaround for a runtime that did not exist.
+- **Two tracks** (`AGENTS.md` §4.5) — Interactive and WordPress Decorator. Snapshot is a pattern inside Interactive, not a third track.
 - **Unbreakable Grid protocol** (`AGENTS.md` §5) — never edit the grid; widget templates and `init_js` never set `position: fixed` on a zone container.
 - **Working pattern / transactions** (`AGENTS.md` §6) — every mutation runs inside an open transaction.
 - **Tool surface** (`AGENTS.md` §2) — only existing `agentshell_*` tools. This skill does not propose new tools.
@@ -200,7 +201,34 @@ Inside an open transaction:
 7. Fix issues and iterate. Re-screenshot. Re-validate. Until both pass.
 8. `agentshell_commit_transaction`. The widget goes live.
 
-For the mu-plugin escape hatch, add a step 5.5: a `curl` health check on the daemon after the atomic `mv` (`AGENTS.md` §4.6).
+For the mu-plugin escape hatch, add a step 5.5: a `curl` health check on the daemon after the atomic `mv` (`AGENTS.md` §4.7).
+
+## The widget's shape — and who calls `init`
+
+A widget is registered with a `template` (the markup), an `init_js` (the
+behaviour) and optionally `css`. The `init_js` registers an initialiser and
+nothing else:
+
+```js
+window.AgentshellWidgets = window.AgentshellWidgets || {};
+window.AgentshellWidgets['my-widget'] = {
+    init: function(el) {
+        const payload = el.dataset.agentshellData ? JSON.parse(el.dataset.agentshellData) : null;
+        if (!payload) return; // malformed or missing payload: degrade gracefully
+        // …render into el…
+    }
+};
+```
+
+**The theme's widget runtime calls `init(el)`.** The agent does not call it,
+the template does not call it, and the widget does not call itself: the
+runtime finds every widget element (both `data-widget` and `data-widget-id`
+mark one), calls the matching `init` once per element, and contains a
+failure so that one broken widget cannot stop the others (`AGENTS.md` §4.3).
+
+A self-invoking script inside a widget's template is a workaround for a
+runtime that did not exist, and it double-initialises the widget as soon as
+the runtime is there. Do not write one.
 
 ## What the agent MUST NOT do (load-bearing rules)
 

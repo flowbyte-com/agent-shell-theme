@@ -51,7 +51,7 @@ Agent: (reads SKILL.md, picks Decorator track, colocates the widget with
                   refresh anchor in init_js
 ```
 
-Both tracks obey the data-* hydration law and the no-fetch boundary — see `AGENTS.md` §4.2 / §4.3 and the operative skill.
+Both tracks obey the data-* hydration law and the no-fetch boundary — see `AGENTS.md` §4.2 / §4.4 and the operative skill.
 
 ## Escape hatch (last resort)
 
@@ -66,7 +66,7 @@ For rare cases where standard WordPress markup does not expose a needed field, t
 
 - **Two tracks, no third.** Snapshot is a pattern inside Interactive.
 - **Data-* hydration only.** No `<script type="application/json">`.
-- **No `fetch()`.** Absolute prohibition, inherited from `AGENTS.md` §4.3.
+- **No `fetch()`.** Absolute prohibition, inherited from `AGENTS.md` §4.4.
 - **Bilateral widget registry.** File + config; config overrides file by id. See `AGENTS.md` §4.1.
 - **Verification inside transactions.** Build, place, screenshot-if-available, validate, commit. No live-site mutation until commit.
 - **Honest limitations.** The skill documents what it cannot do (multi-source decorators, fresh DOM diff, `<script type="application/json">`).

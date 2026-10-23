@@ -15,7 +15,7 @@ Before doing anything, read and obey `AGENTS.md` in full. In particular:
 - **Working pattern** (`AGENTS.md` §6). All mutations run inside `agentshell_begin_transaction` … `agentshell_commit_transaction` (or `rollback_transaction`).
 - **Zone composition / slots** (`AGENTS.md` §3). Three zones (header / main / footer). Header and footer are tri-slot; main is vertical composition. Edit with the matching tool.
 - **Bilateral widget registry** (`AGENTS.md` §4.1). File widgets + config widgets, merged. File widgets are non-removable but disable-able.
-- **Data-* hydration** (`AGENTS.md` §4.2) / **no fetch** (`AGENTS.md` §4.3). Only relevant if the build registers widgets; the same laws apply.
+- **Data-* hydration** (`AGENTS.md` §4.2) / **no fetch** (`AGENTS.md` §4.4). Only relevant if the build registers widgets; the same laws apply.
 - **Unbreakable Grid protocol** (`AGENTS.md` §5). Never edit the grid. Custom CSS is `class`-based and may not set `position: fixed/absolute` on a zone container.
 - **Capability boundary** (`agentshell_rest_auth_callback`). Mutating calls require `edit_theme_options`; raw-content bypass requires `unfiltered_html`; MCP transport requires `manage_options`. The skill operates as that user; failure to satisfy the check is reported, not worked around.
 
@@ -132,7 +132,7 @@ The skill is complete when **all** of the following hold:
 - It does not bypass the capability boundary. (`agentshell_rest_auth_callback` enforces it.)
 - It does not mechanically map README headings to pages.
 - It does not require the user to answer 20 design questions. The skill favours reasonable autonomous decisions.
-- It does not write `<script type="application/json">` or call `fetch()`. (`AGENTS.md` §4.2 / §4.3.)
+- It does not write `<script type="application/json">` or call `fetch()`. (`AGENTS.md` §4.2 / §4.4.)
 - It does not claim `wp_options` is the sole source of truth. (`AGENTS.md` §1 and §4.1.)
 
 For everything else — including the tool list, the architecture, the bilateral widget registry, the data-* / no-fetch laws, the Unbreakable Grid protocol, the working pattern, the transaction semantics, and the capability boundary — see `AGENTS.md`.
