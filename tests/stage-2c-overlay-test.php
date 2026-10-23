@@ -28,6 +28,7 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/credential-tamper.php';
 
 if ( ! defined( 'AUTH_SALT' ) ) { define( 'AUTH_SALT', 'stage-2c-overlay-suite-auth-salt' ); }
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) { define( 'HOUR_IN_SECONDS', 3600 ); }
@@ -165,10 +166,10 @@ function s2co_check( $name, $ok, $detail = '' ) {
  * claims to change.
  */
 function s2co_tamper_key( array $cred ) {
-    $key   = (string) ( $cred['key'] ?? '' );
-    $first = substr( $key, 0, 1 );
-    $cred['key'] = ( 'a' === $first ? 'b' : 'a' ) . substr( $key, 1 );
-    return $cred;
+    // The shared helper does the same thing and is used by every suite
+    // that tampers with a signature, so a fourth copy of this mistake
+    // cannot be written. See tests/credential-tamper.php.
+    return agentshell_test_tamper_signature( $cred )['credential'];
 }
 
 function s2co_reset() {

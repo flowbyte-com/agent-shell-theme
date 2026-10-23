@@ -54,6 +54,7 @@ error_reporting( E_ALL );
 // legacy `is_file(wp-load.php)` check that used to sit here is now
 // redundant: the guard runs it as the very first check.
 require_once __DIR__ . '/agentshell-test-bed.php';
+require_once __DIR__ . '/credential-tamper.php';
 agentshell_destructive_child_identity_guard( $WP_ROOT, __FILE__ );
 
 define( 'ABSPATH', rtrim( $WP_ROOT, '/' ) . '/' );
@@ -259,8 +260,17 @@ $cred_args = Post_Preview::published_preview_url_args( $orig_id, $shadow_id, $tx
 $cred_url  = $anon_url . '?' . http_build_query( $cred_args );
 
 // Tampered credential: change one hex char of the key.
+//
+// The tamper is guaranteed to change the signature: prefixing a fixed
+// character is a NO-OP when the signature already begins with it, and a
+// hex string begins with 'a' one time in sixteen. On those runs the
+// "tampered" credential was valid and the overlay honoured it, so this
+// case failed intermittently — a failure that reads like a security
+// defect and is actually a test that did not tamper.
+// See tests/credential-tamper.php.
 $decoded   = json_decode( Post_Preview::base64url_decode( $cred_args[ Post_Preview::PUB_PREVIEW_CRED_ARG ] ), true );
-$decoded['key'] = 'a' . substr( $decoded['key'], 1 );
+$t         = agentshell_test_tamper_signature( $decoded );
+$decoded   = $t['credential'];
 $tampered_args = array(
     Post_Preview::PUB_PREVIEW_FLAG_ARG => '1',
     Post_Preview::PUB_PREVIEW_CRED_ARG => Post_Preview::base64url_encode( json_encode( $decoded ) ),

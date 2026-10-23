@@ -57,6 +57,7 @@ if ( '' === $WP_ROOT || '' === $REPORT ) {
 // legacy `is_file(wp-load.php)` check that used to sit here is now
 // redundant: the guard runs it as the very first check.
 require_once __DIR__ . '/agentshell-test-bed.php';
+require_once __DIR__ . '/credential-tamper.php';
 agentshell_destructive_child_identity_guard( $WP_ROOT, __FILE__ );
 
 define( 'ABSPATH', rtrim( $WP_ROOT, '/' ) . '/' );
@@ -431,10 +432,21 @@ try {
     $e3['orig_slug'] = (string) ( $mysqli->query( "SELECT post_name FROM wp_posts WHERE ID=" . (int) $orig_id )->fetch_assoc()['post_name'] ?? '' );
     $anon_url = $SITE . '/' . ltrim( $e3['orig_slug'], '/' ) . '/';
 
-    // E3.1: forged credential — flip one hex char of the key
+    // E3.1: forged credential — flip one hex char of the key.
+    //
+    // The tamper is guaranteed to change the signature: prefixing a
+    // fixed character is a NO-OP when the signature already begins with
+    // it, and a hex string begins with 'a' one time in sixteen. On those
+    // runs the "forged" credential was valid, the overlay honoured it,
+    // and this case failed with "forged credential served staged
+    // content" — a failure that reads like a security defect and is
+    // actually a test that did not tamper.
+    // See tests/credential-tamper.php.
     $cred_args = Post_Preview::published_preview_url_args( $orig_id, $shadow_id, $tx_id, $op_id, $agent_user_id );
     $decoded = json_decode( Post_Preview::base64url_decode( $cred_args[ Post_Preview::PUB_PREVIEW_CRED_ARG ] ), true );
-    $decoded['key'] = 'a' . substr( (string) ( $decoded['key'] ?? '' ), 1 );
+    $t = agentshell_test_tamper_signature( $decoded );
+    $decoded = $t['credential'];
+    $e3['tamper_changed'] = ( $t['original'] !== $t['tampered'] );
     $tampered_args = array(
         Post_Preview::PUB_PREVIEW_FLAG_ARG => '1',
         Post_Preview::PUB_PREVIEW_CRED_ARG => Post_Preview::base64url_encode( json_encode( $decoded ) ),

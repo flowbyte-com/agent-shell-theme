@@ -45,6 +45,7 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/credential-tamper.php';
 
 if ( ! defined( 'AUTH_SALT' ) ) { define( 'AUTH_SALT', 'published-preview-transport-auth-salt' ); }
 if ( ! defined( 'AGENTSHELL_REST_TOKEN' ) ) { define( 'AGENTSHELL_REST_TOKEN', 'published-preview-transport-token' ); }
@@ -311,12 +312,22 @@ Agentshell_Test::run( 'a standard-base64 credential also survives the query stri
 Agentshell_Test::run( 'a tampered credential is still refused', function () {
     $args = Post_Preview::published_preview_url_args( 205, 207, 'tx_1', 'op_1', 1 );
     $decoded = json_decode( Post_Preview::base64url_decode( $args[ Post_Preview::PUB_PREVIEW_CRED_ARG ] ), true );
-    $decoded['key'] = 'a' . substr( $decoded['key'], 1 );
-    $tampered = Post_Preview::base64url_encode( wp_json_encode( $decoded ) );
+    // The tamper is guaranteed to change the signature. Prefixing a fixed
+    // character is a NO-OP when the signature already begins with it — a
+    // hex string begins with 'a' one time in sixteen — and on those runs
+    // the "tampered" credential was the valid one and this assertion
+    // failed. The failure looked like a security defect and came in
+    // bursts, because runs inside the same second mint the same
+    // signature. See tests/credential-tamper.php.
+    $t = agentshell_test_tamper_signature( $decoded );
+    $tampered = Post_Preview::base64url_encode( wp_json_encode( $t['credential'] ) );
 
     Agentshell_Test::assert_false(
         is_array( Post_Preview::verify_published_hmac( $tampered ) ),
         'a tampered signature must be refused'
+            . ' [original=' . agentshell_test_signature_summary( $t['original'] )
+            . ' tampered=' . agentshell_test_signature_summary( $t['tampered'] )
+            . ' changed=' . ( $t['original'] !== $t['tampered'] ? 'yes' : 'NO — the tamper was a no-op' ) . ']'
     );
 } );
 
