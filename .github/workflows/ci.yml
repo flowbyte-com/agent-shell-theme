@@ -47,7 +47,7 @@ env:
   # WordPress core version is pinned in the provisioning script, so two
   # runs of the same commit exercise the same software.
   PHP_VERSION: '8.2'
-  WP_CLI_VERSION: 'v2.11.0'
+  WP_CLI_VERSION: '2.11.0'
   WORDPRESS_VERSION: '6.8.2'
 
 jobs:
@@ -172,7 +172,7 @@ jobs:
 
       - name: Install wp-cli
         run: |
-          curl -sSL -o /tmp/wp-cli.phar https://github.com/wp-cli/wp-cli/releases/download/${{ env.WP_CLI_VERSION }}/wp-cli-${{ env.WP_CLI_VERSION }}.phar
+          curl -sSL -o /tmp/wp-cli.phar "https://github.com/wp-cli/wp-cli/releases/download/v${{ env.WP_CLI_VERSION }}/wp-cli-${{ env.WP_CLI_VERSION }}.phar"
           chmod +x /tmp/wp-cli.phar
           # GITHUB_PATH takes *directories*, not files.
           echo "/tmp" >> "$GITHUB_PATH"

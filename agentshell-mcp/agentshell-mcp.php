@@ -41,6 +41,7 @@ require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-claim.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-shadow.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-preview-overlay.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-site-settings.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content-trash.php';
 \AgentShell_MCP\Transaction_Manager::instance();
 
 // Stage 2c Commit 2 — published-content preview overlay. Hooks init
@@ -139,6 +140,8 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-update-draft.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-claim-existing-draft.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-edit-published.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-trash-content.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-restore-content.php';
 
     // Screenshot loop (v1.3)
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-screenshot.php';
@@ -223,6 +226,8 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     $tools[] = new AgentShell_MCP\Tools\Update_Draft();
     $tools[] = new AgentShell_MCP\Tools\Claim_Existing_Draft();
     $tools[] = new AgentShell_MCP\Tools\Edit_Published();
+    $tools[] = new AgentShell_MCP\Tools\Trash_Content();
+    $tools[] = new AgentShell_MCP\Tools\Restore_Content();
 
     // Screenshot loop (v1.3)
     $tools[] = new AgentShell_MCP\Tools\Screenshot();

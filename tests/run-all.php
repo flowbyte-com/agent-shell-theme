@@ -514,6 +514,11 @@ $suites = array(
     // refused setting changes nothing. Destructive: it writes the site's
     // own options (and restores them).
     'site-settings-live'  => __DIR__ . '/site-settings-live-test.php',
+    // Reversible content deletion against a real WordPress: the content
+    // reaches the Trash and not the bin, a restore brings it back, both
+    // operations are idempotent, and every refusal leaves the content
+    // exactly as it was. Destructive: it creates and removes content.
+    'content-trash-live'  => __DIR__ . '/content-trash-live-test.php',
     // audit_written contract regression: the
     // `reconciliation.audit_written` field is now an honest,
     // independently-verified boolean response. Covers the
@@ -559,6 +564,7 @@ $destructive_live_suites = array(
     'published-preview-live',
     'agentshell-test-bed-preflight-live',
     'site-settings-live',
+    'content-trash-live',
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );
