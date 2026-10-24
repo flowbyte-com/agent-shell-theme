@@ -70,6 +70,10 @@ die() { printf '[package] FAILED: %s\n' "$*" >&2; exit 1; }
 # relative to the repository root; the list is the contract that
 # tools/check-release-archive.sh re-checks against the built archive.
 INCLUDE=(
+    # The licence travels with the work. The GNU Affero General Public
+    # License v3 requires that a copy of the licence accompanies every
+    # copy of the work, and the release archive is a copy of the work.
+    "LICENSE"
     "style.css"
     "functions.php"
     "index.php"
