@@ -3,6 +3,9 @@ namespace AgentShell_MCP;
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
+require_once __DIR__ . '/class-cdp.php';
+require_once __DIR__ . '/class-screenshot-cdp.php';
+
 /**
  * A capture could not start because another capture holds the cross-process
  * lock. Distinct from a browser failure so callers can retry rather than
@@ -199,10 +202,15 @@ class Screenshot {
      * @param int    $height Viewport height in px
      * @param string $dir    Destination directory. Must exist or be creatable,
      *                       and must NOT be a web-served path.
+     * @param bool   $full_page Capture the whole page rather than the viewport.
+     * @param string $mode      'auto' (the DevTools path, with the window path
+     *                           as the fallback), 'window' (the window path
+     *                           only) or 'devtools' (the DevTools path only,
+     *                           with no fallback).
      * @return array { file, url, width, height, backend, timed_out, elapsed_ms }
      * @throws \InvalidArgumentException
      */
-    public static function capture( $url, $width, $height, $dir = null ) {
+    public static function capture( $url, $width, $height, $dir = null, $full_page = false, $mode = 'auto' ) {
         $backend = self::backend();
         if ( null === $backend ) {
             throw new \InvalidArgumentException(
@@ -239,7 +247,16 @@ class Screenshot {
         try {
             $profile = self::create_profile_dir();
             try {
-                $result = self::run_browser( $backend['command'], $url, $width, $height, $file, $profile );
+                $result = self::capture_with_viewport(
+                    $backend['command'],
+                    $url,
+                    $width,
+                    $height,
+                    $file,
+                    $profile,
+                    $full_page,
+                    $mode
+                );
             } finally {
                 self::destroy_profile_dir( $profile );
             }
@@ -250,15 +267,26 @@ class Screenshot {
         // The dimensions the capture ACTUALLY has.
         //
         // The requested width is what the caller asked for; it is not
-        // necessarily what the browser rendered. Headless Chrome enforces a
-        // minimum window width (around 485 CSS pixels on the hosts this was
-        // measured on), so a request for a 390-pixel mobile viewport is
-        // laid out at 485 pixels — and the PNG is a crop of that wider
-        // layout, with the right-hand side missing. Reporting the requested
-        // width told the caller it had a 390-pixel screenshot, and it did
-        // not. Reading the PNG's own header is the only measurement that
-        // cannot be wrong.
+        // necessarily what the browser rendered. In the window-based
+        // capture, headless Chrome enforces a minimum window width (500
+        // CSS pixels on the builds measured here), so a request for a
+        // 375-pixel viewport is laid out at 500 pixels — and the PNG is a
+        // crop of that wider layout, with the right-hand side missing.
+        // The DevTools path asks for a viewport instead, and reports the
+        // width the page itself measured.
+        //
+        // Reading the PNG's own header is the only measurement of the
+        // image that cannot be wrong.
         $actual = self::png_dimensions( $file );
+
+        // The viewport the page was laid out at, when the capture could
+        // measure it. Zero means "not measured" — the window-based path
+        // cannot know, because that is the thing it got wrong.
+        $viewport = isset( $result['viewport'] ) && is_array( $result['viewport'] )
+            ? (array) $result['viewport']
+            : array( 'width' => 0, 'height' => 0 );
+        $effective_width  = (int) ( $viewport['width'] ?? 0 );
+        $effective_height = (int) ( $viewport['height'] ?? 0 );
 
         $result_row = array(
             'file'    => $file,
@@ -271,21 +299,50 @@ class Screenshot {
             'backend' => $backend['label'],
             'timed_out' => $result['timed_out'],
             'elapsed_ms' => $result['elapsed_ms'],
+            'capture_mode' => (string) ( $result['mode'] ?? 'window' ),
         );
 
-        if ( $actual['width'] > 0 && ( $actual['width'] !== $width || $actual['height'] !== $height ) ) {
+        if ( $effective_width > 0 ) {
+            $result_row['viewport_width']  = $effective_width;
+            $result_row['viewport_height'] = $effective_height;
+        }
+
+        // The image is wider than the viewport only when the capture is a
+        // full-page one; a viewport capture is exactly the viewport.
+        $adjusted = false;
+        if ( $effective_width > 0 && $effective_width !== $width ) {
+            $adjusted = true;
+        } elseif ( $effective_width <= 0
+            && $actual['width'] > 0
+            && ( $actual['width'] !== $width || $actual['height'] !== $height ) ) {
+            // The window-based path: the image's own dimensions are the
+            // only evidence there is.
+            $adjusted = true;
+        }
+
+        if ( $adjusted ) {
             // Say so. A caller reviewing a "mobile" screenshot has to know
             // that it is not a 390-pixel screenshot.
             $result_row['viewport_adjusted'] = true;
-            $result_row['note'] = sprintf(
-                'The browser rendered %d×%d, not the requested %d×%d. Headless Chrome enforces a minimum window width, '
-                . 'so a narrow viewport is laid out wider than it was asked for and the image is a crop of that layout. '
-                . 'The dimensions above are the ones the image actually has.',
-                $actual['width'],
-                $actual['height'],
-                $width,
-                $height
-            );
+            if ( $effective_width > 0 ) {
+                $result_row['note'] = sprintf(
+                    'The page was laid out at %d×%d, not the requested %d×%d.',
+                    $effective_width,
+                    $effective_height,
+                    $width,
+                    $height
+                );
+            } else {
+                $result_row['note'] = sprintf(
+                    'The browser rendered %d×%d, not the requested %d×%d. Headless Chrome enforces a minimum window width, '
+                    . 'so a narrow viewport is laid out wider than it was asked for and the image is a crop of that layout. '
+                    . 'The dimensions above are the ones the image actually has.',
+                    $actual['width'],
+                    $actual['height'],
+                    $width,
+                    $height
+                );
+            }
         }
 
         return $result_row;
@@ -332,6 +389,89 @@ class Screenshot {
     }
 
     /**
+     * Capture the page, preferring a true viewport.
+     *
+     * The DevTools Protocol path is asked for the requested viewport and
+     * reports the viewport the page actually used (read back from the page
+     * with `window.innerWidth`). When it cannot be used — an older browser
+     * without the DevTools endpoint, a browser that refuses the connection,
+     * a capture that times out — the window-based path takes over, and the
+     * result says which path ran and what the effective viewport was.
+     *
+     * The fallback is not a silent degradation: the caller reports the
+     * measured width either way, and a window-based capture that was laid
+     * out wider than it was asked for still reports `viewport_adjusted`.
+     *
+     * @param string $binary    The browser binary.
+     * @param string $url       The URL.
+     * @param int    $width     The requested viewport width.
+     * @param int    $height    The requested viewport height.
+     * @param string $file      Where to write the PNG.
+     * @param string $profile   The throwaway profile directory.
+     * @param bool   $full_page Whether to capture the whole page.
+     * @param string $mode      'auto', 'window' or 'devtools'.
+     * @return array { timed_out: bool, elapsed_ms: int, mode: string, viewport: array }
+     * @throws \InvalidArgumentException
+     */
+    private static function capture_with_viewport( $binary, $url, $width, $height, $file, $profile, $full_page = false, $mode = 'auto' ) {
+        $timeout = self::timeout_seconds();
+
+        if ( 'window' === $mode ) {
+            // The window path on its own. It is the fallback, and it is
+            // also the path the fake-browser suites exercise, because the
+            // fake speaks no DevTools protocol.
+            $result             = self::run_browser( $binary, $url, $width, $height, $file, $profile );
+            $result['mode']     = 'window';
+            $result['viewport'] = array( 'width' => 0, 'height' => 0 );
+            return $result;
+        }
+
+        $cdp = \AgentShell_MCP\Screenshot_CDP::capture(
+            $binary,
+            $url,
+            $width,
+            $height,
+            $file,
+            $profile,
+            $timeout,
+            $full_page
+        );
+
+        if ( ! empty( $cdp['ok'] ) && is_file( $file ) ) {
+            return array(
+                'timed_out' => (bool) $cdp['timed_out'],
+                'elapsed_ms' => (int) $cdp['elapsed_ms'],
+                'mode'       => 'devtools',
+                'viewport'   => (array) $cdp['viewport'],
+                'cdp_error'  => '',
+            );
+        }
+
+        if ( ! empty( $cdp['fatal'] ) ) {
+            // The page did not load. The window-based path would reach the
+            // same answer and spend the budget again getting there.
+            throw new \InvalidArgumentException(
+                'Screenshot failed: ' . (string) ( $cdp['error'] ?? 'the page could not be loaded' )
+            );
+        }
+
+        if ( 'devtools' === $mode ) {
+            throw new \InvalidArgumentException(
+                'Screenshot failed: ' . (string) ( $cdp['error'] ?? 'the browser could not be driven through the DevTools protocol' )
+            );
+        }
+
+        // The DevTools path did not deliver. Fall back to the window-based
+        // capture, which works on every browser this tool has ever
+        // supported, and say so in the result.
+        $result = self::run_browser( $binary, $url, $width, $height, $file, $profile );
+        $result['mode']      = 'window';
+        $result['viewport']  = array( 'width' => 0, 'height' => 0 );
+        $result['cdp_error'] = (string) ( $cdp['error'] ?? '' );
+        return $result;
+    }
+
+    /**
      * Execute the headless browser under an enforced wall-clock deadline.
      *
      * The browser writes to $file via a private temp path, so a capture that
@@ -368,7 +508,7 @@ class Screenshot {
             $url,
         );
 
-        $wrapped = self::wrap_in_process_group( $argv, $timeout );
+        $wrapped = self::wrap_browser_argv( $argv, $timeout );
 
         $descriptors = array(
             0 => array( 'file', '/dev/null', 'r' ),
@@ -378,7 +518,7 @@ class Screenshot {
         $pipes = array();
 
         $started = microtime( true );
-        $handle  = @proc_open( $wrapped, $descriptors, $pipes, null, self::isolated_env( $profile ) );
+        $handle  = @proc_open( $wrapped, $descriptors, $pipes, null, self::browser_env( $profile ) );
         if ( ! is_resource( $handle ) ) {
             @unlink( $tmp );
             throw new \InvalidArgumentException( 'Could not start the headless browser process.' );
@@ -407,7 +547,7 @@ class Screenshot {
             // Kill the whole process group, not just the direct child — Chrome
             // spawns a zygote and a process per renderer, and orphans would
             // outlive the request and hold the lock against the next attempt.
-            self::kill_process_group( $handle );
+            self::kill_browser_process_group( $handle );
         }
         @proc_close( $handle );
 
@@ -504,7 +644,7 @@ class Screenshot {
      * @param string $profile Throwaway user-data directory for this capture.
      * @return array Environment for proc_open().
      */
-    private static function isolated_env( $profile ) {
+    public static function browser_env( $profile ) {
         $env = getenv();
         if ( ! is_array( $env ) ) {
             $env = array();
@@ -962,7 +1102,7 @@ class Screenshot {
      *
      * @return array argv
      */
-    private static function wrap_in_process_group( array $argv, $timeout ) {
+    public static function wrap_browser_argv( array $argv, $timeout ) {
         $setsid  = self::helper_binary( 'setsid', array( '/usr/bin/setsid', '/bin/setsid' ) );
         $timeout_bin = self::helper_binary( 'timeout', array( '/usr/bin/timeout', '/bin/timeout' ) );
 
@@ -1007,7 +1147,7 @@ class Screenshot {
      *
      * Either way proc_terminate() is the final backstop for the direct child.
      */
-    private static function kill_process_group( $handle ) {
+    public static function kill_browser_process_group( $handle ) {
         $status = proc_get_status( $handle );
         $pid    = isset( $status['pid'] ) ? (int) $status['pid'] : 0;
         $self   = getmypid();

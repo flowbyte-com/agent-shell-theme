@@ -110,14 +110,37 @@ Agentshell_Test::run(
 Agentshell_Test::run(
     'guard refuses when wp-config DB_NAME differs from the profile',
     function () {
-        $integration = '/home/v/local/agentshell-integration/app/public';
-        if ( ! is_file( $integration . '/wp-config.php' ) ) {
-            throw new Exception( 'integration wp-config not present at ' . $integration . ' — cannot run negative' );
+        // The negative case is synthesised rather than borrowed from a
+        // local installation: a hard-coded path made this suite fail on
+        // every machine that does not have one, which is every machine
+        // but the author's. The guard is what is under test, and it
+        // reads the wp-config it is given.
+        $cfg = agentshell_test_bed_load();
+        if ( ! is_array( $cfg ) ) {
+            throw new Exception( 'no test bed profile: the cross-DB check needs the live bed\'s database name' );
         }
-        $result = agentshell_destructive_identity_guard( $integration );
+        $live_db = isset( $cfg['db']['name'] ) ? (string) $cfg['db']['name'] : '';
+        if ( '' === $live_db ) {
+            throw new Exception( 'the test bed profile does not name a database' );
+        }
+
+        $root = sys_get_temp_dir() . '/agentshell-guard-other-' . getmypid();
+        @mkdir( $root, 0700, true );
+        file_put_contents( $root . '/wp-load.php', "<?php\n// a stand-in for another WordPress installation\n" );
+        file_put_contents(
+            $root . '/wp-config.php',
+            "<?php\ndefine( 'DB_NAME', '" . $live_db . "_other' );\ndefine( 'DB_USER', 'x' );\ndefine( 'DB_PASSWORD', 'x' );\ndefine( 'DB_HOST', '127.0.0.1' );\n"
+        );
+        try {
+            $result = agentshell_destructive_identity_guard( $root );
+        } finally {
+            @unlink( $root . '/wp-load.php' );
+            @unlink( $root . '/wp-config.php' );
+            @rmdir( $root );
+        }
         Agentshell_Test::assert_false(
             $result['ok'],
-            'integration wp_root must refuse'
+            'a wp_root naming another database must refuse'
         );
         Agentshell_Test::assert_equals(
             'db_name',

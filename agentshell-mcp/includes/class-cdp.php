@@ -1,0 +1,497 @@
+<?php
+namespace AgentShell_MCP;
+
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+/**
+ * A minimal Chrome DevTools Protocol client.
+ *
+ * Why this exists
+ * ---------------
+ * `--window-size` is not a viewport. Headless Chrome will not make a window
+ * narrower than about 500 CSS pixels: a request for a 375-pixel viewport is
+ * laid out at 500 pixels, the media queries evaluate at 500 pixels, and the
+ * PNG that comes back is a *crop* of that wider layout — a picture of the
+ * left-hand 375 pixels of a 500-pixel page. The screenshot looked narrow;
+ * the page was not. (Measured on Chrome 156: `--window-size=375` gives
+ * `window.innerWidth === 500`.)
+ *
+ * The only supported way to ask a browser for a viewport narrower than its
+ * minimum window size is the DevTools Protocol's
+ * `Emulation.setDeviceMetricsOverride`, which sets the *viewport* — the
+ * width the layout and the media queries see — independently of the window.
+ * That needs a WebSocket, and PHP has no WebSocket client, so this is one:
+ * the handshake, the framing, and the CDP conversation, and nothing else.
+ *
+ * What it deliberately does not do
+ * --------------------------------
+ * - It does not log the URL. A preview credential rides in that URL, and the
+ *   URL must not reach a log, an exception message or the audit trail.
+ * - It does not reuse a profile. Every capture gets the throwaway profile
+ *   the screenshot tool already uses, and that profile is removed
+ *   afterwards.
+ * - It does not print anything. stdout belongs to the MCP transport.
+ *
+ * The framing functions are pure, so the wire format can be tested without
+ * a browser: `tests/cdp-test.php` does exactly that.
+ */
+class CDP {
+    /** The GUID the RFC requires in the handshake's accept computation. */
+    const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+
+    /**
+     * The HTTP request that opens a WebSocket.
+     *
+     * @param string $host The host to connect to.
+     * @param int    $port The port.
+     * @param string $path The request path.
+     * @param string $key  The Sec-WebSocket-Key (base64 of 16 random bytes).
+     * @return string The request bytes.
+     */
+    public static function handshake_request( $host, $port, $path, $key ) {
+        return "GET " . $path . " HTTP/1.1\r\n"
+            . "Host: " . $host . ':' . (int) $port . "\r\n"
+            . "Upgrade: websocket\r\n"
+            . "Connection: Upgrade\r\n"
+            . "Sec-WebSocket-Key: " . $key . "\r\n"
+            . "Sec-WebSocket-Version: 13\r\n"
+            . "\r\n";
+    }
+
+    /**
+     * The value the server must answer with, given the key we sent.
+     *
+     * @param string $key The Sec-WebSocket-Key we sent.
+     * @return string The expected Sec-WebSocket-Accept.
+     */
+    public static function expected_accept( $key ) {
+        return base64_encode( sha1( $key . self::WS_GUID, true ) );
+    }
+
+    /**
+     * Encode a client→server frame.
+     *
+     * A client MUST mask every frame it sends (RFC 6455 §5.3). The mask is
+     * four random bytes; the payload is XORed with them.
+     *
+     * @param string $payload The payload.
+     * @param int    $opcode  1 for text, 8 for close, 9 for pong.
+     * @param string $mask    Four bytes of mask.
+     * @return string The frame.
+     */
+    public static function frame( $payload, $opcode = 1, $mask = "\x00\x00\x00\x00" ) {
+        $length = strlen( $payload );
+        $out    = chr( 0x80 | ( $opcode & 0x0F ) ); // FIN + opcode
+
+        if ( $length < 126 ) {
+            $out .= chr( 0x80 | $length );
+        } elseif ( $length < 65536 ) {
+            $out .= chr( 0x80 | 126 ) . pack( 'n', $length );
+        } else {
+            $out .= chr( 0x80 | 127 ) . pack( 'J', $length );
+        }
+
+        $out .= $mask;
+
+        if ( '' === $mask ) {
+            return $out . $payload;
+        }
+        $masked = '';
+        for ( $i = 0; $i < $length; $i++ ) {
+            $masked .= $payload[ $i ] ^ $mask[ $i % 4 ];
+        }
+        return $out . $masked;
+    }
+
+    /**
+     * Parse as many complete frames as the buffer holds.
+     *
+     * Returns the messages and the remainder, so the caller can read more
+     * bytes and try again. A frame that is not complete is left in the
+     * remainder untouched.
+     *
+     * @param string $buffer The bytes read so far.
+     * @return array{messages:array<int,array{opcode:int,payload:string,fin:bool}>,rest:string}
+     */
+    public static function parse_frames( $buffer ) {
+        $messages = array();
+        $offset   = 0;
+        $length   = strlen( $buffer );
+
+        while ( true ) {
+            if ( $length - $offset < 2 ) {
+                break;
+            }
+            $byte0       = ord( $buffer[ $offset ] );
+            $byte1       = ord( $buffer[ $offset + 1 ] );
+            $fin         = (bool) ( $byte0 & 0x80 );
+            $opcode      = $byte0 & 0x0F;
+            $masked      = (bool) ( $byte1 & 0x80 );
+            $length_bits = $byte1 & 0x7F;
+            $cursor      = $offset + 2;
+
+            if ( 126 === $length_bits ) {
+                if ( $length - $cursor < 2 ) {
+                    break;
+                }
+                $payload_length = unpack( 'n', substr( $buffer, $cursor, 2 ) )[1];
+                $cursor        += 2;
+            } elseif ( 127 === $length_bits ) {
+                if ( $length - $cursor < 8 ) {
+                    break;
+                }
+                $parts = unpack( 'J', substr( $buffer, $cursor, 8 ) );
+                $payload_length = (int) $parts[1];
+                $cursor        += 8;
+            } else {
+                $payload_length = $length_bits;
+            }
+
+            $mask_key = '';
+            if ( $masked ) {
+                if ( $length - $cursor < 4 ) {
+                    break;
+                }
+                $mask_key = substr( $buffer, $cursor, 4 );
+                $cursor  += 4;
+            }
+
+            if ( $length - $cursor < $payload_length ) {
+                break;
+            }
+            $payload = substr( $buffer, $cursor, $payload_length );
+            $cursor += $payload_length;
+
+            if ( '' !== $mask_key ) {
+                $unmasked = '';
+                for ( $i = 0; $i < $payload_length; $i++ ) {
+                    $unmasked .= $payload[ $i ] ^ $mask_key[ $i % 4 ];
+                }
+                $payload = $unmasked;
+            }
+
+            $messages[] = array(
+                'opcode'  => $opcode,
+                'payload' => $payload,
+                'fin'     => $fin,
+            );
+            $offset = $cursor;
+        }
+
+        return array(
+            'messages' => $messages,
+            'rest'     => substr( $buffer, $offset ),
+        );
+    }
+
+    /**
+     * Random bytes, from the best source available.
+     *
+     * @param int $count How many bytes.
+     * @return string
+     */
+    public static function random_bytes( $count ) {
+        try {
+            return random_bytes( $count );
+        } catch ( \Throwable $e ) {
+            $out = '';
+            for ( $i = 0; $i < $count; $i++ ) {
+                $out .= chr( mt_rand( 0, 255 ) );
+            }
+            return $out;
+        }
+    }
+
+    /**
+     * Send a text frame.
+     *
+     * @param resource $socket  The socket.
+     * @param string   $payload The payload.
+     * @return bool True when the bytes were written.
+     */
+    public static function send_text( $socket, $payload ) {
+        $mask  = self::random_bytes( 4 );
+        $frame = self::frame( $payload, 1, $mask );
+        $written = @fwrite( $socket, $frame );
+        return ( false !== $written && strlen( $frame ) === $written );
+    }
+}
+
+/**
+ * One WebSocket connection to a DevTools endpoint, speaking CDP.
+ *
+ * The conversation is request/response with interleaved events: a command
+ * is answered by the message that carries its id, and everything else that
+ * arrives in the meantime is an event (a page load, a console message) and
+ * is queued for the caller.
+ */
+class CDP_Connection {
+    /** @var resource|null */
+    private $socket;
+    /** @var string */
+    private $buffer = '';
+    /** @var array<int,array> Messages read from the socket, not yet examined. */
+    private $pending = array();
+    /** @var array<int,array> Events, kept for whoever asks for them. */
+    private $events = array();
+    /** @var int */
+    private $next_id = 1;
+
+    /**
+     * @param resource|null $socket The socket.
+     * @param string        $buffer Bytes already read from the socket.
+     */
+    public function __construct( $socket, $buffer = '' ) {
+        $this->socket = $socket;
+        $this->buffer = (string) $buffer;
+    }
+
+    /**
+     * Open a connection to a DevTools endpoint.
+     *
+     * @param string $host    The host (127.0.0.1).
+     * @param int    $port    The port.
+     * @param string $path    The path from the DevTools endpoint.
+     * @param float  $timeout The connect/read timeout in seconds.
+     * @return CDP_Connection|null
+     */
+    public static function open( $host, $port, $path, $timeout = 10.0 ) {
+        $errno  = 0;
+        $errstr = '';
+        $socket = @stream_socket_client(
+            'tcp://' . $host . ':' . (int) $port,
+            $errno,
+            $errstr,
+            $timeout,
+            STREAM_CLIENT_CONNECT
+        );
+        if ( ! $socket ) {
+            return null;
+        }
+        $seconds      = (int) floor( $timeout );
+        $microseconds = (int) round( ( $timeout - $seconds ) * 1000000 );
+        stream_set_timeout( $socket, $seconds, $microseconds );
+
+        $key = base64_encode( CDP::random_bytes( 16 ) );
+        fwrite( $socket, CDP::handshake_request( $host, $port, $path, $key ) );
+
+        $response = '';
+        $deadline = microtime( true ) + $timeout;
+        while ( false === strpos( $response, "\r\n\r\n" ) ) {
+            if ( microtime( true ) > $deadline ) {
+                fclose( $socket );
+                return null;
+            }
+            $chunk = @fread( $socket, 4096 );
+            if ( false === $chunk || '' === $chunk ) {
+                $meta = stream_get_meta_data( $socket );
+                if ( ! empty( $meta['timed_out'] ) || feof( $socket ) ) {
+                    fclose( $socket );
+                    return null;
+                }
+                continue;
+            }
+            $response .= $chunk;
+            if ( strlen( $response ) > 65536 ) {
+                fclose( $socket );
+                return null;
+            }
+        }
+
+        list( $head, $rest ) = explode( "\r\n\r\n", $response, 2 );
+        if ( false === stripos( $head, ' 101 ' ) ) {
+            fclose( $socket );
+            return null;
+        }
+        if ( false === stripos( $head, CDP::expected_accept( $key ) ) ) {
+            // The accept hash did not match: this is not the endpoint we
+            // think it is. Refuse rather than talk to it.
+            fclose( $socket );
+            return null;
+        }
+
+        return new self( $socket, $rest );
+    }
+
+    /**
+     * Close the connection.
+     */
+    public function close() {
+        if ( is_resource( $this->socket ) ) {
+            @fwrite( $this->socket, CDP::frame( '', 8, CDP::random_bytes( 4 ) ) );
+            @fclose( $this->socket );
+        }
+        $this->socket = null;
+    }
+
+    /**
+     * Send a command.
+     *
+     * @param string      $method     The CDP method.
+     * @param array       $params     The parameters.
+     * @param string|null $session_id The session, when talking to a target.
+     * @return int The command id.
+     */
+    public function send( $method, array $params = array(), $session_id = null ) {
+        $id = $this->next_id++;
+        $message = array(
+            'id'     => $id,
+            'method' => $method,
+            'params' => (object) $params,
+        );
+        if ( null !== $session_id && '' !== $session_id ) {
+            $message['sessionId'] = $session_id;
+        }
+        $payload = json_encode( $message );
+        if ( ! is_string( $payload ) ) {
+            return 0;
+        }
+        CDP::send_text( $this->socket, $payload );
+        return $id;
+    }
+
+    /**
+     * Read the next message, queueing the events that arrive first.
+     *
+     * @param float $timeout The deadline in seconds.
+     * @return array|null The decoded message, or null on timeout.
+     */
+    public function read( $timeout = 10.0 ) {
+        $deadline = microtime( true ) + $timeout;
+
+        while ( true ) {
+            if ( ! empty( $this->pending ) ) {
+                return array_shift( $this->pending );
+            }
+            if ( microtime( true ) > $deadline ) {
+                return null;
+            }
+            $chunk = @fread( $this->socket, 65536 );
+            if ( false === $chunk || '' === $chunk ) {
+                $meta = stream_get_meta_data( $this->socket );
+                if ( ! empty( $meta['timed_out'] ) || feof( $this->socket ) ) {
+                    return null;
+                }
+                continue;
+            }
+            $this->buffer .= $chunk;
+
+            $parsed = CDP::parse_frames( $this->buffer );
+            $this->buffer = $parsed['rest'];
+            foreach ( $parsed['messages'] as $frame ) {
+                if ( 8 === $frame['opcode'] ) {
+                    return null; // the peer closed
+                }
+                if ( 9 === $frame['opcode'] ) {
+                    // A ping: answer it, or the peer may drop the connection.
+                    @fwrite( $this->socket, CDP::frame( $frame['payload'], 10, CDP::random_bytes( 4 ) ) );
+                    continue;
+                }
+                if ( 1 !== $frame['opcode'] && 2 !== $frame['opcode'] && 0 !== $frame['opcode'] ) {
+                    continue;
+                }
+                $decoded = json_decode( $frame['payload'], true );
+                if ( is_array( $decoded ) ) {
+                    $this->pending[] = $decoded;
+                }
+            }
+        }
+    }
+
+    /**
+     * Send a command and wait for its answer.
+     *
+     * Events that arrive while waiting are *kept*: they are put back on the
+     * queue, so a page-load event that fires while a command is in flight is
+     * still there when the caller waits for it.
+     *
+     * @param string      $method     The CDP method.
+     * @param array       $params     The parameters.
+     * @param string|null $session_id The session, when talking to a target.
+     * @param float       $timeout    The deadline in seconds.
+     * @return array{ok:bool,result:array,error:string}
+     */
+    public function call( $method, array $params = array(), $session_id = null, $timeout = 10.0 ) {
+        $id = $this->send( $method, $params, $session_id );
+        if ( ! $id ) {
+            return array( 'ok' => false, 'result' => array(), 'error' => 'the command could not be sent' );
+        }
+        $deadline = microtime( true ) + $timeout;
+        while ( microtime( true ) < $deadline ) {
+            $message = $this->take( $id );
+            if ( null === $message ) {
+                $message = $this->read( max( 0.1, $deadline - microtime( true ) ) );
+                if ( null === $message ) {
+                    return array( 'ok' => false, 'result' => array(), 'error' => 'the command timed out' );
+                }
+                if ( ! isset( $message['id'] ) || (int) $message['id'] !== $id ) {
+                    // An event, not our answer. It goes to the event queue,
+                    // not back onto the read queue: a message put back on
+                    // the read queue is handed out again by the next read,
+                    // and the command would never see its own answer.
+                    $this->events[] = $message;
+                    continue;
+                }
+            }
+            if ( isset( $message['error'] ) ) {
+                return array(
+                    'ok'    => false,
+                    'result' => array(),
+                    'error' => (string) ( $message['error']['message'] ?? 'the command failed' ),
+                );
+            }
+            return array(
+                'ok'     => true,
+                'result' => isset( $message['result'] ) && is_array( $message['result'] ) ? $message['result'] : array(),
+                'error'  => '',
+            );
+        }
+        return array( 'ok' => false, 'result' => array(), 'error' => 'the command timed out' );
+    }
+
+    /**
+     * Take a queued message with a given command id, if there is one.
+     *
+     * @param int $id The command id.
+     * @return array|null
+     */
+    private function take( $id ) {
+        foreach ( $this->pending as $index => $message ) {
+            if ( isset( $message['id'] ) && (int) $message['id'] === (int) $id ) {
+                unset( $this->pending[ $index ] );
+                $this->pending = array_values( $this->pending );
+                return $message;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Wait for an event with a given method.
+     *
+     * @param string $method  The event method.
+     * @param float  $timeout The deadline in seconds.
+     * @return array|null The event, or null on timeout.
+     */
+    public function wait_for_event( $method, $timeout = 10.0 ) {
+        $deadline = microtime( true ) + $timeout;
+        while ( microtime( true ) < $deadline ) {
+            foreach ( $this->events as $index => $message ) {
+                if ( isset( $message['method'] ) && $method === $message['method'] ) {
+                    unset( $this->events[ $index ] );
+                    $this->events = array_values( $this->events );
+                    return $message;
+                }
+            }
+            $message = $this->read( max( 0.1, $deadline - microtime( true ) ) );
+            if ( null === $message ) {
+                return null;
+            }
+            if ( isset( $message['method'] ) && $method === $message['method'] ) {
+                return $message;
+            }
+            $this->events[] = $message;
+        }
+        return null;
+    }
+}

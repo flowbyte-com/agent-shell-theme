@@ -180,7 +180,7 @@ function e2e_http_get( $url ) {
     ) );
     $body = @file_get_contents( $url, false, $ctx );
     $code = 0;
-    foreach ( agentshell_test_last_response_headers() as $h ) {
+    foreach ( agentshell_test_last_response_headers( $http_response_header ) as $h ) {
         if ( preg_match( '#HTTP/\S+\s+(\d+)#', $h, $m ) ) { $code = (int) $m[1]; }
     }
     return array( 'code' => $code, 'body' => (string) $body );

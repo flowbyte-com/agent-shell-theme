@@ -35,6 +35,8 @@ require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content-journal.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-recovery-advisory-lock.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content-recovery.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-cdp.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot-cdp.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot-store.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-post-preview.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-claim.php';

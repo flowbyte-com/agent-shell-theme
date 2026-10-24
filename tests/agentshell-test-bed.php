@@ -399,7 +399,7 @@ function agentshell_test_bed_check( array $cfg ) {
         if ( false === $http_body ) {
             $http_error = error_get_last() ? ( error_get_last()['message'] ?? '' ) : '';
         }
-        $http_headers = agentshell_test_last_response_headers();
+        $http_headers = agentshell_test_last_response_headers( $http_response_header );
         if ( ! empty( $http_headers ) && preg_match( '/HTTP\/[\d.]+\s+(\d{3})/', (string) $http_headers[0], $m ) ) {
             $http_status = (int) $m[1];
         }
@@ -699,7 +699,7 @@ function agentshell_test_bed_check_http_identity( array $cfg, $token, $expected_
     ) );
     $body = @file_get_contents( $endpoint, false, $ctx );
     $status = 0;
-    $headers = agentshell_test_last_response_headers();
+    $headers = agentshell_test_last_response_headers( $http_response_header );
     if ( ! empty( $headers ) && preg_match( '/HTTP\/[\d.]+\s+(\d{3})/', (string) $headers[0], $m ) ) {
         $status = (int) $m[1];
     }
@@ -1221,9 +1221,16 @@ function agentshell_destructive_identity_guard( $wp_root, $cfg = null, $label = 
             'db_name',
             'wp-config DB_NAME "' . $db['DB_NAME'] . '" does not match the profile\'s expected db.name "' . $expected_db . '"'
         );
-    } else {
-        $pass( 'db_name', $db['DB_NAME'] );
+        // Stop here. The database named by this wp-config is not the one
+        // the profile describes, and everything below this point would
+        // connect to it. Refusing before the connection is made is the
+        // whole point of the check.
+        return array(
+            'ok' => false, 'checks' => $checks, 'refusal' => $refusal,
+            'db_name' => $db['DB_NAME'], 'sentinel' => '', 'siteurl' => '',
+        );
     }
+    $pass( 'db_name', $db['DB_NAME'] );
 
     // 5. connect to the actual database. The connection uses the
     //    credentials parsed from wp-config — NOT the profile's
@@ -1242,7 +1249,13 @@ function agentshell_destructive_identity_guard( $wp_root, $cfg = null, $label = 
         list( $db_host, $socket ) = explode( ':', $db_host, 2 );
     }
     if ( '' === $db_host ) { $db_host = 'localhost'; }
+    // PHP 8.1 and later default to MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT,
+    // so a failed connection throws instead of returning an object with an
+    // error code. The guard's job is to *report* that failure, so the
+    // strict mode is turned off for this one call and restored after it.
+    $previous_report = mysqli_report( MYSQLI_REPORT_OFF );
     $mysqli = @new mysqli( $db_host, $db['DB_USER'], $db['DB_PASSWORD'], $db['DB_NAME'], 0, $socket );
+    mysqli_report( $previous_report );
     if ( ! ( $mysqli instanceof mysqli ) || $mysqli->connect_errno ) {
         $fail( 'db_connect', 'cannot connect to ' . $db['DB_USER'] . '@' . $db['DB_HOST'] . ' / ' . $db['DB_NAME'] . ': ' . ( $mysqli instanceof mysqli ? $mysqli->connect_error : 'mysqli ctor failed' ) );
         return array(

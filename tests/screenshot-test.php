@@ -115,7 +115,10 @@ define( 'AGENTSHELL_SCREENSHOT_TIMEOUT', $timeout );
 $out = array( 'ok' => false );
 $t0 = microtime( true );
 try {
-    $shot = Screenshot::capture( $url, (int) ( $argv[9] ?? 800 ), (int) ( $argv[10] ?? 600 ), $workdir . '/shots' );
+    // The window path: the fake browser speaks no DevTools protocol, and
+    // these suites are about the properties of a capture (the lock, the
+    // deadline, the profile's isolation) rather than about the viewport.
+    $shot = Screenshot::capture( $url, (int) ( $argv[9] ?? 800 ), (int) ( $argv[10] ?? 600 ), $workdir . '/shots', false, 'window' );
     $out = array(
         'ok'      => true,
         'file'    => $shot['file'],

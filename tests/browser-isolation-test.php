@@ -102,7 +102,7 @@ define( 'AGENTSHELL_SCREENSHOT_TIMEOUT', $timeout );
 
 $out = array( 'ok' => false );
 try {
-    $shot = Screenshot::capture( $url, 800, 600, $workdir . '/shots' );
+    $shot = Screenshot::capture( $url, 800, 600, $workdir . '/shots', false, 'window' );
     $out = array(
         'ok'     => true,
         'file'   => $shot['file'],

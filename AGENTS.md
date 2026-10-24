@@ -72,12 +72,23 @@ The count is the number of tools an agent can **call**: the registry is keyed by
   it. Full contract: [`docs/SCREENSHOT-PRIVACY-DESIGN.md`](docs/SCREENSHOT-PRIVACY-DESIGN.md).
 
   **The reported dimensions are the ones the image has, not the ones that were asked
-  for.** Headless Chrome enforces a minimum window width (around 485 CSS pixels on the
-  hosts this was measured on), so a narrow viewport is laid out wider than it was
-  requested and the PNG is a crop of that wider layout. The capture reads the PNG's own
-  header and reports what it got, reports the requested dimensions beside it, and sets
-  `viewport_adjusted` with a note when the two differ. A "mobile" screenshot that was
-  really a 485-pixel layout is a finding an agent must be able to see.
+  for.** A capture drives the browser through the DevTools protocol, sets the viewport
+  it was asked for, and then measures the viewport the page actually got
+  (`window.innerWidth`), so a 320-pixel request is laid out at 320 pixels and the PNG is
+  320 pixels wide. The result reports the requested width, the measured viewport width
+  and height, and the capture mode (`devtools` when the browser was driven through the
+  protocol, `window` when the fallback was used).
+
+  The fallback exists: if the browser cannot be driven through the DevTools protocol,
+  the capture falls back to the window-based path, and *that* path inherits the browser's
+  minimum window width (around 485 CSS pixels on the hosts this was measured on) — the
+  page is then laid out wider than it was requested and the PNG is a crop of that wider
+  layout. The fallback says so: `capture_mode` is `window`, and `viewport_adjusted` is
+  set with a note when the measured dimensions differ from the requested ones. A
+  "mobile" screenshot that was really a 485-pixel layout is a finding an agent must be
+  able to see, and it stays visible in the result. `full_page: true` captures the whole
+  page at the viewport's width: the image is as tall as the page, and its width is still
+  the viewport's width.
 
   **`published_preview: true` captures the staged edit of a published page.** The page
   stays published and stays what visitors see; the capture is served with the staged

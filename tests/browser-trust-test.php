@@ -152,7 +152,7 @@ try {
             $out['destroyed'] = ! is_dir( $path );
         }
     } else {
-        $shot = Screenshot::capture( $op['url'], 800, 600, $workdir . '/shots' );
+        $shot = Screenshot::capture( $op['url'], 800, 600, $workdir . '/shots', false, 'window' );
         $out = array(
             'ok'     => true,
             'size'   => file_exists( $shot['file'] ) ? filesize( $shot['file'] ) : 0,

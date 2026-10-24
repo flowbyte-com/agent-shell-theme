@@ -24,6 +24,7 @@ class Screenshot extends Base_Tool {
                 ),
                 'width'    => array( 'type' => 'integer', 'description' => 'Explicit viewport width in px (overrides viewport preset)' ),
                 'height'   => array( 'type' => 'integer', 'description' => 'Explicit viewport height in px (overrides viewport preset)' ),
+                'full_page' => array( 'type' => 'boolean', 'description' => 'Capture the whole page rather than the viewport. The width is still the viewport width; the image is as tall as the page.' ),
                 'url'      => array( 'type' => 'string', 'description' => 'URL to capture (defaults to the site home page)' ),
                 'profile'  => array( 'type' => 'string', 'description' => 'Optional theme profile name — the screenshot renders its design tokens as preview overrides (requires AGENTSHELL_REST_TOKEN)' ),
                 'transaction' => array( 'type' => 'boolean', 'description' => 'Capture the open transaction\'s staged design instead of the committed one. Requires an open transaction; the staged config is rendered for this request only and is never persisted. Ordinary visitors continue to see the committed config until you commit.' ),
@@ -328,7 +329,13 @@ class Screenshot extends Base_Tool {
         // install — report it as a structured, retryable result rather than an
         // exception, so the calling agent does not treat it as a site fault.
         try {
-            $shot = \AgentShell_MCP\Screenshot::capture( $url, $width, $height, $dir );
+            $shot = \AgentShell_MCP\Screenshot::capture(
+                $url,
+                $width,
+                $height,
+                $dir,
+                ! empty( $arguments['full_page'] )
+            );
         } catch ( \AgentShell_MCP\Screenshot_Busy_Exception $e ) {
             return array(
                 'captured'  => false,
@@ -352,6 +359,9 @@ class Screenshot extends Base_Tool {
                 'height'  => $shot['height'],
                 'requested_width'  => $shot['requested_width'] ?? $shot['width'],
                 'requested_height' => $shot['requested_height'] ?? $shot['height'],
+                'viewport_width'   => $shot['viewport_width'] ?? null,
+                'viewport_height'  => $shot['viewport_height'] ?? null,
+                'capture_mode'     => $shot['capture_mode'] ?? 'window',
                 'backend' => $shot['backend'],
                 'inline'  => $inline,
             ),

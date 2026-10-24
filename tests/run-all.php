@@ -481,6 +481,11 @@ $suites = array(
     // Site identity and reading settings: the bounded surface, its
     // validation, and the projection onto WordPress's own options.
     'site-settings'       => __DIR__ . '/site-settings-test.php',
+    // The DevTools client's wire format: pure functions, no browser.
+    'cdp'                 => __DIR__ . '/cdp-test.php',
+    // The narrow-viewport capture, against a real browser. Skips when the
+    // host has no Chrome.
+    'viewport-live'       => __DIR__ . '/viewport-live-test.php',
     // HAL 9001 remediation regression: the published-edit field
     // preservation contract. A partial edit must inherit every field the
     // caller did not name (title, slug, excerpt) instead of blanking it,

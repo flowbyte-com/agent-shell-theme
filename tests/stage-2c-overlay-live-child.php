@@ -376,7 +376,7 @@ function fetch( $url, &$headers = null ) {
     ) );
     $body = file_get_contents( $url, false, $ctx );
     $code = 0;
-    $last_headers = agentshell_test_last_response_headers();
+    $last_headers = agentshell_test_last_response_headers( $http_response_header );
     if ( ! empty( $last_headers )
         && preg_match( '#HTTP/\S+\s+(\d+)#', (string) $last_headers[0], $m ) ) {
         $code = (int) $m[1];
