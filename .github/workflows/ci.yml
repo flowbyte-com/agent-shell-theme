@@ -160,11 +160,15 @@ jobs:
           sudo mkdir -p /var/run/mysqld
           sudo chown mysql:mysql /var/run/mysqld
           sudo systemctl start mysql.service || sudo service mysql start
-          # The runner image's root account authenticates through the unix
-          # socket (auth_socket), so the administrative connection is
-          # `sudo mysql`. The provisioning script's restricted user is
-          # what the test suites use.
-          sudo mysql --socket=/var/run/mysqld/mysqld.sock -e "SELECT @@server_uuid, @@datadir, @@port;"
+          # The administrative account's authentication differs between
+          # images, so the provisioning script finds a working root
+          # command itself. What this step checks is that the server is
+          # up and listening on the socket the harness requires.
+          for _ in $(seq 1 30); do
+            if [ -S /var/run/mysqld/mysqld.sock ]; then break; fi
+            sleep 1
+          done
+          test -S /var/run/mysqld/mysqld.sock
 
       - name: Install wp-cli
         run: |

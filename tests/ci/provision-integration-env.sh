@@ -140,12 +140,30 @@ fi
 # How to reach MySQL as root. A socket connection is the only shape the
 # harness supports (it requires `db.socket` to be a real socket), so the
 # root command is built around the socket too.
+#
+# The candidates cover the shapes a MySQL installation may use for its
+# administrative account: passwordless socket authentication (a local
+# install), the Debian/Ubuntu maintenance account (which the packaged
+# server creates with its credentials in /etc/mysql/debian.cnf), and the
+# conventional root/root of a packaged development install. CI and a
+# workstation differ here, and a provisioning script that only knew one
+# of them would fail on the other.
 if [ -z "${CI_MYSQL_ROOT_CMD:-}" ]; then
-    if mysql --socket="$CI_MYSQL_SOCKET" -uroot -e "SELECT 1" >/dev/null 2>&1; then
-        CI_MYSQL_ROOT_CMD="mysql --socket=$CI_MYSQL_SOCKET -uroot"
-    elif sudo mysql --socket="$CI_MYSQL_SOCKET" -e "SELECT 1" >/dev/null 2>&1; then
-        CI_MYSQL_ROOT_CMD="sudo mysql --socket=$CI_MYSQL_SOCKET"
-    else
+    CI_MYSQL_ROOT_CMD=""
+    for candidate in \
+        "mysql --socket=$CI_MYSQL_SOCKET -uroot" \
+        "sudo mysql --socket=$CI_MYSQL_SOCKET" \
+        "sudo mysql --socket=$CI_MYSQL_SOCKET -uroot -proot" \
+        "mysql --socket=$CI_MYSQL_SOCKET -uroot -proot" \
+        "sudo mysql --defaults-file=/etc/mysql/debian.cnf --socket=$CI_MYSQL_SOCKET" \
+        "mysql --defaults-file=/etc/mysql/debian.cnf --socket=$CI_MYSQL_SOCKET"
+    do
+        if $candidate -e "SELECT 1" >/dev/null 2>&1; then
+            CI_MYSQL_ROOT_CMD="$candidate"
+            break
+        fi
+    done
+    if [ -z "$CI_MYSQL_ROOT_CMD" ]; then
         die "cannot reach MySQL as root over $CI_MYSQL_SOCKET (set CI_MYSQL_ROOT_CMD)"
     fi
 fi
