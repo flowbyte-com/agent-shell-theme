@@ -15,6 +15,7 @@ class Unpublish_Content extends Base_Tool {
             'properties' => array(
                 'id'   => array( 'type' => 'integer', 'description' => 'Post/page ID' ),
                 'type' => array( 'type' => 'string', 'enum' => array( 'post', 'page' ), 'description' => 'Defaults to page' ),
+                'include_content' => array( 'type' => 'boolean', 'description' => 'Include the content body in the response. Defaults to true (the existing contract); pass false to get the metadata and the length only, which keeps a large body out of the transcript.' ),
             ),
             'required'   => array( 'id' ),
         );
@@ -32,7 +33,8 @@ class Unpublish_Content extends Base_Tool {
         return \AgentShell_MCP\Content_Primitives::set_status(
             (int) $arguments['id'],
             $arguments['type'] ?? 'page',
-            'draft'
+            'draft',
+            $arguments['include_content'] ?? true
         );
     }
 }

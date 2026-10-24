@@ -519,6 +519,9 @@ $suites = array(
     // operations are idempotent, and every refusal leaves the content
     // exactly as it was. Destructive: it creates and removes content.
     'content-trash-live'  => __DIR__ . '/content-trash-live-test.php',
+    // Compact responses: the default contract is unchanged, and the
+    // compact form is measurably smaller. Destructive: it creates content.
+    'compact-response-live' => __DIR__ . '/compact-response-live-test.php',
     // audit_written contract regression: the
     // `reconciliation.audit_written` field is now an honest,
     // independently-verified boolean response. Covers the
@@ -565,6 +568,7 @@ $destructive_live_suites = array(
     'agentshell-test-bed-preflight-live',
     'site-settings-live',
     'content-trash-live',
+    'compact-response-live',
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );

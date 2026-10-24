@@ -20,6 +20,7 @@ class Update_Content extends Base_Tool {
                 'status'  => array( 'type' => 'string', 'enum' => array( 'draft', 'publish', 'pending', 'private', 'future' ), 'description' => 'New status' ),
                 'slug'    => array( 'type' => 'string', 'description' => 'New URL slug' ),
                 'parent'  => array( 'type' => 'integer', 'description' => 'New parent page ID (pages only)' ),
+                'include_content' => array( 'type' => 'boolean', 'description' => 'Include the content body in the response. Defaults to true (the existing contract); pass false to get the metadata and the length only, which keeps a large body out of the transcript.' ),
             ),
             'required'   => array( 'id' ),
         );
@@ -39,12 +40,15 @@ class Update_Content extends Base_Tool {
             );
         }
         $changes = array();
-        foreach ( array( 'title', 'content', 'status', 'slug', 'parent' ) as $key ) {
+        foreach ( array( 'title', 'content', 'status', 'slug', 'parent', 'include_content' ) as $key ) {
             if ( array_key_exists( $key, $arguments ) ) {
                 $changes[ $key ] = $arguments[ $key ];
             }
         }
-        if ( empty( $changes ) ) {
+        // `include_content` is a response preference, not a change: it
+        // must not count as "something to update".
+        $only_response_shape = ( array( 'include_content' ) === array_keys( $changes ) );
+        if ( empty( $changes ) || $only_response_shape ) {
             throw new \InvalidArgumentException( 'Nothing to update — pass at least one of title, content, status, slug, parent.' );
         }
         return \AgentShell_MCP\Content_Primitives::update(
