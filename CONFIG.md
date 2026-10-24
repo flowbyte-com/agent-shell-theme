@@ -157,7 +157,7 @@ rather than a deployment.
 > repository, and the tools that copy a WordPress site — WP Migrate among
 > them — follow symlinks. An export taken from a site in this state
 > carries the whole repository: measured with the migration plugin's own
-> file enumerator, 59 MiB, of which 19.4 MiB is the `.git` directory, and
+> file enumerator, 59 MiB, of which 19.6 MiB is the `.git` directory, and
 > the published history contains a revoked database password. The
 > measurements, and the procedure, are in
 > [`docs/RELEASE-SIZE-AUDIT.md`](docs/RELEASE-SIZE-AUDIT.md) §4.3 and

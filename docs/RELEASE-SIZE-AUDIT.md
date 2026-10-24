@@ -5,7 +5,7 @@
 §8 for what this file is.
 
 **Date:** 2026-10-24. **Measured on:** the development checkout at
-`/home/v/projects/agent-shell-theme`, revision `31344c7`.
+`/home/v/projects/agent-shell-theme`, revision `d225950`.
 
 ---
 
@@ -29,8 +29,8 @@ So a copy of "the theme directory" is a copy of the checkout, and a copy
 of the checkout carries the Git history and four other checkouts with it.
 Removing the plugins — which are ~1.5 MB of the 71 MB — changes nothing.
 
-The production distribution is the **release archive**: **345,329 bytes
-compressed, 1,400,222 bytes extracted, 120 files**. That is the number
+The production distribution is the **release archive**: **345,706 bytes
+compressed, 1,401,575 bytes extracted, 120 files**. That is the number
 that matters, and it is 1.6 MB rather than 70 MB.
 
 ### 1.1 The owner's observation, reproduced
@@ -44,7 +44,7 @@ $ rm -rf /tmp/owner-copy/theme/agentshell-mcp \
           /tmp/owner-copy/theme/agentshell-blocks \
           /tmp/owner-copy/theme/agentshell-mcp-daemon
 $ du -sb /tmp/owner-copy/theme
-60656083   /tmp/owner-copy/theme      # 70 MB — "over 60 MB"
+60928188   /tmp/owner-copy/theme      # 70 MB — "over 60 MB"
 ```
 
 Exactly the owner's report. And what is in those 70 MB:
@@ -52,11 +52,11 @@ Exactly the owner's report. And what is in those 70 MB:
 | Part | Apparent | Disk | What it is |
 |---|---:|---:|---|
 | `.worktrees/` | 34,215,046 | 36 MB | **four other Git checkouts**, gitignored |
-| `.git/` | 20,382,325 | 28 MB | **the Git history and its objects** |
-| `tests/` | 2,917,070 | 3.2 MB | the regression suite |
+| `.git/` | 20,584,693 | 28 MB | **the Git history and its objects** |
+| `tests/` | 2,924,740 | 3.2 MB | the regression suite |
 | `screenshot.png` | 1,637,508 | 1.6 MB | the repository's theme screenshot |
-| `docs/` | 728,647 | 784 KB | the design records |
-| everything else | ~776,000 | ~1.5 MB | the actual theme and plugins |
+| `docs/` | 786,897 | 884 KB | the design records |
+| everything else | ~796,000 | ~1.5 MB | the actual theme and plugins |
 
 **97 % of the "theme" was Git history and other checkouts.**
 
@@ -68,10 +68,10 @@ Exactly the owner's report. And what is in those 70 MB:
 
 | # | What | Apparent bytes | Disk | Files |
 |---|---|---:|---:|---:|
-| A1 | the checkout, everything | 61,871,866 | 73 MB | 4,487 |
-| A2 | `.git/` — history and objects | 20,382,325 | 29 MB | 2,784 objects |
+| A1 | the checkout, everything | 62,147,279 | 73 MB | 4,487 |
+| A2 | `.git/` — history and objects | 20,584,693 | 29 MB | 2,814 objects |
 | A3 | `.worktrees/` — four other checkouts | 34,215,046 | 36 MB | 1,703 |
-| A4 | the working tree without A2 and A3 | 7,274,495 | 7.9 MB | ~1,700 |
+| A4 | the working tree without A2 and A3 | 7,347,540 | 8.0 MB | ~1,700 |
 
 **Hard links:** none. `find -type f -links +1` returns nothing, so no
 file is counted twice by `du`.
@@ -90,13 +90,13 @@ part of a deployment.
 
 | What | Apparent | Disk | Classification |
 |---|---:|---:|---|
-| `agentshell-mcp/` (the MCP plugin) | 1,162,548 | 1.4 MB | **production** |
+| `agentshell-mcp/` (the MCP plugin) | 1,163,901 | 1.4 MB | **production** |
 | `agentshell-blocks/` (the Blocks plugin) | 28,963 | 56 KB | **production** |
 | `agentshell-mcp-daemon/` (the standalone daemon) | 26,227 | 60 KB | **production, not deployed** — it runs on the operator's machine |
 | the theme's own PHP, CSS and JSON | 172,496 | 172 KB | **production** |
 | `widgets/`, `template-parts/`, `assets/` | 9,902 | 36 KB | **production** |
-| `tests/` | 2,917,070 | 3.2 MB | development |
-| `docs/` | 728,647 | 784 KB | development (design records) |
+| `tests/` | 2,924,740 | 3.2 MB | development |
+| `docs/` | 786,897 | 884 KB | development (design records) |
 | `skills/` | 51,619 | 84 KB | development (agent skill documents) |
 | `configurator/` | 60,426 | 72 KB | development (the design tool) |
 | `outputs/` | 115,452 | 164 KB | development (generated output, tracked) |
@@ -109,8 +109,8 @@ part of a deployment.
 
 | # | What | Bytes | Note |
 |---|---:|---:|---|
-| C1 | `agentshell-31344c7.tar.gz` | **345,329** (340 KB) | the compressed archive |
-| C2 | extracted | **1,400,222** (1.6 MB) | 120 files, 128 paths |
+| C1 | `agentshell-d225950.tar.gz` | **345,706** (338 KB) | the compressed archive |
+| C2 | extracted | **1,401,575** (1.6 MB) | 120 files, 128 paths |
 
 Largest files inside the archive:
 
@@ -144,8 +144,8 @@ The whole distribution is source code.
 
 | # | What | Apparent | Disk |
 |---|---|---:|---:|
-| D1 | the copy, plugins included | 61,873,821 | 71 MB |
-| D2 | the copy, plugins removed | 60,656,083 | 70 MB |
+| D1 | the copy, plugins included | 62,149,324 | 71 MB |
+| D2 | the copy, plugins removed | 60,928,188 | 70 MB |
 
 ---
 
@@ -229,8 +229,8 @@ Measured with the plugin's **own** iterator and the plugin's **own**
 exclude filter:
 
 ```
-export would carry: files=4487 bytes=61871866 (59.0 MiB)
-  of which .git:        files=2878 bytes=20382325 (19.4 MiB)
+export would carry: files=4522 bytes=62147318 (59.3 MiB)
+  of which .git:        files=2910 bytes=20584693 (19.6 MiB)
   of which .worktrees:  files=1242 bytes=34215046 (32.6 MiB)
 ```
 
@@ -290,11 +290,11 @@ carry no `.git`, `.worktrees`, `node_modules`, `vendor`, `dist` or
 
 | What | Before | After | Change |
 |---|---:|---:|---:|
-| the checkout (everything) | 61,871,866 | 61,871,866 | unchanged |
-| the checkout without `.git` and `.worktrees` | 7,274,495 | 7,274,495 | unchanged |
-| the owner's copy, plugins removed | 60,656,083 | — | **not the deployment** |
-| the release archive, compressed | 327,371 | **345,329** | +17,958 (one new class, §6.1) |
-| the release archive, extracted | 1,357,785 | **1,400,222** | +42,437 |
+| the checkout (everything) | 61,871,866 | 62,147,279 | +275,413 (the new code and the new records) |
+| the checkout without `.git` and `.worktrees` | 7,274,495 | 7,347,540 | +73,045 |
+| the owner's copy, plugins removed | 60,656,083 | 60,928,188 | **not the deployment** |
+| the release archive, compressed | 327,371 | **345,706** | +18,335 (one new class, §6.1) |
+| the release archive, extracted | 1,357,785 | **1,401,575** | +43,790 |
 | files in the release archive | 119 | **120** | +1 |
 | the runtime directories | — | — | one empty nested `.git` removed |
 
@@ -308,7 +308,7 @@ supposed to be deployed.
 
 ### 6.1 The release gained the request policy
 
-`agentshell-mcp/includes/class-browser-request-policy.php` is 42,437
+`agentshell-mcp/includes/class-browser-request-policy.php` is 43,790
 bytes and is part of the product (see the design record
 `docs/SCREENSHOT-REQUEST-POLICY.md`). It is in the archive because the
 archive is built from the revision's tree.

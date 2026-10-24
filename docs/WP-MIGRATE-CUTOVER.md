@@ -80,8 +80,8 @@ today would carry the whole development repository.
 Measured with the plugin's own iterator and its own exclude filter:
 
 ```
-export would carry: files=4487 bytes=61871866 (59.0 MiB)
-  of which .git:        files=2878 bytes=20382325 (19.4 MiB)
+export would carry: files=4522 bytes=62147318 (59.3 MiB)
+  of which .git:        files=2910 bytes=20584693 (19.6 MiB)
   of which .worktrees:  files=1242 bytes=34215046 (32.6 MiB)
 ```
 
