@@ -208,7 +208,7 @@ class Screenshot {
      *                           as the fallback), 'window' (the window path
      *                           only) or 'devtools' (the DevTools path only,
      *                           with no fallback).
-     * @return array { file, url, width, height, backend, timed_out, elapsed_ms }
+     * @return array { file, url, width, height, backend, timed_out, elapsed_ms, blocked_requests, request_policy }
      * @throws \InvalidArgumentException
      */
     public static function capture( $url, $width, $height, $dir = null, $full_page = false, $mode = 'auto', $policy = null ) {
@@ -313,6 +313,11 @@ class Screenshot {
             // meaningful next to "these were the destinations".
             'blocked_requests' => array_values( (array) ( $result['blocked'] ?? array() ) ),
             'request_policy'   => $policy->describe(),
+            // Which layer enforced the policy. `fetch` is the interception
+            // — origin-level, and it reports what it refused. `host-resolver`
+            // is the browser's resolver rules — host-level, and it reports
+            // nothing.
+            'request_policy_mechanism' => (string) ( $result['mechanism'] ?? 'fetch' ),
         );
 
         if ( $effective_width > 0 ) {
@@ -456,7 +461,12 @@ class Screenshot {
             $result             = self::run_browser( $binary, $url, $width, $height, $file, $profile, $policy );
             $result['mode']     = 'window';
             $result['viewport'] = array( 'width' => 0, 'height' => 0 );
+            // Empty, and deliberately so: this path cannot report what it
+            // refused, because it refuses at the resolver and the resolver
+            // says nothing. The mechanism is named instead, so a caller
+            // knows which guarantee it is holding.
             $result['blocked']  = array();
+            $result['mechanism'] = 'host-resolver';
             return $result;
         }
 
@@ -479,6 +489,7 @@ class Screenshot {
                 'mode'       => 'devtools',
                 'viewport'   => (array) $cdp['viewport'],
                 'blocked'    => (array) ( $cdp['blocked'] ?? array() ),
+                'mechanism'  => 'fetch',
                 'cdp_error'  => '',
             );
         }
