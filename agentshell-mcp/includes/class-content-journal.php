@@ -1139,9 +1139,39 @@ class Content_Journal {
             // was never recorded be found at all. A record missing them cannot
             // be safely resolved, and an unresolvable record must be refused —
             // never guessed at.
-            foreach ( array( 'post_type', 'post_status', 'post_name', 'op_meta_value' ) as $needed ) {
+            foreach ( array( 'post_type', 'post_status', 'op_meta_value' ) as $needed ) {
                 if ( ! isset( $op['after'][ $needed ] ) || '' === $op['after'][ $needed ] ) {
                     $problems[] = $label . ' has no after.' . $needed . ' to identify its post with';
+                }
+            }
+
+            // `post_name` is the one field of that set that a WordPress post
+            // may legitimately not have: a *draft* has no slug. WordPress
+            // names a post when it is published, so every draft in the
+            // database has an empty post_name — and a validator that
+            // demanded a non-empty one refused the whole journal for a
+            // perfectly ordinary draft. The refusal was not a near miss:
+            // the recovery engine could not interpret the journal, so a
+            // rollback could not compensate the draft, and the draft
+            // survived the rollback with the record of the debt discarded.
+            //
+            // An empty name is therefore allowed only when the operation
+            // identifies its post some other way — by its id, and by the
+            // marker the post carries. A *missing* field is still a
+            // structural fault and is still refused: a record that was never
+            // built correctly must not be interpreted, whatever else it
+            // carries. And the comparison itself stays exact: the verifier
+            // skips an empty recorded field, so a draft that was published
+            // in the meantime (and therefore has a name now) is a
+            // divergence, and still a conflict.
+            if ( ! array_key_exists( 'post_name', (array) ( $op['after'] ?? array() ) ) ) {
+                $problems[] = $label . ' has no after.post_name to identify its post with';
+            } elseif ( '' === (string) $op['after']['post_name'] ) {
+                $identifies_by_id = ! empty( $op['post_id'] )
+                    || ! empty( $op['target']['post_id'] );
+                if ( ! $identifies_by_id ) {
+                    $problems[] = $label . ' has an empty after.post_name and no post id to identify '
+                        . 'its post with';
                 }
             }
 

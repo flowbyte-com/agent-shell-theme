@@ -174,10 +174,11 @@ jobs:
         run: |
           curl -sSL -o /tmp/wp-cli.phar "https://github.com/wp-cli/wp-cli/releases/download/v${{ env.WP_CLI_VERSION }}/wp-cli-${{ env.WP_CLI_VERSION }}.phar"
           chmod +x /tmp/wp-cli.phar
+          ln -sf /tmp/wp-cli.phar /tmp/wp
           # GITHUB_PATH takes *directories*, not files, and it only affects
           # the steps that follow this one.
           echo "/tmp" >> "$GITHUB_PATH"
-          /tmp/wp-cli.phar --version --allow-root
+          /tmp/wp --version --allow-root
 
       - name: Provision the disposable environment
         env:
@@ -187,6 +188,7 @@ jobs:
           CI_DB_NAME: agentshell_ci_bed
           CI_DB_USER: agentshell_ci
           CI_MYSQL_SOCKET: /var/run/mysqld/mysqld.sock
+          CI_WP_CLI: wp
         run: |
           # setup-php does not export its binary path as an environment
           # variable, so it is resolved from the PHP on PATH.

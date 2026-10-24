@@ -98,7 +98,7 @@ die() { printf '\n[provision] FAILED: %s\n' "$*" >&2; exit 1; }
 
 # ── 0. preconditions ───────────────────────────────────────────────────────
 [ -n "$CI_PHP_BIN" ] && [ -x "$CI_PHP_BIN" ] || die "no PHP binary (set CI_PHP_BIN)"
-command -v "$CI_WP_CLI" >/dev/null 2>&1 || die "wp-cli is not available ($CI_WP_CLI)"
+command -v "$CI_WP_CLI" >/dev/null 2>&1 || die "wp-cli is not available ($CI_WP_CLI) on PATH"
 
 # wp-cli must run on the *same* PHP as the test site: the CLI needs the
 # mysqli extension to install WordPress, and the profile's `php.binary` is
