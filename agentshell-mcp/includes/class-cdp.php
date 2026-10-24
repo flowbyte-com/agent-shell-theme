@@ -36,6 +36,18 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
  * a browser: `tests/cdp-test.php` does exactly that.
  */
 class CDP {
+
+    /**
+     * The largest frame this parser will accept.
+     *
+     * A screenshot's base64 payload is the largest thing the browser
+     * sends; 32 MiB covers a full-page capture of a very tall page with
+     * room to spare, and it matches the connection's buffer cap. A frame
+     * that claims to be larger is refused: the browser does not send one,
+     * and accepting the claim would mean allocating whatever it asked
+     * for.
+     */
+    const MAX_FRAME_BYTES = 33554432;
     /** The GUID the RFC requires in the handshake's accept computation. */
     const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -110,13 +122,32 @@ class CDP {
      * bytes and try again. A frame that is not complete is left in the
      * remainder untouched.
      *
+     * ## Frame lengths are validated before they are used
+     *
+     * A frame's length is read from the wire. The 64-bit form is eight
+     * bytes that may name any value up to 2^64-1, and PHP's integer is
+     * *signed* — so a length of 2^63 or more cannot be held in one at
+     * all. Casting it produced a negative number, and a negative length
+     * then passed the "is the frame complete?" test (a positive number
+     * is never less than a negative one), moved the cursor backwards, and
+     * left the parser reading before the start of the buffer. PHP warned
+     * about the negative offsets, and those warnings are printed into the
+     * response body — which, for the MCP transport, is the JSON-RPC
+     * stream.
+     *
+     * So the length is now read as two unsigned 32-bit halves, checked
+     * against the safe-integer range and against MAX_FRAME_BYTES *before*
+     * it becomes an offset, and a length that fails either test ends the
+     * parse with a controlled error instead of a warning.
+     *
      * @param string $buffer The bytes read so far.
-     * @return array{messages:array<int,array{opcode:int,payload:string,fin:bool}>,rest:string}
+     * @return array{messages:array<int,array{opcode:int,payload:string,fin:bool}>,rest:string,error:string}
      */
     public static function parse_frames( $buffer ) {
         $messages = array();
         $offset   = 0;
         $length   = strlen( $buffer );
+        $error    = '';
 
         while ( true ) {
             if ( $length - $offset < 2 ) {
@@ -138,11 +169,39 @@ class CDP {
                 $cursor        += 2;
             } elseif ( 127 === $length_bits ) {
                 if ( $length - $cursor < 8 ) {
+                    // The extended length is not here yet. This is an
+                    // incomplete frame, not an invalid one: the caller
+                    // reads more and tries again.
                     break;
                 }
-                $parts = unpack( 'J', substr( $buffer, $cursor, 8 ) );
-                $payload_length = (int) $parts[1];
-                $cursor        += 8;
+                // Two unsigned 32-bit halves, big endian, read apart so
+                // that no cast through a signed 64-bit integer can lose
+                // the high bit.
+                $halves = unpack( 'N2', substr( $buffer, $cursor, 8 ) );
+                $high   = (int) $halves[1];
+                $low    = (int) $halves[2];
+                $cursor += 8;
+
+                if ( $high > 0x1FFFFF ) {
+                    // 0x1FFFFF * 2^32 + 0xFFFFFFFF is 2^53-1, the largest
+                    // integer that survives a round trip through a double
+                    // and is therefore the largest this parser will
+                    // consider. Anything above it is refused rather than
+                    // truncated.
+                    $error    = 'the frame declares a length above the safe integer range';
+                    $messages = array();
+                    $offset   = $length;
+                    break;
+                }
+                $payload_length = ( $high * 4294967296 ) + $low;
+
+                if ( $payload_length > self::MAX_FRAME_BYTES ) {
+                    $error    = 'the frame declares a length of ' . $payload_length
+                        . ' bytes, which is more than the ' . self::MAX_FRAME_BYTES . ' byte maximum';
+                    $messages = array();
+                    $offset   = $length;
+                    break;
+                }
             } else {
                 $payload_length = $length_bits;
             }
@@ -181,6 +240,7 @@ class CDP {
         return array(
             'messages' => $messages,
             'rest'     => substr( $buffer, $offset ),
+            'error'    => $error,
         );
     }
 
@@ -334,6 +394,23 @@ class CDP_Connection {
     }
 
     /**
+     * The reason the last read failed, when it failed for a reason of its
+     * own rather than by timing out.
+     *
+     * @var string
+     */
+    private $error = '';
+
+    /**
+     * The reason the last read failed.
+     *
+     * @return string The reason, or '' when the last read merely timed out.
+     */
+    public function error() {
+        return $this->error;
+    }
+
+    /**
      * Close the connection.
      */
     public function close() {
@@ -409,6 +486,14 @@ class CDP_Connection {
 
             $parsed = CDP::parse_frames( $this->buffer );
             $this->buffer = $parsed['rest'];
+            if ( ! empty( $parsed['error'] ) ) {
+                // A frame the parser refused. The buffer is dropped, the
+                // reason is remembered, and the caller gets a controlled
+                // failure instead of a warning on the wire.
+                $this->buffer = '';
+                $this->error  = 'the browser sent a frame this client cannot read: ' . $parsed['error'];
+                return null;
+            }
             foreach ( $parsed['messages'] as $frame ) {
                 if ( 8 === $frame['opcode'] ) {
                     return null; // the peer closed
@@ -453,7 +538,15 @@ class CDP_Connection {
             if ( null === $message ) {
                 $message = $this->read( max( 0.1, $deadline - microtime( true ) ) );
                 if ( null === $message ) {
-                    return array( 'ok' => false, 'result' => array(), 'error' => 'the command timed out' );
+                    // A refusal by the parser is not a timeout: it has a
+                    // reason, and saying "timed out" would send the caller
+                    // looking in the wrong place.
+                    $reason = $this->error();
+                    return array(
+                        'ok'     => false,
+                        'result' => array(),
+                        'error'  => '' !== $reason ? $reason : 'the command timed out',
+                    );
                 }
                 if ( ! isset( $message['id'] ) || (int) $message['id'] !== $id ) {
                     // An event, not our answer. It goes to the event queue,
