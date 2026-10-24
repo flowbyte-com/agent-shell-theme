@@ -228,6 +228,7 @@ file_put_contents(
     . '$name = isset( $_GET["s"] ) ? (string) $_GET["s"] : "";' . "\n"
     . '$secret = getenv( "SRP_SECRET_URL" );' . "\n"
     . '$ipv6 = getenv( "SRP_SECRET_IPV6_URL" );' . "\n"
+    . '$localhost = getenv( "SRP_SECRET_LOCALHOST_URL" );' . "\n"
     . 'file_put_contents( getenv( "SRP_SITE_LOG" ), $_SERVER["REQUEST_URI"] . "\n", FILE_APPEND );' . "\n"
     . 'if ( "/asset.png" === $_SERVER["REQUEST_URI"] ) { header( "Content-Type: image/png" ); echo base64_decode( "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" ); return; }' . "\n"
     . 'if ( "redirect302" === $name ) { header( "Location: " . $secret, true, 302 ); echo "redirecting"; return; }' . "\n"
@@ -250,6 +251,8 @@ file_put_contents(
     . '  echo "<iframe src=\"" . $secret . "\"></iframe>";'
     . '  echo "<script src=\"" . $secret . "\"></script>";'
     . '  echo "<script>fetch(" . json_encode( $secret ) . ");</script>";'
+    . '  echo "<script>navigator.sendBeacon(" . json_encode( $secret ) . ");</script>";'
+    . '  echo "<img src=\"" . $localhost . "\" alt=\"\">";'
     . '  return; }' . "\n"
     . 'if ( "offsite" === $name ) {'
     . '  echo "<img src=\"http://169.254.169.254/latest/meta-data/\" alt=\"\">";'
@@ -278,6 +281,8 @@ $site = srp_start_server(
         'SRP_SITE_LOG'      => $site_log,
         'SRP_SECRET_URL'    => $secret_url,
         'SRP_SECRET_IPV6_URL' => 'http://[::1]:' . $secret_port . '/secret.php',
+        // The same destination under another name for the same machine.
+        'SRP_SECRET_LOCALHOST_URL' => 'http://localhost:' . $secret_port . '/secret.php',
     )
 );
 
@@ -418,17 +423,24 @@ Agentshell_Test::run(
 
         $blocked = (array) ( $out['blocked'] ?? array() );
         Agentshell_Test::assert_equals(
-            4,
+            6,
             count( $blocked ),
-            'all four requests must be refused and reported: ' . json_encode( $blocked )
+            'all six requests must be refused and reported: ' . json_encode( $blocked )
         );
+        $hosts = array();
         foreach ( $blocked as $violation ) {
-            Agentshell_Test::assert_equals(
-                '127.0.0.1',
-                (string) ( $violation['host'] ?? '' ),
-                'the refused destination must be named: ' . json_encode( $violation )
-            );
+            $hosts[] = (string) ( $violation['host'] ?? '' );
         }
+        sort( $hosts );
+        // Five of them name the destination by its address; the sixth
+        // names it by the other name for the same machine. Both are
+        // refused, and the difference between them is exactly the
+        // difference between a host rule and an origin rule.
+        Agentshell_Test::assert_equals(
+            array( '127.0.0.1', '127.0.0.1', '127.0.0.1', '127.0.0.1', '127.0.0.1', 'localhost' ),
+            $hosts,
+            'every refused destination must be named: ' . json_encode( $blocked )
+        );
         // The capture itself still succeeds: the page is the site's own.
         Agentshell_Test::assert_true(
             ! empty( $out['ok'] ),
