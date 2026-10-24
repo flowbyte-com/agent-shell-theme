@@ -460,3 +460,88 @@ if ( null === $GLOBALS['_agentshell_test_uploads_previous'] ) {
     $GLOBALS['_agentshell_test_uploads'] = $GLOBALS['_agentshell_test_uploads_previous'];
 }
 unset( $GLOBALS['_agentshell_test_uploads_previous'] );
+
+// ── 8. the doctor distinguishes a staged stylesheet from a missing one ────
+//
+// The independent review of PR #16 found that the doctor reported
+// CUSTOM_CSS_ASSET_MISSING for every *staged* stylesheet. A staged
+// stylesheet is deliberately not materialised — writing it to a file would
+// publish uncommitted work — so the warning fired on every legitimate
+// staged change, and an agent reading the doctor learned to ignore it.
+//
+// The check is about the live site: what the file serves is the committed
+// stylesheet. A missing *committed* stylesheet is still a real finding
+// and is still reported.
+Agentshell_Test::run(
+    'the doctor does not report a staged stylesheet as a missing asset',
+    function () {
+        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-doctor.php';
+        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-store.php';
+        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-custom-css-asset.php';
+
+        // The doctor reads the WordPress version; the unit bootstrap does
+        // not define one, and the check would otherwise warn about it.
+        global $wp_version;
+        if ( ! isset( $wp_version ) || '' === (string) $wp_version ) {
+            $wp_version = '6.8';
+        }
+
+        // A committed configuration with no stylesheet at all.
+        agentshell_test_reset();
+        update_option( 'agentshell_config', array( 'zones' => array(), 'design' => array() ) );
+
+        // The staged configuration carries a stylesheet that has
+        // deliberately not been materialised.
+        $staged = array(
+            'zones'      => array(),
+            'design'     => array(),
+            'custom_css' => 'body { color: #abcdef; }',
+        );
+
+        $issues = \AgentShell_MCP\Doctor::check( $staged );
+        $codes  = array();
+        foreach ( (array) ( $issues['warnings'] ?? array() ) as $warning ) {
+            $codes[] = (string) ( $warning['code'] ?? '' );
+        }
+        Agentshell_Test::assert_false(
+            in_array( 'CUSTOM_CSS_ASSET_MISSING', $codes, true ),
+            'a staged stylesheet must not be reported as a missing asset: ' . json_encode( $codes )
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'the doctor still reports a committed stylesheet that was never materialised',
+    function () {
+        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-doctor.php';
+        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-store.php';
+        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-custom-css-asset.php';
+
+        // The doctor reads the WordPress version; the unit bootstrap does
+        // not define one, and the check would otherwise warn about it.
+        global $wp_version;
+        if ( ! isset( $wp_version ) || '' === (string) $wp_version ) {
+            $wp_version = '6.8';
+        }
+
+        // The committed configuration carries a stylesheet, and no file
+        // was written for it. That is a real finding and must survive.
+        agentshell_test_reset();
+        cca_clean();
+        update_option( 'agentshell_config', array(
+            'zones'      => array(),
+            'design'     => array(),
+            'custom_css' => 'body { color: #123456; }',
+        ) );
+
+        $issues = \AgentShell_MCP\Doctor::check( get_option( 'agentshell_config', array() ) );
+        $codes  = array();
+        foreach ( (array) ( $issues['warnings'] ?? array() ) as $warning ) {
+            $codes[] = (string) ( $warning['code'] ?? '' );
+        }
+        Agentshell_Test::assert_true(
+            in_array( 'CUSTOM_CSS_ASSET_MISSING', $codes, true ),
+            'a committed stylesheet with no file must still be reported: ' . json_encode( $codes )
+        );
+    }
+);

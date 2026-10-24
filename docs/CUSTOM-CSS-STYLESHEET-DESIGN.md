@@ -283,10 +283,15 @@ compared honestly.
    document root, or inside a directory that the server serves with a correct
    MIME type and without executing anything". The uploads directory is inside
    the document root and is writable by the web user; the `.htaccess` in the
-   stylesheet's own subdirectory disables the PHP engine, removes the CGI
-   handlers and forbids directory listing. A site that protects its uploads
-   directory with a `deny from all` rule cannot serve the file — the doctor
-   says so, and the page inlines the stylesheet instead.
+   stylesheet's own subdirectory disables the PHP engine and removes the CGI
+   handlers, each inside the `<IfModule>` guard of the module that provides
+   it. It does **not** forbid directory listing: the directory holds only
+   content-addressed stylesheets, which every visitor can fetch anyway, and
+   `Options -Indexes` is the directive a server is most likely to refuse —
+   and a refused directive is a 500 for the whole directory. A site that
+   protects its uploads directory with a `deny from all` rule cannot serve
+   the file — the doctor says so, and the page inlines the stylesheet
+   instead.
 
 ## 8. Related records
 

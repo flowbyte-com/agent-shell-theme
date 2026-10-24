@@ -335,12 +335,24 @@ class Doctor {
         // warning, not an error. It is worth saying out loud, because
         // "the page is 200 KiB heavier than it should be" is otherwise
         // invisible.
-        if ( class_exists( '\AgentShell_MCP\Custom_CSS_Asset' ) && ! empty( $config['custom_css'] ) ) {
-            $state = \AgentShell_MCP\Custom_CSS_Asset::state( $config );
-            if ( ! empty( $state['error'] ) ) {
-                self::warn( $warnings, 'CUSTOM_CSS_ASSET_UNAVAILABLE', 'The custom stylesheet is served inline: ' . $state['error'] );
-            } elseif ( ! empty( $state['inline'] ) ) {
-                self::warn( $warnings, 'CUSTOM_CSS_ASSET_MISSING', 'The custom stylesheet has not been materialised as a file, so it is inlined into every page. The next configuration write will write it.' );
+        //
+        // The state that matters is the *committed* one. A staged
+        // stylesheet is deliberately not materialised — writing it to a
+        // file would publish uncommitted work — so asking whether the
+        // staged stylesheet has a file produced a warning on every
+        // legitimate staged change, and taught agents to ignore the
+        // doctor. The live site's stylesheet is what the file serves, so
+        // that is what is checked.
+        if ( class_exists( '\AgentShell_MCP\Custom_CSS_Asset' ) ) {
+            $committed = get_option( Store::CONFIG_KEY, array() );
+            $committed = is_array( $committed ) ? $committed : array();
+            if ( ! empty( $committed['custom_css'] ) ) {
+                $state = \AgentShell_MCP\Custom_CSS_Asset::state( $committed );
+                if ( ! empty( $state['error'] ) ) {
+                    self::warn( $warnings, 'CUSTOM_CSS_ASSET_UNAVAILABLE', 'The custom stylesheet is served inline: ' . $state['error'] );
+                } elseif ( ! empty( $state['inline'] ) ) {
+                    self::warn( $warnings, 'CUSTOM_CSS_ASSET_MISSING', 'The committed custom stylesheet has not been materialised as a file, so it is inlined into every page. The next configuration write will write it.' );
+                }
             }
         }
     }
