@@ -800,6 +800,17 @@ function agentshell_custom_css_stylesheet_url( $config = null ) {
  * without the long lifetime.
  */
 function agentshell_custom_css_htaccess() {
+    // Every directive that is not available on this server is guarded.
+    // An unguarded directive that the server does not allow is a *500 for
+    // every request to this directory* — which would take the custom
+    // stylesheet away from every page. A stylesheet that is slightly less
+    // well served is a smaller problem than one that is not served at all.
+    //
+    // Directory listing is deliberately not disabled: the directory holds
+    // nothing but content-addressed stylesheets, and those are served to
+    // every visitor anyway, so a listing of them reveals nothing. The
+    // directive that would disable it is also the one most likely to be
+    // refused by a server that does not allow Options overrides.
     $lines = array(
         '# Written by AgentShell. The custom stylesheet is a static asset.',
         '<IfModule mod_headers.c>',
@@ -807,12 +818,11 @@ function agentshell_custom_css_htaccess() {
         '</IfModule>',
         '<IfModule mod_mime.c>',
         'AddType text/css .css',
+        'RemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar',
         '</IfModule>',
-        'Options -Indexes',
         '<IfModule mod_php.c>',
         'php_flag engine off',
         '</IfModule>',
-        'RemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar',
         '',
     );
     return implode( "\n", $lines );
@@ -864,10 +874,11 @@ function agentshell_materialise_custom_css( $config = null ) {
         }
     }
 
+    // The file is written every time, not only when it is missing: it is
+    // ours, it is deterministic, and a rule that has since become wrong
+    // should not survive because it was written once.
     $htaccess = $location['dir'] . '/.htaccess';
-    if ( ! is_file( $htaccess ) ) {
-        @file_put_contents( $htaccess, agentshell_custom_css_htaccess() );
-    }
+    @file_put_contents( $htaccess, agentshell_custom_css_htaccess() );
 
     $tmp = $location['dir'] . '/.agentshell-custom-' . $hash . '.tmp';
     if ( false === @file_put_contents( $tmp, $bytes ) ) {

@@ -226,6 +226,16 @@ class CDP {
  * is queued for the caller.
  */
 class CDP_Connection {
+
+    /**
+     * The largest amount of unparsed input that is kept.
+     *
+     * A frame that has not arrived in full sits in the buffer until the
+     * rest of it does. 32 MiB is far larger than any message the
+     * browser sends for a page capture, and small enough that a runaway
+     * conversation cannot exhaust the process.
+     */
+    const MAX_BUFFER_BYTES = 33554432;
     /** @var resource|null */
     private $socket;
     /** @var string */
@@ -385,6 +395,17 @@ class CDP_Connection {
                 continue;
             }
             $this->buffer .= $chunk;
+
+            // A cap on the buffer. The peer is the browser's own DevTools
+            // endpoint, so this is not a hostile-peer measure: it is a
+            // measure against a page that makes the browser talk a lot
+            // (a console dump, a large screenshot, a chatty extension).
+            // Without a cap, a large frame that has not arrived in full
+            // grows the buffer until the process runs out of memory.
+            if ( strlen( $this->buffer ) > self::MAX_BUFFER_BYTES ) {
+                $this->buffer = '';
+                return null;
+            }
 
             $parsed = CDP::parse_frames( $this->buffer );
             $this->buffer = $parsed['rest'];

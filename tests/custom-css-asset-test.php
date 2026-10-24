@@ -188,8 +188,12 @@ Agentshell_Test::run(
             'nothing in the directory may be executed'
         );
         Agentshell_Test::assert_true(
-            false !== strpos( $raw, 'Options -Indexes' ),
-            'the directory must not be listed'
+            false === strpos( $raw, 'Options ' ),
+            'every directive that a server may refuse must be guarded: an unguarded one is a 500 for the whole directory'
+        );
+        Agentshell_Test::assert_true(
+            false !== strpos( $raw, '<IfModule mod_mime.c>' ),
+            'the MIME and handler rules must be guarded by the module that provides them'
         );
     }
 );
