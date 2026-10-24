@@ -916,6 +916,38 @@ function agentshell_test_set_user( $id, array $caps = array() ) {
     $GLOBALS['_agentshell_test_user_caps'] = $caps;
 }
 
+/**
+ * The uploads directory, for the code that materialises the custom
+ * stylesheet as a static file.
+ *
+ * The stub points at a per-process temporary directory so a suite can
+ * write, read and clean up real files without touching a real site.
+ */
+function agentshell_test_uploads_dir() {
+    $dir = sys_get_temp_dir() . '/agentshell-test-uploads-' . getmypid();
+    if ( ! is_dir( $dir ) ) {
+        @mkdir( $dir, 0755, true );
+    }
+    return $dir;
+}
+
+function wp_upload_dir( $time = null, $create_dir = true ) {
+    $dir = agentshell_test_uploads_dir();
+    return array(
+        'path'    => $dir,
+        'url'     => 'https://uploads.test/' . basename( $dir ),
+        'subdir'  => '',
+        'basedir' => $dir,
+        'baseurl' => 'https://uploads.test/' . basename( $dir ),
+        'error'   => false,
+    );
+}
+
+function wp_mkdir_p( $target ) {
+    if ( is_dir( $target ) ) { return true; }
+    return @mkdir( $target, 0755, true );
+}
+
 function agentshell_test_reset() {
     $GLOBALS['_agentshell_test_options']   = array();
     $GLOBALS['_agentshell_test_user_id']   = 0;

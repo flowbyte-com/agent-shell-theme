@@ -90,7 +90,7 @@ function vp_capture( $browser, $url, $width, $height, $full_page = false ) {
     $profile = \AgentShell_MCP\Screenshot::create_profile_dir();
     $file    = sys_get_temp_dir() . '/agentshell-vp-shot-' . getmypid() . '-' . $counter . '.png';
     try {
-        $out = Screenshot_CDP::capture( $browser, $url, $width, $height, $file, $profile, 60, $full_page );
+        $out = Screenshot_CDP::capture( $browser, $url, $width, $height, $file, $profile, 25, $full_page );
     } finally {
         \AgentShell_MCP\Screenshot::destroy_profile_dir( $profile );
     }

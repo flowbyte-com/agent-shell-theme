@@ -448,6 +448,12 @@ $suites = array(
     // refused) and the byte-not-character measurement are pinned here.
     // Non-destructive unit suite.
     'custom-css-limit'      => __DIR__ . '/custom-css-limit-test.php',
+    // The custom stylesheet as a static, cacheable file: the file's bytes
+    // and the inline block's bytes are the same string, the URL changes
+    // exactly when the content changes, a materialisation failure leaves
+    // the site rendering inline, and the pruning touches nothing but this
+    // feature's own old files. Non-destructive unit suite.
+    'custom-css-asset'      => __DIR__ . '/custom-css-asset-test.php',
     // HAL 9001 remediation regression: the saved-configuration token
     // block is CSS, not HTML. It was emitted with esc_attr() — the HTML
     // attribute escaper — inside a <style> element, where entities are
@@ -519,6 +525,12 @@ $suites = array(
     // refused setting changes nothing. Destructive: it writes the site's
     // own options (and restores them).
     'site-settings-live'  => __DIR__ . '/site-settings-live-test.php',
+    // The custom stylesheet as a static file, against a real WordPress: a
+    // staged stylesheet never reaches a file, the preview inlines it, a
+    // commit materialises it with the same bytes the inline block would
+    // have carried, and a snapshot restore re-materialises. Destructive:
+    // it writes the site's own configuration (and restores it).
+    'custom-css-asset-live' => __DIR__ . '/custom-css-asset-live-test.php',
     // Reversible content deletion against a real WordPress: the content
     // reaches the Trash and not the bin, a restore brings it back, both
     // operations are idempotent, and every refusal leaves the content

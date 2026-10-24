@@ -44,6 +44,7 @@ require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-shadow.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-preview-overlay.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-site-settings.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content-trash.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-custom-css-asset.php';
 \AgentShell_MCP\Transaction_Manager::instance();
 
 // Stage 2c Commit 2 — published-content preview overlay. Hooks init
@@ -251,6 +252,12 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
      * @param mixed $value      The configuration being written.
      */
     add_action( 'update_option_agentshell_config', array( 'AgentShell_MCP\Site_Settings', 'project' ), 10, 2 );
+    // The custom stylesheet is materialised as a static file after every
+    // *committed* configuration write. A staged write never reaches this
+    // hook: WordPress skips the write while a transaction is open, so an
+    // uncommitted stylesheet is never written to a file and never
+    // published to anyone who guesses the URL.
+    add_action( 'update_option_agentshell_config', array( 'AgentShell_MCP\Custom_CSS_Asset', 'project' ), 20, 2 );
 
     /**
      * The same projection when the configuration option is created rather

@@ -123,9 +123,25 @@ class Screenshot_CDP {
                 return $result;
             }
 
-            $connection = CDP_Connection::open( '127.0.0.1', $port, $path, min( 10.0, $timeout ) );
+            // The browser's DevTools server can refuse the first
+            // connection while it is still initialising: the HTTP
+            // endpoint answers before the WebSocket endpoint is ready.
+            // A few attempts, a moment apart, turn a race into a
+            // non-event.
+            $connection = null;
+            $diagnostic = '';
+            $attempts   = 0;
+            $deadline   = microtime( true ) + max( 5.0, min( 20.0, $timeout ) );
+            while ( ! $connection && microtime( true ) < $deadline && $attempts < 6 ) {
+                $attempts++;
+                $connection = CDP_Connection::open( '127.0.0.1', $port, $path, min( 10.0, $timeout ), $diagnostic );
+                if ( ! $connection ) {
+                    usleep( 500000 );
+                }
+            }
             if ( ! $connection ) {
-                $result['error'] = 'the DevTools connection could not be opened';
+                $result['error'] = 'the DevTools connection could not be opened'
+                    . ( '' !== $diagnostic ? ' (' . $diagnostic . ')' : '' );
                 return $result;
             }
 
@@ -146,11 +162,40 @@ class Screenshot_CDP {
                 \AgentShell_MCP\Screenshot::kill_browser_process_group( $handle );
                 @proc_close( $handle );
             }
+            // When the capture failed, the browser's own words about why
+            // are the most useful thing there is. They are reported with
+            // every URL removed: the browser's log may name the URL it
+            // was asked to open, and that URL may carry a preview
+            // credential.
+            if ( ! empty( $result['error'] ) ) {
+                $excerpt = self::log_excerpt( $log );
+                if ( '' !== $excerpt ) {
+                    $result['error'] .= ': ' . $excerpt;
+                }
+            }
             @unlink( $log );
         }
 
         $result['elapsed_ms'] = (int) round( ( microtime( true ) - $started ) * 1000 );
         return $result;
+    }
+
+    /**
+     * The browser's own explanation, with every URL removed.
+     *
+     * @param string $log The browser's log file.
+     * @return string A short excerpt, or '' when there is nothing to say.
+     */
+    private static function log_excerpt( $log ) {
+        if ( ! is_file( $log ) ) { return ''; }
+        $raw = (string) @file_get_contents( $log );
+        if ( '' === trim( $raw ) ) { return ''; }
+        // Any URL is replaced: the browser was asked to open one, and it
+        // may carry a credential.
+        $raw = preg_replace( '#https?://\S+#i', '<url>', $raw );
+        $raw = trim( (string) preg_replace( '/\s+/', ' ', $raw ) );
+        if ( '' === $raw ) { return ''; }
+        return substr( $raw, 0, 300 );
     }
 
     /**

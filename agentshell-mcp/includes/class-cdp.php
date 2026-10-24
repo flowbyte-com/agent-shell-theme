@@ -255,7 +255,7 @@ class CDP_Connection {
      * @param float  $timeout The connect/read timeout in seconds.
      * @return CDP_Connection|null
      */
-    public static function open( $host, $port, $path, $timeout = 10.0 ) {
+    public static function open( $host, $port, $path, $timeout = 10.0, &$diagnostic = null ) {
         $errno  = 0;
         $errstr = '';
         $socket = @stream_socket_client(
@@ -266,6 +266,7 @@ class CDP_Connection {
             STREAM_CLIENT_CONNECT
         );
         if ( ! $socket ) {
+            $diagnostic = 'the connection was refused or timed out';
             return null;
         }
         $seconds      = (int) floor( $timeout );
@@ -280,6 +281,7 @@ class CDP_Connection {
         while ( false === strpos( $response, "\r\n\r\n" ) ) {
             if ( microtime( true ) > $deadline ) {
                 fclose( $socket );
+                $diagnostic = 'the handshake response did not arrive';
                 return null;
             }
             $chunk = @fread( $socket, 4096 );
@@ -287,6 +289,7 @@ class CDP_Connection {
                 $meta = stream_get_meta_data( $socket );
                 if ( ! empty( $meta['timed_out'] ) || feof( $socket ) ) {
                     fclose( $socket );
+                    $diagnostic = 'the connection was closed before the handshake completed';
                     return null;
                 }
                 continue;
@@ -294,19 +297,26 @@ class CDP_Connection {
             $response .= $chunk;
             if ( strlen( $response ) > 65536 ) {
                 fclose( $socket );
+                $diagnostic = 'the handshake response was implausibly large';
                 return null;
             }
         }
 
         list( $head, $rest ) = explode( "\r\n\r\n", $response, 2 );
+
+        // The status line, and nothing else: it says why the server said
+        // no, and it carries no URL, so it is safe to report.
+        $status = trim( strtok( $head, "\r\n" ) );
         if ( false === stripos( $head, ' 101 ' ) ) {
             fclose( $socket );
+            $diagnostic = 'the server answered: ' . ( '' !== $status ? $status : 'an unreadable status line' );
             return null;
         }
         if ( false === stripos( $head, CDP::expected_accept( $key ) ) ) {
             // The accept hash did not match: this is not the endpoint we
             // think it is. Refuse rather than talk to it.
             fclose( $socket );
+            $diagnostic = 'the server accepted the connection with the wrong accept hash';
             return null;
         }
 

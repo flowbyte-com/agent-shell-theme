@@ -329,6 +329,20 @@ class Doctor {
         if ( ! empty( $config['custom_css'] ) && substr_count( $config['custom_css'], '{' ) !== substr_count( $config['custom_css'], '}' ) ) {
             self::warn( $warnings, 'CUSTOM_CSS_UNBALANCED', 'custom_css has unbalanced braces.' );
         }
+
+        // The materialised stylesheet. When it is missing the site still
+        // renders — the stylesheet is inlined instead — so this is a
+        // warning, not an error. It is worth saying out loud, because
+        // "the page is 200 KiB heavier than it should be" is otherwise
+        // invisible.
+        if ( class_exists( '\AgentShell_MCP\Custom_CSS_Asset' ) && ! empty( $config['custom_css'] ) ) {
+            $state = \AgentShell_MCP\Custom_CSS_Asset::state( $config );
+            if ( ! empty( $state['error'] ) ) {
+                self::warn( $warnings, 'CUSTOM_CSS_ASSET_UNAVAILABLE', 'The custom stylesheet is served inline: ' . $state['error'] );
+            } elseif ( ! empty( $state['inline'] ) ) {
+                self::warn( $warnings, 'CUSTOM_CSS_ASSET_MISSING', 'The custom stylesheet has not been materialised as a file, so it is inlined into every page. The next configuration write will write it.' );
+            }
+        }
     }
 
     // ── Auth configuration ───────────────────────────────────────
