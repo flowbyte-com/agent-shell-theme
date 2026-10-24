@@ -201,7 +201,11 @@ jobs:
           AGENTSHELL_TEST_BED_CONFIG: ${{ github.workspace }}/tests/config/test-bed-ci.json
         run: |
           set -o pipefail
-          php tests/run-all.php 2>&1 | tee integration-suite.log
+          # The log is written *outside* the checkout. The suite ends with
+          # a checkout-integrity check, and a log file created inside the
+          # repository while the suite runs is exactly the kind of change
+          # that check exists to report.
+          php tests/run-all.php 2>&1 | tee "${{ runner.temp }}/integration-suite.log"
 
       # The profile holds a password for a database that exists only for
       # the length of this job. It is still a credential, so it is not
@@ -209,4 +213,4 @@ jobs:
       # either.
       - name: Remove the generated profile and the log
         if: always()
-        run: rm -f "${{ github.workspace }}/tests/config/test-bed-ci.json" "${{ github.workspace }}/integration-suite.log"
+        run: rm -f "${{ github.workspace }}/tests/config/test-bed-ci.json" "${{ runner.temp }}/integration-suite.log"
