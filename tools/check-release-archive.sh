@@ -68,6 +68,9 @@ fail() { printf '[check] FAILED: %s\n' "$*" >&2; FAILURES=$((FAILURES + 1)); }
 
 # ── the required set ───────────────────────────────────────────────────────
 REQUIRED=(
+    # A deployment that does not carry the licence is not a compliant
+    # distribution of an AGPL-licensed work.
+    "LICENSE"
     "style.css"
     "functions.php"
     "header.php"

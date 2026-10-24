@@ -118,6 +118,23 @@ Agentshell_Test::run(
         exec( 'tar -tzf ' . escapeshellarg( $archives[0] ), $listing );
         $text = implode( "\n", $listing );
 
+        // The licence travels with the work: the GNU Affero General
+        // Public License v3 requires that a copy of the licence
+        // accompanies every copy of the work, and the release archive is
+        // a copy of the work. An archive without it is not a compliant
+        // distribution.
+        $listing = array();
+        exec( 'tar -tzf ' . escapeshellarg( $archives[0] ), $listing );
+        Agentshell_Test::assert_true(
+            in_array( 'agentshell/LICENSE', $listing, true ),
+            'the archive must carry the licence'
+        );
+        $head = '';
+        foreach ( $listing as $entry ) {
+            if ( 'agentshell/LICENSE' === $entry ) { $head = $entry; break; }
+        }
+        Agentshell_Test::assert_true( '' !== $head, 'the archive must carry the licence' );
+
         // The product is in it.
         foreach ( array(
             'style.css',
