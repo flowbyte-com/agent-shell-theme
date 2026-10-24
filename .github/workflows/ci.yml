@@ -174,7 +174,9 @@ jobs:
         run: |
           curl -sSL -o /tmp/wp-cli.phar https://github.com/wp-cli/wp-cli/releases/download/${{ env.WP_CLI_VERSION }}/wp-cli-${{ env.WP_CLI_VERSION }}.phar
           chmod +x /tmp/wp-cli.phar
-          echo "/tmp/wp-cli.phar" >> "$GITHUB_PATH"
+          # GITHUB_PATH takes *directories*, not files.
+          echo "/tmp" >> "$GITHUB_PATH"
+          wp --version --allow-root
 
       - name: Provision the disposable environment
         env:

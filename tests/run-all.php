@@ -478,6 +478,9 @@ $suites = array(
     // statement is a build failure, not a surprise for whoever reads
     // the file next.
     'doc-consistency'     => __DIR__ . '/doc-consistency-test.php',
+    // Site identity and reading settings: the bounded surface, its
+    // validation, and the projection onto WordPress's own options.
+    'site-settings'       => __DIR__ . '/site-settings-test.php',
     // HAL 9001 remediation regression: the published-edit field
     // preservation contract. A partial edit must inherit every field the
     // caller did not name (title, slug, excerpt) instead of blanking it,
@@ -506,6 +509,11 @@ $suites = array(
     // the failure is deterministic. Destructive live: gated on the
     // same fail-closed check the other destructive suites use.
     'agentshell-test-bed-preflight-live' => __DIR__ . '/agentshell-test-bed-preflight-live-test.php',
+    // Site settings against a real WordPress: a staged setting does not
+    // reach the live site, a commit applies it, a rollback does not, and a
+    // refused setting changes nothing. Destructive: it writes the site's
+    // own options (and restores them).
+    'site-settings-live'  => __DIR__ . '/site-settings-live-test.php',
     // audit_written contract regression: the
     // `reconciliation.audit_written` field is now an honest,
     // independently-verified boolean response. Covers the
@@ -550,6 +558,7 @@ $destructive_live_suites = array(
     'edit-published-preservation-live',
     'published-preview-live',
     'agentshell-test-bed-preflight-live',
+    'site-settings-live',
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );

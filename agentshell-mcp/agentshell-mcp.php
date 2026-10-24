@@ -40,6 +40,7 @@ require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-post-preview.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-claim.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-shadow.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-preview-overlay.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-site-settings.php';
 \AgentShell_MCP\Transaction_Manager::instance();
 
 // Stage 2c Commit 2 — published-content preview overlay. Hooks init
@@ -79,6 +80,8 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-update-zone-slots.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-set-layout.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-get-site-info.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-get-site-settings.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-set-site-settings.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-inject-json-block.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-update-post-content.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-list-widgets.php';
@@ -150,6 +153,8 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     $tools[] = new AgentShell_MCP\Tools\Update_Zone_Slots();
     $tools[] = new AgentShell_MCP\Tools\Set_Layout();
     $tools[] = new AgentShell_MCP\Tools\Get_Site_Info();
+    $tools[] = new AgentShell_MCP\Tools\Get_Site_Settings();
+    $tools[] = new AgentShell_MCP\Tools\Set_Site_Settings();
     $tools[] = new AgentShell_MCP\Tools\Inject_Json_Block();
     $tools[] = new AgentShell_MCP\Tools\Update_Post_Content();
 
@@ -226,6 +231,29 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     return $tools;
 }, 5 );
 
+    /**
+     * Project the configuration's site settings onto WordPress's own options.
+     *
+     * The action fires only when the configuration is really written. A
+     * write that a transaction intercepts returns the old value to
+     * WordPress, which skips the write — so a *staged* site setting never
+     * reaches the live options, and only a commit (or an immediate write
+     * with no transaction open) projects them.
+     *
+     * @param mixed $old_value The previous configuration.
+     * @param mixed $value      The configuration being written.
+     */
+    add_action( 'update_option_agentshell_config', array( 'AgentShell_MCP\Site_Settings', 'project' ), 10, 2 );
+
+    /**
+     * The same projection when the configuration option is created rather
+     * than updated.
+     *
+     * @param string $option The option name.
+     * @param mixed  $value  The value being written.
+     */
+    add_action( 'added_option_agentshell_config', array( 'AgentShell_MCP\Site_Settings', 'project_added' ), 10, 2 );
+
 /**
  * agentshell_mcp_execute_tool
  *
@@ -235,8 +263,7 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
  * @param string $tool_name
  * @param array  $arguments
  * @return array
- */
-add_filter( 'agentshell_mcp_execute_tool', function( $response, $tool_name, $arguments ) {
+ */add_filter( 'agentshell_mcp_execute_tool', function( $response, $tool_name, $arguments ) {
     return $response;
 }, 10, 3 );
 
