@@ -880,10 +880,35 @@ function agentshell_materialise_custom_css( $config = null ) {
     $htaccess = $location['dir'] . '/.htaccess';
     @file_put_contents( $htaccess, agentshell_custom_css_htaccess() );
 
-    $tmp = $location['dir'] . '/.agentshell-custom-' . $hash . '.tmp';
-    if ( false === @file_put_contents( $tmp, $bytes ) ) {
+    // The temporary file is created exclusively and under a name nothing
+    // can predict.
+    //
+    // The name used to be derived from the hash of the bytes being
+    // written, which is also the name of the file the stylesheet is
+    // served under — so it was public. A file placed at that path before
+    // the write (a symbolic link, say) would be *followed* by the write,
+    // and the stylesheet's bytes would land in whatever it pointed at.
+    // The independent review of PR #16 reproduced that: a symbolic link
+    // in the uploads directory turned "write the stylesheet" into "write
+    // to any file the web user can write".
+    //
+    // Random_bytes(16) makes the path unguessable, and fopen() in 'x'
+    // mode fails rather than following anything that is already there.
+    $tmp = $location['dir'] . '/.agentshell-custom-' . bin2hex( random_bytes( 16 ) ) . '.tmp';
+    $handle = @fopen( $tmp, 'x' );
+    if ( false === $handle ) {
+        return array( 'url' => '', 'hash' => $hash, 'path' => $path, 'error' => 'cannot create a temporary file in ' . $location['dir'] );
+    }
+    $written = false;
+    try {
+        $bytes_written = @fwrite( $handle, $bytes );
+        $written = ( false !== $bytes_written && (int) $bytes_written === strlen( $bytes ) );
+    } finally {
+        @fclose( $handle );
+    }
+    if ( ! $written ) {
         @unlink( $tmp );
-        return array( 'url' => '', 'hash' => $hash, 'path' => $path, 'error' => 'cannot write ' . $tmp );
+        return array( 'url' => '', 'hash' => $hash, 'path' => $path, 'error' => 'cannot write ' . strlen( $bytes ) . ' bytes to a temporary file' );
     }
     @chmod( $tmp, 0644 );
     if ( ! @rename( $tmp, $path ) ) {

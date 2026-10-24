@@ -274,7 +274,138 @@ Agentshell_Test::run(
     }
 );
 
-// ── 6. pruning touches nothing but this feature's own old files ─────────
+// ── 6. the temporary file cannot be hijacked ──────────────────────────────
+//
+// The independent review of PR #16 found that the stylesheet was written
+// to a temporary file whose name was derived from the hash of the bytes
+// being written — which is also the name of the file the stylesheet is
+// served under, so the path was public. A symbolic link placed at that
+// path before the write was *followed* by it, and the stylesheet's bytes
+// landed in whatever it pointed at.
+//
+// The fixture here is a file in the test's own temporary directory. It is
+// disposable by construction and it is never anything that matters.
+Agentshell_Test::run(
+    'a symlink at the predictable temporary path cannot redirect the stylesheet',
+    function () {
+        cca_seed( 'body { color: red; }' );
+
+        $bytes = agentshell_custom_css_bytes( 'body { color: red; }' );
+        $hash  = agentshell_custom_css_hash( $bytes );
+        $dir   = cca_uploads_dir() . '/agentshell-css';
+        @mkdir( $dir, 0755, true );
+
+        // The path the old implementation used, and the one a reader of
+        // the served URL could name.
+        $predictable = $dir . '/.agentshell-custom-' . $hash . '.tmp';
+
+        // The disposable victim: a file in the test's own temporary
+        // directory whose contents must not change.
+        $victim = sys_get_temp_dir() . '/agentshell-cca-victim-' . getmypid() . '.txt';
+        file_put_contents( $victim, "this file must not be touched\n" );
+
+        @unlink( $predictable );
+        symlink( $victim, $predictable );
+
+        $result = agentshell_materialise_custom_css();
+
+        $contents = (string) @file_get_contents( $victim );
+        @unlink( $victim );
+        @unlink( $predictable );
+
+        Agentshell_Test::assert_equals(
+            "this file must not be touched\n",
+            $contents,
+            'the stylesheet must not be written through a symlink into another file'
+        );
+        Agentshell_Test::assert_equals(
+            '',
+            (string) $result['error'],
+            'the materialisation must still succeed: ' . (string) $result['error']
+        );
+        Agentshell_Test::assert_true(
+            is_file( $result['path'] ),
+            'the stylesheet must still be published at its content-addressed name'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'the temporary file is created exclusively and is gone when the write fails',
+    function () {
+        cca_seed( 'body { color: red; }' );
+
+        // A directory that cannot be written to: the write must fail,
+        // and it must leave nothing behind.
+        $dir = cca_uploads_dir() . '/agentshell-css';
+        if ( is_dir( $dir ) ) {
+            foreach ( (array) scandir( $dir ) as $entry ) {
+                if ( '.' === $entry || '..' === $entry ) { continue; }
+                @unlink( $dir . '/' . $entry );
+            }
+            @rmdir( $dir );
+        }
+        @mkdir( $dir, 0500, true );
+
+        $result = agentshell_materialise_custom_css();
+        @chmod( $dir, 0755 );
+
+        Agentshell_Test::assert_true(
+            '' !== (string) $result['error'],
+            'the failure must be reported'
+        );
+        Agentshell_Test::assert_equals( '', $result['url'], 'a failed materialisation must not report a URL' );
+
+        $left = is_dir( $dir ) ? array_values( array_diff( (array) scandir( $dir ), array( '.', '..' ) ) ) : array();
+        Agentshell_Test::assert_equals(
+            0,
+            count( $left ),
+            'a failed write must leave no temporary file behind: ' . json_encode( $left )
+        );
+        @rmdir( $dir );
+    }
+);
+
+Agentshell_Test::run(
+    'the published stylesheet is readable and not executable',
+    function () {
+        cca_seed( 'body { color: red; }' );
+        $result = agentshell_materialise_custom_css();
+        Agentshell_Test::assert_true( is_file( $result['path'] ), 'the stylesheet must exist' );
+
+        $mode = fileperms( $result['path'] ) & 0777;
+        Agentshell_Test::assert_true(
+            (bool) ( $mode & 0444 ),
+            sprintf( 'the stylesheet must be readable (mode %o)', $mode )
+        );
+        Agentshell_Test::assert_true(
+            ! ( $mode & 0111 ),
+            sprintf( 'the stylesheet must not be executable (mode %o)', $mode )
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'two materialisations of the same stylesheet agree',
+    function () {
+        // Concurrency: two writers, the same bytes, the same
+        // content-addressed name. The second writer's temporary file has a
+        // different name, so the two cannot collide, and the published
+        // file is the same either way.
+        cca_seed( 'body { color: red; }' );
+        $first  = agentshell_materialise_custom_css();
+        $second = agentshell_materialise_custom_css();
+        Agentshell_Test::assert_equals( $first['url'], $second['url'], 'both writers must name the same file' );
+        Agentshell_Test::assert_equals( $first['path'], $second['path'], 'both writers must publish to the same path' );
+        Agentshell_Test::assert_equals(
+            agentshell_custom_css_bytes( 'body { color: red; }' ),
+            (string) file_get_contents( $first['path'] ),
+            'the published bytes must be the stylesheet'
+        );
+    }
+);
+
+// ── 7. pruning touches nothing but this feature's own old files ─────────
 Agentshell_Test::run(
     'pruning removes only this feature\'s own old files, and nothing else',
     function () {
