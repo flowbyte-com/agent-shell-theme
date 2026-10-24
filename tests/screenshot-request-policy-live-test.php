@@ -245,6 +245,17 @@ file_put_contents(
     . 'if ( "private" === $name ) { echo "<img src=\"http://10.0.0.1/\" alt=\"\">"; return; }' . "\n"
     . 'if ( "public" === $name ) { echo "<iframe src=\"https://example.com/\"></iframe>"; return; }' . "\n"
     . 'if ( "asset" === $name ) { echo "<img src=\"/asset.png\" alt=\"\"><p>the site\'s own asset</p>"; return; }' . "\n"
+    . 'if ( "subresources" === $name ) {'
+    . '  echo "<img src=\"" . $secret . "\" alt=\"\">";'
+    . '  echo "<iframe src=\"" . $secret . "\"></iframe>";'
+    . '  echo "<script src=\"" . $secret . "\"></script>";'
+    . '  echo "<script>fetch(" . json_encode( $secret ) . ");</script>";'
+    . '  return; }' . "\n"
+    . 'if ( "offsite" === $name ) {'
+    . '  echo "<img src=\"http://169.254.169.254/latest/meta-data/\" alt=\"\">";'
+    . '  echo "<img src=\"http://10.0.0.1/\" alt=\"\">";'
+    . '  echo "<iframe src=\"https://example.com/\"></iframe>";'
+    . '  return; }' . "\n"
     . 'echo "<p>the site itself</p>";' . "\n"
 );
 
@@ -342,14 +353,7 @@ $prohibited = array(
     array( 'js-href', 'document', 'a JavaScript location.href', true ),
     array( 'js-replace', 'document', 'a JavaScript location.replace', true ),
     array( 'js-window-open', 'document', 'a JavaScript window.open', false ),
-    array( 'img', 'subresource', 'an image', true ),
-    array( 'iframe', 'subresource', 'a frame', true ),
-    array( 'script', 'subresource', 'a script', true ),
-    array( 'fetch', 'subresource', 'a fetch', true ),
     array( 'ipv6', 'document', 'the IPv6 loopback literal', true ),
-    array( 'link-local', 'subresource', 'the cloud metadata address', true ),
-    array( 'private', 'subresource', 'a private-network address', true ),
-    array( 'public', 'subresource', 'another host', true ),
 );
 
 foreach ( $prohibited as $scenario ) {
@@ -393,6 +397,75 @@ foreach ( $prohibited as $scenario ) {
         }
     );
 }
+
+Agentshell_Test::run(
+    'a subresource of every kind never reaches the destination',
+    function () use ( $browser, $site_origin, $origins, $secret_log ) {
+        // One page that asks for the same destination four ways: an
+        // image, a frame, a script and a fetch. One capture covers four
+        // mechanisms, and the report must name all four — which is a
+        // stronger assertion than four separate captures, because a
+        // mechanism that was not refused is visible in the count.
+        @file_put_contents( $secret_log, '' );
+
+        $out = srp_capture( $browser, $site_origin . '/?s=subresources', $origins );
+
+        Agentshell_Test::assert_equals(
+            array(),
+            srp_secret_requests( $secret_log ),
+            'the destination must receive no request at all, not merely no content in the image'
+        );
+
+        $blocked = (array) ( $out['blocked'] ?? array() );
+        Agentshell_Test::assert_equals(
+            4,
+            count( $blocked ),
+            'all four requests must be refused and reported: ' . json_encode( $blocked )
+        );
+        foreach ( $blocked as $violation ) {
+            Agentshell_Test::assert_equals(
+                '127.0.0.1',
+                (string) ( $violation['host'] ?? '' ),
+                'the refused destination must be named: ' . json_encode( $violation )
+            );
+        }
+        // The capture itself still succeeds: the page is the site's own.
+        Agentshell_Test::assert_true(
+            ! empty( $out['ok'] ),
+            'the capture of the site must still succeed: ' . json_encode( $out )
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'a destination of every kind is refused, and named as the kind it is',
+    function () use ( $browser, $site_origin, $origins ) {
+        // Three destinations, three kinds: the cloud metadata address, a
+        // private-network address and another host entirely.
+        $out = srp_capture( $browser, $site_origin . '/?s=offsite', $origins );
+
+        $blocked = (array) ( $out['blocked'] ?? array() );
+        $by_host = array();
+        foreach ( $blocked as $violation ) {
+            $by_host[ (string) ( $violation['host'] ?? '' ) ] = (string) ( $violation['category'] ?? '' );
+        }
+        Agentshell_Test::assert_equals(
+            'metadata',
+            $by_host['169.254.169.254'] ?? '(not refused)',
+            'the cloud metadata address must be refused and named as one'
+        );
+        Agentshell_Test::assert_equals(
+            'private',
+            $by_host['10.0.0.1'] ?? '(not refused)',
+            'a private-network address must be refused and named as one'
+        );
+        Agentshell_Test::assert_equals(
+            'cross_host',
+            $by_host['example.com'] ?? '(not refused)',
+            'another host must be refused and named as one'
+        );
+    }
+);
 
 Agentshell_Test::run(
     'the site\'s own page is captured',

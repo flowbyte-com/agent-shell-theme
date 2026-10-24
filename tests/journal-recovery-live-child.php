@@ -2682,10 +2682,15 @@ function jr18_fetch( $url ) {
 // from inside this child. The fake browser writes PNG bytes without
 // fetching the URL; that is sufficient for (c) — we do not need the
 // rasterised output, we need the tool to return a successful capture.
-$jr18_browser_dir = sys_get_temp_dir() . '/agentshell-jr18-bin-' . getmypid();
-@mkdir( $jr18_browser_dir, 0700, true );
+//
+// It is the fake that speaks the DevTools Protocol, because the
+// screenshot tool captures through the DevTools Protocol and refuses to
+// capture at all when the browser cannot be driven that way. The window
+// fake — which writes a file and exits — would leave the tool with no
+// capture, and a child that dies half way through leaves the site with
+// the transaction it was testing still open.
 if ( ! defined( 'AGENTSHELL_CHROME_BIN' ) ) {
-    define( 'AGENTSHELL_CHROME_BIN', agentshell_fake_browser_path( $jr18_browser_dir ) );
+    define( 'AGENTSHELL_CHROME_BIN', agentshell_fake_cdp_browser_path() );
 }
 // The screenshot store base directory must exist and be writable. The
 // test environment may not have a default-fall-back location that the

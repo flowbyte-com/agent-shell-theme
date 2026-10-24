@@ -1098,7 +1098,7 @@ Agentshell_Test::run( 'tool: an inline capture returns the image and leaves no f
     $browser = agentshell_fake_cdp_browser_path( $dir );
     putenv( 'AGENTSHELL_FAKE_CHROME_MODE=success' );
     putenv( 'AGENTSHELL_FAKE_PNG_BYTES=4096' );
-    define( 'AGENTSHELL_CHROME_BIN', $browser );
+    if ( ! defined( 'AGENTSHELL_CHROME_BIN' ) ) { define( 'AGENTSHELL_CHROME_BIN', $browser ); }
 
     $tool  = new Screenshot();
     $store = Screenshot_Store::screenshot_dir();

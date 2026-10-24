@@ -534,6 +534,11 @@ class CDP_Connection {
             $except  = null;
             $seconds = (int) floor( $remaining );
             $micro   = (int) round( ( $remaining - $seconds ) * 1000000 );
+            if ( $micro >= 1000000 ) {
+                // stream_select() wants the microseconds below a million.
+                $seconds++;
+                $micro = 0;
+            }
             $ready   = @stream_select( $read, $write, $except, $seconds, $micro );
             if ( false === $ready ) {
                 return null;
