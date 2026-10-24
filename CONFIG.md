@@ -152,6 +152,17 @@ serves the repository directly can be checked too. Both run in CI, so a
 category that is excluded in one and forgotten in the other fails the build
 rather than a deployment.
 
+> **Do not export or archive a site whose theme is a symlink into the
+> checkout.** The development arrangement above is a symlink into the
+> repository, and the tools that copy a WordPress site — WP Migrate among
+> them — follow symlinks. An export taken from a site in this state
+> carries the whole repository: measured with the migration plugin's own
+> file enumerator, 59 MiB, of which 19.4 MiB is the `.git` directory, and
+> the published history contains a revoked database password. The
+> measurements, and the procedure, are in
+> [`docs/RELEASE-SIZE-AUDIT.md`](docs/RELEASE-SIZE-AUDIT.md) §4.3 and
+> [`docs/WP-MIGRATE-CUTOVER.md`](docs/WP-MIGRATE-CUTOVER.md) §2.2.
+
 **The test-bed profile.** The destructive test suites read a profile that
 names a database and its password. It used to live at
 `tests/config/test-bed.json`, inside the repository — and a gitignored file
