@@ -5,7 +5,7 @@
 ## Read this first
 
 1. Open `AGENTS.md` and treat it as the single source of truth.
-2. Use the **45+ `agentshell_*` MCP tools** (full list in `AGENTS.md` §2). The plugin + daemon (`agentshell-mcp` + `agentshell-mcp-daemon`) expose every operation; do not call raw REST endpoints unless the daemon is unavailable.
+2. Use the **`agentshell_*` MCP tools** (the authoritative list, and the only place the count is written down, is in `AGENTS.md` §2). The plugin + daemon (`agentshell-mcp` + `agentshell-mcp-daemon`) expose every operation; do not call raw REST endpoints unless the daemon is unavailable.
 3. Run the loop in `AGENTS.md` §6: `inspect` → `validate` → `begin_transaction` → mutations → `preview_transaction` / `validate_transaction` → `commit_transaction` (or `rollback_transaction`).
 
 ## Architecture (one line)
@@ -28,7 +28,7 @@
 - **No `<script type="application/json">` hydration** — `wp_kses_post` strips it. (`AGENTS.md` §4.2.)
 - **Bilateral widget registry, not wp_options-only.** (`AGENTS.md` §4.1.)
 - **No new MCP tools in skills.** Skills teach how to compose existing tools; they do not define tools. (`AGENTS.md` §2 / §8.)
-- **45+ tools, not 10 / 11 / 12.** (`AGENTS.md` §2.)
+- **The tool count lives in `AGENTS.md` §2, and only there.** Do not repeat it in a file of your own; a test fails the build when the documented count and the registry's differ. (`AGENTS.md` §2.)
 - **Mutations inside transactions.** (`AGENTS.md` §6.)
 
 ## Local development

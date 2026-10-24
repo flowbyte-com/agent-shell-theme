@@ -53,6 +53,8 @@
  * Locate the test-bed config file. Returns the absolute path or null when
  * neither the env-var override nor tests/config/test-bed.json exists.
  */
+require_once __DIR__ . '/http-headers.php';
+
 function agentshell_test_bed_config_path() {
     $env = getenv( 'AGENTSHELL_TEST_BED_CONFIG' );
     if ( is_string( $env ) && '' !== $env && is_file( $env ) ) {
@@ -397,7 +399,8 @@ function agentshell_test_bed_check( array $cfg ) {
         if ( false === $http_body ) {
             $http_error = error_get_last() ? ( error_get_last()['message'] ?? '' ) : '';
         }
-        if ( isset( $http_response_header[0] ) && preg_match( '/HTTP\/[\d.]+\s+(\d{3})/', $http_response_header[0], $m ) ) {
+        $http_headers = agentshell_test_last_response_headers();
+        if ( ! empty( $http_headers ) && preg_match( '/HTTP\/[\d.]+\s+(\d{3})/', (string) $http_headers[0], $m ) ) {
             $http_status = (int) $m[1];
         }
         if ( '' === $http_body || $http_status >= 500 ) {
@@ -696,7 +699,8 @@ function agentshell_test_bed_check_http_identity( array $cfg, $token, $expected_
     ) );
     $body = @file_get_contents( $endpoint, false, $ctx );
     $status = 0;
-    if ( isset( $http_response_header[0] ) && preg_match( '/HTTP\/[\d.]+\s+(\d{3})/', $http_response_header[0], $m ) ) {
+    $headers = agentshell_test_last_response_headers();
+    if ( ! empty( $headers ) && preg_match( '/HTTP\/[\d.]+\s+(\d{3})/', (string) $headers[0], $m ) ) {
         $status = (int) $m[1];
     }
     if ( false === $body || '' === $body ) {

@@ -392,7 +392,7 @@ Every other markdown in this repository is a pointer, an archive, a non-normativ
 | `CLAUDE.md` | Pointer | Claude Code orientation; "AGENTS.md is authoritative" stated up front. |
 | `AGENT-PROMT-EXAMPLE.md` | **Archive / deprecated** | v1 prompt fragments. The legacy "Unbreakable Grid Protocol" wording it contains is captured above in Section 5; the file itself is not normative. |
 | `agentshell-mcp/README.md` | Pointer | Plugin install + auth + capability hint; points to this file for the tool list. |
-| `agentshell-mcp-daemon/README.md` | Pointer | Daemon config + transport; no normative agent contracts. |
+| `agentshell-mcp-daemon/README.md` | Pointer | Daemon config + transport, and the version-compatibility policy (protocol version, product version, and the refusal on an incompatible pairing). |
 | `skills/agentshell/SKILL.md` | Pointer | Namespaced skills index; delegates to this file for the tool surface. |
 | `skills/agentshell/image-to-theme/SKILL.md` | Skill | A single task contract: theme the site to a reference image. No tool definitions, no duplicate architecture. |
 | `skills/agentshell/image-to-theme/README.md` | Pointer | Human overview of the image-to-theme skill. |

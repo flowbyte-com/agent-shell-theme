@@ -941,6 +941,8 @@ function agentshell_test_reset() {
 /**
  * Minimal assertion library
  */
+require_once __DIR__ . '/http-headers.php';
+
 class Agentshell_Test {
     public static $passed = 0;
     public static $failed = 0;

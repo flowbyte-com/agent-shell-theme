@@ -38,8 +38,21 @@ class Client {
             throw new \RuntimeException( 'HTTP request failed: ' . ( $error['message'] ?? 'Unknown error' ) );
         }
 
-        // Check for auth errors (401)
-        if ( isset( $http_response_header[0] ) && strpos( $http_response_header[0], '401' ) !== false ) {
+        // Check for auth errors (401).
+        //
+        // The response headers are read through http_get_last_response_headers()
+        // where it exists. The predefined `$http_response_header` is only
+        // global: inside a method, PHP 8.5 raises a deprecation notice for
+        // the implicitly local variable — and a deprecation notice printed
+        // to stdout lands in the middle of the JSON-RPC stream, where a
+        // strict client reads it as a malformed message.
+        $headers = array();
+        if ( function_exists( 'http_get_last_response_headers' ) ) {
+            $headers = (array) http_get_last_response_headers();
+        } elseif ( isset( $GLOBALS['http_response_header'] ) && is_array( $GLOBALS['http_response_header'] ) ) {
+            $headers = $GLOBALS['http_response_header'];
+        }
+        if ( ! empty( $headers ) && strpos( (string) $headers[0], '401' ) !== false ) {
             throw new \RuntimeException( 'Authentication failed — check user and application password' );
         }
 

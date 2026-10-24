@@ -376,12 +376,13 @@ function fetch( $url, &$headers = null ) {
     ) );
     $body = file_get_contents( $url, false, $ctx );
     $code = 0;
-    if ( isset( $http_response_header[0] )
-        && preg_match( '#HTTP/\S+\s+(\d+)#', $http_response_header[0], $m ) ) {
+    $last_headers = agentshell_test_last_response_headers();
+    if ( ! empty( $last_headers )
+        && preg_match( '#HTTP/\S+\s+(\d+)#', (string) $last_headers[0], $m ) ) {
         $code = (int) $m[1];
     }
     $hdrs = array();
-    foreach ( (array) ( $http_response_header ?? array() ) as $line ) {
+    foreach ( $last_headers as $line ) {
         if ( strpos( $line, ':' ) !== false ) {
             list( $k, $v ) = explode( ':', $line, 2 );
             $hdrs[ strtolower( trim( $k ) ) ] = trim( $v );

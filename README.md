@@ -51,9 +51,11 @@ A WordPress theme built for human–agent collaboration. The shell is static and
 
 Full diagram and authoritative architecture contract in `AGENTS.md` §1.
 
-## MCP tools (count + pointer)
+## MCP tools (pointer, and where the count lives)
 
-The plugin ships **45+ `agentshell_*` tools** across configuration, observation, transactions, revisions, snapshots, profiles, content, widgets, and screenshots. The full list and categories are in `AGENTS.md` §2. Discover at runtime with `agentshell_get_capabilities`. **The count "45+" is canonical**; older "10 / 11 / 12 tools" figures cited anywhere else are deprecated.
+The plugin publishes the `agentshell_*` tools listed in [`AGENTS.md` §2](./AGENTS.md) — configuration, observation, transactions, revisions, snapshots, profiles, content, widgets, and screenshots. Discover them at runtime with `agentshell_get_capabilities`.
+
+**The count is in one place only: the `## 2. MCP tools (authoritative count: **N**` heading in `AGENTS.md`.** It is not repeated here on purpose: a number written down in several places can only be kept right by remembering to change it in all of them — and it had been wrong in all of them. `tests/tool-count-test.php` counts the tool names the two plugins actually publish and fails the build when that number and `AGENTS.md` §2's differ, so the count cannot go stale without failing. If you add or remove a tool, the test tells you the new number.
 
 ## Zones, slots & blocks
 

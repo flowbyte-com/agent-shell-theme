@@ -665,7 +665,7 @@ $ctx = stream_context_create( array(
 ) );
 $body = @file_get_contents( $url, false, $ctx );
 $code = 0;
-foreach ( (array) ( $http_response_header ?? array() ) as $h ) {
+foreach ( agentshell_test_last_response_headers() as $h ) {
     if ( preg_match( '#HTTP/\S+\s+(\d+)#', $h, $m ) ) { $code = (int) $m[1]; }
 }
 $report( 'T8.1 anonymous request returns 200', $code === 200, 'url=' . $url . ' code=' . $code );

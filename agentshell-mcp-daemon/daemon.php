@@ -13,10 +13,20 @@ class Daemon {
     private $verbose = false;
 
     private $server_version = null;
+    private $server_protocol = null;
 
-    const DAEMON_VERSION = '1.0.0';
-    const MIN_COMPATIBLE_PROTOCOL_VERSION = '2025-03-26';
-    const EXPECTED_SERVER_VERSION = '1.1.0';
+    // The daemon and the WordPress plugin are released together: they are
+    // one product with two halves, so they carry the same product version.
+    // The number below is kept equal to the plugin's by
+    // tests/daemon-version-test.php, so the two cannot drift apart
+    // unnoticed — the same "a number that is written down can only be
+    // kept right by remembering to change it" problem the tool count had.
+    const DAEMON_VERSION = '1.3.0';
+
+    // The MCP wire format this daemon speaks. The server answers the
+    // initialize handshake with the protocol version it will use; if that
+    // is not this one, the daemon refuses (see daemon-version.php).
+    const PROTOCOL_VERSION = '2025-03-26';
 
     public function __construct( array $config, bool $verbose = false ) {
         $this->config    = $config;
@@ -47,7 +57,7 @@ class Daemon {
 
     private function send_initialize() {
         $request = JsonRpc::build_request( 'initialize', array(
-            'protocolVersion' => self::MIN_COMPATIBLE_PROTOCOL_VERSION,
+            'protocolVersion' => self::PROTOCOL_VERSION,
             'clientInfo'     => array( 'name' => 'agentshell-mcp-daemon', 'version' => self::DAEMON_VERSION ),
             'capabilities'   => array(),
         ) );
@@ -62,37 +72,80 @@ class Daemon {
             $this->server_version = $decoded['result']['serverInfo']['version'];
             if ( $this->verbose ) { fwrite( STDERR, "Server version: " . $this->server_version . "\n" ); }
         }
+        if ( isset( $decoded['result']['protocolVersion'] ) ) {
+            $this->server_protocol = (string) $decoded['result']['protocolVersion'];
+            if ( $this->verbose ) { fwrite( STDERR, "Server protocol: " . $this->server_protocol . "\n" ); }
+        }
     }
 
+    /**
+     * Check the two ends against each other and refuse to serve when they
+     * are incompatible.
+     *
+     * Two independent axes are checked: the protocol version (the wire
+     * format) and the product version (the tool surface). A refusal is
+     * written to stderr — never to stdout, which carries the JSON-RPC
+     * stream and must not be polluted — and the daemon exits with a
+     * distinct code so a supervisor can tell the reason.
+     *
+     * An operator who knows the pairing works can override the refusal
+     * for one run with AGENTSHELL_ALLOW_INCOMPATIBLE_SERVER=1.
+     */
     private function check_version_compatibility() {
-        $status = agentshell_daemon_version_status(
-            $this->server_version,
-            self::DAEMON_VERSION
+        $checks = array(
+            agentshell_daemon_protocol_status( $this->server_protocol, self::PROTOCOL_VERSION ),
+            agentshell_daemon_version_status( $this->server_version, self::DAEMON_VERSION ),
         );
-        // Only the loudest level writes to stderr. info is silent;
-        // notice is verbose-only — it is a compatibility remark about
-        // two version numbers that are both working, and the daemon is
-        // started afresh for every connection, so an unconditional
-        // notice is a line of noise on every single connection;
-        // warning is the pre-fix behaviour and is reserved for cases
-        // that warrant operator attention.
-        if ( $status['level'] === 'info' ) {
+
+        $incompatible = array();
+        foreach ( $checks as $status ) {
+            // Only the loudest level writes to stderr. info is silent;
+            // notice is verbose-only — it is a compatibility remark about
+            // two version numbers that are both working, and the daemon is
+            // started afresh for every connection, so an unconditional
+            // notice is a line of noise on every single connection;
+            // warning is reserved for cases that warrant operator
+            // attention; error is a refusal.
+            if ( $status['level'] === 'info' ) {
+                continue;
+            }
+            if ( $status['level'] === 'notice' && ! $this->verbose ) {
+                continue;
+            }
+            if ( $status['level'] === 'error' ) {
+                $incompatible[] = $status;
+                continue;
+            }
+            $prefix = ( $status['level'] === 'warning' ) ? 'WARNING' : strtoupper( $status['level'] );
+            fwrite(
+                STDERR,
+                sprintf(
+                    "%s: %s (daemon v%s, server v%s).\n",
+                    $prefix,
+                    $status['message'],
+                    self::DAEMON_VERSION,
+                    (string) $this->server_version
+                )
+            );
+        }
+
+        if ( empty( $incompatible ) ) {
             return;
         }
-        if ( $status['level'] === 'notice' && ! $this->verbose ) {
+
+        foreach ( $incompatible as $status ) {
+            fwrite( STDERR, "INCOMPATIBLE: " . $status['message'] . "\n" );
+        }
+
+        if ( agentshell_daemon_incompatible_override() ) {
+            fwrite(
+                STDERR,
+                "WARNING: proceeding anyway because AGENTSHELL_ALLOW_INCOMPATIBLE_SERVER is set.\n"
+            );
             return;
         }
-        $prefix = ( $status['level'] === 'warning' ) ? 'WARNING' : strtoupper( $status['level'] );
-        fwrite(
-            STDERR,
-            sprintf(
-                "%s: %s (daemon v%s, server v%s).\n",
-                $prefix,
-                $status['message'],
-                self::DAEMON_VERSION,
-                (string) $this->server_version
-            )
-        );
+
+        exit( agentshell_daemon_incompatible_exit_code() );
     }
 
     private function handle_client_message( array $message ) {
@@ -138,6 +191,15 @@ class Daemon {
 }
 
 // CLI entry point
+//
+// stdout carries the JSON-RPC stream and nothing else. PHP's own notices
+// and warnings would be printed there by default on a CLI configuration
+// with display_errors on, and a strict MCP client parses every line it
+// reads: a stray "Deprecated: ..." line is a malformed message. Every
+// diagnostic therefore goes to stderr.
+ini_set( 'display_errors', 'stderr' );
+ini_set( 'log_errors', '0' );
+
 $options = getopt( '', array( 'config:', 'verbose' ) );
 $config_path = $options['config'] ?? ( getenv( 'HOME' ) . '/.agentshell-mcp.json' );
 

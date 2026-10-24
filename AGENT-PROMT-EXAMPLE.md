@@ -35,4 +35,4 @@ This is the historical source of the protocol. The current, authoritative wordin
 - **Do not invent `fetch()` paths for widgets** — see `AGENTS.md` §4.3.
 - **Do not reimplement `wp_loop` or `wp_core`** in a widget — see `AGENTS.md` §4.4.
 
-For the canonical, current contract — including the data-* hydration law, the no-fetch boundary, the bilateral registry, the 45+ tool surface, the three grid rules, and the working pattern — see `AGENTS.md`.
+For the canonical, current contract — including the data-* hydration law, the no-fetch boundary, the bilateral registry, the tool surface and its count, the three grid rules, and the working pattern — see `AGENTS.md`.
