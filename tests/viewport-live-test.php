@@ -81,6 +81,15 @@ $page = 'data:text/html;base64,' . base64_encode(
  */
 function vp_capture( $browser, $url, $width, $height, $full_page = false ) {
     static $counter = 0;
+
+    // A browser that cannot be driven at all fails every capture the same
+    // way. Retrying it nine times costs nine browser launches and tells
+    // the reader nothing new, so the first failure is remembered and the
+    // rest report it.
+    if ( isset( $GLOBALS['vp_broken'] ) ) {
+        return array( 'ok' => false, 'error' => $GLOBALS['vp_broken'], 'file' => '', 'viewport' => array() );
+    }
+
     $counter++;
     // The screenshot class's own profile: it creates the browser's HOME
     // and TMPDIR inside it, and Chrome aborts when it cannot create the
@@ -90,11 +99,14 @@ function vp_capture( $browser, $url, $width, $height, $full_page = false ) {
     $profile = \AgentShell_MCP\Screenshot::create_profile_dir();
     $file    = sys_get_temp_dir() . '/agentshell-vp-shot-' . getmypid() . '-' . $counter . '.png';
     try {
-        $out = Screenshot_CDP::capture( $browser, $url, $width, $height, $file, $profile, 25, $full_page );
+        $out = Screenshot_CDP::capture( $browser, $url, $width, $height, $file, $profile, 35, $full_page );
     } finally {
         \AgentShell_MCP\Screenshot::destroy_profile_dir( $profile );
     }
     $out['file'] = $file;
+    if ( empty( $out['ok'] ) ) {
+        $GLOBALS['vp_broken'] = (string) ( $out['error'] ?? 'the capture failed' );
+    }
     return $out;
 }
 

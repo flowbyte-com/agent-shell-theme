@@ -67,6 +67,12 @@ class Screenshot_CDP {
             '--hide-scrollbars',
             '--no-first-run',
             '--no-default-browser-check',
+            // The browser's shared memory. In a container /dev/shm is
+            // usually 64 MiB, and Chromium's renderer will crash when it
+            // runs out — which looks exactly like a browser that started,
+            // published a port and then vanished. This flag moves the
+            // shared memory into a temporary directory instead.
+            '--disable-dev-shm-usage',
             // Port 0: the browser picks a free port and writes it into
             // DevToolsActivePort in the user-data directory. A fixed port
             // would collide with whatever else is running.
@@ -74,6 +80,15 @@ class Screenshot_CDP {
             '--user-data-dir=' . $profile,
             'about:blank',
         );
+
+        // Chromium's sandbox needs user namespaces, which a container
+        // running as root does not have. Without this the browser exits
+        // immediately and the capture fails with a message about a
+        // connection that was refused.
+        if ( function_exists( 'posix_geteuid' ) && 0 === posix_geteuid() ) {
+            $argv[] = '--no-sandbox';
+            $argv[] = '--disable-setuid-sandbox';
+        }
 
         // The profile's own subdirectories — the browser's HOME (where its
         // trust store lives) and its TMPDIR (where it creates the socket
@@ -100,7 +115,12 @@ class Screenshot_CDP {
         // the zygote and the renderers — can be killed when the capture
         // ends. A browser that outlives its capture holds files open in
         // the profile, and the profile is then not removable.
-        $argv = \AgentShell_MCP\Screenshot::wrap_browser_argv( $argv, $timeout );
+        //
+        // The wrapper's budget is the capture's budget plus a grace
+        // period. With the same budget the wrapper would kill the browser
+        // at the very moment the capture gives up, and the failure would
+        // look like a refused connection rather than a timeout.
+        $argv = \AgentShell_MCP\Screenshot::wrap_browser_argv( $argv, $timeout + 30 );
 
         $handle = @proc_open( $argv, $descriptors, $pipes, null, self::isolated_env( $profile ) );
         if ( ! is_resource( $handle ) ) {
