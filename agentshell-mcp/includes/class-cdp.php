@@ -504,6 +504,12 @@ class CDP_Connection {
     /**
      * Read the next message, queueing the events that arrive first.
      *
+     * The timeout is this call's own deadline, and it is honoured: the
+     * socket's timeout is a backstop, not the deadline. A read that
+     * blocked for the socket's timeout would ignore the deadline it was
+     * given, and a caller waiting for an event that was never going to
+     * arrive would wait ten times as long as it asked to.
+     *
      * @param float $timeout The deadline in seconds.
      * @return array|null The decoded message, or null on timeout.
      */
@@ -514,9 +520,28 @@ class CDP_Connection {
             if ( ! empty( $this->pending ) ) {
                 return array_shift( $this->pending );
             }
-            if ( microtime( true ) > $deadline ) {
+            $remaining = $deadline - microtime( true );
+            if ( $remaining <= 0 ) {
                 return null;
             }
+
+            // Wait for the socket to become readable, for no longer than
+            // the deadline. Without this the read below would block for
+            // the socket's own timeout, which is longer than the
+            // deadline this call was given.
+            $read    = array( $this->socket );
+            $write   = null;
+            $except  = null;
+            $seconds = (int) floor( $remaining );
+            $micro   = (int) round( ( $remaining - $seconds ) * 1000000 );
+            $ready   = @stream_select( $read, $write, $except, $seconds, $micro );
+            if ( false === $ready ) {
+                return null;
+            }
+            if ( 0 === $ready ) {
+                return null; // the deadline passed with nothing to read
+            }
+
             $chunk = @fread( $this->socket, 65536 );
             if ( false === $chunk || '' === $chunk ) {
                 $meta = stream_get_meta_data( $this->socket );
