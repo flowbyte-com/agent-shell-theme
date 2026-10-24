@@ -135,6 +135,15 @@ jobs:
       - name: Unit suites
         run: php tests/run-all.php
 
+      # The regression tests for the corrective diff are proven to fail
+      # against the pre-fix code: each guarantee is removed in turn and
+      # the suite that covers it has to notice. A regression test that
+      # cannot fail is a claim, and this is the evidence that these are
+      # tests. The two declared survivors are equivalent or unobservable
+      # by construction, and the harness prints the argument for each.
+      - name: Corrective-diff mutation harness
+        run: php tests/corrective-mutation.php
+
       # The Node suites are also run by the PHP runner where it can, but
       # the configurator one is run directly here as well: the PHP
       # wrapper skips when Node is absent, and a skip is not a test.

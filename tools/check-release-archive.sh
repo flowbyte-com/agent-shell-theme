@@ -60,35 +60,11 @@ fail() { printf '[check] FAILED: %s\n' "$*" >&2; FAILURES=$((FAILURES + 1)); }
 
 # ── the forbidden set ──────────────────────────────────────────────────────
 #
-# Two kinds of rule. A *root* rule names a directory of the repository
-# itself; it must not match a directory that merely has the same name
-# further down — `agentshell-mcp/includes/tools/` is the plugin's tool
-# classes, and a deployment without them has no tools at all.
+# The categories live in one file, shared with the packager: see
+# tools/release-exclusions.sh for why there is one list and not two.
 #
-# A *depth* rule names a category of file wherever it appears.
-FORBIDDEN_ROOT=(
-    "tests"
-    ".git"
-    ".github"
-    ".worktrees"
-    "tools"
-    "configurator"
-    "skills"
-    "dist"
-    "outputs"
-    "docs"
-    "agentshell-mcp-daemon"
-)
-
-FORBIDDEN_DEPTH=(
-    "tests"
-    "*.sql"
-    "*.pem"
-    "*.key"
-    "*.log"
-    "*.swp"
-    "*~"
-)
+# shellcheck source=tools/release-exclusions.sh
+. "$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )/release-exclusions.sh"
 
 # ── the required set ───────────────────────────────────────────────────────
 REQUIRED=(
@@ -97,11 +73,15 @@ REQUIRED=(
     "header.php"
     "footer.php"
     "default-config.json"
+    "template-parts/shell-render.php"
+    "template-parts/widgets.php"
+    "assets/theme.js"
+    "widgets/.index.json"
+    "widgets/hello-world.php"
     "agentshell-mcp/agentshell-mcp.php"
     "agentshell-mcp/includes/tools/class-inspect.php"
     "agentshell-blocks/agentshell-blocks.php"
     "agentshell-blocks/includes/tools/class-get-widget.php"
-    "widgets/.index.json"
 )
 
 WORK="$(mktemp -d)"
@@ -123,7 +103,10 @@ case "$MODE" in
         ;;
 esac
 
-( cd "$ROOT" && find . -mindepth 1 \( -path './.git' -o -path './.worktrees' \) -prune -o -print ) \
+# The prune is for *directories* only: a real .git directory would be
+# enormous, but a *file* named .git is git internals too, and the rule
+# that forbids git internals must see it.
+( cd "$ROOT" && find . -mindepth 1 \( -type d \( -name '.git' -o -name '.worktrees' \) -prune \) -o -print ) \
     | sed 's|^\./||' | sort > "$LIST"
 
 TOTAL="$(wc -l < "$LIST" | tr -d ' ')"
@@ -132,14 +115,14 @@ say "$TOTAL paths"
 # ── forbidden ──────────────────────────────────────────────────────────────
 while IFS= read -r path; do
     [ -n "$path" ] || continue
-    for forbidden in "${FORBIDDEN_ROOT[@]}"; do
+    for forbidden in "${EXCLUDE_ROOT[@]}"; do
         if [ "$path" = "$forbidden" ] || case "$path" in "$forbidden"/*) true ;; *) false ;; esac; then
             fail "the deployment contains $path (a $forbidden directory must not ship)"
             continue 2
         fi
     done
     base="$(basename "$path")"
-    for pattern in "${FORBIDDEN_DEPTH[@]}"; do
+    for pattern in "${EXCLUDE_ANY[@]}"; do
         case "$base" in
             $pattern)
                 fail "the deployment contains $path (a $pattern must not ship)"

@@ -87,45 +87,11 @@ INCLUDE=(
 
 # ── what must never ship ──────────────────────────────────────────────────
 #
-# Two kinds of rule, and the difference matters.
+# The categories live in one file, shared with the checker: see
+# tools/release-exclusions.sh for why there is one list and not two.
 #
-# A *root* rule names a directory of the repository itself: the working
-# tree's own directories, which exist at the top level and nowhere else.
-# It must not match a directory that merely has the same name further
-# down — `agentshell-mcp/includes/tools/` is the plugin's tool classes,
-# and excluding it would produce an archive with no tools at all.
-#
-# A *depth* rule names a category of file wherever it appears: a log, a
-# SQL dump, a private key, a test directory.
-EXCLUDE_ROOT=(
-    ".git"                 # git's own directory
-    ".github"              # the CI workflow and its scripts
-    ".worktrees"           # other checkouts
-    "tests"                # the test suite and every fixture it carries
-    "tools"                # the release tooling itself
-    "configurator"         # the design tool
-    "skills"               # agent skill documents
-    "dist"                 # previous archives
-    "outputs"              # generated output
-    "docs"                 # design records; the product does not need them
-    "agentshell-mcp-daemon"  # the client-side daemon; it runs on the operator's machine
-)
-
-EXCLUDE_ANY=(
-    "tests"                # a test directory, at any depth
-    "*.log"
-    "*.sql"
-    "*.tar.gz"
-    "*.tgz"
-    "*.zip"
-    "*.key"
-    "*.pem"
-    "*.swp"
-    "*~"
-    ".DS_Store"
-    "pi-session-*.html"
-    "screenshot.png"
-)
+# shellcheck source=tools/release-exclusions.sh
+. "$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )/release-exclusions.sh"
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not a git checkout: $REPO_ROOT"
 
