@@ -380,6 +380,17 @@ Every refusal names the size, the limit and the excess, so it is actionable.
 
 **A routine configuration read does not carry the stylesheet.** `agentshell_get_config` omits the `custom_css` body and reports `custom_css_bytes` and `custom_css_present` instead: a stylesheet can be a quarter of a megabyte, and every response that carried it would carry it into a transcript, a log and an agent's context window. The body is returned only when it is asked for by name — `agentshell_get_config( include_custom_css: true )`.
 
+**The stylesheet is served as a static file, not inlined into every page.** A committed stylesheet is materialised into the uploads directory under a name that carries a hash of its own bytes — `agentshell-custom-<sha256-prefix>.css` — and the page carries a `<link>` instead of the bytes. The hash is over the bytes that are served, so the URL changes exactly when the content changes; that is what makes the file's one-year, immutable cache lifetime safe. The file is written atomically (a temporary file in the same directory, then a rename), so a reader can never fetch a half-written stylesheet.
+
+Four properties of this are load-bearing:
+
+- **One function produces the bytes.** `agentshell_custom_css_bytes()` is the single source of the served bytes, and both delivery paths call it: the inline block and the file carry the same string, character for character. A stylesheet that rendered differently depending on which path served it would be invisible until it was deployed.
+- **A staged stylesheet is never written to a file.** The materialisation is driven by the `update_option_agentshell_config` action, and WordPress skips the write entirely while a transaction is open — so the action fires only for a *committed* write. A preview response inlines the staged stylesheet and links to nothing; uncommitted work is never published to anyone who guesses the URL.
+- **A materialisation failure is not a failure of the site.** The configuration is the source of truth and the file is a cache of it. If the file cannot be written, the page inlines the stylesheet exactly as it did before the feature existed, the failure is recorded in the audit log (`custom_css_materialisation_failed`), and the doctor reports it (`CUSTOM_CSS_ASSET_MISSING` or `CUSTOM_CSS_ASSET_UNAVAILABLE`). It never fails a commit.
+- **The directory serves nothing but the stylesheet.** It carries an `.htaccess` that disables the PHP engine, removes the CGI handlers, forbids directory listing, declares `text/css` and sets `Cache-Control: public, max-age=31536000, immutable`. Files this feature wrote that are more than thirty days old are pruned; nothing else in the directory is ever touched.
+
+**The doctor is the place to look when the stylesheet is not being served from a file**, and so is the audit log. A site whose stylesheet is served inline still renders correctly — it is simply heavier on every page — which is why this state is reported rather than merely tolerated.
+
 ---
 
 ## 7. Files agents must not modify

@@ -29,10 +29,25 @@ require_once dirname( __DIR__ ) . '/functions.php';
 
 echo "custom stylesheet asset tests\n";
 
+// The suites share one process, and other suites set the uploads
+// directory for themselves. This suite needs a directory of its own, so
+// it claims one and restores whatever was there when it finishes.
+$GLOBALS['_agentshell_test_uploads_previous'] = isset( $GLOBALS['_agentshell_test_uploads'] )
+    ? $GLOBALS['_agentshell_test_uploads']
+    : null;
+$GLOBALS['_agentshell_test_uploads'] = array(
+    'basedir' => sys_get_temp_dir() . '/agentshell-cca-uploads-' . getmypid(),
+    'baseurl' => 'https://uploads.test/agentshell-cca',
+    'error'   => false,
+);
+if ( ! is_dir( $GLOBALS['_agentshell_test_uploads']['basedir'] ) ) {
+    @mkdir( $GLOBALS['_agentshell_test_uploads']['basedir'], 0755, true );
+}
+
 /** The uploads directory the stub serves. */
 function cca_uploads_dir() {
     $uploads = wp_upload_dir( null, false );
-    return $uploads['basedir'];
+    return rtrim( (string) $uploads['basedir'], '/' );
 }
 
 /** Remove the materialisation directory. */
@@ -303,3 +318,10 @@ Agentshell_Test::run(
 );
 
 cca_clean();
+@rmdir( cca_uploads_dir() );
+if ( null === $GLOBALS['_agentshell_test_uploads_previous'] ) {
+    unset( $GLOBALS['_agentshell_test_uploads'] );
+} else {
+    $GLOBALS['_agentshell_test_uploads'] = $GLOBALS['_agentshell_test_uploads_previous'];
+}
+unset( $GLOBALS['_agentshell_test_uploads_previous'] );

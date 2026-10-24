@@ -932,6 +932,11 @@ function agentshell_test_uploads_dir() {
 }
 
 function wp_upload_dir( $time = null, $create_dir = true ) {
+    // A suite that cares about the uploads directory sets its own; the
+    // default is a per-process temporary directory.
+    if ( isset( $GLOBALS['_agentshell_test_uploads'] ) && is_array( $GLOBALS['_agentshell_test_uploads'] ) ) {
+        return $GLOBALS['_agentshell_test_uploads'];
+    }
     $dir = agentshell_test_uploads_dir();
     return array(
         'path'    => $dir,
