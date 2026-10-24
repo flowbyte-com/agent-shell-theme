@@ -35,11 +35,16 @@ require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content-journal.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-recovery-advisory-lock.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content-recovery.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-cdp.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot-cdp.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-screenshot-store.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-post-preview.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-claim.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-shadow.php';
 require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-published-preview-overlay.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-site-settings.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-content-trash.php';
+require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/class-custom-css-asset.php';
 \AgentShell_MCP\Transaction_Manager::instance();
 
 // Stage 2c Commit 2 — published-content preview overlay. Hooks init
@@ -79,6 +84,8 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-update-zone-slots.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-set-layout.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-get-site-info.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-get-site-settings.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-set-site-settings.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-inject-json-block.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-update-post-content.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-list-widgets.php';
@@ -136,6 +143,8 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-update-draft.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-claim-existing-draft.php';
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-edit-published.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-trash-content.php';
+    require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-restore-content.php';
 
     // Screenshot loop (v1.3)
     require_once AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-screenshot.php';
@@ -150,6 +159,8 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     $tools[] = new AgentShell_MCP\Tools\Update_Zone_Slots();
     $tools[] = new AgentShell_MCP\Tools\Set_Layout();
     $tools[] = new AgentShell_MCP\Tools\Get_Site_Info();
+    $tools[] = new AgentShell_MCP\Tools\Get_Site_Settings();
+    $tools[] = new AgentShell_MCP\Tools\Set_Site_Settings();
     $tools[] = new AgentShell_MCP\Tools\Inject_Json_Block();
     $tools[] = new AgentShell_MCP\Tools\Update_Post_Content();
 
@@ -218,6 +229,8 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
     $tools[] = new AgentShell_MCP\Tools\Update_Draft();
     $tools[] = new AgentShell_MCP\Tools\Claim_Existing_Draft();
     $tools[] = new AgentShell_MCP\Tools\Edit_Published();
+    $tools[] = new AgentShell_MCP\Tools\Trash_Content();
+    $tools[] = new AgentShell_MCP\Tools\Restore_Content();
 
     // Screenshot loop (v1.3)
     $tools[] = new AgentShell_MCP\Tools\Screenshot();
@@ -225,6 +238,35 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
 
     return $tools;
 }, 5 );
+
+    /**
+     * Project the configuration's site settings onto WordPress's own options.
+     *
+     * The action fires only when the configuration is really written. A
+     * write that a transaction intercepts returns the old value to
+     * WordPress, which skips the write — so a *staged* site setting never
+     * reaches the live options, and only a commit (or an immediate write
+     * with no transaction open) projects them.
+     *
+     * @param mixed $old_value The previous configuration.
+     * @param mixed $value      The configuration being written.
+     */
+    add_action( 'update_option_agentshell_config', array( 'AgentShell_MCP\Site_Settings', 'project' ), 10, 2 );
+    // The custom stylesheet is materialised as a static file after every
+    // *committed* configuration write. A staged write never reaches this
+    // hook: WordPress skips the write while a transaction is open, so an
+    // uncommitted stylesheet is never written to a file and never
+    // published to anyone who guesses the URL.
+    add_action( 'update_option_agentshell_config', array( 'AgentShell_MCP\Custom_CSS_Asset', 'project' ), 20, 2 );
+
+    /**
+     * The same projection when the configuration option is created rather
+     * than updated.
+     *
+     * @param string $option The option name.
+     * @param mixed  $value  The value being written.
+     */
+    add_action( 'added_option_agentshell_config', array( 'AgentShell_MCP\Site_Settings', 'project_added' ), 10, 2 );
 
 /**
  * agentshell_mcp_execute_tool
@@ -235,8 +277,7 @@ add_filter( 'agentshell_mcp_register_tools', function( $tools ) {
  * @param string $tool_name
  * @param array  $arguments
  * @return array
- */
-add_filter( 'agentshell_mcp_execute_tool', function( $response, $tool_name, $arguments ) {
+ */add_filter( 'agentshell_mcp_execute_tool', function( $response, $tool_name, $arguments ) {
     return $response;
 }, 10, 3 );
 

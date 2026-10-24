@@ -29,7 +29,7 @@ class Content_Primitives {
      * @param string $content Raw HTML content
      * @param string $status  draft|publish|pending|private|future
      * @param array  $extra   Optional: post_name, parent (pages), comment_status,
-     *                        ping_status, post_date
+     *                        ping_status, post_date, include_content
      * @return array Created record { id, type, title, status, edit_url, atomicity }
      * @throws \InvalidArgumentException
      */
@@ -71,7 +71,8 @@ class Content_Primitives {
 
         // describe() is inside the guard on purpose: if reading the post back
         // fails, the tool must not report a failure over a post that exists.
-        $record = Content_Write_Guard::run( function () use ( $postarr, $type ) {
+        $include_content = ! array_key_exists( 'include_content', $extra ) || (bool) $extra['include_content'];
+        $record = Content_Write_Guard::run( function () use ( $postarr, $type, $include_content ) {
             $id = wp_insert_post( wp_slash( $postarr ), true );
             if ( is_wp_error( $id ) ) {
                 throw new \InvalidArgumentException( 'Could not create ' . $type . ': ' . $id->get_error_message() );
@@ -80,7 +81,7 @@ class Content_Primitives {
                 throw new \InvalidArgumentException( 'Could not create ' . $type . '. WordPress returned no post ID.' );
             }
 
-            return self::describe( $id, $type );
+            return self::describe( $id, $type, $include_content );
         } );
 
         $record['atomicity'] = Content_Write_Guard::report();
@@ -98,6 +99,11 @@ class Content_Primitives {
      */
     public static function update( $id, $type, array $changes ) {
         $existing = self::require_post( $id, $type );
+
+        // The body is echoed back by default, which is the existing
+        // contract; `include_content => false` returns the length instead.
+        $include_content = ! array_key_exists( 'include_content', $changes ) || (bool) $changes['include_content'];
+        unset( $changes['include_content'] );
 
         $postarr = array( 'ID' => (int) $id );
         foreach ( $changes as $key => $value ) {
@@ -128,7 +134,7 @@ class Content_Primitives {
             }
         }
 
-        $record = Content_Write_Guard::run( function () use ( $postarr, $type, $id ) {
+        $record = Content_Write_Guard::run( function () use ( $postarr, $type, $id, $include_content ) {
             $result = wp_update_post( wp_slash( $postarr ), true );
             if ( is_wp_error( $result ) ) {
                 throw new \InvalidArgumentException( 'Could not update ' . $type . ' #' . $id . ': ' . $result->get_error_message() );
@@ -137,7 +143,7 @@ class Content_Primitives {
                 throw new \InvalidArgumentException( 'Could not update ' . $type . ' #' . $id . '. WordPress returned no post ID.' );
             }
 
-            return self::describe( (int) $id, $type );
+            return self::describe( (int) $id, $type, $include_content );
         } );
 
         $record['atomicity'] = Content_Write_Guard::report();
@@ -159,8 +165,12 @@ class Content_Primitives {
      *
      * @return array Updated record
      */
-    public static function set_status( $id, $type, $status ) {
-        return self::update( $id, $type, array( 'status' => $status ) );
+    public static function set_status( $id, $type, $status, $include_content = true ) {
+        return self::update(
+            $id,
+            $type,
+            array( 'status' => $status, 'include_content' => (bool) $include_content )
+        );
     }
 
     /**
@@ -208,8 +218,22 @@ class Content_Primitives {
      * @return array Record incl. raw content (rendered and raw variants)
      * @throws \InvalidArgumentException
      */
-    public static function get( $id, $type ) {
+    public static function get( $id, $type, $include_content = true ) {
         $post = self::require_post( $id, $type );
+
+        if ( ! $include_content ) {
+            // The metadata-only read: the lengths are reported so the
+            // caller knows how big the body is without carrying it.
+            return array_merge( self::compact( $post ), array(
+                'content' => array(
+                    'length'  => strlen( (string) $post->post_content ),
+                    'omitted' => true,
+                ),
+                'slug'    => $post->post_name,
+                'link'    => get_permalink( $post ),
+            ) );
+        }
+
         return array_merge( self::compact( $post ), array(
             'content' => array(
                 'raw'     => $post->post_content,
@@ -223,13 +247,23 @@ class Content_Primitives {
     /**
      * Full record for create/update responses.
      */
-    private static function describe( $id, $type ) {
+    private static function describe( $id, $type, $include_content = true ) {
         $post = self::require_post( $id, $type );
         $record = self::compact( $post );
-        $record['content'] = array(
-            'raw'       => $post->post_content,
-            'length'    => strlen( $post->post_content ),
-        );
+        if ( $include_content ) {
+            $record['content'] = array(
+                'raw'       => $post->post_content,
+                'length'    => strlen( $post->post_content ),
+            );
+        } else {
+            // The length is reported, the body is not: a create or an
+            // update that echoes the whole body back carries it into every
+            // transcript that quotes the response.
+            $record['content'] = array(
+                'length'  => strlen( (string) $post->post_content ),
+                'omitted' => true,
+            );
+        }
         $record['link'] = get_permalink( $post );
         $record['edit_url'] = admin_url( 'post.php?post=' . $id . '&action=edit' );
         return $record;

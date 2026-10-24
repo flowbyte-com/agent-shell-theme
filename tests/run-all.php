@@ -448,6 +448,16 @@ $suites = array(
     // refused) and the byte-not-character measurement are pinned here.
     // Non-destructive unit suite.
     'custom-css-limit'      => __DIR__ . '/custom-css-limit-test.php',
+    // The custom stylesheet as a static, cacheable file: the file's bytes
+    // and the inline block's bytes are the same string, the URL changes
+    // exactly when the content changes, a materialisation failure leaves
+    // the site rendering inline, and the pruning touches nothing but this
+    // feature's own old files. Non-destructive unit suite.
+    'custom-css-asset'      => __DIR__ . '/custom-css-asset-test.php',
+    // The deployment is a build, and this suite asserts what it carries.
+    // It builds the archive, so it runs after the suites that change the
+    // working tree.
+    'release-archive'       => __DIR__ . '/release-archive-test.php',
     // HAL 9001 remediation regression: the saved-configuration token
     // block is CSS, not HTML. It was emitted with esc_attr() — the HTML
     // attribute escaper — inside a <style> element, where entities are
@@ -473,6 +483,19 @@ $suites = array(
     // down can only be kept right by remembering to change it; this one
     // fails the build when it drifts. Non-destructive unit suite.
     'tool-count'          => __DIR__ . '/tool-count-test.php',
+    // The documentation gates of AGENTS.md §9, executable: a stale tool
+    // count, a duplicated tool table or a contradicted source-of-truth
+    // statement is a build failure, not a surprise for whoever reads
+    // the file next.
+    'doc-consistency'     => __DIR__ . '/doc-consistency-test.php',
+    // Site identity and reading settings: the bounded surface, its
+    // validation, and the projection onto WordPress's own options.
+    'site-settings'       => __DIR__ . '/site-settings-test.php',
+    // The DevTools client's wire format: pure functions, no browser.
+    'cdp'                 => __DIR__ . '/cdp-test.php',
+    // The narrow-viewport capture, against a real browser. Skips when the
+    // host has no Chrome.
+    'viewport-live'       => __DIR__ . '/viewport-live-test.php',
     // HAL 9001 remediation regression: the published-edit field
     // preservation contract. A partial edit must inherit every field the
     // caller did not name (title, slug, excerpt) instead of blanking it,
@@ -501,6 +524,25 @@ $suites = array(
     // the failure is deterministic. Destructive live: gated on the
     // same fail-closed check the other destructive suites use.
     'agentshell-test-bed-preflight-live' => __DIR__ . '/agentshell-test-bed-preflight-live-test.php',
+    // Site settings against a real WordPress: a staged setting does not
+    // reach the live site, a commit applies it, a rollback does not, and a
+    // refused setting changes nothing. Destructive: it writes the site's
+    // own options (and restores them).
+    'site-settings-live'  => __DIR__ . '/site-settings-live-test.php',
+    // The custom stylesheet as a static file, against a real WordPress: a
+    // staged stylesheet never reaches a file, the preview inlines it, a
+    // commit materialises it with the same bytes the inline block would
+    // have carried, and a snapshot restore re-materialises. Destructive:
+    // it writes the site's own configuration (and restores it).
+    'custom-css-asset-live' => __DIR__ . '/custom-css-asset-live-test.php',
+    // Reversible content deletion against a real WordPress: the content
+    // reaches the Trash and not the bin, a restore brings it back, both
+    // operations are idempotent, and every refusal leaves the content
+    // exactly as it was. Destructive: it creates and removes content.
+    'content-trash-live'  => __DIR__ . '/content-trash-live-test.php',
+    // Compact responses: the default contract is unchanged, and the
+    // compact form is measurably smaller. Destructive: it creates content.
+    'compact-response-live' => __DIR__ . '/compact-response-live-test.php',
     // audit_written contract regression: the
     // `reconciliation.audit_written` field is now an honest,
     // independently-verified boolean response. Covers the
@@ -545,10 +587,30 @@ $destructive_live_suites = array(
     'edit-published-preservation-live',
     'published-preview-live',
     'agentshell-test-bed-preflight-live',
+    'site-settings-live',
+    'content-trash-live',
+    'compact-response-live',
 );
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );
 $verification_http_fail  = ( is_array( $test_bed_cfg ) && ! $test_bed_http_ok );
+
+// Suites that *read* the test-bed profile and assert something about the
+// live test installation. They are not destructive — they do not mutate the
+// site — but they cannot be answered without one: the profile names a
+// wp_root, a sentinel and a siteurl, and the assertions are about what the
+// live installation reports. In an environment with no test bed (a plain
+// unit run, or CI's unit job) they are **unexecuted**, not passing.
+//
+// Before this list existed these two suites failed in any environment
+// without a test-bed profile: the assertion "test-bed config must load"
+// could not be satisfied by the absence of the thing it was asserting
+// about. A suite that cannot run is reported as skipped, with the reason,
+// so the report never claims a guarantee it did not check.
+$test_bed_required_suites = array(
+    'destructive-identity-guard',
+    'destructive-identity-guard-siteurl',
+);
 
 foreach ( $suites as $name => $path ) {
     echo "\n=== $name ===\n";
@@ -583,6 +645,17 @@ foreach ( $suites as $name => $path ) {
     if ( $verification_failed && in_array( $name, $destructive_live_suites, true ) ) {
         echo "  SKIPPED: fail-closed check failed (refusal: " . $test_bed_check['refusal'] . ").\n";
         $skipped_suites[ $name ] = 'failed_verification';
+        Agentshell_Test::$passed = 0;
+        Agentshell_Test::$failed = 0;
+        Agentshell_Test::summary();
+        continue;
+    }
+    if ( in_array( $name, $test_bed_required_suites, true ) && ! is_array( $test_bed_cfg ) ) {
+        echo "  SKIPPED: no test-bed config — this suite asserts something about the\n";
+        echo "           live test installation (profile, sentinel, siteurl), so it has\n";
+        echo "           nothing to assert against without one. It is unexecuted, not\n";
+        echo "           passing.\n";
+        $skipped_suites[ $name ] = 'no_test_bed_config';
         Agentshell_Test::$passed = 0;
         Agentshell_Test::$failed = 0;
         Agentshell_Test::summary();

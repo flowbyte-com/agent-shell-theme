@@ -36,11 +36,49 @@ if ( '' === $WP_ROOT ) {
     fwrite( STDERR, "stage-2c-overlay-live-child: argv[1] (WordPress root) is required\n" );
     exit( 7 );
 }
-$SITE     = 'http://agentshell-test.local';
-$DB_SOCK  = '/home/v/.config/Local/run/JcloZdmY7/mysql/mysqld.sock';
-$DB_USER  = 'root';
-$DB_PASS  = 'root';
-$DB_NAME  = 'agentshell_test_bed';
+$SITE     = '';
+$DB_SOCK  = '';
+$DB_USER  = '';
+$DB_PASS  = '';
+$DB_NAME  = '';
+
+// The site and the database come from the test-bed profile, not from
+// constants baked into this file. A child that hardcodes them can only
+// ever run against the one workstation it was written on: it would create
+// its fixtures in a database the runner is not testing, fetch a URL that
+// is not the site under test, and report a 404 as a product defect. The
+// profile is the same one the runner verified, so reading it here is what
+// makes this child's assertions about *that* site.
+$__asint_bed_cfg_path = getenv( 'AGENTSHELL_TEST_BED_CONFIG' );
+if ( ! is_string( $__asint_bed_cfg_path ) || '' === $__asint_bed_cfg_path ) {
+    // The profile names a database and its password, so its default
+    // location is outside the repository: the repository is a theme, and
+    // a theme is a directory a web server serves.
+    $__asint_home = getenv( 'HOME' );
+    if ( ! is_string( $__asint_home ) || '' === $__asint_home ) {
+        $__asint_home = sys_get_temp_dir();
+    }
+    $__asint_bed_cfg_path = rtrim( $__asint_home, '/' ) . '/.config/agentshell/test-bed.json';
+    if ( ! is_file( $__asint_bed_cfg_path ) ) {
+        $__asint_bed_cfg_path = __DIR__ . '/config/test-bed.json';
+    }
+}
+$__asint_bed_cfg = is_file( $__asint_bed_cfg_path )
+    ? json_decode( (string) file_get_contents( $__asint_bed_cfg_path ), true )
+    : null;
+if ( ! is_array( $__asint_bed_cfg ) ) {
+    fwrite( STDERR, "test-bed config not found or malformed at {$__asint_bed_cfg_path}\n" );
+    exit( 2 );
+}
+$DB_SOCK  = (string) ( $__asint_bed_cfg['db']['socket']   ?? '' );
+$DB_USER  = (string) ( $__asint_bed_cfg['db']['user']     ?? '' );
+$DB_PASS  = (string) ( $__asint_bed_cfg['db']['password'] ?? '' );
+$DB_NAME  = (string) ( $__asint_bed_cfg['db']['name']     ?? '' );
+$SITE     = rtrim( (string) ( $__asint_bed_cfg['url_http'] ?? '' ), '/' );
+$__asint_bed_host = (string) ( $__asint_bed_cfg['domain']
+    ?? parse_url( (string) ( $__asint_bed_cfg['url_http'] ?? '' ), PHP_URL_HOST )
+    ?? 'localhost' );
+unset( $__asint_bed_cfg, $__asint_bed_cfg_path );
 $MARKER   = 'STAGE2C_OVR_LIVE';
 
 ini_set( 'display_errors', 'stderr' );
@@ -59,10 +97,27 @@ agentshell_destructive_child_identity_guard( $WP_ROOT, __FILE__ );
 
 define( 'ABSPATH', rtrim( $WP_ROOT, '/' ) . '/' );
 define( 'WP_USE_THEMES', false );
-$_SERVER['HTTP_HOST']   = 'agentshell-test.local';
+$_SERVER['HTTP_HOST']   = $__asint_bed_host;
 $_SERVER['REQUEST_URI']  = '/';
 ini_set( 'mysqli.default_socket', $DB_SOCK );
 require_once ABSPATH . 'wp-load.php';
+
+// The base URL for the HTTP probes is the site's *canonical* URL — the
+// `siteurl` option — and not the profile's transport URL. The two differ
+// on a LocalWP installation, where the transport endpoint carries the
+// site's listener port and the canonical URL does not; a request to the
+// transport URL is answered with a redirect to the canonical one, and this
+// child asserts on the exact status code (and on the preview credential
+// not surviving a redirect), so it must ask for the URL a visitor would
+// use.
+//
+// The siteurl option is portless by construction: the harness's siteurl
+// gate refuses an installation whose siteurl carries an explicit port.
+$__asint_siteurl = (string) get_option( 'siteurl' );
+if ( '' !== $__asint_siteurl ) {
+    $SITE = rtrim( $__asint_siteurl, '/' );
+}
+unset( $__asint_siteurl );
 
 if ( ! defined( 'AGENTSHELL_MCP_VERSION' ) ) {
     fwrite( STDERR, "agentshell-mcp plugin is not active — overlay cannot be exercised\n" );
@@ -331,12 +386,15 @@ function fetch( $url, &$headers = null ) {
     ) );
     $body = file_get_contents( $url, false, $ctx );
     $code = 0;
-    if ( isset( $http_response_header[0] )
-        && preg_match( '#HTTP/\S+\s+(\d+)#', $http_response_header[0], $m ) ) {
+    $last_headers = ( function_exists( 'http_get_last_response_headers' )
+            ? agentshell_test_last_response_headers()
+            : agentshell_test_last_response_headers( $http_response_header ) );
+    if ( ! empty( $last_headers )
+        && preg_match( '#HTTP/\S+\s+(\d+)#', (string) $last_headers[0], $m ) ) {
         $code = (int) $m[1];
     }
     $hdrs = array();
-    foreach ( (array) ( $http_response_header ?? array() ) as $line ) {
+    foreach ( $last_headers as $line ) {
         if ( strpos( $line, ':' ) !== false ) {
             list( $k, $v ) = explode( ':', $line, 2 );
             $hdrs[ strtolower( trim( $k ) ) ] = trim( $v );

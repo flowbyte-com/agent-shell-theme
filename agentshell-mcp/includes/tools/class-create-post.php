@@ -17,6 +17,7 @@ class Create_Post extends Base_Tool {
                 'content'  => array( 'type' => 'string', 'description' => 'Raw HTML content. No script tags or inline event handlers — they are stripped by WordPress core for non-super-admin users.' ),
                 'status'   => array( 'type' => 'string', 'enum' => array( 'draft', 'publish', 'pending', 'private', 'future' ), 'description' => 'Default draft' ),
                 'slug'     => array( 'type' => 'string', 'description' => 'Optional URL slug' ),
+                'include_content' => array( 'type' => 'boolean', 'description' => 'Include the content body in the response. Defaults to true (the existing contract); pass false to get the metadata and the length only, which keeps a large body out of the transcript.' ),
             ),
             'required'   => array( 'title', 'content' ),
         );
@@ -46,7 +47,10 @@ class Create_Post extends Base_Tool {
             $title,
             $content,
             $arguments['status'] ?? 'draft',
-            array( 'post_name' => $arguments['slug'] ?? null )
+            array(
+                'post_name' => $arguments['slug'] ?? null,
+                'include_content' => $arguments['include_content'] ?? true,
+            )
         );
     }
 }

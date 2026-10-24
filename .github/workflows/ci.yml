@@ -1,0 +1,275 @@
+name: CI
+
+# AgentShell's contract is a WordPress theme plus two plugins, and its
+# safety net is a test suite that runs against a real WordPress and a real
+# MySQL. This workflow runs that suite on every pull request and on every
+# push to main.
+#
+# Three jobs, in increasing order of cost and decreasing order of
+# specificity:
+#
+#   static       PHP and JavaScript syntax, the tool-registry checks
+#                (duplicate registrations, schema drift, the documented
+#                count), and the documentation gates. No database.
+#   unit         every suite that does not need a live WordPress. No
+#                database.
+#   integration  every suite, against a disposable MySQL database and a
+#                disposable WordPress installation created by the job
+#                itself. The job never touches a LocalWP installation, a
+#                developer's database, or any credential that is not
+#                generated during the run.
+#
+# Nothing here is allowed to fail quietly: there is no
+# `continue-on-error`, no `|| true` around the suite, and no step that
+# reports success when the tests did not.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Least privilege: the workflow reads the repository and runs tests. It
+# does not write to it, does not create releases, and does not need
+# package or deployment scopes.
+permissions:
+  contents: read
+
+# One run per branch. A newer push supersedes an in-flight run for the
+# same ref; the run that is cancelled is not a green run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned versions. `wp-cli` is downloaded below and the WordPress core
+  # version is pinned in the provisioning script, so two runs of the same
+  # commit exercise the same software.
+  #
+  # The wp-cli download is also *verified*: the release publishes a
+  # checksum file next to the archive, and the workflow refuses an
+  # archive whose digest does not match it. A pinned version says which
+  # bytes are expected; the checksum says whether those are the bytes
+  # that arrived.
+  PHP_VERSION: '8.2'
+  WP_CLI_VERSION: '2.11.0'
+  WORDPRESS_VERSION: '6.8.2'
+  WP_CLI_SHA256: 'a39021ac809530ea607580dbf93afbc46ba02f86b6cffd03de4b126ca53079f6'
+
+jobs:
+  # ── static checks ────────────────────────────────────────────────────────
+  static:
+    name: Static checks (syntax, tool registry, documentation)
+    runs-on: ubuntu-24.04
+    steps:
+      # The actions are pinned to a commit, not to a tag: a tag is a name
+      # that can be moved, and a build that can be moved is not
+      # reproducible. The version is named in the comment.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mysqli, mbstring, curl, dom, json
+          coverage: none
+
+      - name: PHP syntax
+        run: ./.github/scripts/lint-php.sh
+
+      - name: JavaScript syntax
+        run: ./.github/scripts/lint-js.sh
+
+      # The registry checks are the ones that catch the failure mode the
+      # tool-count test exists for: two plugins publishing the same tool
+      # name (one implementation silently unreachable), a schema that
+      # drifts from the documented contract, and a documented count that
+      # no longer matches the surface an agent can call.
+      - name: Tool registry (count, duplicates, schema)
+        run: |
+          php tests/tool-count-test.php
+          php tests/tool-schema-test.php
+
+      - name: Documentation gates
+        run: php tests/doc-consistency-test.php
+
+      # The deployment is a build, not a copy of the working tree. The
+      # independent review of PR #16 found the test-bed profile readable
+      # over HTTP at its path inside the theme, with a database password in
+      # cleartext: the repository is a theme, and a theme is a directory a
+      # web server serves. These two steps build what a deployment would
+      # contain and assert that it contains nothing that must not ship.
+      - name: Build the release archive
+        run: bash tools/package-release.sh --out "$RUNNER_TEMP/dist"
+
+      - name: Check what the release archive contains
+        run: bash tools/check-release-archive.sh --archive "$(ls "$RUNNER_TEMP"/dist/agentshell-*.tar.gz)"
+
+  # ── unit suites ──────────────────────────────────────────────────────────
+  unit:
+    name: Unit suites (no database)
+    runs-on: ubuntu-24.04
+    steps:
+      # The actions are pinned to a commit, not to a tag: a tag is a name
+      # that can be moved, and a build that can be moved is not
+      # reproducible. The version is named in the comment.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mysqli, mbstring, curl, dom, json
+          coverage: none
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      # No test-bed profile is present, so the runner takes its unit-only
+      # path: the suites that need a live WordPress are reported as
+      # SKIPPED (unexecuted), and the run still fails if any unit suite
+      # fails. The integration job below is what executes them.
+      - name: Unit suites
+        run: php tests/run-all.php
+
+      # The regression tests for the corrective diff are proven to fail
+      # against the pre-fix code: each guarantee is removed in turn and
+      # the suite that covers it has to notice. A regression test that
+      # cannot fail is a claim, and this is the evidence that these are
+      # tests. The two declared survivors are equivalent or unobservable
+      # by construction, and the harness prints the argument for each.
+      - name: Corrective-diff mutation harness
+        run: php tests/corrective-mutation.php
+
+      # The Node suites are also run by the PHP runner where it can, but
+      # the configurator one is run directly here as well: the PHP
+      # wrapper skips when Node is absent, and a skip is not a test.
+      - name: Configurator state model (Node)
+        run: node tests/configurator-state-test.js
+
+      # The widget runtime's behavioural half needs the JavaScript the
+      # theme actually emits, which only PHP can produce. It is generated
+      # here (through the same bootstrap the PHP suite uses) and handed to
+      # Node, so the suite cannot pass by being skipped.
+      - name: Widget runtime (Node)
+        run: |
+          php -r '
+            require "tests/bootstrap.php";
+            require "functions.php";
+            file_put_contents( "/tmp/agentshell-widget-runtime.js", agentshell_widget_runtime_js() );
+          '
+          node tests/widget-init-test.js /tmp/agentshell-widget-runtime.js
+          rm -f /tmp/agentshell-widget-runtime.js
+
+  # ── integration suites ───────────────────────────────────────────────────
+  integration:
+    name: Integration suites (disposable MySQL + WordPress)
+    runs-on: ubuntu-24.04
+    steps:
+      # The actions are pinned to a commit, not to a tag: a tag is a name
+      # that can be moved, and a build that can be moved is not
+      # reproducible. The version is named in the comment.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mysqli, mbstring, curl, dom, json, gd, zip
+          coverage: none
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      # The MySQL instance is the job's own: it is started from the
+      # runner image, listens on a unix socket, and holds exactly one
+      # database. The provisioning script creates a user whose only grant
+      # is that database, and the test harness refuses to run when the
+      # configured user can reach anything else — so "CI never touches a
+      # LocalWP database" is enforced by the harness, not promised here.
+      - name: Start MySQL
+        run: |
+          sudo mkdir -p /var/run/mysqld
+          sudo chown mysql:mysql /var/run/mysqld
+          sudo systemctl start mysql.service || sudo service mysql start
+          # The administrative account's authentication differs between
+          # images, so the provisioning script finds a working root
+          # command itself. What this step checks is that the server is
+          # up and listening on the socket the harness requires.
+          for _ in $(seq 1 30); do
+            if [ -S /var/run/mysqld/mysqld.sock ]; then break; fi
+            sleep 1
+          done
+          test -S /var/run/mysqld/mysqld.sock
+
+      - name: Install wp-cli
+        run: |
+          # The archive and the checksum file are downloaded together and
+          # the digest is verified before the file is used. The expected
+          # digest is in the workflow's environment; a mismatch fails the
+          # step, and the file is removed rather than executed.
+          curl -sSL --retry 3 -o /tmp/wp-cli.phar \
+            "https://github.com/wp-cli/wp-cli/releases/download/v${{ env.WP_CLI_VERSION }}/wp-cli-${{ env.WP_CLI_VERSION }}.phar"
+          curl -sSL --retry 3 -o /tmp/wp-cli.phar.sha256 \
+            "https://github.com/wp-cli/wp-cli/releases/download/v${{ env.WP_CLI_VERSION }}/wp-cli-${{ env.WP_CLI_VERSION }}.phar.sha256"
+
+          actual="$(sha256sum /tmp/wp-cli.phar | cut -d' ' -f1)"
+          expected="$(cut -d' ' -f1 < /tmp/wp-cli.phar.sha256)"
+          if [ "$actual" != "$expected" ]; then
+            echo "wp-cli checksum mismatch: expected $expected, got $actual" >&2
+            rm -f /tmp/wp-cli.phar /tmp/wp-cli.phar.sha256
+            exit 1
+          fi
+          # The pinned digest in the workflow must match the published one.
+          if [ "$actual" != "${{ env.WP_CLI_SHA256 }}" ]; then
+            echo "wp-cli does not match the digest pinned in this workflow: expected ${{ env.WP_CLI_SHA256 }}, got $actual" >&2
+            rm -f /tmp/wp-cli.phar /tmp/wp-cli.phar.sha256
+            exit 1
+          fi
+
+          chmod +x /tmp/wp-cli.phar
+          ln -sf /tmp/wp-cli.phar /tmp/wp
+          # GITHUB_PATH takes *directories*, not files, and it only affects
+          # the steps that follow this one.
+          echo "/tmp" >> "$GITHUB_PATH"
+          /tmp/wp --version --allow-root
+
+      - name: Provision the disposable environment
+        env:
+          CI_REPO: ${{ github.workspace }}
+          CI_WP_DIR: ${{ runner.temp }}/agentshell-ci/wp
+          CI_WP_VERSION: ${{ env.WORDPRESS_VERSION }}
+          CI_DB_NAME: agentshell_ci_bed
+          CI_DB_USER: agentshell_ci
+          CI_MYSQL_SOCKET: /var/run/mysqld/mysqld.sock
+          CI_WP_CLI: wp
+        run: |
+          # setup-php does not export its binary path as an environment
+          # variable, so it is resolved from the PHP on PATH.
+          export CI_PHP_BIN="$(command -v php)"
+          ./tests/ci/provision-integration-env.sh \
+            --config-out "${{ github.workspace }}/tests/config/test-bed-ci.json"
+
+      - name: Full suite against the disposable environment
+        env:
+          AGENTSHELL_TEST_BED_CONFIG: ${{ github.workspace }}/tests/config/test-bed-ci.json
+        run: |
+          set -o pipefail
+          # The log is written *outside* the checkout. The suite ends with
+          # a checkout-integrity check, and a log file created inside the
+          # repository while the suite runs is exactly the kind of change
+          # that check exists to report.
+          php tests/run-all.php 2>&1 | tee "${{ runner.temp }}/integration-suite.log"
+
+      # The profile holds a password for a database that exists only for
+      # the length of this job. It is still a credential, so it is not
+      # left behind in the workspace, and the log is not left behind
+      # either.
+      - name: Remove the generated profile and the log
+        if: always()
+        run: rm -f "${{ github.workspace }}/tests/config/test-bed-ci.json" "${{ runner.temp }}/integration-suite.log"

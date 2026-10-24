@@ -39,7 +39,17 @@ $RESULT   = (string) ( $argv[2] ?? '' );
 // local default.
 $__asint_bed_cfg_path = getenv( 'AGENTSHELL_TEST_BED_CONFIG' );
 if ( ! is_string( $__asint_bed_cfg_path ) || '' === $__asint_bed_cfg_path ) {
-    $__asint_bed_cfg_path = __DIR__ . '/config/test-bed.json';
+    // The profile names a database and its password, so its default
+    // location is outside the repository: the repository is a theme, and
+    // a theme is a directory a web server serves.
+    $__asint_home = getenv( 'HOME' );
+    if ( ! is_string( $__asint_home ) || '' === $__asint_home ) {
+        $__asint_home = sys_get_temp_dir();
+    }
+    $__asint_bed_cfg_path = rtrim( $__asint_home, '/' ) . '/.config/agentshell/test-bed.json';
+    if ( ! is_file( $__asint_bed_cfg_path ) ) {
+        $__asint_bed_cfg_path = __DIR__ . '/config/test-bed.json';
+    }
 }
 $__asint_bed_cfg = is_file( $__asint_bed_cfg_path )
     ? json_decode( (string) file_get_contents( $__asint_bed_cfg_path ), true )
@@ -665,7 +675,9 @@ $ctx = stream_context_create( array(
 ) );
 $body = @file_get_contents( $url, false, $ctx );
 $code = 0;
-foreach ( (array) ( $http_response_header ?? array() ) as $h ) {
+foreach ( ( function_exists( 'http_get_last_response_headers' )
+            ? agentshell_test_last_response_headers()
+            : agentshell_test_last_response_headers( $http_response_header ) ) as $h ) {
     if ( preg_match( '#HTTP/\S+\s+(\d+)#', $h, $m ) ) { $code = (int) $m[1]; }
 }
 $report( 'T8.1 anonymous request returns 200', $code === 200, 'url=' . $url . ' code=' . $code );

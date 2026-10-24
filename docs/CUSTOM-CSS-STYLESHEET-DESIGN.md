@@ -1,12 +1,13 @@
 # Custom CSS as a versioned, cacheable stylesheet — feasibility and implications
 
 > **This is a design record, not a contract.** It records an investigation, an
-> option, a recommendation and the evidence for it. Nothing in it is
-> implemented, and nothing in it changes what the system does today. The
-> normative behaviour of the custom stylesheet is in `AGENTS.md` §6.6.
+> option, a recommendation and the evidence for it. Where it disagrees with
+> `AGENTS.md`, `AGENTS.md` is right.
 >
-> Status: **evaluated, not implemented.** No code in this repository serves a
-> separate stylesheet; the custom CSS is inlined into the page.
+> Status: **implemented.** The stylesheet is materialised as a content-addressed
+> static file and served with a `<link>`; the normative behaviour is
+> `AGENTS.md` §6.6. §7 below records what was actually built and where the
+> implementation differs from what this document proposed.
 
 ---
 
@@ -224,7 +225,75 @@ The reasoning:
 
 ---
 
-## 7. Related records
+## 7. What was built, and where it differs from this proposal
+
+The change was made as its own commit, after the remediation wave closed, as
+§6 recommended. The normative description is `AGENTS.md` §6.6; this section
+records the differences, so that the reasoning and the implementation can be
+compared honestly.
+
+**As proposed, and implemented as proposed:**
+
+- The stylesheet is materialised into the uploads directory under a name that
+  carries a truncated SHA-256 of the served bytes, and the page carries a
+  `<link>` instead of the bytes.
+- The write is atomic: a temporary file in the same directory, then a rename.
+- The hash is over the served bytes, so the URL changes exactly when the
+  content changes.
+- The preview never links to the file. The staged stylesheet is inlined, and
+  the preview response stays uncacheable.
+- A materialisation failure does not fail a commit. The page falls back to
+  inlining, the failure is audited, and the doctor reports it.
+- One function produces the bytes: `agentshell_custom_css_bytes()` is called by
+  both delivery paths, so the file and the inline block are the same string.
+
+**Different from the proposal, and why:**
+
+1. **The materialisation is driven by one option hook, not by three call
+   sites.** §6.1 proposed "one materialiser, called from one place", and named
+   the commit path, the restore paths and the activation path as the callers.
+   In this codebase every one of those paths writes the same option through
+   `update_option()`, and WordPress fires one action for all of them — so the
+   caller is that action. The consequence is stronger than the proposal's: a
+   path this document did not think of (the theme's own REST endpoint, the
+   legacy widget migration, a theme import) is materialised too, because it
+   cannot write the configuration without going through the same hook.
+
+2. **The preview guarantee is stronger than "do not materialise".** Because
+   `update_option()` is intercepted while a transaction is open — the staged
+   value is returned in place of the new one, and core skips the write — the
+   action never fires for a staged configuration. The guarantee is therefore
+   structural rather than a rule someone has to remember: there is no code
+   path that writes a staged stylesheet to a file.
+
+3. **The pruning policy was added.** §3.3 noted that "the previous file can be
+   deleted; a reader holding the old URL gets a 404, which is why the old file
+   must be kept for a while". Files this feature wrote that are more than
+   thirty days old are pruned; the current file and every file that is not
+   ours are left alone.
+
+4. **The cache headers are a best effort, not a guarantee.** The `.htaccess`
+   sets `Cache-Control: public, max-age=31536000, immutable` and declares
+   `text/css`, but only Apache with `mod_headers` reads it. On nginx the file
+   is served correctly and is not cached as long as the file is; the URL is
+   still content-addressed, so a stale stylesheet is impossible either way.
+   The lifetime is an optimisation, and the correctness rests on the hash.
+
+5. **The directory is the uploads directory.** §3.3 asked for "outside the
+   document root, or inside a directory that the server serves with a correct
+   MIME type and without executing anything". The uploads directory is inside
+   the document root and is writable by the web user; the `.htaccess` in the
+   stylesheet's own subdirectory disables the PHP engine and removes the CGI
+   handlers, each inside the `<IfModule>` guard of the module that provides
+   it. It does **not** forbid directory listing: the directory holds only
+   content-addressed stylesheets, which every visitor can fetch anyway, and
+   `Options -Indexes` is the directive a server is most likely to refuse —
+   and a refused directive is a 500 for the whole directory. A site that
+   protects its uploads directory with a `deny from all` rule cannot serve
+   the file — the doctor says so, and the page inlines the stylesheet
+   instead.
+
+## 8. Related records
 
 - `AGENTS.md` §6.6 — the normative custom stylesheet contract (limit,
   escaping, enforcement, the routine-read shape).

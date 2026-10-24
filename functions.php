@@ -695,6 +695,263 @@ function agentshell_zones_for_render() {
 }
 
 /**
+ * The exact bytes of the custom stylesheet, as they are served.
+ *
+ * One function, so the inline block and the materialised file cannot
+ * disagree: a stylesheet that renders differently depending on which
+ * delivery path served it is a bug that is very hard to see.
+ *
+ * Two things happen here and they happen for both paths. A `<style>`
+ * element inside the payload is stripped: the payload is CSS, and a
+ * `<style>` tag inside it would either be parsed as CSS or (in the
+ * inline path) close the wrapping element. And a literal `</` is
+ * escaped, so the payload cannot close the wrapping element early.
+ *
+ * @param mixed $value The stored custom_css value.
+ * @return string The bytes, or '' when there is nothing to serve.
+ */
+function agentshell_custom_css_bytes( $value ) {
+    if ( ! is_string( $value ) ) { return ''; }
+    if ( '' === trim( $value ) ) { return ''; }
+    $css = preg_replace( '/<\/?style\b[^>]*>/i', '', $value );
+    if ( ! is_string( $css ) ) { return ''; }
+    return agentshell_harden_custom_css( trim( $css ) );
+}
+
+/**
+ * Where the materialised stylesheet lives, and the URL it is served from.
+ *
+ * The uploads directory is used because it is the one directory on a
+ * WordPress site that is both writable by the web user and served by
+ * the web server. The stylesheet is a static asset, so it belongs with
+ * the other static assets.
+ *
+ * @return array|null { dir, url, basedir } or null when the uploads
+ *                     directory is not usable.
+ */
+function agentshell_custom_css_upload_location() {
+    if ( ! function_exists( 'wp_upload_dir' ) ) { return null; }
+    $uploads = wp_upload_dir( null, false );
+    if ( ! is_array( $uploads ) || ! empty( $uploads['error'] ) ) { return null; }
+    $basedir = isset( $uploads['basedir'] ) ? rtrim( (string) $uploads['basedir'], '/' ) : '';
+    $baseurl = isset( $uploads['baseurl'] ) ? rtrim( (string) $uploads['baseurl'], '/' ) : '';
+    if ( '' === $basedir || '' === $baseurl ) { return null; }
+    return array(
+        'basedir' => $basedir,
+        'dir'     => $basedir . '/agentshell-css',
+        'url'     => $baseurl . '/agentshell-css',
+    );
+}
+
+/**
+ * The content hash a stylesheet's URL is built from.
+ *
+ * The hash is over the *served bytes*, so the URL changes exactly when
+ * the content changes. That is what makes an immutable, year-long cache
+ * lifetime safe: a reader holding the old URL is holding a page that
+ * was rendered with the old stylesheet.
+ *
+ * @param string $bytes The served bytes.
+ * @return string A short hexadecimal hash.
+ */
+function agentshell_custom_css_hash( $bytes ) {
+    return substr( hash( 'sha256', (string) $bytes ), 0, 16 );
+}
+
+/**
+ * The file name a hash is served under.
+ *
+ * @param string $hash
+ * @return string
+ */
+function agentshell_custom_css_filename( $hash ) {
+    return 'agentshell-custom-' . preg_replace( '/[^a-f0-9]/', '', (string) $hash ) . '.css';
+}
+
+/**
+ * The URL of the materialised stylesheet for a configuration, or '' when
+ * there is none to serve.
+ *
+ * This never writes anything. A render may not write to disk: the
+ * stylesheet is materialised when the configuration is committed, and a
+ * render that finds no file falls back to inlining the stylesheet.
+ *
+ * @param array|null $config The configuration. Null means the committed one.
+ * @return string The URL, or ''.
+ */
+function agentshell_custom_css_stylesheet_url( $config = null ) {
+    if ( ! is_array( $config ) ) { $config = agentshell_get_config(); }
+    $bytes = agentshell_custom_css_bytes( isset( $config['custom_css'] ) ? $config['custom_css'] : '' );
+    if ( '' === $bytes ) { return ''; }
+    $location = agentshell_custom_css_upload_location();
+    if ( null === $location ) { return ''; }
+    $name = agentshell_custom_css_filename( agentshell_custom_css_hash( $bytes ) );
+    if ( ! is_file( $location['dir'] . '/' . $name ) ) { return ''; }
+    return $location['url'] . '/' . $name;
+}
+
+/**
+ * The rules the materialised stylesheet's directory carries.
+ *
+ * Three things: nothing in the directory may be executed, the directory
+ * may not be listed, and the file is immutable for a year because its
+ * URL carries its content hash. The cache header needs Apache's
+ * mod_headers; without it the file is still served correctly, just
+ * without the long lifetime.
+ */
+function agentshell_custom_css_htaccess() {
+    // Every directive that is not available on this server is guarded.
+    // An unguarded directive that the server does not allow is a *500 for
+    // every request to this directory* — which would take the custom
+    // stylesheet away from every page. A stylesheet that is slightly less
+    // well served is a smaller problem than one that is not served at all.
+    //
+    // Directory listing is deliberately not disabled: the directory holds
+    // nothing but content-addressed stylesheets, and those are served to
+    // every visitor anyway, so a listing of them reveals nothing. The
+    // directive that would disable it is also the one most likely to be
+    // refused by a server that does not allow Options overrides.
+    $lines = array(
+        '# Written by AgentShell. The custom stylesheet is a static asset.',
+        '<IfModule mod_headers.c>',
+        'Header set Cache-Control "public, max-age=31536000, immutable"',
+        '</IfModule>',
+        '<IfModule mod_mime.c>',
+        'AddType text/css .css',
+        'RemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar',
+        '</IfModule>',
+        '<IfModule mod_php.c>',
+        'php_flag engine off',
+        '</IfModule>',
+        '',
+    );
+    return implode( "\n", $lines );
+}
+
+/**
+ * Materialise the committed custom stylesheet as a static file.
+ *
+ * The write is atomic: the bytes go to a temporary file in the same
+ * directory and are then renamed into place, so a reader can never
+ * fetch a half-written stylesheet.
+ *
+ * A failure is a failure to *serve the file*, not a failure to change
+ * the site: the caller reports it and the page falls back to inlining
+ * the stylesheet. The configuration is the source of truth; the file is
+ * a cache of it.
+ *
+ * @param array|null $config The configuration to materialise. Null means the
+ *                           committed one.
+ * @return array { url, hash, path, error } — `error` is '' on success.
+ */
+function agentshell_materialise_custom_css( $config = null ) {
+    if ( ! is_array( $config ) ) { $config = agentshell_get_config(); }
+    $bytes = agentshell_custom_css_bytes( isset( $config['custom_css'] ) ? $config['custom_css'] : '' );
+    if ( '' === $bytes ) {
+        return array( 'url' => '', 'hash' => '', 'path' => '', 'error' => '' );
+    }
+
+    $location = agentshell_custom_css_upload_location();
+    if ( null === $location ) {
+        return array( 'url' => '', 'hash' => '', 'path' => '', 'error' => 'the uploads directory is not available' );
+    }
+
+    $hash = agentshell_custom_css_hash( $bytes );
+    $name = agentshell_custom_css_filename( $hash );
+    $path = $location['dir'] . '/' . $name;
+    $url  = $location['url'] . '/' . $name;
+
+    // Already materialised: nothing to write. This is the common case —
+    // a configuration write that did not touch the stylesheet.
+    if ( is_file( $path ) && $bytes === (string) @file_get_contents( $path ) ) {
+        return array( 'url' => $url, 'hash' => $hash, 'path' => $path, 'error' => '' );
+    }
+
+    if ( ! is_dir( $location['dir'] ) ) {
+        $made = function_exists( 'wp_mkdir_p' ) ? wp_mkdir_p( $location['dir'] ) : mkdir( $location['dir'], 0755, true );
+        if ( ! $made && ! is_dir( $location['dir'] ) ) {
+            return array( 'url' => '', 'hash' => $hash, 'path' => $path, 'error' => 'cannot create ' . $location['dir'] );
+        }
+    }
+
+    // The file is written every time, not only when it is missing: it is
+    // ours, it is deterministic, and a rule that has since become wrong
+    // should not survive because it was written once.
+    $htaccess = $location['dir'] . '/.htaccess';
+    @file_put_contents( $htaccess, agentshell_custom_css_htaccess() );
+
+    // The temporary file is created exclusively and under a name nothing
+    // can predict.
+    //
+    // The name used to be derived from the hash of the bytes being
+    // written, which is also the name of the file the stylesheet is
+    // served under — so it was public. A file placed at that path before
+    // the write (a symbolic link, say) would be *followed* by the write,
+    // and the stylesheet's bytes would land in whatever it pointed at.
+    // The independent review of PR #16 reproduced that: a symbolic link
+    // in the uploads directory turned "write the stylesheet" into "write
+    // to any file the web user can write".
+    //
+    // Random_bytes(16) makes the path unguessable, and fopen() in 'x'
+    // mode fails rather than following anything that is already there.
+    $tmp = $location['dir'] . '/.agentshell-custom-' . bin2hex( random_bytes( 16 ) ) . '.tmp';
+    $handle = @fopen( $tmp, 'x' );
+    if ( false === $handle ) {
+        return array( 'url' => '', 'hash' => $hash, 'path' => $path, 'error' => 'cannot create a temporary file in ' . $location['dir'] );
+    }
+    $written = false;
+    try {
+        $bytes_written = @fwrite( $handle, $bytes );
+        $written = ( false !== $bytes_written && (int) $bytes_written === strlen( $bytes ) );
+    } finally {
+        @fclose( $handle );
+    }
+    if ( ! $written ) {
+        @unlink( $tmp );
+        return array( 'url' => '', 'hash' => $hash, 'path' => $path, 'error' => 'cannot write ' . strlen( $bytes ) . ' bytes to a temporary file' );
+    }
+    @chmod( $tmp, 0644 );
+    if ( ! @rename( $tmp, $path ) ) {
+        @unlink( $tmp );
+        return array( 'url' => '', 'hash' => $hash, 'path' => $path, 'error' => 'cannot move the stylesheet into place' );
+    }
+
+    agentshell_custom_css_prune( $location['dir'], $hash );
+
+    return array( 'url' => $url, 'hash' => $hash, 'path' => $path, 'error' => '' );
+}
+
+/**
+ * Remove stylesheets this site no longer serves.
+ *
+ * Only files this feature wrote are ever considered, and only once they
+ * are old enough that a reader holding them is unlikely to still be
+ * looking at the page they were rendered for. The current file is never
+ * touched.
+ *
+ * @param string $dir       The materialisation directory.
+ * @param string $keep_hash The hash of the file that is current.
+ * @return int The number of files removed.
+ */
+function agentshell_custom_css_prune( $dir, $keep_hash ) {
+    $max_age = defined( 'AGENTSHELL_CUSTOM_CSS_MAX_AGE' ) ? (int) AGENTSHELL_CUSTOM_CSS_MAX_AGE : 30 * 86400;
+    if ( $max_age <= 0 || ! is_dir( $dir ) ) { return 0; }
+    $entries = @scandir( $dir );
+    if ( ! is_array( $entries ) ) { return 0; }
+    $removed = 0;
+    $cutoff  = time() - $max_age;
+    foreach ( $entries as $entry ) {
+        if ( ! preg_match( '/^agentshell-custom-[a-f0-9]{16}\.css$/', $entry ) ) { continue; }
+        if ( $entry === agentshell_custom_css_filename( $keep_hash ) ) { continue; }
+        $path = $dir . '/' . $entry;
+        $mtime = @filemtime( $path );
+        if ( ! $mtime || $mtime > $cutoff ) { continue; }
+        if ( @unlink( $path ) ) { $removed++; }
+    }
+    return $removed;
+}
+
+/**
  * 1. Inject Saved CSS Variables, custom_css, and structural prohibition.
  * Injects all -- vars from flattened config, custom_css if present,
  * and a grid-fix rule that prevents agents from breaking layout with
@@ -709,19 +966,24 @@ function agentshell_inject_saved_styles() {
         $flat = $config;
     }
 
-    if ( empty( $flat ) ) return;
-
-    echo "<style id='agentshell-saved-config'>\n:root {\n";
-    foreach ( $flat as $key => $value ) {
-        if ( strpos( $key, '--' ) === 0 && ! empty( $value ) ) {
-            $name = agentshell_safe_css_property_name( $key );
-            if ( '' === $name ) {
-                continue;
+    // The token block is emitted only when there are tokens. The rest of
+    // this function — the custom stylesheet, the layout CSS and the grid
+    // fix — is not conditional on there being any: the grid fix is part of
+    // the layout protocol (AGENTS.md §5), and a configuration with no
+    // design tokens still needs it.
+    if ( ! empty( $flat ) ) {
+        echo "<style id='agentshell-saved-config'>\n:root {\n";
+        foreach ( $flat as $key => $value ) {
+            if ( strpos( $key, '--' ) === 0 && ! empty( $value ) ) {
+                $name = agentshell_safe_css_property_name( $key );
+                if ( '' === $name ) {
+                    continue;
+                }
+                echo '    ' . $name . ': ' . agentshell_safe_css_value( $value ) . ";\n";
             }
-            echo '    ' . $name . ': ' . agentshell_safe_css_value( $value ) . ";\n";
         }
+        echo "}\n</style>\n";
     }
-    echo "}\n</style>\n";
 
     // custom_css — trusted author context. We strip pre-existing <style>
     // tags from the user payload so the value can be safely wrapped in our
@@ -729,9 +991,21 @@ function agentshell_inject_saved_styles() {
     // remaining content is neutralised by agentshell_harden_custom_css so
     // it cannot close the wrapping element early.
     if ( ! empty( $config['custom_css'] ) ) {
-        $css = preg_replace( '/<\/?style\b[^>]*>/i', '', $config['custom_css'] );
-        $css = agentshell_harden_custom_css( trim( $css ) );
-        echo "<style id='agentshell-custom-css'>\n" . $css . "\n</style>\n";
+        $css = agentshell_custom_css_bytes( $config['custom_css'] );
+
+        // The stylesheet is served as a static file when one has been
+        // materialised, and inlined otherwise. A staged preview is always
+        // inlined: the staged stylesheet is uncommitted work, and writing
+        // it to a file would publish it to anyone who guessed the URL.
+        $stylesheet_url = '';
+        if ( ! agentshell_authorize_transaction_preview() ) {
+            $stylesheet_url = agentshell_custom_css_stylesheet_url( $config );
+        }
+        if ( '' !== $stylesheet_url ) {
+            echo "<link rel='stylesheet' id='agentshell-custom-css' href='" . esc_url( $stylesheet_url ) . "'>\n";
+        } else {
+            echo "<style id='agentshell-custom-css'>\n" . $css . "\n</style>\n";
+        }
     }
 
     // Configurable layout — only emitted when agentshell_set_layout has

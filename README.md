@@ -51,9 +51,11 @@ A WordPress theme built for human–agent collaboration. The shell is static and
 
 Full diagram and authoritative architecture contract in `AGENTS.md` §1.
 
-## MCP tools (count + pointer)
+## MCP tools (pointer, and where the count lives)
 
-The plugin ships **45+ `agentshell_*` tools** across configuration, observation, transactions, revisions, snapshots, profiles, content, widgets, and screenshots. The full list and categories are in `AGENTS.md` §2. Discover at runtime with `agentshell_get_capabilities`. **The count "45+" is canonical**; older "10 / 11 / 12 tools" figures cited anywhere else are deprecated.
+The plugin publishes the `agentshell_*` tools listed in [`AGENTS.md` §2](./AGENTS.md) — configuration, observation, transactions, revisions, snapshots, profiles, content, widgets, and screenshots. Discover them at runtime with `agentshell_get_capabilities`.
+
+**The count is in one place only: the `## 2. MCP tools (authoritative count: **N**` heading in `AGENTS.md`.** It is not repeated here on purpose: a number written down in several places can only be kept right by remembering to change it in all of them — and it had been wrong in all of them. `tests/tool-count-test.php` counts the tool names the two plugins actually publish and fails the build when that number and `AGENTS.md` §2's differ, so the count cannot go stale without failing. If you add or remove a tool, the test tells you the new number.
 
 ## Zones, slots & blocks
 
@@ -73,6 +75,22 @@ The CSS Grid layout obeys three load-bearing rules — every grid container uses
 |---|---|---|
 | `agentshell-image-to-theme` | Theme the site to match a reference image | `skills/agentshell/image-to-theme/SKILL.md` |
 | `agentshell-widget-builder` | Build a custom widget from a user's description | `skills/agentshell/widget-builder/SKILL.md` |
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and on every push to `main`. It has three jobs, and none of them is allowed to fail quietly — there is no `continue-on-error` and no step that reports success when the tests did not.
+
+| Job | What it runs | Needs a database |
+|---|---|---|
+| `static` | `php -l` over every tracked PHP file, `node --check` over every tracked JavaScript file, the tool-registry checks (`tests/tool-count-test.php`, `tests/tool-schema-test.php`) and the documentation gates (`tests/doc-consistency-test.php`) | no |
+| `unit` | `php tests/run-all.php` with no test-bed profile: every suite that does not need a live WordPress | no |
+| `integration` | `php tests/run-all.php` against a MySQL database and a WordPress installation that the job creates for itself | yes |
+
+**What CI covers of the 1,291-assertion baseline.** The `unit` job runs 1,076 of them; the `integration` job runs all 1,291, because the live suites add the other 215. The split is visible in the report: a suite that needs a live installation is printed as `SKIPPED` with the reason (`no_test_bed_config`), never as a pass.
+
+**What still needs a separate environment.** The `integration` job provisions its own environment with `tests/ci/provision-integration-env.sh`: a MySQL database, a user whose only grant is that database, a WordPress install, the `agentshell_site_mode = disposable_test_bed` sentinel, and an HTTP server. The harness refuses to run when the configured database user can reach anything else, so "CI never touches a LocalWP database" is enforced rather than promised. The suites that need a *real browser* run in CI where the runner has one: the runner image ships Chrome, so the narrow-viewport suite captures real pages there — and it skips itself, with a reason, on a host that has no browser. The screenshot capture path against a *live site* is the exception: it is verified locally and against the showcase, because it needs a site to capture rather than a data URL.
+
+**Secrets.** The integration job generates its database password and its MCP static token at run time, writes them into the disposable site's `wp-config.php` and into a gitignored profile, and deletes the profile when the job ends. No credential is stored in the workflow.
 
 ## Troubleshooting (one-liners)
 

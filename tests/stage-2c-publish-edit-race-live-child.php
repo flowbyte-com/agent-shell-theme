@@ -47,7 +47,17 @@ $REPORT   = (string) ( $argv[2] ?? '' );
 
 $__asint_bed_cfg_path = getenv( 'AGENTSHELL_TEST_BED_CONFIG' );
 if ( ! is_string( $__asint_bed_cfg_path ) || '' === $__asint_bed_cfg_path ) {
-    $__asint_bed_cfg_path = __DIR__ . '/config/test-bed.json';
+    // The profile names a database and its password, so its default
+    // location is outside the repository: the repository is a theme, and
+    // a theme is a directory a web server serves.
+    $__asint_home = getenv( 'HOME' );
+    if ( ! is_string( $__asint_home ) || '' === $__asint_home ) {
+        $__asint_home = sys_get_temp_dir();
+    }
+    $__asint_bed_cfg_path = rtrim( $__asint_home, '/' ) . '/.config/agentshell/test-bed.json';
+    if ( ! is_file( $__asint_bed_cfg_path ) ) {
+        $__asint_bed_cfg_path = __DIR__ . '/config/test-bed.json';
+    }
 }
 $__asint_bed_cfg = is_file( $__asint_bed_cfg_path )
     ? json_decode( (string) file_get_contents( $__asint_bed_cfg_path ), true )
@@ -82,6 +92,9 @@ define( 'WP_USE_THEMES', false );
 $_SERVER['HTTP_HOST']   = (string) ( $__asint_bed_cfg['domain'] ?? parse_url( (string) ( $__asint_bed_cfg['url_http'] ?? '' ), PHP_URL_HOST ) ?? 'localhost' );
 $_SERVER['REQUEST_URI']  = '/';
 ini_set( 'mysqli.default_socket', $DB_SOCK );
+// The racers are spawned with the same socket, so that they reach the
+// same database this script is talking to.
+$GLOBALS['asint_db_sock'] = $DB_SOCK;
 require_once ABSPATH . 'wp-load.php';
 
 if ( ! defined( 'AGENTSHELL_MCP_VERSION' ) ) {
@@ -186,15 +199,24 @@ function pe_race_reset_state( $mysqli ) {
 }
 
 function pe_race_spawn( $scenario, $op_id, $barrier_dir, $wp_root, $mode = 'publish' ) {
-    $php = '/home/v/.config/Local/lightning-services/php-8.2.29+0/bin/linux/bin/php';
-    $env = 'AGENTSHELL_TEST_WP_ROOT=' . escapeshellarg( $wp_root ) . ' '
-         . 'LD_LIBRARY_PATH=/home/v/.config/Local/lightning-services/php-8.2.29+0/bin/linux/shared-libs ';
-    $ini = '-d mysqli.default_socket=/home/v/.config/Local/run/JcloZdmY7/mysql/mysqld.sock';
+    // The same PHP that is running this script, and the child scripts
+    // that sit next to it. Both used to be absolute paths into one
+    // developer's machine, which meant the race could only ever be
+    // rehearsed there.
+    $php = PHP_BINARY;
+    $env = 'AGENTSHELL_TEST_WP_ROOT=' . escapeshellarg( $wp_root ) . ' ';
+    if ( getenv( 'AGENTSHELL_TEST_BED_CONFIG' ) ) {
+        $env .= 'AGENTSHELL_TEST_BED_CONFIG=' . escapeshellarg( (string) getenv( 'AGENTSHELL_TEST_BED_CONFIG' ) ) . ' ';
+    }
+    $ini = '';
+    if ( ! empty( $GLOBALS['asint_db_sock'] ) ) {
+        $ini = '-d mysqli.default_socket=' . escapeshellarg( (string) $GLOBALS['asint_db_sock'] );
+    }
     $report = $barrier_dir . '/report-' . $scenario . '.json';
     $log    = $barrier_dir . '/log-' . $scenario . '.txt';
     $script = ( 'publish' === $mode )
-        ? '/home/v/projects/agent-shell-theme/.worktrees/stage-2c-published-content-editing/tests/stage-2c-publish-edit-race-child-publish.php'
-        : '/home/v/projects/agent-shell-theme/.worktrees/stage-2c-published-content-editing/tests/stage-2c-publish-edit-race-child-reconcile.php';
+        ? __DIR__ . '/stage-2c-publish-edit-race-child-publish.php'
+        : __DIR__ . '/stage-2c-publish-edit-race-child-reconcile.php';
     $cmd = $env . escapeshellarg( $php ) . ' ' . $ini . ' ' . escapeshellarg( $script ) . ' '
          . escapeshellarg( $report ) . ' '
          . escapeshellarg( $op_id ) . ' '

@@ -133,6 +133,18 @@ write_png() {
   printf '\211PNG\r\n\032\n' > "$OUT"
   head -c "$SIZE" /dev/zero | tr '\0' 'X' >> "$OUT"
 }
+# The browser may be launched without an output path — the DevTools path
+# asks the browser to open a page, not to write a file. Writing to an empty
+# path would litter the working directory with a file called ".gc".
+if [ -z "$OUT" ]; then
+  case "$MODE" in
+    hang) sleep 300 & wait ;;
+    fail) exit 3 ;;
+    *)    exit 0 ;;
+  esac
+  exit $?
+fi
+
 case "$MODE" in
   hang)
     write_png
