@@ -159,8 +159,12 @@ jobs:
         run: |
           sudo mkdir -p /var/run/mysqld
           sudo chown mysql:mysql /var/run/mysqld
-          sudo systemctl start mysql.service
-          mysql --socket=/var/run/mysqld/mysqld.sock -uroot -e "SELECT @@server_uuid, @@datadir, @@port;"
+          sudo systemctl start mysql.service || sudo service mysql start
+          # The runner image's root account authenticates through the unix
+          # socket (auth_socket), so the administrative connection is
+          # `sudo mysql`. The provisioning script's restricted user is
+          # what the test suites use.
+          sudo mysql --socket=/var/run/mysqld/mysqld.sock -e "SELECT @@server_uuid, @@datadir, @@port;"
 
       - name: Install wp-cli
         run: |
