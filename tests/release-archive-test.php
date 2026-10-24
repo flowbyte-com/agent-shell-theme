@@ -285,3 +285,51 @@ Agentshell_Test::run(
         );
     }
 );
+
+Agentshell_Test::run(
+    'the runtime directories of the source tree carry no repository and no build output',
+    function () {
+        // The archive is clean because the packager builds it from an
+        // explicit list. The *source tree* is a different thing: it is
+        // what a deployment that copies the checkout gets, and it is
+        // what the local site serves when the theme is a symlink into
+        // it. A nested repository inside a runtime directory is the
+        // shape that mistake takes — it is how a `.git` full of history
+        // ends up inside a served directory.
+        $root   = dirname( __DIR__ );
+        $runtime = array(
+            'agentshell-mcp',
+            'agentshell-blocks',
+            'agentshell-mcp-daemon',
+            'widgets',
+            'template-parts',
+            'assets',
+        );
+        $forbidden = array( '.git', '.worktrees', 'node_modules', 'vendor', 'dist', 'build' );
+
+        foreach ( $runtime as $directory ) {
+            $path = $root . '/' . $directory;
+            if ( ! is_dir( $path ) ) {
+                continue;
+            }
+            foreach ( $forbidden as $name ) {
+                $found = array();
+                $it = new RecursiveIteratorIterator(
+                    new RecursiveDirectoryIterator( $path, FilesystemIterator::SKIP_DOTS ),
+                    RecursiveIteratorIterator::SELF_FIRST
+                );
+                foreach ( $it as $item ) {
+                    if ( $item->isDir() && $item->getFilename() === $name ) {
+                        $found[] = $item->getPathname();
+                    }
+                }
+                Agentshell_Test::assert_equals(
+                    array(),
+                    $found,
+                    $directory . ' must carry no ' . $name . ' directory: a deployment that copies the '
+                        . 'checkout would serve it'
+                );
+            }
+        }
+    }
+);

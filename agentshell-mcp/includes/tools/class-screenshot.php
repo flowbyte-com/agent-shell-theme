@@ -256,15 +256,22 @@ class Screenshot extends Base_Tool {
         // SSRF guard: a trusted agent could otherwise point Chrome at
         // http://169.254.169.254/ (cloud metadata), http://localhost:8080/admin, or any
         // internal host, and whatever that host renders would end up in the
-        // capture. Reject any URL whose host differs from home_url() — the
-        // legitimate use case (previewing theme profiles) is same-site by
-        // construction. This host check is the whole control; it does not depend
-        // on the browser sandbox, which capture() leaves enabled.
-        $site_host = wp_parse_url( home_url(), PHP_URL_HOST );
-        $target_host = wp_parse_url( $url, PHP_URL_HOST );
-        if ( ! $target_host || strcasecmp( $target_host, (string) $site_host ) !== 0 ) {
+        // capture. The request policy is what refuses it, and the policy is
+        // enforced again inside the browser, before every request the page
+        // makes — a redirect, a script, a frame, a subresource. The check
+        // here is the early one: it refuses a URL the caller plainly
+        // named, before a browser is launched at all.
+        //
+        // The unit of permission is the origin, not the host: the site's
+        // own 127.0.0.1:8080 and another service on 127.0.0.1:8099 share a
+        // host and share nothing else, and the second one is exactly the
+        // thing this guard exists to keep out of a capture.
+        $policy   = \AgentShell_MCP\Browser_Request_Policy::for_site();
+        $decision = $policy->evaluate( $url );
+        if ( ! $decision['allow'] ) {
             throw new \InvalidArgumentException(
-                "url host '{$target_host}' does not match this site's host ('{$site_host}'); screenshots are scoped to this site to prevent SSRF."
+                "url host '{$decision['host']}' does not match this site's origin; screenshots are scoped to this site to prevent SSRF ("
+                . $decision['reason'] . ').'
             );
         }
 
@@ -334,7 +341,9 @@ class Screenshot extends Base_Tool {
                 $width,
                 $height,
                 $dir,
-                ! empty( $arguments['full_page'] )
+                ! empty( $arguments['full_page'] ),
+                'auto',
+                $policy
             );
         } catch ( \AgentShell_MCP\Screenshot_Busy_Exception $e ) {
             return array(
@@ -364,6 +373,12 @@ class Screenshot extends Base_Tool {
                 'capture_mode'     => $shot['capture_mode'] ?? 'window',
                 'backend' => $shot['backend'],
                 'inline'  => $inline,
+                // What the browser was allowed to ask for, and what it
+                // asked for that was refused. A capture that dropped a
+                // cross-host request says so here rather than leaving the
+                // caller to wonder why a font or an image is missing.
+                'request_policy'   => (array) ( $shot['request_policy'] ?? array() ),
+                'blocked_requests' => array_values( (array) ( $shot['blocked_requests'] ?? array() ) ),
             ),
             'elapsed_ms' => $shot['elapsed_ms'],
             // Never the credential-bearing URL. This summary is returned to the

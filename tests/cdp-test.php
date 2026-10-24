@@ -345,3 +345,62 @@ Agentshell_Test::run(
         }
     }
 );
+
+Agentshell_Test::run(
+    'a read honours its own deadline, not the socket\'s',
+    function () {
+        // The defect this pins: `read()` used to block in `fread()` for as
+        // long as the socket's own timeout, so a caller that asked to wait
+        // 200 milliseconds waited for the socket's ten seconds instead.
+        // A capture paid for it: every capture spent ten seconds waiting
+        // for a load event that had already arrived.
+        $pair = @stream_socket_pair( STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0 );
+        if ( ! is_array( $pair ) || 2 !== count( $pair ) ) {
+            Agentshell_Test::assert_true( true, 'skipped: this host has no socket pairs' );
+            return;
+        }
+        list( $ours, $theirs ) = $pair;
+
+        // A socket with a long timeout of its own — the shape a real
+        // DevTools connection has.
+        stream_set_timeout( $ours, 10 );
+
+        $connection = new \AgentShell_MCP\CDP_Connection( $ours );
+
+        $started = microtime( true );
+        $message = $connection->read( 0.25 );
+        $elapsed = microtime( true ) - $started;
+
+        Agentshell_Test::assert_true(
+            null === $message,
+            'a read with nothing to read must return nothing'
+        );
+        Agentshell_Test::assert_true(
+            $elapsed < 2.0,
+            'the read must honour its 0.25 second deadline, not the socket\'s ten seconds; it took '
+                . round( $elapsed, 3 ) . ' seconds'
+        );
+
+        // And a message that *is* waiting is returned promptly.
+        // A framed message, the way the browser sends one.
+        fwrite( $theirs, \AgentShell_MCP\CDP::frame(
+            json_encode( array( 'id' => 7, 'result' => array( 'ok' => true ) ) ),
+            1,
+            "\x01\x02\x03\x04"
+        ) );
+        $started = microtime( true );
+        $message = $connection->read( 2.0 );
+        $elapsed = microtime( true ) - $started;
+        Agentshell_Test::assert_true(
+            is_array( $message ) && isset( $message['id'] ) && 7 === (int) $message['id'],
+            'the waiting message must be returned'
+        );
+        Agentshell_Test::assert_true(
+            $elapsed < 1.0,
+            'a waiting message must be returned at once; it took ' . round( $elapsed, 3 ) . ' seconds'
+        );
+
+        fclose( $ours );
+        fclose( $theirs );
+    }
+);

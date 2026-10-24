@@ -1,7 +1,29 @@
 # flowbyte.com — migration, cutover and rollback plan
 
+> **SUPERSEDED — 2026-10-24.** The owner has decided to migrate the
+> local showcase to `flowbyte.com` with **WP Migrate**, not with a
+> symlink switch and a DNS change. The procedure that will actually be
+> used is **[`WP-MIGRATE-CUTOVER.md`](./WP-MIGRATE-CUTOVER.md)**.
+>
+> This document is kept as a **historical record**: it describes the
+> mechanism that was planned, the rehearsal that was run against a
+> disposable site, the timings that were measured, and the reasoning
+> behind the decisions that were taken then. None of it is the
+> instruction to follow now, and the DNS cutover it describes is not
+> what will happen. In particular §2's premise — that the destination's
+> content would be preserved because the cutover never writes to the
+> old site's data — **does not hold for a database import**, which
+> replaces it. Read the superseded plan for the history; read the
+> current one for the work.
+>
+> The rehearsal evidence it records is still true of what it measured:
+> a symlinked development checkout is not a deployment, and the size
+> audit in [`RELEASE-SIZE-AUDIT.md`](./RELEASE-SIZE-AUDIT.md) §4.3
+> measured what such an arrangement would put into a production
+> archive.
+
 **Date:** 2026-10-24
-**Status:** **prepared, not executed.** Nothing in this document has been
+**Status:** **superseded; not executed.** Nothing in this document has been
 applied to flowbyte.com, and no step of it may be run without a separate,
 explicit approval.
 **Companion:** the rehearsal script lives beside the showcase's operational

@@ -5,6 +5,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 require_once __DIR__ . '/class-cdp.php';
 require_once __DIR__ . '/class-screenshot-cdp.php';
+require_once __DIR__ . '/class-browser-request-policy.php';
 
 /**
  * A capture could not start because another capture holds the cross-process
@@ -207,15 +208,19 @@ class Screenshot {
      *                           as the fallback), 'window' (the window path
      *                           only) or 'devtools' (the DevTools path only,
      *                           with no fallback).
-     * @return array { file, url, width, height, backend, timed_out, elapsed_ms }
+     * @return array { file, url, width, height, backend, timed_out, elapsed_ms, blocked_requests, request_policy }
      * @throws \InvalidArgumentException
      */
-    public static function capture( $url, $width, $height, $dir = null, $full_page = false, $mode = 'auto' ) {
+    public static function capture( $url, $width, $height, $dir = null, $full_page = false, $mode = 'auto', $policy = null ) {
         $backend = self::backend();
         if ( null === $backend ) {
             throw new \InvalidArgumentException(
                 'No headless browser found. Install google-chrome/chromium, or define AGENTSHELL_CHROME_BIN in wp-config.php.'
             );
+        }
+
+        if ( ! $policy instanceof \AgentShell_MCP\Browser_Request_Policy ) {
+            $policy = \AgentShell_MCP\Browser_Request_Policy::for_site();
         }
 
         $width  = max( 320, min( 4096, (int) $width ) );
@@ -255,7 +260,8 @@ class Screenshot {
                     $file,
                     $profile,
                     $full_page,
-                    $mode
+                    $mode,
+                    $policy
                 );
             } finally {
                 self::destroy_profile_dir( $profile );
@@ -300,6 +306,18 @@ class Screenshot {
             'timed_out' => $result['timed_out'],
             'elapsed_ms' => $result['elapsed_ms'],
             'capture_mode' => (string) ( $result['mode'] ?? 'window' ),
+            // The requests the policy refused, and what the policy
+            // permitted. A capture that refused something says so; a
+            // capture that refused nothing still says what it was
+            // allowed to ask for, because "nothing was refused" is only
+            // meaningful next to "these were the destinations".
+            'blocked_requests' => array_values( (array) ( $result['blocked'] ?? array() ) ),
+            'request_policy'   => $policy->describe(),
+            // Which layer enforced the policy. `fetch` is the interception
+            // — origin-level, and it reports what it refused. `host-resolver`
+            // is the browser's resolver rules — host-level, and it reports
+            // nothing.
+            'request_policy_mechanism' => (string) ( $result['mechanism'] ?? 'fetch' ),
         );
 
         if ( $effective_width > 0 ) {
@@ -394,13 +412,28 @@ class Screenshot {
      * The DevTools Protocol path is asked for the requested viewport and
      * reports the viewport the page actually used (read back from the page
      * with `window.innerWidth`). When it cannot be used — an older browser
-     * without the DevTools endpoint, a browser that refuses the connection,
-     * a capture that times out — the window-based path takes over, and the
-     * result says which path ran and what the effective viewport was.
+     * without the DevTools endpoint, a browser that refuses the
+     * connection, a capture that times out — the capture is **refused**.
      *
-     * The fallback is not a silent degradation: the caller reports the
-     * measured width either way, and a window-based capture that was laid
-     * out wider than it was asked for still reports `viewport_adjusted`.
+     * ## Why there is no automatic fallback
+     *
+     * The legacy window-based path asks Chrome for a screenshot of a URL
+     * and lets Chrome do as it likes with it: it follows redirects and it
+     * runs scripts, and there was nothing to stop it from doing either. A
+     * capture that falls back to it silently is a capture with no
+     * site-scoping at all, and a caller reading "captured: true" would
+     * have no way of knowing.
+     *
+     * The window path is not *unprotected* any more — it carries the
+     * browser's resolver rules, so every name it resolves other than a
+     * permitted one fails to resolve — but those rules are host-level,
+     * where the interception is origin-level. It is the coarser of the two
+     * guarantees, and the tool does not use it. The path is still here
+     * because the capture lock, the wall-clock deadline and the profile
+     * isolation are all exercised through it, and because an operator
+     * whose browser genuinely cannot be driven through the DevTools
+     * Protocol can ask for it explicitly and be told which guarantee they
+     * are getting.
      *
      * @param string $binary    The browser binary.
      * @param string $url       The URL.
@@ -410,19 +443,30 @@ class Screenshot {
      * @param string $profile   The throwaway profile directory.
      * @param bool   $full_page Whether to capture the whole page.
      * @param string $mode      'auto', 'window' or 'devtools'.
+     * @param Browser_Request_Policy|null $policy What the browser may ask for.
      * @return array { timed_out: bool, elapsed_ms: int, mode: string, viewport: array }
      * @throws \InvalidArgumentException
      */
-    private static function capture_with_viewport( $binary, $url, $width, $height, $file, $profile, $full_page = false, $mode = 'auto' ) {
+    private static function capture_with_viewport( $binary, $url, $width, $height, $file, $profile, $full_page = false, $mode = 'auto', $policy = null ) {
         $timeout = self::timeout_seconds();
+
+        if ( ! $policy instanceof \AgentShell_MCP\Browser_Request_Policy ) {
+            $policy = \AgentShell_MCP\Browser_Request_Policy::for_site();
+        }
 
         if ( 'window' === $mode ) {
             // The window path on its own. It is the fallback, and it is
             // also the path the fake-browser suites exercise, because the
             // fake speaks no DevTools protocol.
-            $result             = self::run_browser( $binary, $url, $width, $height, $file, $profile );
+            $result             = self::run_browser( $binary, $url, $width, $height, $file, $profile, $policy );
             $result['mode']     = 'window';
             $result['viewport'] = array( 'width' => 0, 'height' => 0 );
+            // Empty, and deliberately so: this path cannot report what it
+            // refused, because it refuses at the resolver and the resolver
+            // says nothing. The mechanism is named instead, so a caller
+            // knows which guarantee it is holding.
+            $result['blocked']  = array();
+            $result['mechanism'] = 'host-resolver';
             return $result;
         }
 
@@ -434,7 +478,8 @@ class Screenshot {
             $file,
             $profile,
             $timeout,
-            $full_page
+            $full_page,
+            $policy
         );
 
         if ( ! empty( $cdp['ok'] ) && is_file( $file ) ) {
@@ -443,6 +488,8 @@ class Screenshot {
                 'elapsed_ms' => (int) $cdp['elapsed_ms'],
                 'mode'       => 'devtools',
                 'viewport'   => (array) $cdp['viewport'],
+                'blocked'    => (array) ( $cdp['blocked'] ?? array() ),
+                'mechanism'  => 'fetch',
                 'cdp_error'  => '',
             );
         }
@@ -461,14 +508,15 @@ class Screenshot {
             );
         }
 
-        // The DevTools path did not deliver. Fall back to the window-based
-        // capture, which works on every browser this tool has ever
-        // supported, and say so in the result.
-        $result = self::run_browser( $binary, $url, $width, $height, $file, $profile );
-        $result['mode']      = 'window';
-        $result['viewport']  = array( 'width' => 0, 'height' => 0 );
-        $result['cdp_error'] = (string) ( $cdp['error'] ?? '' );
-        return $result;
+        // The DevTools path did not deliver, and the window path is not
+        // used automatically: it cannot enforce the same policy, and a
+        // capture that quietly changed its guarantee would be worse than a
+        // capture that failed and said why.
+        throw new \InvalidArgumentException(
+            'Screenshot failed: ' . (string) ( $cdp['error'] ?? 'the browser could not be driven through the DevTools protocol' )
+            . '. The legacy window-based capture is not used as a fallback, because it cannot enforce the'
+            . ' request policy that keeps a capture on this site.'
+        );
     }
 
     /**
@@ -478,11 +526,16 @@ class Screenshot {
      * fails or times out leaves nothing behind. The browser itself runs against
      * a throwaway user-data directory that this class owns and removes.
      *
+     * @param Browser_Request_Policy|null $policy What the browser may ask for.
      * @return array { timed_out: bool, elapsed_ms: int }
      * @throws \InvalidArgumentException
      */
-    private static function run_browser( $binary, $url, $width, $height, $file, $profile ) {
+    private static function run_browser( $binary, $url, $width, $height, $file, $profile, $policy = null ) {
         $timeout = self::timeout_seconds();
+
+        if ( ! $policy instanceof \AgentShell_MCP\Browser_Request_Policy ) {
+            $policy = \AgentShell_MCP\Browser_Request_Policy::for_site();
+        }
 
         $dir  = dirname( $file );
         $stem = basename( $file, '.png' );
@@ -504,6 +557,14 @@ class Screenshot {
             // response set — can persist there across captures and outlive the
             // request that rendered it. See the class docblock.
             '--user-data-dir=' . $profile,
+            // The request policy's backstop. This path cannot intercept
+            // requests the way the DevTools path does, so it is given the
+            // browser's resolver rules instead: every name other than a
+            // permitted one fails to resolve, and a request to a forbidden
+            // destination is never sent. It is host-level rather than
+            // origin-level, which is the difference between this path and
+            // the DevTools one.
+            '--host-resolver-rules=' . $policy->host_resolver_rules(),
             '--screenshot=' . $tmp,
             $url,
         );

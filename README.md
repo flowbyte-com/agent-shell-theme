@@ -86,11 +86,26 @@ The CSS Grid layout obeys three load-bearing rules — every grid container uses
 | `unit` | `php tests/run-all.php` with no test-bed profile: every suite that does not need a live WordPress | no |
 | `integration` | `php tests/run-all.php` against a MySQL database and a WordPress installation that the job creates for itself | yes |
 
-**What CI covers of the 1,291-assertion baseline.** The `unit` job runs 1,076 of them; the `integration` job runs all 1,291, because the live suites add the other 215. The split is visible in the report: a suite that needs a live installation is printed as `SKIPPED` with the reason (`no_test_bed_config`), never as a pass.
+**What CI covers.** The `unit` job runs the suites that do not need a live WordPress; the `integration` job runs **every** suite, against a MySQL database and a WordPress installation the job creates for itself. The split is visible in the report: a suite that needs a live installation is printed as `SKIPPED` with the reason (`no_test_bed_config`), never as a pass. The assertion totals move with the suite, so the runner's own `=== TOTAL ===` line is the number to read — not a figure quoted here.
 
 **What still needs a separate environment.** The `integration` job provisions its own environment with `tests/ci/provision-integration-env.sh`: a MySQL database, a user whose only grant is that database, a WordPress install, the `agentshell_site_mode = disposable_test_bed` sentinel, and an HTTP server. The harness refuses to run when the configured database user can reach anything else, so "CI never touches a LocalWP database" is enforced rather than promised. The suites that need a *real browser* run in CI where the runner has one: the runner image ships Chrome, so the narrow-viewport suite captures real pages there — and it skips itself, with a reason, on a host that has no browser. The screenshot capture path against a *live site* is the exception: it is verified locally and against the showcase, because it needs a site to capture rather than a data URL.
 
 **Secrets.** The integration job generates its database password and its MCP static token at run time, writes them into the disposable site's `wp-config.php` and into a gitignored profile, and deletes the profile when the job ends. No credential is stored in the workflow.
+
+## Deploying
+
+**A deployment is a build, not a copy of the checkout.** The repository is a theme *and* a development tree: it carries the test suite, the design records, the Git history and four other worktrees. None of that belongs on a server.
+
+```bash
+bash tools/package-release.sh --out dist                                   # build
+bash tools/check-release-archive.sh --archive dist/agentshell-*.tar.gz      # check
+```
+
+The archive carries the theme, both plugins, the assets, the licence and the configuration defaults — about 1.4 MB — and refuses the Git history, the worktrees, the tests, the tooling and anything that looks like a credential. The two scripts share one list of exclusions, so an exclusion forgotten in one fails the build.
+
+**Never copy the working tree to a server.** A checkout is 62 MB, 59 MiB of which is Git history and other checkouts — and the published history contains a revoked database password, so a copied `.git` is a credential on a public machine. The measurements, and what else was found, are in [`docs/RELEASE-SIZE-AUDIT.md`](docs/RELEASE-SIZE-AUDIT.md).
+
+For moving the local showcase to `flowbyte.com`, see [`docs/WP-MIGRATE-CUTOVER.md`](docs/WP-MIGRATE-CUTOVER.md) — the cutover plan for WP Migrate, including the backup and recovery procedure for the existing public site.
 
 ## Troubleshooting (one-liners)
 

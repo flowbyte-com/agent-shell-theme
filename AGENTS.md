@@ -90,6 +90,32 @@ The count is the number of tools an agent can **call**: the registry is keyed by
   page at the viewport's width: the image is as tall as the page, and its width is still
   the viewport's width.
 
+  **A capture may ask for one thing only: the site's own origin — and the check
+  happens before the request is sent.** The unit of permission is the **origin**
+  (scheme, host and port), not the host: the site's own `127.0.0.1:8080` and another
+  service on `127.0.0.1:8099` share a host and share nothing else, and the second one is
+  exactly what the guard exists to keep out of a capture. Two layers enforce it: the
+  DevTools protocol's **Fetch** domain pauses every request the page makes — redirects,
+  scripts, frames and subresources — and refuses the ones the policy does not permit
+  *before they are sent*; and the browser's own resolver rules make every name that is
+  not permitted fail to resolve. A refusal of the **page itself** fails the capture and
+  names the reason; a refusal of something **inside** the page fails that request and is
+  reported in the result, by host and by kind, with no path and no query — that is where
+  a preview credential rides.
+
+  **There is no automatic fallback to the legacy window-based capture.** That path cannot
+  enforce an origin-level policy, and a capture that quietly changed its guarantee would
+  be worse than a capture that failed and said why. When the browser cannot be driven
+  through the DevTools protocol, the capture is **refused** and the refusal explains
+  itself. The window path still exists, is still reachable by name, carries the resolver
+  rules, and reports `capture_mode: window` — a coarser guarantee, labelled as one.
+
+  The policy's allowlist is **empty by default**; a site whose pages legitimately load
+  from a third-party origin declares it with `AGENTSHELL_SCREENSHOT_ALLOWED_HOSTS` in
+  `wp-config.php` or with the `agentshell_screenshot_allowed_hosts` filter. Design,
+  rationale and the adversarial reproductions:
+  [`docs/SCREENSHOT-REQUEST-POLICY.md`](docs/SCREENSHOT-REQUEST-POLICY.md).
+
   **`published_preview: true` captures the staged edit of a published page.** The page
   stays published and stays what visitors see; the capture is served with the staged
   title, body, excerpt and slug through the published-preview overlay, under a credential
@@ -430,11 +456,14 @@ Every other markdown in this repository is a pointer, an archive, a non-normativ
 | `docs/SCREENSHOT-PRIVACY-DESIGN.md` | **Design record** | The screenshot privacy investigation and the design adopted from it. The normative part — inline delivery, storage outside the document root, ownership-based retrieval authorisation, per-capture browser profiles — is restated in §2 and implemented. Anything else in it is a record. |
 | `docs/SCREENSHOT-STORAGE.md` | **Design record** | On-disk layout and retention for the screenshot store. Companion to the above. |
 | `docs/DRAFT-CAPTURE-DESIGN.md` | **Design record** | The draft-capture investigation behind the post-preview tools. |
+| `docs/SCREENSHOT-REQUEST-POLICY.md` | **Design record** | The investigation behind the browser request policy: why a final-URL check cannot close the cross-host capture hole, what an origin-level policy is, the Fetch interception and the resolver rules, the fourteen adversarial reproductions, and the mutation harness. The normative part is restated in §2 and implemented. |
+| `docs/RELEASE-SIZE-AUDIT.md` | **Design record** | The measured sizes of everything that could be deployed, what is required at runtime and what is development material, and the finding that the "60 MB theme" was a copy of the development repository — Git history and four other checkouts included. It also records that an export taken while the theme is a symlink would carry the Git history, and therefore a revoked credential, into a public installation. **A record of measurements, not a size target.** |
+| `docs/WP-MIGRATE-CUTOVER.md` | **Plan** | The cutover procedure for moving the local showcase to `flowbyte.com` with WP Migrate: what the free edition of the installed plugin can and cannot do, the symlink precondition, the fifteen-item checklist, the backup and recovery procedure for the existing public site, and the post-migration verification. **A plan, not a permission** — the owner performs the migration, and nothing in it has been applied to `flowbyte.com`. |
 | `docs/CUSTOM-CSS-STYLESHEET-DESIGN.md` | **Design record** | The evaluation of serving the custom stylesheet as a versioned, cacheable stylesheet instead of inlining it into every page: the argument, the shape of the change, the risks, and what to test. **Evaluated, not implemented** — the normative behaviour is §6.6. |
 | `docs/TRANSACTION-PREVIEW.md` | **Design record** | Why transaction preview is rendered from a staged draft rather than from live config, and the credential model that follows from it. |
 | `docs/CONTENT-TRANSACTIONS-DESIGN.md` | **Design record** | The transactional-content investigation, the approved decisions (persisted drafts + durable pre-image journal + short-lived SQL transactions, deliberately *not* one open DB transaction), the failure inventory, and the staged implementation plan. Stage 0 — the lease — is implemented; §6.2 is the normative form of it. The Stage 1a journal and its recovery engine are implemented for one operation type; §6.4 is the normative form of them, and its §4.1 sketch is superseded by the schema actually built. Stages 1b+ are proposals, not behaviour. |
 | `docs/PRODUCT-ISSUES.md` | **Design record** | The issue backlog these designs answer. A backlog entry is a request, not a contract. |
-| `docs/FLOWBYTE-CUTOVER-PLAN.md` | **Design record** | The migration, cutover and rollback plan for moving `flowbyte.com` onto AgentShell, with the rehearsal that was run against a disposable site and the measured timings. **A plan, not a permission** — nothing in it has been applied to `flowbyte.com`, and no step of it may be run without a separate approval. |
+| `docs/FLOWBYTE-CUTOVER-PLAN.md` | **Design record — superseded** | The migration, cutover and rollback plan for moving `flowbyte.com` onto AgentShell, with the rehearsal that was run against a disposable site and the measured timings. **Superseded** by `docs/WP-MIGRATE-CUTOVER.md`: the owner is migrating with WP Migrate, not with a symlink switch and a DNS change, and a database import replaces the destination's content where the symlink cutover preserved it. Kept as a historical record of the mechanism, the rehearsal and the reasoning. **A plan, not a permission** — nothing in it has been applied to `flowbyte.com`, and no step of it may be run without a separate approval. |
 
 **Hard rule about new docs.** Any new markdown file must do one of: (a) pointer to this file, (b) archive notice, (c) single-task skill, (d) non-normative human setup guide, (e) **design record**.
 

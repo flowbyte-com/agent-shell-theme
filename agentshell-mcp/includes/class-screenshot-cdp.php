@@ -9,6 +9,7 @@ require_once __DIR__ . '/class-cdp.php';
 // two require each other; neither touches the other at load time, so the
 // cycle is harmless whichever one is loaded first.
 require_once __DIR__ . '/class-screenshot.php';
+require_once __DIR__ . '/class-browser-request-policy.php';
 
 /**
  * A capture driven by the Chrome DevTools Protocol.
@@ -43,10 +44,14 @@ class Screenshot_CDP {
      * @param string $profile  The throwaway user-data directory.
      * @param int    $timeout  The wall-clock budget in seconds.
      * @param bool   $full_page Whether to capture the whole page.
+     * @param Browser_Request_Policy|null $policy What the browser may ask for.
      * @return array{ok:bool,error:string,viewport:array{width:int,height:int},elapsed_ms:int,timed_out:bool}
      */
-    public static function capture( $binary, $url, $width, $height, $file, $profile, $timeout, $full_page = false ) {
+    public static function capture( $binary, $url, $width, $height, $file, $profile, $timeout, $full_page = false, $policy = null ) {
         $started = microtime( true );
+        if ( ! $policy instanceof Browser_Request_Policy ) {
+            $policy = Browser_Request_Policy::for_site();
+        }
         $result  = array(
             'ok'        => false,
             'error'     => '',
@@ -57,6 +62,12 @@ class Screenshot_CDP {
             'viewport'  => array( 'width' => 0, 'height' => 0 ),
             'elapsed_ms' => 0,
             'timed_out' => false,
+            // The requests the policy refused. Each entry names the
+            // destination and says what kind of destination it was; no
+            // path and no query, because that is where a preview
+            // credential would be.
+            'blocked'   => array(),
+            'policy'    => $policy->describe(),
         );
 
         $log = $file . '.cdp.log';
@@ -73,6 +84,14 @@ class Screenshot_CDP {
             // published a port and then vanished. This flag moves the
             // shared memory into a temporary directory instead.
             '--disable-dev-shm-usage',
+            // The second layer of the request policy. Every name the
+            // browser resolves other than a permitted one fails to
+            // resolve, so a request to a forbidden destination is never
+            // sent — even on a code path that cannot intercept requests.
+            // It is host-level, where the interception is origin-level, so
+            // it is the coarser of the two; it is also the one that holds
+            // when the interception cannot be installed at all.
+            '--host-resolver-rules=' . $policy->host_resolver_rules(),
             // Port 0: the browser picks a free port and writes it into
             // DevToolsActivePort in the user-data directory. A fixed port
             // would collide with whatever else is running.
@@ -165,7 +184,7 @@ class Screenshot_CDP {
                 return $result;
             }
 
-            $outcome = self::drive( $connection, $url, $width, $height, $file, $timeout, $full_page );
+            $outcome = self::drive( $connection, $url, $width, $height, $file, $timeout, $full_page, $policy );
             $result = array_merge( $result, $outcome );
         } catch ( \Throwable $e ) {
             // The message may contain the URL, and the URL may carry a
@@ -228,10 +247,87 @@ class Screenshot_CDP {
      * @param string         $file       Where to write the PNG.
      * @param int            $timeout    The budget in seconds.
      * @param bool           $full_page  Whether to capture the whole page.
+     * @param Browser_Request_Policy $policy What the browser may ask for.
      * @return array
      */
-    private static function drive( CDP_Connection $connection, $url, $width, $height, $file, $timeout, $full_page ) {
-        $out = array( 'ok' => false, 'error' => '', 'viewport' => array( 'width' => 0, 'height' => 0 ) );
+    private static function drive( CDP_Connection $connection, $url, $width, $height, $file, $timeout, $full_page, $policy ) {
+        $out = array(
+            'ok'       => false,
+            'error'    => '',
+            'viewport' => array( 'width' => 0, 'height' => 0 ),
+            'blocked'  => array(),
+        );
+
+        // The interception's state. It is shared with the event handlers
+        // below, which run while the connection is reading, so it is
+        // passed by reference.
+        $state = array(
+            'main_session'  => '',
+            'main_frame'    => '',
+            'violations'    => array(),
+            'fetch_enabled' => array(),
+        );
+
+        // ── the interception ─────────────────────────────────────────────
+        //
+        // A paused request is answered while the message carrying it is
+        // being read. That is the whole point: the browser is holding the
+        // request until it is answered, so an answer given later would be
+        // an answer given too late — the request would have to be allowed
+        // in order to be refused.
+        $connection->set_event_handler(
+            'Fetch.requestPaused',
+            function ( $message, $conn ) use ( &$state, $policy ) {
+                self::handle_paused_request( $message, $conn, $state, $policy );
+            }
+        );
+
+        // A site that answers with an authentication challenge must not
+        // deadlock the capture: the browser is waiting for an answer
+        // about a paused request, and so are we.
+        $connection->set_event_handler(
+            'Fetch.authRequired',
+            function ( $message, $conn ) {
+                $params    = $message['params'] ?? array();
+                $requestId = (string) ( $params['requestId'] ?? '' );
+                if ( '' === $requestId ) {
+                    return;
+                }
+                $conn->notify(
+                    'Fetch.continueWithAuth',
+                    array(
+                        'requestId' => $requestId,
+                        'authChallengeResponse' => array( 'response' => 'Default' ),
+                    ),
+                    (string) ( $message['sessionId'] ?? '' )
+                );
+            }
+        );
+
+        // A frame that is a target of its own — an out-of-process iframe —
+        // gets its own session, and its own interception. It is paused
+        // before it may make a request, so the interception is installed
+        // before it is released.
+        $connection->set_event_handler(
+            'Target.attachedToTarget',
+            function ( $message, $conn ) use ( &$state ) {
+                $params  = $message['params'] ?? array();
+                $session = (string) ( $params['sessionId'] ?? '' );
+                if ( '' === $session ) {
+                    return;
+                }
+                if ( isset( $state['fetch_enabled'][ $session ] ) ) {
+                    return;
+                }
+                $state['fetch_enabled'][ $session ] = true;
+                $conn->notify(
+                    'Fetch.enable',
+                    array( 'patterns' => array( array( 'urlPattern' => '*', 'requestStage' => 'Request' ) ) ),
+                    $session
+                );
+                $conn->notify( 'Runtime.runIfWaitingForDebugger', array(), $session );
+            }
+        );
 
         $created = $connection->call( 'Target.createTarget', array( 'url' => 'about:blank' ), null, min( 10.0, $timeout ) );
         if ( ! $created['ok'] || empty( $created['result']['targetId'] ) ) {
@@ -251,6 +347,43 @@ class Screenshot_CDP {
             return $out;
         }
         $session = (string) $attached['result']['sessionId'];
+        $state['main_session'] = $session;
+
+        $connection->call( 'Page.enable', array(), $session, min( 10.0, $timeout ) );
+
+        // The interception. Without it the browser may ask for anything,
+        // so a browser that refuses it is a browser this capture must not
+        // use: the alternative is a capture with no protection at all.
+        $fetch = $connection->call(
+            'Fetch.enable',
+            array( 'patterns' => array( array( 'urlPattern' => '*', 'requestStage' => 'Request' ) ) ),
+            $session,
+            min( 10.0, $timeout )
+        );
+        if ( ! $fetch['ok'] ) {
+            $out['error'] = 'the browser refused to intercept requests, so the capture could not be scoped to this site';
+            $out['fatal'] = true;
+            return $out;
+        }
+        $state['fetch_enabled'][ $session ] = true;
+
+        // From here on, a target created by the page — an out-of-process
+        // iframe — is attached automatically and intercepted before it is
+        // allowed to make a request.
+        $connection->call(
+            'Target.setAutoAttach',
+            array( 'autoAttach' => true, 'waitForDebuggerOnStart' => true, 'flatten' => true ),
+            null,
+            min( 10.0, $timeout )
+        );
+
+        // The main frame's id. A request carries the frame it belongs to,
+        // and this is how a request for the *page* is told apart from a
+        // request for a frame inside it.
+        $tree = $connection->call( 'Page.getFrameTree', array(), $session, min( 10.0, $timeout ) );
+        if ( $tree['ok'] ) {
+            $state['main_frame'] = (string) ( $tree['result']['frameTree']['frame']['id'] ?? '' );
+        }
 
         // The viewport. This is the whole point: the device metrics
         // override sets the width the layout and the media queries see,
@@ -271,8 +404,6 @@ class Screenshot_CDP {
             return $out;
         }
 
-        $connection->call( 'Page.enable', array(), $session, min( 10.0, $timeout ) );
-
         $navigate = $connection->call(
             'Page.navigate',
             array( 'url' => $url ),
@@ -292,12 +423,47 @@ class Screenshot_CDP {
         // "the browser failed".
         $error_text = (string) ( $navigate['result']['errorText'] ?? '' );
         if ( '' !== $error_text ) {
-            $out['error']  = 'the page could not be loaded: ' . $error_text;
-            $out['fatal']  = true;
+            $out['error']   = 'the page could not be loaded: ' . $error_text;
+            $out['fatal']   = true;
+            $out['blocked'] = $state['violations'];
+
+            // A redirect the policy refused arrives here as a failed
+            // navigation. The reason is the policy's, not the browser's,
+            // and saying so is the difference between "the page could not
+            // be loaded" and "the page tried to leave this site".
+            foreach ( $state['violations'] as $violation ) {
+                if ( ! empty( $violation['is_main_frame'] ) && 'Document' === $violation['resource_type'] ) {
+                    $out['error'] = 'the page asked to leave this site: ' . $violation['reason'];
+                    break;
+                }
+            }
             return $out;
         }
 
         $connection->wait_for_event( 'Page.loadEventFired', min( 15.0, $timeout ) );
+
+        // Let the page settle. A script that navigates away does so
+        // *after* the load event, and the refusal has to be on the record
+        // before the picture is taken — otherwise the capture would be of
+        // a page that is on its way somewhere else, and the refusal would
+        // be reported as a later event.
+        $settle_until = microtime( true ) + 0.8;
+        while ( microtime( true ) < $settle_until ) {
+            $connection->read( 0.1 );
+        }
+
+        $out['blocked'] = $state['violations'];
+
+        // The page itself was refused. The capture would be of a page that
+        // is not this site, so there is nothing to photograph: the refusal
+        // is reported instead of an image of somebody else's content.
+        foreach ( $state['violations'] as $violation ) {
+            if ( ! empty( $violation['is_main_frame'] ) && 'Document' === $violation['resource_type'] ) {
+                $out['error'] = 'the page asked to leave this site: ' . $violation['reason'];
+                $out['fatal'] = true;
+                return $out;
+            }
+        }
 
         // The effective viewport, read from the page itself. A number
         // measured here cannot be wrong the way an assumed one can.
@@ -370,6 +536,66 @@ class Screenshot_CDP {
 
         $out['ok'] = true;
         return $out;
+    }
+
+    /**
+     * Decide one paused request, and answer the browser.
+     *
+     * The browser is holding this request until it is answered, so the
+     * answer is given here and now: allowed requests are continued, and
+     * every other request is failed with `BlockedByClient` — a reason
+     * that means "the client refused it", which is exactly what happened.
+     * The request never leaves the browser.
+     *
+     * @param array                  $message The `Fetch.requestPaused` event.
+     * @param CDP_Connection          $conn    The connection.
+     * @param array                   $state   The interception's state.
+     * @param Browser_Request_Policy  $policy  What the browser may ask for.
+     */
+    private static function handle_paused_request( $message, $conn, array &$state, $policy ) {
+        $params    = $message['params'] ?? array();
+        $request_id = (string) ( $params['requestId'] ?? '' );
+        if ( '' === $request_id ) {
+            return;
+        }
+        $session       = (string) ( $message['sessionId'] ?? '' );
+        $url           = (string) ( $params['request']['url'] ?? '' );
+        $resource_type = (string) ( $params['resourceType'] ?? 'Other' );
+        $frame_id      = (string) ( $params['frameId'] ?? '' );
+        $is_main_frame = ( '' !== $state['main_frame'] && $frame_id === $state['main_frame'] );
+
+        $decision = $policy->evaluate(
+            $url,
+            array(
+                'resource_type' => $resource_type,
+                'frame_id'      => $frame_id,
+                'is_main_frame' => $is_main_frame,
+            )
+        );
+
+        if ( $decision['allow'] ) {
+            $conn->notify( 'Fetch.continueRequest', array( 'requestId' => $request_id ), $session );
+            return;
+        }
+
+        $conn->notify(
+            'Fetch.failRequest',
+            array( 'requestId' => $request_id, 'errorReason' => 'BlockedByClient' ),
+            $session
+        );
+
+        $state['violations'][] = array(
+            'host'          => $decision['host'],
+            'scheme'        => $decision['scheme'],
+            'port'          => $decision['port'],
+            'category'      => $decision['category'],
+            'reason'        => $decision['reason'],
+            'resource_type' => $resource_type,
+            'is_main_frame' => $is_main_frame,
+            // The destination, without its path and without its query: a
+            // preview credential rides in a query string.
+            'url'           => Browser_Request_Policy::redact_url( $url ),
+        );
     }
 
     /**

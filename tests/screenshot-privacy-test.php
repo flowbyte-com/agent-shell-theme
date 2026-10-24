@@ -1095,10 +1095,10 @@ Agentshell_Test::run( 'tool: an inline capture returns the image and leaves no f
 
     $dir = sys_get_temp_dir() . '/agentshell-privacy-browser-' . getmypid();
     mkdir( $dir, 0700, true );
-    $browser = agentshell_fake_browser_path( $dir );
+    $browser = agentshell_fake_cdp_browser_path( $dir );
     putenv( 'AGENTSHELL_FAKE_CHROME_MODE=success' );
     putenv( 'AGENTSHELL_FAKE_PNG_BYTES=4096' );
-    define( 'AGENTSHELL_CHROME_BIN', $browser );
+    if ( ! defined( 'AGENTSHELL_CHROME_BIN' ) ) { define( 'AGENTSHELL_CHROME_BIN', $browser ); }
 
     $tool  = new Screenshot();
     $store = Screenshot_Store::screenshot_dir();
@@ -1123,7 +1123,7 @@ Agentshell_Test::run( 'tool: an inline capture decodes to exactly the bytes Chro
 
     $dir = sys_get_temp_dir() . '/agentshell-privacy-browser2-' . getmypid();
     mkdir( $dir, 0700, true );
-    $browser = agentshell_fake_browser_path( $dir );
+    $browser = agentshell_fake_cdp_browser_path( $dir );
     putenv( 'AGENTSHELL_FAKE_CHROME_MODE=success' );
     putenv( 'AGENTSHELL_FAKE_PNG_BYTES=4096' );
     if ( ! defined( 'AGENTSHELL_CHROME_BIN' ) ) { define( 'AGENTSHELL_CHROME_BIN', $browser ); }
@@ -1168,7 +1168,7 @@ Agentshell_Test::run( 'tool: an over-limit capture is refused explicitly, not tr
 
     $dir = sys_get_temp_dir() . '/agentshell-privacy-browser3-' . getmypid();
     mkdir( $dir, 0700, true );
-    $browser = agentshell_fake_browser_path( $dir );
+    $browser = agentshell_fake_cdp_browser_path( $dir );
     putenv( 'AGENTSHELL_FAKE_CHROME_MODE=success' );
     // Comfortably over the 5 MB default limit.
     putenv( 'AGENTSHELL_FAKE_PNG_BYTES=' . ( 6 * MB_IN_BYTES ) );
@@ -1236,7 +1236,7 @@ Agentshell_Test::run( 'tool: a stored capture belongs to the actor who took it',
 
     $dir = sys_get_temp_dir() . '/agentshell-privacy-browser4-' . getmypid();
     mkdir( $dir, 0700, true );
-    $browser = agentshell_fake_browser_path( $dir );
+    $browser = agentshell_fake_cdp_browser_path( $dir );
     putenv( 'AGENTSHELL_FAKE_CHROME_MODE=success' );
     putenv( 'AGENTSHELL_FAKE_PNG_BYTES=4096' );
     if ( ! defined( 'AGENTSHELL_CHROME_BIN' ) ) { define( 'AGENTSHELL_CHROME_BIN', $browser ); }

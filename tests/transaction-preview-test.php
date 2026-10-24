@@ -180,7 +180,7 @@ function agentshell_test_capture( array $arguments ) {
     $dir = sys_get_temp_dir() . '/agentshell-txpreview-bin-' . getmypid();
     @mkdir( $dir, 0700, true );
     if ( ! defined( 'AGENTSHELL_CHROME_BIN' ) ) {
-        define( 'AGENTSHELL_CHROME_BIN', agentshell_fake_browser_path( $dir ) );
+        define( 'AGENTSHELL_CHROME_BIN', agentshell_fake_cdp_browser_path( $dir ) );
     }
     putenv( 'AGENTSHELL_FAKE_CHROME_MODE=success' );
     putenv( 'AGENTSHELL_FAKE_PNG_BYTES=4096' );

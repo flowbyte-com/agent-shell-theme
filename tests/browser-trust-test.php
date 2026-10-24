@@ -152,7 +152,15 @@ try {
             $out['destroyed'] = ! is_dir( $path );
         }
     } else {
-        $shot = Screenshot::capture( $op['url'], 800, 600, $workdir . '/shots', false, 'window' );
+        // The capture is scoped to the origin it is pointed at. The
+        // request policy refuses every other destination, and the
+        // browser's resolver rules refuse every other *name* — so a
+        // policy that does not include this URL's origin would block
+        // the capture before it began. The suite is about certificates,
+        // not about the policy, so the policy is built for the URL.
+        $origin = \AgentShell_MCP\Browser_Request_Policy::origin_from_url( (string) $op['url'] );
+        $policy = new \AgentShell_MCP\Browser_Request_Policy( null === $origin ? array() : array( $origin ) );
+        $shot = Screenshot::capture( $op['url'], 800, 600, $workdir . '/shots', false, 'window', $policy );
         $out = array(
             'ok'     => true,
             'size'   => file_exists( $shot['file'] ) ? filesize( $shot['file'] ) : 0,

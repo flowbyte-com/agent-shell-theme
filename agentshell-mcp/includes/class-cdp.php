@@ -91,9 +91,22 @@ class CDP {
      * @param string $mask    Four bytes of mask.
      * @return string The frame.
      */
-    public static function frame( $payload, $opcode = 1, $mask = "\x00\x00\x00\x00" ) {
+    public static function frame( $payload, $opcode = 1, $mask = "\x00\x00\x00\x00", $masked = true ) {
         $length = strlen( $payload );
         $out    = chr( 0x80 | ( $opcode & 0x0F ) ); // FIN + opcode
+
+        if ( ! $masked ) {
+            // A server must not mask the frames it sends (RFC 6455 §5.1),
+            // so the mask bit has to be clear — and no mask key follows.
+            if ( $length < 126 ) {
+                $out .= chr( $length );
+            } elseif ( $length < 65536 ) {
+                $out .= chr( 126 ) . pack( 'n', $length );
+            } else {
+                $out .= chr( 127 ) . pack( 'J', $length );
+            }
+            return $out . $payload;
+        }
 
         if ( $length < 126 ) {
             $out .= chr( 0x80 | $length );
@@ -304,6 +317,10 @@ class CDP_Connection {
     private $pending = array();
     /** @var array<int,array> Events, kept for whoever asks for them. */
     private $events = array();
+    /** @var array<string,callable> Handlers for events, keyed by method name. */
+    private $handlers = array();
+    /** @var array<int,bool> Command ids whose answer nobody is waiting for. */
+    private $discarded = array();
     /** @var int */
     private $next_id = 1;
 
@@ -422,6 +439,43 @@ class CDP_Connection {
     }
 
     /**
+     * Handle an event as it arrives.
+     *
+     * A handler is called with the message and with this connection. It
+     * must not *read* from the connection: reading inside a handler would
+     * consume the answer to whatever command the reader is waiting for.
+     * A handler that must answer the browser — which the Fetch
+     * interception does, for every paused request — uses `notify()`, which
+     * writes without reading.
+     *
+     * @param string   $method  The event method.
+     * @param callable $handler The handler.
+     */
+    public function set_event_handler( $method, callable $handler ) {
+        $this->handlers[ (string) $method ] = $handler;
+    }
+
+    /**
+     * Send a command whose answer nobody needs.
+     *
+     * The command is written and its id remembered, so that the answer
+     * the browser sends back can be discarded instead of being queued as an
+     * unread message.
+     *
+     * @param string      $method     The CDP method.
+     * @param array       $params     The parameters.
+     * @param string|null $session_id The session, when talking to a target.
+     * @return int The command id.
+     */
+    public function notify( $method, array $params = array(), $session_id = null ) {
+        $id = $this->send( $method, $params, $session_id );
+        if ( $id ) {
+            $this->discarded[ $id ] = true;
+        }
+        return $id;
+    }
+
+    /**
      * Send a command.
      *
      * @param string      $method     The CDP method.
@@ -450,6 +504,12 @@ class CDP_Connection {
     /**
      * Read the next message, queueing the events that arrive first.
      *
+     * The timeout is this call's own deadline, and it is honoured: the
+     * socket's timeout is a backstop, not the deadline. A read that
+     * blocked for the socket's timeout would ignore the deadline it was
+     * given, and a caller waiting for an event that was never going to
+     * arrive would wait ten times as long as it asked to.
+     *
      * @param float $timeout The deadline in seconds.
      * @return array|null The decoded message, or null on timeout.
      */
@@ -460,9 +520,33 @@ class CDP_Connection {
             if ( ! empty( $this->pending ) ) {
                 return array_shift( $this->pending );
             }
-            if ( microtime( true ) > $deadline ) {
+            $remaining = $deadline - microtime( true );
+            if ( $remaining <= 0 ) {
                 return null;
             }
+
+            // Wait for the socket to become readable, for no longer than
+            // the deadline. Without this the read below would block for
+            // the socket's own timeout, which is longer than the
+            // deadline this call was given.
+            $read    = array( $this->socket );
+            $write   = null;
+            $except  = null;
+            $seconds = (int) floor( $remaining );
+            $micro   = (int) round( ( $remaining - $seconds ) * 1000000 );
+            if ( $micro >= 1000000 ) {
+                // stream_select() wants the microseconds below a million.
+                $seconds++;
+                $micro = 0;
+            }
+            $ready   = @stream_select( $read, $write, $except, $seconds, $micro );
+            if ( false === $ready ) {
+                return null;
+            }
+            if ( 0 === $ready ) {
+                return null; // the deadline passed with nothing to read
+            }
+
             $chunk = @fread( $this->socket, 65536 );
             if ( false === $chunk || '' === $chunk ) {
                 $meta = stream_get_meta_data( $this->socket );
@@ -508,9 +592,61 @@ class CDP_Connection {
                 }
                 $decoded = json_decode( $frame['payload'], true );
                 if ( is_array( $decoded ) ) {
-                    $this->pending[] = $decoded;
+                    $this->accept( $decoded );
                 }
             }
+        }
+    }
+
+    /**
+     * Take one message off the wire.
+     *
+     * An event is handed to its handler *here*, at the moment it arrives,
+     * rather than when somebody goes looking for it. That is what makes
+     * the Fetch interception possible: the browser is waiting for an
+     * answer about a paused request, and the answer has to be given while
+     * the message is being read, not later.
+     *
+     * @param array $message The decoded message.
+     */
+    private function accept( array $message ) {
+        if ( isset( $message['method'] ) ) {
+            $this->fire( $message );
+            $this->pending[] = $message;
+            return;
+        }
+        if ( isset( $message['id'] ) ) {
+            $id = (int) $message['id'];
+            if ( isset( $this->discarded[ $id ] ) ) {
+                unset( $this->discarded[ $id ] );
+                return;
+            }
+        }
+        $this->pending[] = $message;
+    }
+
+    /**
+     * Hand an event to its handler.
+     *
+     * A handler that throws must not break the connection: the browser is
+     * in the middle of a conversation, and a failed handler is a bug in
+     * this program, not a reason to drop every later message.
+     *
+     * @param array $message The event.
+     */
+    private function fire( array $message ) {
+        $method = (string) ( $message['method'] ?? '' );
+        if ( '' === $method ) {
+            return;
+        }
+        $handler = $this->handlers[ $method ] ?? ( $this->handlers['*'] ?? null );
+        if ( null === $handler ) {
+            return;
+        }
+        try {
+            call_user_func( $handler, $message, $this );
+        } catch ( \Throwable $e ) {
+            // Deliberately swallowed: see above.
         }
     }
 
