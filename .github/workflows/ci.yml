@@ -43,12 +43,19 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Pinned versions. `wp-cli` is downloaded by wp-cli/actions and the
-  # WordPress core version is pinned in the provisioning script, so two
-  # runs of the same commit exercise the same software.
+  # Pinned versions. `wp-cli` is downloaded below and the WordPress core
+  # version is pinned in the provisioning script, so two runs of the same
+  # commit exercise the same software.
+  #
+  # The wp-cli download is also *verified*: the release publishes a
+  # checksum file next to the archive, and the workflow refuses an
+  # archive whose digest does not match it. A pinned version says which
+  # bytes are expected; the checksum says whether those are the bytes
+  # that arrived.
   PHP_VERSION: '8.2'
   WP_CLI_VERSION: '2.11.0'
   WORDPRESS_VERSION: '6.8.2'
+  WP_CLI_SHA256: 'a39021ac809530ea607580dbf93afbc46ba02f86b6cffd03de4b126ca53079f6'
 
 jobs:
   # ── static checks ────────────────────────────────────────────────────────
@@ -56,10 +63,13 @@ jobs:
     name: Static checks (syntax, tool registry, documentation)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      # The actions are pinned to a commit, not to a tag: a tag is a name
+      # that can be moved, and a build that can be moved is not
+      # reproducible. The version is named in the comment.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
         with:
           php-version: ${{ env.PHP_VERSION }}
           extensions: mysqli, mbstring, curl, dom, json
@@ -84,22 +94,37 @@ jobs:
       - name: Documentation gates
         run: php tests/doc-consistency-test.php
 
+      # The deployment is a build, not a copy of the working tree. The
+      # independent review of PR #16 found the test-bed profile readable
+      # over HTTP at its path inside the theme, with a database password in
+      # cleartext: the repository is a theme, and a theme is a directory a
+      # web server serves. These two steps build what a deployment would
+      # contain and assert that it contains nothing that must not ship.
+      - name: Build the release archive
+        run: bash tools/package-release.sh --out "$RUNNER_TEMP/dist"
+
+      - name: Check what the release archive contains
+        run: bash tools/check-release-archive.sh --archive "$(ls "$RUNNER_TEMP"/dist/agentshell-*.tar.gz)"
+
   # ── unit suites ──────────────────────────────────────────────────────────
   unit:
     name: Unit suites (no database)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      # The actions are pinned to a commit, not to a tag: a tag is a name
+      # that can be moved, and a build that can be moved is not
+      # reproducible. The version is named in the comment.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
         with:
           php-version: ${{ env.PHP_VERSION }}
           extensions: mysqli, mbstring, curl, dom, json
           coverage: none
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
 
@@ -135,17 +160,20 @@ jobs:
     name: Integration suites (disposable MySQL + WordPress)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      # The actions are pinned to a commit, not to a tag: a tag is a name
+      # that can be moved, and a build that can be moved is not
+      # reproducible. The version is named in the comment.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
         with:
           php-version: ${{ env.PHP_VERSION }}
           extensions: mysqli, mbstring, curl, dom, json, gd, zip
           coverage: none
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
 
@@ -172,7 +200,29 @@ jobs:
 
       - name: Install wp-cli
         run: |
-          curl -sSL -o /tmp/wp-cli.phar "https://github.com/wp-cli/wp-cli/releases/download/v${{ env.WP_CLI_VERSION }}/wp-cli-${{ env.WP_CLI_VERSION }}.phar"
+          # The archive and the checksum file are downloaded together and
+          # the digest is verified before the file is used. The expected
+          # digest is in the workflow's environment; a mismatch fails the
+          # step, and the file is removed rather than executed.
+          curl -sSL --retry 3 -o /tmp/wp-cli.phar \
+            "https://github.com/wp-cli/wp-cli/releases/download/v${{ env.WP_CLI_VERSION }}/wp-cli-${{ env.WP_CLI_VERSION }}.phar"
+          curl -sSL --retry 3 -o /tmp/wp-cli.phar.sha256 \
+            "https://github.com/wp-cli/wp-cli/releases/download/v${{ env.WP_CLI_VERSION }}/wp-cli-${{ env.WP_CLI_VERSION }}.phar.sha256"
+
+          actual="$(sha256sum /tmp/wp-cli.phar | cut -d' ' -f1)"
+          expected="$(cut -d' ' -f1 < /tmp/wp-cli.phar.sha256)"
+          if [ "$actual" != "$expected" ]; then
+            echo "wp-cli checksum mismatch: expected $expected, got $actual" >&2
+            rm -f /tmp/wp-cli.phar /tmp/wp-cli.phar.sha256
+            exit 1
+          fi
+          # The pinned digest in the workflow must match the published one.
+          if [ "$actual" != "${{ env.WP_CLI_SHA256 }}" ]; then
+            echo "wp-cli does not match the digest pinned in this workflow: expected ${{ env.WP_CLI_SHA256 }}, got $actual" >&2
+            rm -f /tmp/wp-cli.phar /tmp/wp-cli.phar.sha256
+            exit 1
+          fi
+
           chmod +x /tmp/wp-cli.phar
           ln -sf /tmp/wp-cli.phar /tmp/wp
           # GITHUB_PATH takes *directories*, not files, and it only affects

@@ -116,6 +116,61 @@ Verify the links resolve:
 ls -l "<SITE_PATH>/app/public/wp-content/themes/" "<SITE_PATH>/app/public/wp-content/plugins/"
 ```
 
+### 3.1 What a development install serves, and what a deployment ships
+
+The links above are a **development** arrangement: the whole repository is
+under the web server's document root, so the web server can serve the test
+suite, the CI workflow and the release tooling as well as the theme. That
+is convenient and it is not a deployment.
+
+A **deployment** is a build, and the build is explicit:
+
+```bash
+# Build the archive for the revision you reviewed.
+bash tools/package-release.sh --out /tmp/agentshell-dist
+
+# Assert what it contains, and what it must not.
+bash tools/check-release-archive.sh --archive /tmp/agentshell-dist/agentshell-*.tar.gz
+```
+
+`tools/package-release.sh` builds from a *revision's tree*, not from the
+working directory, so a deployment is the code that was reviewed. It ships
+the theme, both plugins and the theme's assets, and it excludes:
+
+| Excluded | Why |
+|---|---|
+| `tests/` | the test suite and every fixture it carries |
+| `.git/`, `.worktrees/` | git's own directory and other checkouts |
+| `.github/` | the CI workflow and its scripts |
+| `tools/`, `docs/_archive/`, `skills/`, `configurator/` | repository tooling, not the product |
+| `agentshell-mcp-daemon/` | the daemon runs on the operator's machine, not on the server |
+| any file that looks like a private key | refused outright, not merely skipped |
+
+`tools/check-release-archive.sh` re-checks the built archive against that
+list, and also works against a directory (`--tree`), so an installation that
+serves the repository directly can be checked too. Both run in CI, so a
+category that is excluded in one and forgotten in the other fails the build
+rather than a deployment.
+
+**The test-bed profile.** The destructive test suites read a profile that
+names a database and its password. It used to live at
+`tests/config/test-bed.json`, inside the repository — and a gitignored file
+is still a file on a disk that may be served. The independent review of PR
+#16 found it readable over HTTP at that path, with the password in
+cleartext. It now lives outside the repository, in the operator's own
+configuration directory:
+
+```bash
+mkdir -p ~/.config/agentshell && chmod 700 ~/.config/agentshell
+cp <your-profile>.json ~/.config/agentshell/test-bed.json
+chmod 600 ~/.config/agentshell/test-bed.json
+```
+
+The harness looks there by default; `AGENTSHELL_TEST_BED_CONFIG` overrides
+it. The in-tree location is still honoured for an installation that has not
+moved its profile yet, and `tools/check-release-archive.sh` reports it if a
+deployment contains one.
+
 ---
 
 ## 4. PHP CLI on `PATH`

@@ -86,6 +86,30 @@ which is why the TTL is lowered **before** the window opens.
 3. **Build the new site beside the old one.** A separate directory, a
    separate database, the same content, the design built and staged.
    Nothing about the old site changes while this happens.
+4. **Build the release, and check it.** The deployment is not a copy of
+   the working tree — it is an archive built from the reviewed revision:
+
+   ```bash
+   bash tools/package-release.sh --out /tmp/agentshell-dist
+   bash tools/check-release-archive.sh --archive /tmp/agentshell-dist/agentshell-*.tar.gz
+   ```
+
+   The archive ships the theme, both plugins and the theme's assets. It
+   does **not** ship the test suite, git's directory, the CI workflow, the
+   repository's tooling, the daemon, or any file that looks like a
+   private key. That exclusion is not a matter of care: the checker asserts
+   it, and CI runs both steps, so a category that is excluded in the
+   packager and forgotten in the checker fails the build.
+
+   **This matters more here than in a development install.** The
+   independent review of PR #16 found the test-bed profile readable over
+   HTTP at its path inside the theme, with a database password in
+   cleartext — because the repository is a theme, and a theme is a
+   directory a web server serves. The profile now lives outside the
+   repository (in the operator's configuration directory), and the
+   deployment does not carry the test suite at all. On `flowbyte.com`
+   there is no test suite, no test bed and no database credential in the
+   served tree, and the checker says so before the window opens.
 
 ### 3.2 The window
 

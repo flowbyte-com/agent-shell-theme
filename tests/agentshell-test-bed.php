@@ -60,11 +60,44 @@ function agentshell_test_bed_config_path() {
     if ( is_string( $env ) && '' !== $env && is_file( $env ) ) {
         return $env;
     }
+
+    // The default location is *outside* the repository.
+    //
+    // The profile names a database and its password. The repository is the
+    // theme, and a theme is a directory a web server serves: the
+    // independent review of PR #16 found the profile readable over HTTP at
+    // its path inside the theme, with the password in cleartext. The
+    // profile is gitignored, which keeps it out of the repository — but a
+    // gitignored file is still a file on a disk that may be served.
+    //
+    // So the default lives in the user's own configuration directory,
+    // which is not under any document root.
+    $home = agentshell_test_bed_home_path();
+    if ( is_file( $home ) ) {
+        return $home;
+    }
+
+    // The in-tree location is still honoured, for an installation that
+    // has not moved its profile yet — and the deployment procedure is
+    // what keeps it out of a production tree.
     $local = __DIR__ . '/config/test-bed.json';
     if ( is_file( $local ) ) {
         return $local;
     }
     return null;
+}
+
+/**
+ * Where the test-bed profile lives when nothing says otherwise.
+ *
+ * @return string The path, whether or not the file is there.
+ */
+function agentshell_test_bed_home_path() {
+    $home = getenv( 'HOME' );
+    if ( ! is_string( $home ) || '' === $home ) {
+        $home = sys_get_temp_dir();
+    }
+    return rtrim( $home, '/' ) . '/.config/agentshell/test-bed.json';
 }
 
 /**
@@ -399,7 +432,9 @@ function agentshell_test_bed_check( array $cfg ) {
         if ( false === $http_body ) {
             $http_error = error_get_last() ? ( error_get_last()['message'] ?? '' ) : '';
         }
-        $http_headers = agentshell_test_last_response_headers( $http_response_header );
+        $http_headers = ( function_exists( 'http_get_last_response_headers' )
+            ? agentshell_test_last_response_headers()
+            : agentshell_test_last_response_headers( $http_response_header ) );
         if ( ! empty( $http_headers ) && preg_match( '/HTTP\/[\d.]+\s+(\d{3})/', (string) $http_headers[0], $m ) ) {
             $http_status = (int) $m[1];
         }
@@ -699,7 +734,9 @@ function agentshell_test_bed_check_http_identity( array $cfg, $token, $expected_
     ) );
     $body = @file_get_contents( $endpoint, false, $ctx );
     $status = 0;
-    $headers = agentshell_test_last_response_headers( $http_response_header );
+    $headers = ( function_exists( 'http_get_last_response_headers' )
+            ? agentshell_test_last_response_headers()
+            : agentshell_test_last_response_headers( $http_response_header ) );
     if ( ! empty( $headers ) && preg_match( '/HTTP\/[\d.]+\s+(\d{3})/', (string) $headers[0], $m ) ) {
         $status = (int) $m[1];
     }

@@ -1,2 +1,5 @@
 .worktrees/
 .superpowers/
+
+# Release archives are build output, not source.
+/dist/
