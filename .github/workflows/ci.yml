@@ -1,0 +1,199 @@
+name: CI
+
+# AgentShell's contract is a WordPress theme plus two plugins, and its
+# safety net is a test suite that runs against a real WordPress and a real
+# MySQL. This workflow runs that suite on every pull request and on every
+# push to main.
+#
+# Three jobs, in increasing order of cost and decreasing order of
+# specificity:
+#
+#   static       PHP and JavaScript syntax, the tool-registry checks
+#                (duplicate registrations, schema drift, the documented
+#                count), and the documentation gates. No database.
+#   unit         every suite that does not need a live WordPress. No
+#                database.
+#   integration  every suite, against a disposable MySQL database and a
+#                disposable WordPress installation created by the job
+#                itself. The job never touches a LocalWP installation, a
+#                developer's database, or any credential that is not
+#                generated during the run.
+#
+# Nothing here is allowed to fail quietly: there is no
+# `continue-on-error`, no `|| true` around the suite, and no step that
+# reports success when the tests did not.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Least privilege: the workflow reads the repository and runs tests. It
+# does not write to it, does not create releases, and does not need
+# package or deployment scopes.
+permissions:
+  contents: read
+
+# One run per branch. A newer push supersedes an in-flight run for the
+# same ref; the run that is cancelled is not a green run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned versions. `wp-cli` is downloaded by wp-cli/actions and the
+  # WordPress core version is pinned in the provisioning script, so two
+  # runs of the same commit exercise the same software.
+  PHP_VERSION: '8.2'
+  WP_CLI_VERSION: 'v2.11.0'
+  WORDPRESS_VERSION: '6.8.2'
+
+jobs:
+  # ── static checks ────────────────────────────────────────────────────────
+  static:
+    name: Static checks (syntax, tool registry, documentation)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mysqli, mbstring, curl, dom, json
+          coverage: none
+
+      - name: PHP syntax
+        run: ./.github/scripts/lint-php.sh
+
+      - name: JavaScript syntax
+        run: ./.github/scripts/lint-js.sh
+
+      # The registry checks are the ones that catch the failure mode the
+      # tool-count test exists for: two plugins publishing the same tool
+      # name (one implementation silently unreachable), a schema that
+      # drifts from the documented contract, and a documented count that
+      # no longer matches the surface an agent can call.
+      - name: Tool registry (count, duplicates, schema)
+        run: |
+          php tests/tool-count-test.php
+          php tests/tool-schema-test.php
+
+      - name: Documentation gates
+        run: php tests/doc-consistency-test.php
+
+  # ── unit suites ──────────────────────────────────────────────────────────
+  unit:
+    name: Unit suites (no database)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mysqli, mbstring, curl, dom, json
+          coverage: none
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # No test-bed profile is present, so the runner takes its unit-only
+      # path: the suites that need a live WordPress are reported as
+      # SKIPPED (unexecuted), and the run still fails if any unit suite
+      # fails. The integration job below is what executes them.
+      - name: Unit suites
+        run: php tests/run-all.php
+
+      # The Node suites are also run by the PHP runner where it can, but
+      # the configurator one is run directly here as well: the PHP
+      # wrapper skips when Node is absent, and a skip is not a test.
+      - name: Configurator state model (Node)
+        run: node tests/configurator-state-test.js
+
+      # The widget runtime's behavioural half needs the JavaScript the
+      # theme actually emits, which only PHP can produce. It is generated
+      # here (through the same bootstrap the PHP suite uses) and handed to
+      # Node, so the suite cannot pass by being skipped.
+      - name: Widget runtime (Node)
+        run: |
+          php -r '
+            require "tests/bootstrap.php";
+            require "functions.php";
+            file_put_contents( "/tmp/agentshell-widget-runtime.js", agentshell_widget_runtime_js() );
+          '
+          node tests/widget-init-test.js /tmp/agentshell-widget-runtime.js
+          rm -f /tmp/agentshell-widget-runtime.js
+
+  # ── integration suites ───────────────────────────────────────────────────
+  integration:
+    name: Integration suites (disposable MySQL + WordPress)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mysqli, mbstring, curl, dom, json, gd, zip
+          coverage: none
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The MySQL instance is the job's own: it is started from the
+      # runner image, listens on a unix socket, and holds exactly one
+      # database. The provisioning script creates a user whose only grant
+      # is that database, and the test harness refuses to run when the
+      # configured user can reach anything else — so "CI never touches a
+      # LocalWP database" is enforced by the harness, not promised here.
+      - name: Start MySQL
+        run: |
+          sudo mkdir -p /var/run/mysqld
+          sudo chown mysql:mysql /var/run/mysqld
+          sudo systemctl start mysql.service
+          mysql --socket=/var/run/mysqld/mysqld.sock -uroot -e "SELECT @@server_uuid, @@datadir, @@port;"
+
+      - name: Install wp-cli
+        run: |
+          curl -sSL -o /tmp/wp-cli.phar https://github.com/wp-cli/wp-cli/releases/download/${{ env.WP_CLI_VERSION }}/wp-cli-${{ env.WP_CLI_VERSION }}.phar
+          chmod +x /tmp/wp-cli.phar
+          echo "/tmp/wp-cli.phar" >> "$GITHUB_PATH"
+
+      - name: Provision the disposable environment
+        env:
+          CI_REPO: ${{ github.workspace }}
+          CI_WP_DIR: ${{ runner.temp }}/agentshell-ci/wp
+          CI_WP_VERSION: ${{ env.WORDPRESS_VERSION }}
+          CI_DB_NAME: agentshell_ci_bed
+          CI_DB_USER: agentshell_ci
+          CI_MYSQL_SOCKET: /var/run/mysqld/mysqld.sock
+        run: |
+          # setup-php does not export its binary path as an environment
+          # variable, so it is resolved from the PHP on PATH.
+          export CI_PHP_BIN="$(command -v php)"
+          ./tests/ci/provision-integration-env.sh \
+            --config-out "${{ github.workspace }}/tests/config/test-bed-ci.json"
+
+      - name: Full suite against the disposable environment
+        env:
+          AGENTSHELL_TEST_BED_CONFIG: ${{ github.workspace }}/tests/config/test-bed-ci.json
+        run: |
+          set -o pipefail
+          php tests/run-all.php 2>&1 | tee integration-suite.log
+
+      # The profile holds a password for a database that exists only for
+      # the length of this job. It is still a credential, so it is not
+      # left behind in the workspace, and the log is not left behind
+      # either.
+      - name: Remove the generated profile and the log
+        if: always()
+        run: rm -f "${{ github.workspace }}/tests/config/test-bed-ci.json" "${{ github.workspace }}/integration-suite.log"

@@ -473,6 +473,11 @@ $suites = array(
     // down can only be kept right by remembering to change it; this one
     // fails the build when it drifts. Non-destructive unit suite.
     'tool-count'          => __DIR__ . '/tool-count-test.php',
+    // The documentation gates of AGENTS.md §9, executable: a stale tool
+    // count, a duplicated tool table or a contradicted source-of-truth
+    // statement is a build failure, not a surprise for whoever reads
+    // the file next.
+    'doc-consistency'     => __DIR__ . '/doc-consistency-test.php',
     // HAL 9001 remediation regression: the published-edit field
     // preservation contract. A partial edit must inherit every field the
     // caller did not name (title, slug, excerpt) instead of blanking it,
@@ -550,6 +555,23 @@ $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );
 $verification_http_fail  = ( is_array( $test_bed_cfg ) && ! $test_bed_http_ok );
 
+// Suites that *read* the test-bed profile and assert something about the
+// live test installation. They are not destructive — they do not mutate the
+// site — but they cannot be answered without one: the profile names a
+// wp_root, a sentinel and a siteurl, and the assertions are about what the
+// live installation reports. In an environment with no test bed (a plain
+// unit run, or CI's unit job) they are **unexecuted**, not passing.
+//
+// Before this list existed these two suites failed in any environment
+// without a test-bed profile: the assertion "test-bed config must load"
+// could not be satisfied by the absence of the thing it was asserting
+// about. A suite that cannot run is reported as skipped, with the reason,
+// so the report never claims a guarantee it did not check.
+$test_bed_required_suites = array(
+    'destructive-identity-guard',
+    'destructive-identity-guard-siteurl',
+);
+
 foreach ( $suites as $name => $path ) {
     echo "\n=== $name ===\n";
     // Explicit "no test bed config" gate: when no test-bed.json is
@@ -583,6 +605,17 @@ foreach ( $suites as $name => $path ) {
     if ( $verification_failed && in_array( $name, $destructive_live_suites, true ) ) {
         echo "  SKIPPED: fail-closed check failed (refusal: " . $test_bed_check['refusal'] . ").\n";
         $skipped_suites[ $name ] = 'failed_verification';
+        Agentshell_Test::$passed = 0;
+        Agentshell_Test::$failed = 0;
+        Agentshell_Test::summary();
+        continue;
+    }
+    if ( in_array( $name, $test_bed_required_suites, true ) && ! is_array( $test_bed_cfg ) ) {
+        echo "  SKIPPED: no test-bed config — this suite asserts something about the\n";
+        echo "           live test installation (profile, sentinel, siteurl), so it has\n";
+        echo "           nothing to assert against without one. It is unexecuted, not\n";
+        echo "           passing.\n";
+        $skipped_suites[ $name ] = 'no_test_bed_config';
         Agentshell_Test::$passed = 0;
         Agentshell_Test::$failed = 0;
         Agentshell_Test::summary();

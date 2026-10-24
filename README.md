@@ -74,6 +74,22 @@ The CSS Grid layout obeys three load-bearing rules — every grid container uses
 | `agentshell-image-to-theme` | Theme the site to match a reference image | `skills/agentshell/image-to-theme/SKILL.md` |
 | `agentshell-widget-builder` | Build a custom widget from a user's description | `skills/agentshell/widget-builder/SKILL.md` |
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and on every push to `main`. It has three jobs, and none of them is allowed to fail quietly — there is no `continue-on-error` and no step that reports success when the tests did not.
+
+| Job | What it runs | Needs a database |
+|---|---|---|
+| `static` | `php -l` over every tracked PHP file, `node --check` over every tracked JavaScript file, the tool-registry checks (`tests/tool-count-test.php`, `tests/tool-schema-test.php`) and the documentation gates (`tests/doc-consistency-test.php`) | no |
+| `unit` | `php tests/run-all.php` with no test-bed profile: every suite that does not need a live WordPress | no |
+| `integration` | `php tests/run-all.php` against a MySQL database and a WordPress installation that the job creates for itself | yes |
+
+**What CI covers of the 1,196-assertion baseline.** The `unit` job runs 1,011 of them (the 1,002 unit assertions plus the 9 documentation gates); the `integration` job runs all 1,196, because the live suites add the other 185. The split is visible in the report: a suite that needs a live installation is printed as `SKIPPED` with the reason (`no_test_bed_config`), never as a pass.
+
+**What still needs a separate environment.** The `integration` job provisions its own environment with `tests/ci/provision-integration-env.sh`: a MySQL database, a user whose only grant is that database, a WordPress install, the `agentshell_site_mode = disposable_test_bed` sentinel, and an HTTP server. The harness refuses to run when the configured database user can reach anything else, so "CI never touches a LocalWP database" is enforced rather than promised. The suites that need a *real browser* (the screenshot capture path against a live page, as opposed to the fake-browser unit suite) are not part of CI: they need Chrome on the host, and the capture path is verified locally and on the showcase instead.
+
+**Secrets.** The integration job generates its database password and its MCP static token at run time, writes them into the disposable site's `wp-config.php` and into a gitignored profile, and deletes the profile when the job ends. No credential is stored in the workflow.
+
 ## Troubleshooting (one-liners)
 
 | Error | Cause |
