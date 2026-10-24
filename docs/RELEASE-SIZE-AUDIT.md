@@ -5,7 +5,11 @@
 §8 for what this file is.
 
 **Date:** 2026-10-24. **Measured on:** the development checkout at
-`/home/v/projects/agent-shell-theme`, revision `d225950`.
+`/home/v/projects/agent-shell-theme`, revision `86d23a6`.
+
+*The numbers move with every commit, because this document is in the
+repository it measures. They are the measurements at the revision named
+above, and they are reproducible with the commands in §2.*
 
 ---
 
@@ -29,8 +33,8 @@ So a copy of "the theme directory" is a copy of the checkout, and a copy
 of the checkout carries the Git history and four other checkouts with it.
 Removing the plugins — which are ~1.5 MB of the 71 MB — changes nothing.
 
-The production distribution is the **release archive**: **345,706 bytes
-compressed, 1,401,575 bytes extracted, 120 files**. That is the number
+The production distribution is the **release archive**: **345,899 bytes
+compressed, 1,402,325 bytes extracted, 120 files**. That is the number
 that matters, and it is 1.6 MB rather than 70 MB.
 
 ### 1.1 The owner's observation, reproduced
@@ -68,10 +72,10 @@ Exactly the owner's report. And what is in those 70 MB:
 
 | # | What | Apparent bytes | Disk | Files |
 |---|---|---:|---:|---:|
-| A1 | the checkout, everything | 62,147,279 | 73 MB | 4,487 |
-| A2 | `.git/` — history and objects | 20,584,693 | 29 MB | 2,814 objects |
+| A1 | the checkout, everything | 62,235,703 | 73 MB | 4,504 |
+| A2 | `.git/` — history and objects | 20,670,831 | 30 MB | 2,821 objects |
 | A3 | `.worktrees/` — four other checkouts | 34,215,046 | 36 MB | 1,703 |
-| A4 | the working tree without A2 and A3 | 7,347,540 | 8.0 MB | ~1,700 |
+| A4 | the working tree without A2 and A3 | 7,349,826 | 8.0 MB | ~1,700 |
 
 **Hard links:** none. `find -type f -links +1` returns nothing, so no
 file is counted twice by `du`.
@@ -90,7 +94,7 @@ part of a deployment.
 
 | What | Apparent | Disk | Classification |
 |---|---:|---:|---|
-| `agentshell-mcp/` (the MCP plugin) | 1,163,901 | 1.4 MB | **production** |
+| `agentshell-mcp/` (the MCP plugin) | 1,164,651 | 1.4 MB | **production** |
 | `agentshell-blocks/` (the Blocks plugin) | 28,963 | 56 KB | **production** |
 | `agentshell-mcp-daemon/` (the standalone daemon) | 26,227 | 60 KB | **production, not deployed** — it runs on the operator's machine |
 | the theme's own PHP, CSS and JSON | 172,496 | 172 KB | **production** |
@@ -109,8 +113,8 @@ part of a deployment.
 
 | # | What | Bytes | Note |
 |---|---:|---:|---|
-| C1 | `agentshell-d225950.tar.gz` | **345,706** (338 KB) | the compressed archive |
-| C2 | extracted | **1,401,575** (1.6 MB) | 120 files, 128 paths |
+| C1 | `agentshell-86d23a6.tar.gz` | **345,899** (338 KB) | the compressed archive |
+| C2 | extracted | **1,402,325** (1.6 MB) | 120 files, 129 paths |
 
 Largest files inside the archive:
 
@@ -290,11 +294,11 @@ carry no `.git`, `.worktrees`, `node_modules`, `vendor`, `dist` or
 
 | What | Before | After | Change |
 |---|---:|---:|---:|
-| the checkout (everything) | 61,871,866 | 62,147,279 | +275,413 (the new code and the new records) |
-| the checkout without `.git` and `.worktrees` | 7,274,495 | 7,347,540 | +73,045 |
+| the checkout (everything) | 61,871,866 | 62,235,703 | +363,837 (the new code and the new records) |
+| the checkout without `.git` and `.worktrees` | 7,274,495 | 7,349,826 | +75,331 |
 | the owner's copy, plugins removed | 60,656,083 | 60,928,188 | **not the deployment** |
-| the release archive, compressed | 327,371 | **345,706** | +18,335 (one new class, §6.1) |
-| the release archive, extracted | 1,357,785 | **1,401,575** | +43,790 |
+| the release archive, compressed | 327,371 | **345,899** | +18,528 (one new class, §6.1) |
+| the release archive, extracted | 1,357,785 | **1,402,325** | +44,540 |
 | files in the release archive | 119 | **120** | +1 |
 | the runtime directories | — | — | one empty nested `.git` removed |
 
@@ -308,7 +312,7 @@ supposed to be deployed.
 
 ### 6.1 The release gained the request policy
 
-`agentshell-mcp/includes/class-browser-request-policy.php` is 43,790
+`agentshell-mcp/includes/class-browser-request-policy.php` is 44,540
 bytes and is part of the product (see the design record
 `docs/SCREENSHOT-REQUEST-POLICY.md`). It is in the archive because the
 archive is built from the revision's tree.
@@ -374,7 +378,7 @@ symlinks into the checkout.** See §4.3 and
 
 **It was the result of copying development material.** The theme is
 172 KB of PHP, CSS and JSON plus 1.2 MB of plugin code: **1.4 MB
-extracted, 345 KB compressed.** Nothing about the theme is excessive,
+extracted, 346 KB compressed.** Nothing about the theme is excessive,
 and nothing was refactored to make it smaller, because nothing needed
 to be.
 

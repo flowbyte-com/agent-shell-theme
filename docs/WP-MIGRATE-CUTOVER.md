@@ -375,7 +375,7 @@ $ rm -rf agent-shell-theme && ln -s /home/v/projects/agent-shell-theme agent-she
 
 **Prefer the validated release package to a raw copy of the source
 repository.** The size audit measured the difference: the release
-archive is **345 KB compressed / 1.4 MB extracted / 120 files**; the
+archive is **346 KB compressed / 1.4 MB extracted / 120 files**; the
 checkout is **61.9 MB**, of which 59 MiB is Git history and other
 checkouts.
 
