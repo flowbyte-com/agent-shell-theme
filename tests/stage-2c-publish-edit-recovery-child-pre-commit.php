@@ -40,7 +40,22 @@ define( 'ABSPATH', rtrim( $wp_root, '/' ) . '/' );
 define( 'WP_USE_THEMES', false );
 $_SERVER['HTTP_HOST']   = 'agentshell-test.local';
 $_SERVER['REQUEST_URI']  = '/';
-ini_set( 'mysqli.default_socket', '/home/v/.config/Local/run/JcloZdmY7/mysql/mysqld.sock' );
+// The database socket comes from the test-bed profile, not from a path
+// baked into this file: the profile is what says where the database is,
+// and it is different on every machine the suite runs on.
+$__asint_bed_cfg_path = getenv( 'AGENTSHELL_TEST_BED_CONFIG' );
+if ( ! is_string( $__asint_bed_cfg_path ) || '' === $__asint_bed_cfg_path ) {
+    $__asint_bed_cfg_path = __DIR__ . '/config/test-bed.json';
+}
+$__asint_bed_cfg = is_file( $__asint_bed_cfg_path )
+    ? json_decode( (string) file_get_contents( $__asint_bed_cfg_path ), true )
+    : null;
+$__asint_db_sock = is_array( $__asint_bed_cfg )
+    ? (string) ( $__asint_bed_cfg['db']['socket'] ?? '' )
+    : '';
+if ( '' !== $__asint_db_sock ) {
+    ini_set( 'mysqli.default_socket', $__asint_db_sock );
+}
 require_once ABSPATH . 'wp-load.php';
 
 require_once ABSPATH . 'wp-content/plugins/agentshell-mcp/includes/class-store.php';

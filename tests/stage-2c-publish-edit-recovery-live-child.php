@@ -179,9 +179,14 @@ function pe_rec_drop_fixture( $mysqli, $orig_id, $shadow_id ) {
 }
 
 function pe_rec_spawn( $script, $args, $barrier_dir, $log_name, $wp_root ) {
-    $php = '/home/v/.config/Local/lightning-services/php-8.2.29+0/bin/linux/bin/php';
-    $env = 'AGENTSHELL_TEST_WP_ROOT=' . escapeshellarg( $wp_root ) . ' '
-         . 'LD_LIBRARY_PATH=/home/v/.config/Local/lightning-services/php-8.2.29+0/bin/linux/shared-libs ';
+    // The same PHP that is running this script, and the child scripts
+    // that sit next to it. Both used to be absolute paths into one
+    // developer's machine.
+    $php = PHP_BINARY;
+    $env = 'AGENTSHELL_TEST_WP_ROOT=' . escapeshellarg( $wp_root ) . ' ';
+    if ( getenv( 'AGENTSHELL_TEST_BED_CONFIG' ) ) {
+        $env .= 'AGENTSHELL_TEST_BED_CONFIG=' . escapeshellarg( (string) getenv( 'AGENTSHELL_TEST_BED_CONFIG' ) ) . ' ';
+    }
     $ini = '-d mysqli.default_socket=/home/v/.config/Local/run/JcloZdmY7/mysql/mysqld.sock';
     $log = $barrier_dir . '/' . $log_name;
     $cmd = $env . escapeshellarg( $php ) . ' ' . $ini . ' ' . escapeshellarg( $script );
@@ -272,7 +277,7 @@ foreach ( glob( $barrier_dir . '/*' ) as $f ) { @unlink( $f ); }
 
 $pre_report = $barrier_dir . '/A.json';
 $pre_proc = pe_rec_spawn(
-    '/home/v/projects/agent-shell-theme/.worktrees/stage-2c-published-content-editing/tests/stage-2c-publish-edit-recovery-child-pre-commit.php',
+    __DIR__ . '/stage-2c-publish-edit-recovery-child-pre-commit.php',
     array( $pre_report, $op_id, $barrier_dir, (string) $orig_id, (string) $shadow_id ),
     $barrier_dir,
     'A.log',
@@ -300,7 +305,7 @@ proc_close( $pre_proc['proc'] );
 // ── Phase B: recover in a fresh process ───────────────────────
 $rec_report = $barrier_dir . '/B.json';
 $rec_proc = pe_rec_spawn(
-    '/home/v/projects/agent-shell-theme/.worktrees/stage-2c-published-content-editing/tests/stage-2c-publish-edit-recovery-child-recover.php',
+    __DIR__ . '/stage-2c-publish-edit-recovery-child-recover.php',
     array( $rec_report, $op_id, (string) $orig_id, (string) $shadow_id ),
     $barrier_dir,
     'B.log',
@@ -318,7 +323,7 @@ if ( null === $B ) { fwrite( STDERR, "phase B produced no report\n" ); exit( 6 )
 // ── Phase C: repeat reconcile is mutation-free ────────────────
 $rep_report = $barrier_dir . '/C.json';
 $rep_proc = pe_rec_spawn(
-    '/home/v/projects/agent-shell-theme/.worktrees/stage-2c-published-content-editing/tests/stage-2c-publish-edit-recovery-child-recover.php',
+    __DIR__ . '/stage-2c-publish-edit-recovery-child-recover.php',
     array( $rep_report, $op_id, (string) $orig_id, (string) $shadow_id ),
     $barrier_dir,
     'C.log',
