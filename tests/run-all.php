@@ -454,6 +454,10 @@ $suites = array(
     // the site rendering inline, and the pruning touches nothing but this
     // feature's own old files. Non-destructive unit suite.
     'custom-css-asset'      => __DIR__ . '/custom-css-asset-test.php',
+    // The deployment is a build, and this suite asserts what it carries.
+    // It builds the archive, so it runs after the suites that change the
+    // working tree.
+    'release-archive'       => __DIR__ . '/release-archive-test.php',
     // HAL 9001 remediation regression: the saved-configuration token
     // block is CSS, not HTML. It was emitted with esc_attr() — the HTML
     // attribute escaper — inside a <style> element, where entities are

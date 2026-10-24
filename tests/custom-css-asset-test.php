@@ -452,15 +452,6 @@ Agentshell_Test::run(
     }
 );
 
-cca_clean();
-@rmdir( cca_uploads_dir() );
-if ( null === $GLOBALS['_agentshell_test_uploads_previous'] ) {
-    unset( $GLOBALS['_agentshell_test_uploads'] );
-} else {
-    $GLOBALS['_agentshell_test_uploads'] = $GLOBALS['_agentshell_test_uploads_previous'];
-}
-unset( $GLOBALS['_agentshell_test_uploads_previous'] );
-
 // ── 8. the doctor distinguishes a staged stylesheet from a missing one ────
 //
 // The independent review of PR #16 found that the doctor reported
@@ -503,6 +494,18 @@ Agentshell_Test::run(
         foreach ( (array) ( $issues['warnings'] ?? array() ) as $warning ) {
             $codes[] = (string) ( $warning['code'] ?? '' );
         }
+
+        // The check must fail for the right reason: the state has to be
+        // readable, or "not reported as missing" would be true only
+        // because the asset could not be examined at all.
+        $committed = get_option( 'agentshell_config', array() );
+        $state     = \AgentShell_MCP\Custom_CSS_Asset::state( $committed );
+        Agentshell_Test::assert_equals(
+            '',
+            (string) $state['error'],
+            'the asset state must be readable: ' . json_encode( $state )
+        );
+
         Agentshell_Test::assert_false(
             in_array( 'CUSTOM_CSS_ASSET_MISSING', $codes, true ),
             'a staged stylesheet must not be reported as a missing asset: ' . json_encode( $codes )
@@ -534,14 +537,26 @@ Agentshell_Test::run(
             'custom_css' => 'body { color: #123456; }',
         ) );
 
-        $issues = \AgentShell_MCP\Doctor::check( get_option( 'agentshell_config', array() ) );
-        $codes  = array();
+        $committed = get_option( 'agentshell_config', array() );
+        $issues    = \AgentShell_MCP\Doctor::check( $committed );
+        $codes     = array();
         foreach ( (array) ( $issues['warnings'] ?? array() ) as $warning ) {
             $codes[] = (string) ( $warning['code'] ?? '' );
         }
+        $state = \AgentShell_MCP\Custom_CSS_Asset::state( $committed );
         Agentshell_Test::assert_true(
             in_array( 'CUSTOM_CSS_ASSET_MISSING', $codes, true ),
             'a committed stylesheet with no file must still be reported: ' . json_encode( $codes )
+                . ' state=' . json_encode( $state )
         );
     }
 );
+
+cca_clean();
+@rmdir( cca_uploads_dir() );
+if ( null === $GLOBALS['_agentshell_test_uploads_previous'] ) {
+    unset( $GLOBALS['_agentshell_test_uploads'] );
+} else {
+    $GLOBALS['_agentshell_test_uploads'] = $GLOBALS['_agentshell_test_uploads_previous'];
+}
+unset( $GLOBALS['_agentshell_test_uploads_previous'] );
