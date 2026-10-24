@@ -155,6 +155,16 @@ The policy is a **name** policy, enforced before any name is resolved.
   own DNS were poisoned, the capture would follow it. That is a
   property of trusting the site, not a gap in the policy.
 
+**One machine has several names.** `localhost`, `127.0.0.1` and `[::1]`
+are three names for the same machine, and a rule that matched names
+rather than machines would let one of them through while refusing the
+others. The policy compares names, and every name is judged on its own:
+`http://127.0.0.1:8099` is refused when the site is
+`http://127.0.0.1:8080` (same name, different origin) and
+`http://localhost:8099` is refused when the site is
+`http://127.0.0.1:8080` (different name, same machine). Both are
+refused, and the refusals name the destination that was refused.
+
 The policy also **classifies** destinations — loopback, private,
 link-local, cloud-metadata, carrier-grade NAT, unspecified, public —
 so that a refusal can say *why* it refused. The classification is for
@@ -217,7 +227,7 @@ which path ran. It is a coarser guarantee and it is labelled as one.
 | `tests/screenshot-request-policy-live-test.php` | the **effect**: a real browser and two disposable sites. The destination receives **no request at all** — not "no content in the image" | slow |
 | `tests/screenshot-request-policy-mutation.php` | that the fast suite **notices** when the mechanism is removed: seven mutants, seven kills | slow-ish |
 
-### 4.1 The fourteen adversarial reproductions
+### 4.1 The sixteen adversarial reproductions
 
 The live suite starts two disposable sites on the machine: the *site*,
 which is the origin the capture is pointed at, and the *secret*, which
@@ -227,18 +237,20 @@ request at all** — so a destination that logs the attempt sees nothing.
 
 | # | How the page tries | | # | How the page tries |
 |---|---|---|---|---|
-| 1 | an HTTP 302 redirect | | 8 | a `<script src>` |
-| 2 | an HTTP 301 redirect | | 9 | `fetch()` |
-| 3 | a meta refresh | | 10 | the IPv6 loopback literal `[::1]` |
-| 4 | `location.href` | | 11 | the cloud metadata address `169.254.169.254` |
-| 5 | `location.replace` | | 12 | a private-network address `10.0.0.1` |
-| 6 | `window.open` | | 13 | another host entirely |
-| 7 | an `<img>` | | 14 | — |
+| 1 | an HTTP 302 redirect | | 9 | `fetch()` |
+| 2 | an HTTP 301 redirect | | 10 | `navigator.sendBeacon()` |
+| 3 | a meta refresh | | 11 | the IPv6 loopback literal `[::1]` |
+| 4 | `location.href` | | 12 | the cloud metadata address `169.254.169.254` |
+| 5 | `location.replace` | | 13 | a private-network address `10.0.0.1` |
+| 6 | `window.open` | | 14 | another host entirely |
+| 7 | an `<img>` | | 15 | the same machine under another name (`localhost`) |
+| 8 | an `<iframe>` and a `<script src>` | | 16 | — |
 
-Plus the two that must keep working: the site's own page, and the
+Plus the three that must keep working: the site's own page, the
 site's own public asset — the latter asserted by checking that the
 asset really *was* requested, because a policy that refused the site's
-own resources would be a policy that broke the site.
+own resources would be a policy that broke the site — and an
+authenticated preview.
 
 **Scenario 10 is the one that separates the two layers.** The secret is
 on the *same host* as the site and on a different port, so the
