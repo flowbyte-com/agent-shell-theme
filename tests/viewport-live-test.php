@@ -37,10 +37,11 @@ function vp_browser() {
     if ( defined( 'AGENTSHELL_CHROME_BIN' ) && is_string( AGENTSHELL_CHROME_BIN ) && '' !== AGENTSHELL_CHROME_BIN ) {
         // The screenshot suites point AGENTSHELL_CHROME_BIN at their fake
         // browser, and that variable outlives the suite in the same
-        // process. The fake browser speaks no DevTools protocol, so this
-        // suite must not use it: it would be testing the fake, not the
-        // browser.
+        // process. The fake browsers speak no DevTools protocol — or
+        // speak a made-up one — so this suite must not use them: it
+        // would be testing the fake, not the browser.
         if ( false === strpos( AGENTSHELL_CHROME_BIN, 'fake-browser' )
+            && false === strpos( AGENTSHELL_CHROME_BIN, 'fake-cdp-browser' )
             && ( is_executable( AGENTSHELL_CHROME_BIN ) || file_exists( AGENTSHELL_CHROME_BIN ) ) ) {
             return AGENTSHELL_CHROME_BIN;
         }

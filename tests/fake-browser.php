@@ -165,3 +165,23 @@ SH;
         return $path;
     }
 }
+if ( ! function_exists( 'agentshell_fake_cdp_browser_path' ) ) {
+    /**
+     * The path of the fake browser that speaks the DevTools Protocol.
+     *
+     * The screenshot tool captures through the DevTools Protocol and
+     * refuses to capture at all when the browser cannot be driven that
+     * way, so the suites that drive the *tool* need a browser that
+     * speaks it. The window fake above cannot: it writes a file and
+     * exits.
+     *
+     * @param string $dir Where to put a copy, when a copy is wanted.
+     * @return string The absolute path of the fake.
+     */
+    function agentshell_fake_cdp_browser_path( $dir = '' ) {
+        // The original, not a copy: the fake loads the protocol client's
+        // framing functions by a path relative to itself, and a copy in a
+        // temporary directory would not find them.
+        return __DIR__ . '/fake-cdp-browser.php';
+    }
+}

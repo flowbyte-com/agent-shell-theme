@@ -350,6 +350,14 @@ $suites = array(
     'navigation-live'      => __DIR__ . '/navigation-live-test.php',
     'screenshot'           => __DIR__ . '/screenshot-test.php',
     'screenshot-privacy'   => __DIR__ . '/screenshot-privacy-test.php',
+    // The request policy: what a capture is allowed to ask for, and what
+    // the browser is told when it asks for something else. The first is
+    // the decision, the second is the interception that enforces it
+    // against a browser that pauses every request, and the third is the
+    // same property against a real browser and two disposable sites.
+    'browser-request-policy' => __DIR__ . '/browser-request-policy-test.php',
+    'screenshot-interception' => __DIR__ . '/screenshot-interception-test.php',
+    'screenshot-request-policy-live' => __DIR__ . '/screenshot-request-policy-live-test.php',
     'browser-isolation'    => __DIR__ . '/browser-isolation-test.php',
     'browser-trust'        => __DIR__ . '/browser-trust-test.php',
     'configurator-state'   => __DIR__ . '/run-configurator-state.php',

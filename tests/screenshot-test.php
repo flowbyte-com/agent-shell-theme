@@ -841,10 +841,47 @@ Agentshell_Test::run( 'capture: the PNG dimensions are read from the header, not
 } );
 
 /** 14. SSRF protection must remain effective. */
-Agentshell_Test::run( 'security: SSRF host check is still enforced', function () {
+Agentshell_Test::run( 'security: the request policy is enforced before the browser is launched', function () {
     $src  = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-screenshot.php' );
     $code = Screenshot_Test_Helpers::code_without_comments( $src );
 
-    Agentshell_Test::assert_true( false !== strpos( $code, 'strcasecmp' ), 'the host comparison must remain' );
-    Agentshell_Test::assert_true( false !== strpos( $code, 'PHP_URL_HOST' ), 'the host must still be parsed out of the URL' );
+    // The guard is no longer a host comparison in the tool: it is the
+    // request policy, which decides on the origin and which the browser
+    // then enforces before every request it makes. The tool must build
+    // the policy and ask it about the URL.
+    Agentshell_Test::assert_true(
+        false !== strpos( $code, 'Browser_Request_Policy' ),
+        'the tool must build the request policy'
+    );
+    Agentshell_Test::assert_true(
+        false !== strpos( $code, '$policy->evaluate(' ),
+        'the tool must decide the URL against the policy'
+    );
+    Agentshell_Test::assert_true(
+        false !== strpos( $code, "['allow']" ),
+        'the tool must refuse a URL the policy does not permit'
+    );
+    Agentshell_Test::assert_true(
+        false !== strpos( $code, "does not match this site" ),
+        'the refusal must say why the URL was refused'
+    );
+});
+
+/** 15. The capture itself must not fall back to a path that cannot enforce the policy. */
+Agentshell_Test::run( 'security: the capture fails closed rather than falling back to the window path', function () {
+    $src  = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php' );
+    $code = Screenshot_Test_Helpers::code_without_comments( $src );
+
+    // The window path is still here — the capture lock, the deadline and
+    // the profile isolation are exercised through it — but it is not
+    // reached automatically. A capture that quietly changed its guarantee
+    // would be worse than a capture that failed and said why.
+    Agentshell_Test::assert_true(
+        false !== strpos( $code, 'legacy window-based capture is not used as a fallback' ),
+        'the automatic fallback must be gone'
+    );
+    Agentshell_Test::assert_true(
+        false !== strpos( $src, '--host-resolver-rules=' ),
+        'the window path must carry the resolver rules'
+    );
 });
