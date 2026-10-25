@@ -313,6 +313,13 @@ $suites = array(
     'widget-init'          => __DIR__ . '/widget-init-test.php',
     'widget-root-marker'  => __DIR__ . '/widget-root-marker-test.php',
     'render-block'         => __DIR__ . '/render-block-test.php',
+    // Navigation blocks: menu selection, resolution, the no-substitution
+    // guarantee, unique ids, escaping, the doctor's dependency warnings and
+    // MCP ↔ configurator equivalence. Must run before nine-area-zones, which
+    // reuses the menu stubs this suite installs first (tests/agentshell-nav-stubs.php).
+    'navigation-blocks'    => __DIR__ . '/navigation-blocks-test.php',
+    // The navigation script's open/close/Escape rules, in Node.
+    'nav-model'            => __DIR__ . '/run-nav-model.php',
     // Nine-area header/footer zones: canonical schema, the three-slot
     // compatibility layer, markup parity, layout derivation, validation,
     // and MCP ↔ configurator equivalence. Defines the wp_core stubs the
@@ -353,6 +360,11 @@ $suites = array(
     'daemon-version'       => __DIR__ . '/daemon-version-test.php',
     'navigation'           => __DIR__ . '/navigation-test.php',
     'navigation-live'      => __DIR__ . '/navigation-live-test.php',
+    // Independent navigation blocks against a real WordPress: a named menu, a
+    // registered location, nested items, unique list ids across placements,
+    // and no substitution when a menu is missing. Destructive (creates and
+    // deletes its own menus), so it is gated like navigation-live.
+    'navigation-blocks-live' => __DIR__ . '/navigation-blocks-live-test.php',
     'screenshot'           => __DIR__ . '/screenshot-test.php',
     'screenshot-privacy'   => __DIR__ . '/screenshot-privacy-test.php',
     // The request policy: what a capture is allowed to ask for, and what
@@ -587,6 +599,7 @@ $destructive_live_suites = array(
     'content-write-live',
     'journal-recovery-live',
     'navigation-live',
+    'navigation-blocks-live',
     'stage-2c-leak-check-live',
     'stage-2c-overlay-live',
     'stage-2c-publish-edit-live',

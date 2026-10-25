@@ -215,6 +215,17 @@ class Update_Zone_Slots extends Base_Tool {
             if ( ( $type === 'widget' || $type === 'wp_widget_area' ) && empty( $block['id'] ) ) {
                 throw new \InvalidArgumentException( "{$where}[{$i}]: {$type} block requires 'id' field." );
             }
+            // Navigation fields (menu / location / mode / label) are validated
+            // by the theme's canonical helper, so the tool cannot store a block
+            // the renderer or the doctor would reject. When the theme is not
+            // loaded the block cannot render either, and there is nothing to
+            // disagree with.
+            if ( $type === 'wp_core' && function_exists( 'agentshell_nav_block_issues' ) ) {
+                $nav_issues = agentshell_nav_block_issues( $block );
+                if ( ! empty( $nav_issues ) ) {
+                    throw new \InvalidArgumentException( "{$where}[{$i}]: " . $nav_issues[0]['message'] );
+                }
+            }
             $out[] = $block;
         }
 

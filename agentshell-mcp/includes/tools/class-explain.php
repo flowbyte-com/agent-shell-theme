@@ -125,7 +125,29 @@ class Explain extends Base_Tool {
                     $out[] = 'WordPress loop';
                     break;
                 case 'wp_core':
-                    $out[] = ( $block['id'] ?? 'core component' );
+                    $core = (string) ( $block['id'] ?? 'core component' );
+                    // Say which menu a navigation block selects: "nav_menu"
+                    // alone does not tell a reader whether it is the primary
+                    // menu or one of five independent ones.
+                    if ( 'nav_menu' === $core && function_exists( 'agentshell_nav_block_is_extended' ) && agentshell_nav_block_is_extended( $block ) ) {
+                        $bits = array();
+                        if ( ! empty( $block['menu'] ) ) {
+                            $bits[] = 'menu: ' . $block['menu'];
+                        }
+                        if ( ! empty( $block['location'] ) ) {
+                            $bits[] = 'location: ' . $block['location'];
+                        }
+                        if ( ! empty( $block['mode'] ) ) {
+                            $bits[] = (string) $block['mode'];
+                        }
+                        if ( ! empty( $block['label'] ) ) {
+                            $bits[] = 'label: ' . $block['label'];
+                        }
+                        if ( ! empty( $bits ) ) {
+                            $core .= ' (' . implode( ', ', $bits ) . ')';
+                        }
+                    }
+                    $out[] = $core;
                     break;
                 case 'widget':
                     $out[] = 'widget ' . ( $block['id'] ?? '' );

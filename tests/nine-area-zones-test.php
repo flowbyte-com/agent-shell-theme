@@ -44,14 +44,12 @@ if ( ! function_exists( 'get_bloginfo' ) ) {
 if ( ! function_exists( 'the_custom_logo' ) ) {
     function the_custom_logo() { /* no logo set: WP prints nothing */ }
 }
-if ( ! function_exists( 'wp_nav_menu' ) ) {
-    function wp_nav_menu( $args = array() ) { return '<nav class="wp-core-nav"><ul><li>Home</li></ul></nav>'; }
-}
+// Shared WordPress menu stubs (tests/agentshell-nav-stubs.php). One stub set
+// for every suite that renders a navigation block, so two suites cannot
+// disagree about what WordPress does.
+require_once __DIR__ . '/agentshell-nav-stubs.php';
 if ( ! function_exists( 'get_search_form' ) ) {
     function get_search_form( $args = array() ) { return '<form class="search-form"><input></form>'; }
-}
-if ( ! function_exists( 'esc_attr__' ) ) {
-    function esc_attr__( $text, $domain = null ) { return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' ); }
 }
 
 /** The canonical ids, written out here on purpose: if the definition changes,

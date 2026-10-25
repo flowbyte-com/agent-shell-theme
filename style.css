@@ -497,6 +497,197 @@ p  { margin: 0 0 var(--space-4, 1rem); }
     box-shadow: inset 0 -2px 0 0 var(--theme-accent);
 }
 
+/* ── Navigation blocks: presentation modes and nested menus ─────────────
+ * A navigation block is a `wp_core` block with id `nav_menu`. A block with
+ * no navigation fields renders exactly as it always has (the rules above);
+ * a block that names a menu adds `wp-core-nav--{mode}` here.
+ *
+ * Progressive enhancement is the rule throughout: every nested list is
+ * reachable without JavaScript on a device with a keyboard (hover and
+ * :focus-within already open it), and the disclosure buttons the script adds
+ * are what make it reachable with a pointer and with assistive technology.
+ */
+
+/* Vertical: a column of links, nested items always visible and indented.
+ * No dropdown, no hover: this is the footer-column shape, and a list of
+ * links that is already on screen needs no interaction to be usable. */
+.wp-core-nav_menu .wp-core-nav--vertical,
+.wp-core-nav_menu .wp-core-nav--vertical ul {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: var(--space-2, 0.5rem);
+}
+
+.wp-core-nav_menu .wp-core-nav--vertical li {
+    width: 100%;
+}
+
+.wp-core-nav_menu .wp-core-nav--vertical .sub-menu {
+    display: flex;
+    position: static;
+    min-width: 0;
+    padding: 0.15rem 0 0 0.9rem;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+}
+
+/* Compact: the list is collapsed behind one button. The collapse is applied
+ * only when the script has marked the nav (`data-nav-enhanced`), so a visitor
+ * without JavaScript sees the links instead of an empty box. */
+.wp-core-nav_menu .wp-core-nav--compact > ul {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: var(--space-2, 0.5rem);
+}
+
+.wp-core-nav_menu .wp-core-nav--compact[data-nav-enhanced="1"]:not(.is-open) > ul {
+    display: none;
+}
+
+.wp-core-nav_menu .nav-compact-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: transparent;
+    border: 1px solid var(--theme-border, #e7e5e4);
+    border-radius: var(--radius-sm, 6px);
+    color: inherit;
+    font: inherit;
+    font-size: 0.85em;
+    padding: 0.35rem 0.6rem;
+    cursor: pointer;
+}
+
+.wp-core-nav_menu .nav-compact-toggle::after {
+    content: '';
+    width: 0.42em;
+    height: 0.42em;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg) translateY(-1px);
+    transition: transform 150ms ease;
+}
+
+.wp-core-nav_menu .nav-compact-toggle[aria-expanded="true"]::after {
+    transform: rotate(-135deg) translateY(-1px);
+}
+
+/* Disclosure button for one submenu. Injected by the script, so it never
+ * appears in the server markup a no-JS visitor receives. */
+.wp-core-nav_menu .wp-core-nav .submenu-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    line-height: 1;
+    padding: 0.4rem;
+    margin-left: 0.1rem;
+    cursor: pointer;
+}
+
+.wp-core-nav_menu .wp-core-nav .submenu-toggle::before {
+    content: '';
+    width: 0.42em;
+    height: 0.42em;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg) translateY(-1px);
+    transition: transform 150ms ease;
+}
+
+.wp-core-nav_menu .wp-core-nav .submenu-toggle[aria-expanded="true"]::before {
+    transform: rotate(-135deg) translateY(-1px);
+}
+
+/* The open state, used by the script. Hover and :focus-within keep working
+ * independently, so the CSS-only path is unchanged. */
+.wp-core-nav_menu .wp-core-nav li.is-open > .sub-menu {
+    display: flex;
+}
+
+/* A dropdown is a list of links, so its rows start at the left edge and fill
+ * the panel. The top-level row keeps its centred alignment (the historical
+ * look); this only affects the panel, which previously inherited
+ * `align-items: center` and centred every dropdown item — readable at one
+ * level, unreadable at three. */
+.wp-core-nav_menu .wp-core-nav .sub-menu {
+    align-items: stretch;
+}
+
+.wp-core-nav_menu .wp-core-nav .sub-menu > li {
+    width: 100%;
+}
+
+/* A dropdown link fills its row (a full-width target), so the disclosure
+ * button for a nested level is positioned at the row's trailing edge instead
+ * of following the link into a line of its own. */
+.wp-core-nav_menu .wp-core-nav .sub-menu .submenu-toggle {
+    position: absolute;
+    top: 0.35rem;
+    right: 0.2rem;
+}
+
+.wp-core-nav_menu .wp-core-nav .sub-menu > li > a {
+    padding-right: 2.2rem;
+}
+
+/* Second level and deeper fly out to the side rather than downwards: a
+ * grandchild that opened below its parent would cover the parent's siblings
+ * and, in a footer, run off the bottom of the page. */
+.wp-core-nav_menu .wp-core-nav .sub-menu .sub-menu {
+    top: 0;
+    left: 100%;
+}
+
+/* A top-level dropdown on the last item would overflow the viewport's right
+ * edge; flip it to open leftwards. A heuristic, and a cheap one: the failure
+ * it prevents (a menu half off-screen) is worse than the case it mishandles
+ * (a last item whose dropdown would have fit). */
+.wp-core-nav_menu .wp-core-nav > ul > li:last-child > .sub-menu {
+    left: auto;
+    right: 0;
+}
+
+.wp-core-nav_menu .wp-core-nav .sub-menu > li:last-child > .sub-menu {
+    left: auto;
+    right: 100%;
+}
+
+/* In the footer, a dropdown opens upwards: there is nothing below the footer
+ * to open into. */
+#zone-footer .wp-core-nav .sub-menu {
+    top: auto;
+    bottom: 100%;
+}
+
+#zone-footer .wp-core-nav .sub-menu .sub-menu {
+    top: 0;
+    bottom: auto;
+    left: 100%;
+}
+
+/* Focus: a visible ring on every focusable thing this feature adds or
+ * touches, on top of whatever the browser draws. */
+.wp-core-nav_menu .wp-core-nav a:focus-visible,
+.wp-core-nav_menu .wp-core-nav .submenu-toggle:focus-visible,
+.wp-core-nav_menu .nav-compact-toggle:focus-visible {
+    outline: 2px solid var(--theme-accent, #e87a3e);
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
+/* Never let a menu push its zone wider than the viewport. */
+.wp-core-nav_menu .wp-core-nav {
+    max-width: 100%;
+    min-width: 0;
+}
+
 /* ── SECTION 6: CONTENT ── */
 .u-full-width { width: 100%; }
 
@@ -775,16 +966,62 @@ p  { margin: 0 0 var(--space-4, 1rem); }
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     }
 
-    .slot-center {
+    /* Header centre slot only. This rule used to be unscoped, so it hid the
+     * footer's centre slot too: every mobile site lost whatever the operator
+     * had put there — a navigation menu, a social row, an address. The
+     * footer's centre is content, not the header's collapsible navigation,
+     * and it is now left alone. */
+    #zone-header .slot-center {
         display: none;
     }
 
+    /* Menus stack on narrow viewports. A horizontal menu in a footer would
+     * otherwise wrap mid-row and read as broken; nested lists become static
+     * (a dropdown positioned over a 390-pixel viewport covers the links it
+     * belongs to) and are opened by the disclosure buttons the script adds. */
+    .wp-core-nav_menu .wp-core-nav,
+    .wp-core-nav_menu .wp-core-nav ul.menu {
+        flex-direction: column;
+        flex-wrap: nowrap;
+        align-items: flex-start;
+        gap: var(--space-2, 0.5rem);
+        width: 100%;
+    }
+
+    .wp-core-nav_menu .wp-core-nav .sub-menu {
+        position: static;
+        display: none;
+        min-width: 0;
+        width: 100%;
+        padding: 0.25rem 0 0.25rem 1rem;
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+        background: transparent;
+    }
+
+    .wp-core-nav_menu .wp-core-nav li.is-open > .sub-menu {
+        display: flex;
+    }
+
+    #zone-footer .wp-core-nav .sub-menu {
+        position: static;
+        bottom: auto;
+    }
+
+    /* Vertical mode keeps its nested items visible on mobile as well: it is
+     * the footer-column shape, chosen precisely so a list of links needs no
+     * interaction to be read. */
+    .wp-core-nav_menu .wp-core-nav--vertical .sub-menu {
+        display: flex;
+        position: static;
+        padding: 0.25rem 0 0.25rem 0.9rem;
+    }
+
     /* The nine-area grid's middle-centre cell takes the same treatment as the
-     * historical centre slot — in the header only. Scoped deliberately: the
-     * existing `.slot-center` rule is unscoped and therefore also hides a
-     * footer's centre slot on mobile, which is a pre-existing behaviour this
-     * change neither copies into the nine-area footer nor alters. Navigation
-     * and mobile behaviour are PR B's subject. */
+     * historical centre slot — in the header only. The header collapses its
+     * centre so the hamburger has something to reveal; the footer never does,
+     * in either layout. */
     #zone-header .zone-slot[data-slot="middle-center"] {
         display: none;
     }

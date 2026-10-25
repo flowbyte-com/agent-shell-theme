@@ -1691,6 +1691,463 @@ function agentshell_zone_layout_class( $zone_id_or_zone ) {
     return agentshell_zone_is_expanded( $zone ) ? 'zone-grid--expanded' : '';
 }
 
+/* ── Navigation blocks ────────────────────────────────────────────────────
+ *
+ * A navigation block is a `wp_core` block with id `nav_menu` and optional
+ * navigation fields:
+ *
+ *   { "type": "wp_core", "id": "nav_menu",
+ *     "menu": "legal",             // menu slug (a name or numeric id also resolve)
+ *     "location": "footer-legal",  // OR a registered theme location
+ *     "mode": "horizontal",        // horizontal | vertical | compact
+ *     "label": "Legal" }           // accessible name
+ *
+ * A block with none of those four fields is the historical primary-location
+ * nav, rendered by exactly the code that rendered it before this existed.
+ *
+ * The menu itself is WordPress's: these helpers only *select* a menu from the
+ * native registry. Nothing here creates, edits or caches menu items.
+ */
+
+/**
+ * Presentation modes a navigation block may declare.
+ *
+ * @return string[]
+ */
+function agentshell_nav_modes() {
+    return array( 'horizontal', 'vertical', 'compact' );
+}
+
+/**
+ * The navigation fields a block may carry.
+ *
+ * @return string[]
+ */
+function agentshell_nav_fields() {
+    return array( 'menu', 'location', 'mode', 'label' );
+}
+
+/**
+ * Whether a block asks for anything beyond the historical primary nav.
+ *
+ * A block that does not is rendered by the original code path, byte for byte,
+ * which is what makes "existing sites keep their behaviour" a structural
+ * property rather than a promise.
+ *
+ * @param array $block
+ * @return bool
+ */
+function agentshell_nav_block_is_extended( array $block ) {
+    foreach ( agentshell_nav_fields() as $field ) {
+        if ( isset( $block[ $field ] ) && '' !== $block[ $field ] ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Validate the navigation fields of one block.
+ *
+ * Returns every problem rather than the first, because an agent that sent a
+ * malformed block benefits from fixing it in one pass. An empty array means
+ * the block is valid.
+ *
+ * @param array $block
+ * @return array<int, array{code:string, message:string}>
+ */
+function agentshell_nav_block_issues( array $block ) {
+    $issues = array();
+
+    $type = $block['type'] ?? '';
+    $id   = $block['id'] ?? '';
+    $has_nav_fields = agentshell_nav_block_is_extended( $block );
+
+    if ( $has_nav_fields && ! ( 'wp_core' === $type && 'nav_menu' === $id ) ) {
+        $issues[] = array(
+            'code'    => 'navigation_fields_on_other_component',
+            'message' => 'Navigation fields (menu, location, mode, label) only apply to a wp_core block with id "nav_menu".',
+        );
+        return $issues;
+    }
+
+    if ( ! $has_nav_fields ) {
+        return $issues;
+    }
+
+    foreach ( array( 'menu', 'location', 'label' ) as $field ) {
+        if ( ! isset( $block[ $field ] ) ) {
+            continue;
+        }
+        $value = $block[ $field ];
+        if ( ! is_string( $value ) ) {
+            $issues[] = array(
+                'code'    => 'navigation_field_not_string',
+                'message' => "Navigation field '{$field}' must be a string.",
+            );
+            continue;
+        }
+        if ( '' !== $value && strlen( $value ) > 100 ) {
+            $issues[] = array(
+                'code'    => 'navigation_field_too_long',
+                'message' => "Navigation field '{$field}' is limited to 100 characters.",
+            );
+        }
+        // A control character in a slug is never intended and cannot survive
+        // an attribute or a URL intact. Refusing it here keeps the storage
+        // clean rather than relying on the escaper downstream.
+        if ( preg_match( '/[\x00-\x1F\x7F]/', $value ) ) {
+            $issues[] = array(
+                'code'    => 'navigation_field_control_characters',
+                'message' => "Navigation field '{$field}' must not contain control characters.",
+            );
+        }
+    }
+
+    $menu     = isset( $block['menu'] ) ? trim( (string) $block['menu'] ) : '';
+    $location = isset( $block['location'] ) ? trim( (string) $block['location'] ) : '';
+    if ( '' !== $menu && '' !== $location ) {
+        $issues[] = array(
+            'code'    => 'navigation_selection_ambiguous',
+            'message' => 'A navigation block selects one target: set either "menu" (a menu slug) or "location" (a registered theme location), not both.',
+        );
+    }
+
+    if ( isset( $block['mode'] ) && '' !== $block['mode'] ) {
+        if ( ! is_string( $block['mode'] ) || ! in_array( $block['mode'], agentshell_nav_modes(), true ) ) {
+            $issues[] = array(
+                'code'    => 'navigation_mode_invalid',
+                'message' => 'Navigation "mode" must be one of: ' . implode( ', ', agentshell_nav_modes() ) . '.',
+            );
+        }
+    }
+
+    return $issues;
+}
+
+/**
+ * The site-specific navigation this configuration depends on.
+ *
+ * Portable configurations travel between sites; menus do not. Listing the
+ * references here is what lets an export say "this design expects a menu called
+ * 'legal'" before somebody imports it onto a site that has never had one.
+ * Resolution happens on the destination — nothing here rewrites a reference.
+ *
+ * @param array $config
+ * @return array{menus: array<int, array{reference:string, kind:string}>, locations: string[]}
+ */
+function agentshell_navigation_dependencies( array $config ) {
+    $menus     = array();
+    $locations = array();
+
+    $zones = isset( $config['zones'] ) && is_array( $config['zones'] ) ? $config['zones'] : array();
+    foreach ( $zones as $zone ) {
+        if ( ! is_array( $zone ) ) {
+            continue;
+        }
+        $blocks = array();
+        if ( isset( $zone['composition'] ) && is_array( $zone['composition'] ) ) {
+            $blocks = array_merge( $blocks, $zone['composition'] );
+        }
+        if ( isset( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
+            foreach ( $zone['slots'] as $slot_blocks ) {
+                if ( is_array( $slot_blocks ) ) {
+                    $blocks = array_merge( $blocks, $slot_blocks );
+                }
+            }
+        }
+        foreach ( $blocks as $block ) {
+            if ( ! is_array( $block ) || 'wp_core' !== ( $block['type'] ?? '' ) || 'nav_menu' !== ( $block['id'] ?? '' ) ) {
+                continue;
+            }
+            if ( ! empty( $block['menu'] ) && is_string( $block['menu'] ) ) {
+                $menus[ 'menu:' . $block['menu'] ] = array(
+                    'reference' => $block['menu'],
+                    'kind'      => 'menu',
+                );
+            }
+            if ( ! empty( $block['location'] ) && is_string( $block['location'] ) ) {
+                $locations[ $block['location'] ] = $block['location'];
+                $menus[ 'location:' . $block['location'] ] = array(
+                    'reference' => $block['location'],
+                    'kind'      => 'location',
+                );
+            }
+        }
+    }
+
+    return array(
+        'menus'     => array_values( $menus ),
+        'locations' => array_values( $locations ),
+    );
+}
+
+/**
+ * Resolve a navigation block's target against the live WordPress registry.
+ *
+ * Resolution order, and nothing else:
+ *
+ *   1. `menu`      — exact slug, then a name that matches exactly one menu,
+ *                    then a numeric term id (legacy manifests).
+ *   2. `location`  — a registered location that has a menu assigned.
+ *   3. neither     — the historical `primary` location.
+ *
+ * There is no "first menu that has items" step and no fallback callback: a
+ * block that names a menu renders that menu or renders a diagnostic, because
+ * showing a different menu than the one configured is worse than showing
+ * nothing.
+ *
+ * @param array $block
+ * @return array{ok:bool, code:string, message:string, reference:string, mode:string, label:string, location:string, menu_id:int, menu_name:string}
+ */
+function agentshell_resolve_nav_block( array $block ) {
+    $mode  = isset( $block['mode'] ) ? (string) $block['mode'] : 'horizontal';
+    if ( ! in_array( $mode, agentshell_nav_modes(), true ) ) {
+        $mode = 'horizontal';
+    }
+
+    $label     = isset( $block['label'] ) ? trim( (string) $block['label'] ) : '';
+    $menu_ref  = isset( $block['menu'] ) ? trim( (string) $block['menu'] ) : '';
+    $location  = isset( $block['location'] ) ? trim( (string) $block['location'] ) : '';
+
+    $base = array(
+        'ok'        => false,
+        'code'      => '',
+        'message'   => '',
+        'reference' => '',
+        'mode'      => $mode,
+        'label'     => $label,
+        'location'  => '',
+        'menu_id'   => 0,
+        'menu_name' => '',
+    );
+
+    // ── historical primary-location nav ──
+    if ( '' === $menu_ref && '' === $location ) {
+        return array_merge( $base, array( 'ok' => true, 'location' => 'primary', 'label' => $label ) );
+    }
+
+    // ── explicit menu ──
+    if ( '' !== $menu_ref ) {
+        $base['reference'] = $menu_ref;
+        $menus = function_exists( 'wp_get_nav_menus' ) ? wp_get_nav_menus() : array();
+
+        $by_slug = null;
+        $by_name = array();
+        $by_id   = null;
+        foreach ( $menus as $menu ) {
+            if ( ! is_object( $menu ) || ! isset( $menu->term_id ) ) {
+                continue;
+            }
+            if ( (string) $menu->slug === $menu_ref ) {
+                $by_slug = $menu;
+            }
+            if ( (string) $menu->name === $menu_ref ) {
+                $by_name[] = $menu;
+            }
+            if ( ctype_digit( $menu_ref ) && (int) $menu->term_id === (int) $menu_ref ) {
+                $by_id = $menu;
+            }
+        }
+
+        $resolved = $by_slug;
+        if ( ! $resolved && 1 === count( $by_name ) ) {
+            // A name is not unique in WordPress; only use it when it picks
+            // exactly one menu. Two menus with the same name is a diagnostic,
+            // not a coin flip.
+            $resolved = $by_name[0];
+        } elseif ( ! $resolved && count( $by_name ) > 1 ) {
+            return array_merge( $base, array(
+                'code'    => 'navigation_menu_ambiguous',
+                'message' => sprintf(
+                    /* translators: %s: the menu reference the block asked for */
+                    __( 'More than one menu is named “%s”. Select one by its slug instead.', 'agentshell' ),
+                    $menu_ref
+                ),
+            ) );
+        }
+        if ( ! $resolved && $by_id ) {
+            $resolved = $by_id;
+        }
+
+        if ( ! $resolved ) {
+            return array_merge( $base, array(
+                'code'    => 'navigation_menu_missing',
+                'message' => sprintf(
+                    /* translators: %s: the menu reference the block asked for */
+                    __( 'This navigation block references the menu “%s”, which does not exist.', 'agentshell' ),
+                    $menu_ref
+                ),
+            ) );
+        }
+
+        return array_merge( $base, array(
+            'ok'        => true,
+            'menu_id'   => (int) $resolved->term_id,
+            'menu_name' => (string) $resolved->name,
+            'label'     => '' !== $label ? $label : (string) $resolved->name,
+        ) );
+    }
+
+    // ── registered theme location ──
+    $base['reference'] = $location;
+    $registered = function_exists( 'get_registered_nav_menus' ) ? get_registered_nav_menus() : array();
+    $assigned   = function_exists( 'get_nav_menu_locations' ) ? get_nav_menu_locations() : array();
+
+    if ( ! is_array( $registered ) || ! array_key_exists( $location, $registered ) ) {
+        return array_merge( $base, array(
+            'code'    => 'navigation_location_unregistered',
+            'message' => sprintf(
+                /* translators: %s: the theme location slug the block asked for */
+                __( 'This navigation block references the theme location “%s”, which the theme does not register.', 'agentshell' ),
+                $location
+            ),
+        ) );
+    }
+
+    $menu_id = isset( $assigned[ $location ] ) ? (int) $assigned[ $location ] : 0;
+    if ( $menu_id <= 0 ) {
+        return array_merge( $base, array(
+            'code'    => 'navigation_location_unassigned',
+            'message' => sprintf(
+                /* translators: %s: the theme location slug the block asked for */
+                __( 'No menu is assigned to the theme location “%s”. Assign one under Appearance → Menus → Manage Locations.', 'agentshell' ),
+                $location
+            ),
+        ) );
+    }
+
+    $menu = function_exists( 'wp_get_nav_menu_object' ) ? wp_get_nav_menu_object( $menu_id ) : false;
+    if ( ! $menu || is_wp_error( $menu ) ) {
+        return array_merge( $base, array(
+            'code'    => 'navigation_location_menu_missing',
+            'message' => sprintf(
+                /* translators: %s: the theme location slug the block asked for */
+                __( 'The theme location “%s” points at a menu that no longer exists.', 'agentshell' ),
+                $location
+            ),
+        ) );
+    }
+
+    $location_label = (string) $registered[ $location ];
+
+    return array_merge( $base, array(
+        'ok'        => true,
+        'location'  => $location,
+        'menu_id'   => (int) $menu->term_id,
+        'menu_name' => (string) $menu->name,
+        'label'     => '' !== $label ? $label : ( '' !== $location_label ? $location_label : (string) $menu->name ),
+    ) );
+}
+
+/**
+ * The editor-facing diagnostic for a navigation block that cannot render.
+ *
+ * Visitors get nothing: an unresolved menu is a configuration problem, and a
+ * public error message about a menu that does not exist helps nobody. Editors
+ * (the people who can fix it) get the reference, the reason and the place to
+ * fix it. The configuration is never rewritten — the block keeps its value so
+ * the menu reappears if it is restored.
+ *
+ * @param array $resolved Result of agentshell_resolve_nav_block().
+ * @return string
+ */
+function agentshell_nav_diagnostic_markup( array $resolved ) {
+    if ( ! is_user_logged_in() || ! current_user_can( 'edit_theme_options' ) ) {
+        return '';
+    }
+    return sprintf(
+        '<p class="wp-core-empty wp-core-nav-diagnostic" data-nav-diagnostic="%s">%s %s</p>',
+        esc_attr( $resolved['code'] ),
+        esc_html( $resolved['message'] ),
+        esc_html__( 'Fix it in Shell Config → Zones → this navigation block.', 'agentshell' )
+    );
+}
+
+/**
+ * Render a navigation block.
+ *
+ * Two paths, and the difference matters:
+ *
+ *   - Not extended (no menu/location/mode/label): the original code, unchanged,
+ *     including its "No menu assigned to Primary Location" message. This is the
+ *     behaviour every existing site has.
+ *   - Extended: the block's own menu, resolved through agentshell_resolve_nav_block()
+ *     and rendered by wp_nav_menu() with the fallback callback disabled, so a
+ *     missing menu can never be replaced by "the first menu that has items".
+ *
+ * Duplicate DOM ids are WordPress's problem and WordPress already solves it:
+ * `wp_nav_menu()` keeps a static list of the ids it has emitted this request
+ * and suffixes repeats (`menu-legal`, `menu-legal-1`). Passing our own
+ * `menu_id` would defeat that, so we do not.
+ *
+ * @param array $block
+ * @return string
+ */
+function agentshell_render_nav_block( array $block ) {
+    if ( ! agentshell_nav_block_is_extended( $block ) ) {
+        $nav = wp_nav_menu(
+            array(
+                'echo'           => false,
+                'theme_location' => 'primary',
+                'container'      => 'nav',
+                'container_class'=> 'wp-core-nav',
+            )
+        ) ?: '<p class="wp-core-empty">' . esc_html__( 'No menu assigned to Primary Location', 'agentshell' ) . '</p>';
+
+        // wp_nav_menu() has no container aria-label arg before 5.5 — add it directly.
+        return str_replace(
+            '<nav class="wp-core-nav">',
+            '<nav class="wp-core-nav" aria-label="' . esc_attr__( 'Primary', 'agentshell' ) . '">',
+            $nav
+        );
+    }
+
+    $resolved = agentshell_resolve_nav_block( $block );
+    if ( empty( $resolved['ok'] ) ) {
+        return agentshell_nav_diagnostic_markup( $resolved );
+    }
+
+    $menu_id = (int) $resolved['menu_id'];
+    $mode    = (string) $resolved['mode'];
+    $label   = '' !== $resolved['label'] ? $resolved['label'] : __( 'Navigation', 'agentshell' );
+
+    if ( $menu_id > 0 ) {
+        $nav = wp_nav_menu(
+            array(
+                'echo'                => false,
+                'menu'                => $menu_id,
+                'container'           => 'nav',
+                'container_class'     => 'wp-core-nav wp-core-nav--' . $mode,
+                'container_aria_label'=> $label,
+                // No fallback: a menu that exists but is empty renders an empty
+                // nav, and a menu that does not exist was handled above. Letting
+                // wp_page_menu() stand in would show a page list the operator
+                // never chose.
+                'fallback_cb'         => false,
+                'depth'               => 0,
+            )
+        );
+    } else {
+        $nav = '';
+    }
+
+    if ( ! is_string( $nav ) || '' === trim( $nav ) || false === strpos( $nav, '<li' ) ) {
+        // Resolved, but nothing to show. Editors get the reason; visitors get
+        // an empty (invisible) block rather than a placeholder page menu.
+        return agentshell_nav_diagnostic_markup( array(
+            'code'    => 'navigation_menu_empty',
+            'message' => sprintf(
+                /* translators: %s: menu name or theme location */
+                __( 'The navigation menu “%s” has no items, so this block renders nothing.', 'agentshell' ),
+                '' !== $resolved['menu_name'] ? $resolved['menu_name'] : $resolved['reference']
+            ),
+        ) );
+    }
+
+    return $nav;
+}
+
 /**
  * The configuration contract.
  *
@@ -2083,7 +2540,7 @@ function agentshell_get_core_components() {
  * @param string $id Component ID (site_title, nav_menu, etc.)
  * @return string HTML
  */
-function agentshell_render_core_component( $id ) {
+function agentshell_render_core_component( $id, array $block = array() ) {
     switch ( $id ) {
         case 'site_title':
             $blog_name = get_bloginfo( 'name' );
@@ -2123,18 +2580,10 @@ function agentshell_render_core_component( $id ) {
             }
             return $logo_markup;
         case 'nav_menu':
-            $nav = wp_nav_menu(array(
-                'echo'           => false,
-                'theme_location'=> 'primary',
-                'container'     => 'nav',
-                'container_class'=> 'wp-core-nav',
-            )) ?: '<p class="wp-core-empty">' . esc_html__( 'No menu assigned to Primary Location', 'agentshell' ) . '</p>';
-            // wp_nav_menu() has no container aria-label arg — add it directly.
-            return str_replace(
-                '<nav class="wp-core-nav">',
-                '<nav class="wp-core-nav" aria-label="' . esc_attr__( 'Primary', 'agentshell' ) . '">',
-                $nav
-            );
+            // Navigation selection lives in agentshell_render_nav_block(): a
+            // block with no navigation fields is the historical primary nav,
+            // byte for byte; a block with them names its own menu.
+            return agentshell_render_nav_block( $block );
         case 'search_form':
             return get_search_form( array( 'echo' => false ) );
         default:
@@ -3034,6 +3483,10 @@ function agentshell_validate_config( $config ) {
                     if ( $block['type'] === 'wp_core' && isset( $block['id'] ) && ! in_array( $block['id'], $allowed_wp_core_ids, true ) ) {
                         return new WP_Error( 'invalid_wp_core_id', "Unknown wp_core id: {$block['id']}" );
                     }
+                    $nav_issues = agentshell_nav_block_issues( (array) $block );
+                    if ( ! empty( $nav_issues ) ) {
+                        return new WP_Error( $nav_issues[0]['code'], $nav_issues[0]['message'] );
+                    }
                 }
             }
             if ( isset( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
@@ -3059,6 +3512,14 @@ function agentshell_validate_config( $config ) {
                         }
                         if ( $block['type'] === 'wp_core' && isset( $block['id'] ) && ! in_array( $block['id'], $allowed_wp_core_ids, true ) ) {
                             return new WP_Error( 'invalid_wp_core_id', "Unknown wp_core id: {$block['id']}" );
+                        }
+                        // Navigation blocks: selection, mode and label are
+                        // validated by the same helper the doctor uses, so the
+                        // configurator, the MCP tools and the import gate
+                        // cannot accept different things.
+                        $nav_issues = agentshell_nav_block_issues( (array) $block );
+                        if ( ! empty( $nav_issues ) ) {
+                            return new WP_Error( $nav_issues[0]['code'], $nav_issues[0]['message'] );
                         }
                     }
                 }
@@ -3495,6 +3956,35 @@ function agentshell_build_config_get_response() {
         $zones = array();
     }
 
+    // Menus the operator can choose from, and the theme's registered
+    // locations. The configurator renders these directly; a navigation block
+    // that references something absent from these lists is shown as
+    // unavailable rather than silently rewritten.
+    $available_menus = array();
+    $all_menus       = function_exists( 'wp_get_nav_menus' ) ? wp_get_nav_menus() : array();
+    foreach ( ( is_array( $all_menus ) ? $all_menus : array() ) as $menu ) {
+        if ( ! is_object( $menu ) || ! isset( $menu->term_id ) ) {
+            continue;
+        }
+        $available_menus[] = array(
+            'id'    => (int) $menu->term_id,
+            'slug'  => (string) $menu->slug,
+            'name'  => (string) $menu->name,
+            'count' => isset( $menu->count ) ? (int) $menu->count : 0,
+        );
+    }
+
+    $registered_nav_locations = function_exists( 'get_registered_nav_menus' ) ? get_registered_nav_menus() : array();
+    $assigned_nav_locations   = function_exists( 'get_nav_menu_locations' ) ? get_nav_menu_locations() : array();
+    $available_menu_locations = array();
+    foreach ( ( is_array( $registered_nav_locations ) ? $registered_nav_locations : array() ) as $location_slug => $location_label ) {
+        $available_menu_locations[] = array(
+            'slug'    => (string) $location_slug,
+            'label'   => (string) $location_label,
+            'menu_id' => isset( $assigned_nav_locations[ $location_slug ] ) ? (int) $assigned_nav_locations[ $location_slug ] : 0,
+        );
+    }
+
     $custom_css = (string) ( $config['custom_css'] ?? '' );
     $custom_js  = (string) ( $config['custom_js']  ?? '' );
 
@@ -3512,6 +4002,9 @@ function agentshell_build_config_get_response() {
         'available_widgets'     => $available_widgets,
         'core_components'       => $core_components,
         'available_widget_areas'=> $available_widget_areas,
+        'available_menus'       => $available_menus,
+        'available_menu_locations' => $available_menu_locations,
+        'navigation_dependencies'  => agentshell_navigation_dependencies( $config ),
         'custom_css'            => $custom_css,
         'custom_js'             => $custom_js,
         'custom_css_bytes'      => strlen( $custom_css ),

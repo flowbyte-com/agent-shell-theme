@@ -41,6 +41,16 @@ class Export_Theme extends Base_Tool {
             'config'      => $config,
         );
 
+        // Advisory, additive: the site-specific navigation this configuration
+        // expects. Menus do not travel with a manifest, so naming them here is
+        // what lets a destination report "this design needs a menu called
+        // 'legal'" instead of rendering an empty block and saying nothing.
+        // Resolution happens on the destination; nothing here rewrites a
+        // reference. Importers that ignore the key are unaffected.
+        if ( function_exists( 'agentshell_navigation_dependencies' ) ) {
+            $manifest['dependencies'] = agentshell_navigation_dependencies( $config );
+        }
+
         return array(
             'manifest'  => $manifest,
             'json'      => wp_json_encode( $manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ),
