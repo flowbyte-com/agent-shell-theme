@@ -37,7 +37,8 @@ class Explain extends Base_Tool {
                 $id   = $zone['id'] ?? '';
                 $desc = array();
                 if ( isset( $zone['slots'] ) ) {
-                    foreach ( array( 'left', 'center', 'right' ) as $slot ) {
+                    $slot_ids = \AgentShell_MCP\Doctor::slot_ids();
+                    foreach ( $slot_ids as $slot ) {
                         $blocks = $zone['slots'][ $slot ] ?? array();
                         if ( ! empty( $blocks ) ) {
                             $desc[] = $slot . ': ' . $this->describe_blocks( $blocks );

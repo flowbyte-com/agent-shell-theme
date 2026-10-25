@@ -394,11 +394,6 @@ body.config-panel-open {
     padding: 0.4rem 0.5rem;
 }
 
-#agentshell-config-panel .zone-slot-builder:first-of-type {
-    border-top: 0;
-    padding-top: 0.25rem;
-}
-
 #agentshell-config-panel .slot-header {
     font-size: 0.7rem;
     text-transform: uppercase;
@@ -406,6 +401,130 @@ body.config-panel-open {
     color: var(--configurator-muted);
     font-weight: 600;
     margin-bottom: 0.25rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+}
+
+/* ── Nine-area picker ─────────────────────────────────────────────────────
+ * The 3×3 map of areas. It is the whole zone at a glance: one button per
+ * area, the selected one filled, a dot count on the areas that hold blocks.
+ * The editor below it is the selected area only, which is what keeps 18
+ * areas out of a sidebar.
+ */
+#agentshell-config-panel .zone-area-picker {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2px;
+    padding: 0.4rem;
+    background: var(--configurator-surface);
+    border-bottom: 1px solid var(--configurator-border);
+}
+
+#agentshell-config-panel .zone-area-btn {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 1.9rem;
+    padding: 0.2rem;
+    background: transparent;
+    border: 1px solid var(--configurator-border);
+    border-radius: 4px;
+    color: var(--configurator-muted);
+    font: inherit;
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease;
+}
+
+#agentshell-config-panel .zone-area-btn:hover {
+    border-color: var(--configurator-accent, #e87a3e);
+}
+
+#agentshell-config-panel .zone-area-btn:focus-visible {
+    outline: 2px solid var(--configurator-accent, #e87a3e);
+    outline-offset: 1px;
+}
+
+#agentshell-config-panel .zone-area-btn.has-blocks {
+    color: var(--configurator-text);
+}
+
+#agentshell-config-panel .zone-area-btn.is-selected {
+    background: var(--configurator-text);
+    border-color: var(--configurator-text);
+    color: var(--configurator-surface, #fff);
+}
+
+#agentshell-config-panel .zone-area-short {
+    font-family: monospace;
+    font-size: 0.7rem;
+}
+
+/* The panel is a self-contained surface: it must not depend on the theme
+ * stylesheet having loaded a visually-hidden utility. Only the accessible
+ * name of a picker button uses this (the visible label is the two-letter
+ * map code), so the rule lives with the panel that needs it. */
+#agentshell-config-panel .screen-reader-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+#agentshell-config-panel .zone-area-count {
+    position: absolute;
+    top: 1px;
+    right: 3px;
+    font-size: 0.6rem;
+    line-height: 1;
+    opacity: 0.75;
+}
+
+#agentshell-config-panel .zone-layout-note {
+    margin: 0;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.7rem;
+    color: var(--configurator-muted);
+    border-bottom: 1px solid var(--configurator-border);
+}
+
+#agentshell-config-panel .zone-layout-note[data-layout="expanded"] {
+    color: var(--configurator-accent, #e87a3e);
+}
+
+#agentshell-config-panel .slot-align-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+}
+
+#agentshell-config-panel .zb-align-label {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.68rem;
+    color: var(--configurator-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+#agentshell-config-panel .zb-align-label select {
+    font-size: 0.7rem;
+    padding: 0.1rem 0.2rem;
+}
+
+#agentshell-config-panel .zb-move-select {
+    font-size: 0.7rem;
+    max-width: 5.4rem;
 }
 
 #agentshell-config-panel .zone-block-area {

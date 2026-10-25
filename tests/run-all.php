@@ -313,6 +313,11 @@ $suites = array(
     'widget-init'          => __DIR__ . '/widget-init-test.php',
     'widget-root-marker'  => __DIR__ . '/widget-root-marker-test.php',
     'render-block'         => __DIR__ . '/render-block-test.php',
+    // Nine-area header/footer zones: canonical schema, the three-slot
+    // compatibility layer, markup parity, layout derivation, validation,
+    // and MCP ↔ configurator equivalence. Defines the wp_core stubs the
+    // shared bootstrap omits, guarded with function_exists().
+    'nine-area-zones'      => __DIR__ . '/nine-area-zones-test.php',
     // Live HTTP regression for the WordPress on-demand block-style pipeline.
     // Reads the rendered home page and asserts that WP's own template
     // enhancement output buffer ran to completion (no placeholder stubs
