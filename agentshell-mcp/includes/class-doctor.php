@@ -265,6 +265,21 @@ class Doctor {
                     $blocks = array_merge( $blocks, $slot_blocks );
                 }
 
+                // A stored config can already contain the alias/canonical
+                // ambiguity that validation refuses on write. Report it: the
+                // canonical area wins when rendering, so the other block is
+                // silently not shown, and the operator should know that.
+                if ( function_exists( 'agentshell_zone_slot_alias_conflicts' ) ) {
+                    foreach ( agentshell_zone_slot_alias_conflicts( $zone ) as $conflict ) {
+                        self::warn(
+                            $warnings,
+                            'SLOT_ALIAS_CONFLICT',
+                            "Zone {$id} carries blocks in both '{$conflict['alias']}' and '{$conflict['canonical']}', which are the same area; only the canonical one renders.",
+                            array( 'zone' => $id )
+                        );
+                    }
+                }
+
                 // Alignment is presentation, but a value outside the known set
                 // would render as the default while the operator believes
                 // otherwise — an alignment control that changes nothing.

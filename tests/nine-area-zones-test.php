@@ -209,6 +209,83 @@ Agentshell_Test::run(
     }
 );
 
+Agentshell_Test::run(
+    'a payload that fills both an alias and its canonical area is refused, not silently reduced',
+    function () {
+        // Normalisation prefers the canonical key, which is deterministic — and
+        // silently drops the alias's blocks. On a write that is data loss, so
+        // validation refuses it and names the pair.
+        $config = array(
+            'zones' => array(
+                array(
+                    'id'    => 'header',
+                    'slots' => array(
+                        'left'        => array( array( 'type' => 'json_block', 'content' => '<b>legacy</b>' ) ),
+                        'middle-left' => array( array( 'type' => 'json_block', 'content' => '<b>canonical</b>' ) ),
+                    ),
+                ),
+            ),
+        );
+
+        $result = agentshell_validate_config( $config );
+        Agentshell_Test::assert_instance_of( 'WP_Error', $result );
+        Agentshell_Test::assert_equals( 'slot_alias_conflict', $result->get_error_code() );
+        Agentshell_Test::assert_true( strpos( $result->get_error_message(), 'middle-left' ) !== false );
+    }
+);
+
+Agentshell_Test::run(
+    'an alias and its canonical area may both be present when only one holds blocks',
+    function () {
+        $ok = agentshell_validate_config( array(
+            'zones' => array(
+                array(
+                    'id'    => 'header',
+                    'slots' => array(
+                        'left'        => array(),
+                        'middle-left' => array( array( 'type' => 'json_block', 'content' => '<b>only</b>' ) ),
+                    ),
+                ),
+            ),
+        ) );
+        Agentshell_Test::assert_true( is_array( $ok ) );
+
+        $ok2 = agentshell_validate_config( array(
+            'zones' => array(
+                array(
+                    'id'    => 'header',
+                    'slots' => array(
+                        'left'        => array( array( 'type' => 'json_block', 'content' => '<b>only</b>' ) ),
+                        'middle-left' => array(),
+                    ),
+                ),
+            ),
+        ) );
+        Agentshell_Test::assert_true( is_array( $ok2 ) );
+    }
+);
+
+Agentshell_Test::run(
+    'the doctor warns about an alias conflict already in storage',
+    function () {
+        $issues = \AgentShell_MCP\Doctor::check( array(
+            'zones' => array(
+                array(
+                    'id'    => 'header',
+                    'slots' => array(
+                        'left'        => array( array( 'type' => 'json_block', 'content' => '<b>legacy</b>' ) ),
+                        'middle-left' => array( array( 'type' => 'json_block', 'content' => '<b>canonical</b>' ) ),
+                    ),
+                ),
+            ),
+        ) );
+        Agentshell_Test::assert_true(
+            in_array( 'SLOT_ALIAS_CONFLICT', array_column( $issues['warnings'], 'code' ), true ),
+            'the ambiguity is reported rather than hidden'
+        );
+    }
+);
+
 // ── 3. rendering parity ─────────────────────────────────────────────────────
 Agentshell_Test::run(
     'a three-slot zone renders the historical markup, byte for byte',

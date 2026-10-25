@@ -1520,6 +1520,38 @@ function agentshell_normalize_zone( $zone ) {
 }
 
 /**
+ * Slot keys that carry blocks in both their canonical and historical form.
+ *
+ * `left` and `middle-left` are the same area. The normaliser prefers the
+ * canonical key, which is deterministic — but a payload that carries *both*
+ * with content is ambiguous, and resolving it silently loses whichever one
+ * lost. Imports are exactly where such payloads appear, so the ambiguity is
+ * surfaced rather than swallowed: validation refuses a write that would lose
+ * blocks, and the doctor warns about a stored config that already contains one.
+ *
+ * @param array $zone
+ * @return array<int, array{alias:string, canonical:string}>
+ */
+function agentshell_zone_slot_alias_conflicts( array $zone ) {
+    $conflicts = array();
+    if ( ! isset( $zone['slots'] ) || ! is_array( $zone['slots'] ) ) {
+        return $conflicts;
+    }
+    foreach ( agentshell_zone_slot_aliases() as $alias => $canonical ) {
+        $alias_blocks  = $zone['slots'][ $alias ] ?? array();
+        $canonical_blocks = $zone['slots'][ $canonical ] ?? array();
+        if ( is_array( $alias_blocks ) && ! empty( $alias_blocks )
+            && is_array( $canonical_blocks ) && ! empty( $canonical_blocks ) ) {
+            $conflicts[] = array(
+                'alias'     => $alias,
+                'canonical' => $canonical,
+            );
+        }
+    }
+    return $conflicts;
+}
+
+/**
  * Normalise every structural zone in a config. Main is untouched: it is a
  * vertical composition, not a slot grid.
  *
@@ -3066,6 +3098,20 @@ function agentshell_validate_config( $config ) {
                             );
                         }
                     }
+                }
+
+                // A payload that fills both `left` and `middle-left` is asking
+                // for one area twice. Normalisation would pick the canonical
+                // one and the other block would vanish, so the write is refused
+                // instead: the caller sends one of them.
+                $alias_conflicts = agentshell_zone_slot_alias_conflicts( $zone );
+                if ( ! empty( $alias_conflicts ) ) {
+                    $conflict = $alias_conflicts[0];
+                    return new WP_Error(
+                        'slot_alias_conflict',
+                        "Zone {$zone['id']} carries blocks in both '{$conflict['alias']}' and '{$conflict['canonical']}', "
+                        . 'which are the same area. Send one of them.'
+                    );
                 }
             }
         }
