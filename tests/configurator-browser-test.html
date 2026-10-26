@@ -300,6 +300,18 @@ async function run() {
   ok('closing with unsaved changes asks first', asked === 1, String(asked));
   ok('a refused close leaves the editor open', q('.as-cfg__rail') !== null);
 
+  // ── A closed editor is not in the tab order ──────────────────────────
+  window.confirm = function () { return true; };
+  q('.as-cfg__close').click();
+  await wait(300);
+  ok('the editor closes', ! q('#agentshell-config-panel').classList.contains('is-open'));
+  ok('the closed editor is hidden from the keyboard',
+     getComputedStyle(q('#agentshell-config-panel')).visibility === 'hidden',
+     getComputedStyle(q('#agentshell-config-panel')).visibility);
+  ok('the closed editor is hidden from assistive technology',
+     q('#agentshell-config-panel').getAttribute('aria-hidden') === 'true',
+     q('#agentshell-config-panel').getAttribute('aria-hidden'));
+
   report();
 }
 

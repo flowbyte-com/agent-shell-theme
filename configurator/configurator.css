@@ -77,13 +77,21 @@
     border-left: 1px solid var(--configurator-border);
     box-shadow: -8px 0 30px rgba(0,0,0,0.14);
     transform: translateX(100%);
-    transition: transform 220ms cubic-bezier(0.2, 0, 0, 1);
+    /* Hidden, not merely off screen. A panel that is only translated away
+       still holds focusable controls: a keyboard user tabbing through the
+       page would walk into an editor they cannot see. `visibility` takes
+       the panel's contents out of the tab order and out of the
+       accessibility tree, and it transitions discretely, so the panel stays
+       visible for the whole of its slide-out. */
+    visibility: hidden;
+    transition: transform 220ms cubic-bezier(0.2, 0, 0, 1), visibility 220ms;
     font-size: 14px;
     line-height: 1.45;
 }
 
 #agentshell-config-panel.is-open {
     transform: none;
+    visibility: visible;
 }
 
 body.config-panel-open {
