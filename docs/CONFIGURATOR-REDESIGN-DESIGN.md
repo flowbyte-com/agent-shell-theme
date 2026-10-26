@@ -106,6 +106,40 @@ The rules that follow from that split:
 - **The transport is the only place that knows the routes.** The routes are
   the theme's own. No MCP tool is added, and no MCP tool changes behaviour.
 
+### 4.0 The interface as it is
+
+The four contexts, at 1600 × 1000, against the site being edited:
+
+**Layout** — the zone switcher, the 3×3 map of the nine areas, the selected
+area's components, the component inspector, and the zone's own appearance
+tokens. The action bar is pinned to the bottom of the dock.
+
+![The Layout context](../images/configurator/editor-layout.png)
+
+**Appearance** — the settings that apply to the whole site, grouped by what
+they are: colours, typography, spacing, borders and shadows.
+
+![The Appearance context](../images/configurator/editor-appearance.png)
+
+**History** — the open transaction, the snapshots and the revisions, with a
+restore on each.
+
+![The History context](../images/configurator/editor-history.png)
+
+**Advanced** — custom CSS and JavaScript in full-height editors, the menus
+the design depends on, and the configuration as JSON.
+
+![The Advanced context](../images/configurator/editor-advanced.png)
+
+**At 390 × 844** the rail becomes a horizontal strip of tabs, the dock takes
+the whole width, and the action bar stays pinned.
+
+![The editor on a narrow viewport](../images/configurator/editor-mobile.png)
+
+These are captures of the real interface: the theme's stylesheet and its four
+modules, driven by the committed browser harness
+(`tests/configurator-browser-test.html`), with the REST responses stubbed.
+
 ### 4.1 The information architecture
 
 Four contexts, chosen because they are the four things an operator actually
