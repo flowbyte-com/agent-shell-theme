@@ -126,7 +126,12 @@ function agentshell_enqueue_assets() {
         return;
     }
     wp_enqueue_style( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.css', array( 'agentshell-style' ), filemtime( get_template_directory() . '/configurator/configurator.css' ) );
-    wp_enqueue_script( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.js', array(), filemtime( get_template_directory() . '/configurator/configurator.js' ), true );
+    // The pure state + zone model is a real dependency of the panel, not a
+    // test-only file. Without this handle the browser never receives
+    // window.AgentshellConfiguratorState, and the panel silently loses the
+    // transaction pill, the save gate and the nine-area editing rules.
+    wp_enqueue_script( 'agentshell-configurator-state', get_template_directory_uri() . '/configurator/configurator-state.js', array(), filemtime( get_template_directory() . '/configurator/configurator-state.js' ), true );
+    wp_enqueue_script( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.js', array( 'agentshell-configurator-state' ), filemtime( get_template_directory() . '/configurator/configurator.js' ), true );
     wp_localize_script( 'agentshell-configurator', 'AgentShellConfig', array(
         'adminUrl'   => admin_url( 'admin-ajax.php' ),
         'restUrl'    => rest_url(),
@@ -1316,6 +1321,376 @@ function agentshell_transaction_open() {
     return \AgentShell_MCP\Transaction_Manager::instance()->is_active();
 }
 
+/* ── Zone slot geometry (the nine-area header/footer grid) ────────────────
+ *
+ * There is one authority for the slot grid: this block. The renderer, the
+ * validator, the REST config endpoint, the MCP tools and the configurator all
+ * ask these functions rather than carrying their own list, because a second
+ * list is a second answer waiting to disagree.
+ *
+ * The canonical schema is nine slots per structural zone, named by row then
+ * column. The historical three-slot schema (`left`, `center`, `right`) is an
+ * input alias for the middle row, and `agentshell_normalize_zone()` is the
+ * only place that translation happens.
+ *
+ * The layout mode is *derived from content*, never stored: a zone is expanded
+ * exactly when a slot outside the middle row holds a block. A site that never
+ * puts anything in the top or bottom rows therefore renders through the
+ * three-slot path it has always used — same markup, same CSS, same pixels.
+ * A flag stored next to the content could disagree with it; the content cannot
+ * disagree with itself.
+ */
+
+/**
+ * The canonical slot grid, ordered top → bottom, left → right.
+ *
+ * @return array<string, string[]> Row name => slot ids in that row.
+ */
+function agentshell_zone_slot_rows() {
+    return array(
+        'top'    => array( 'top-left', 'top-center', 'top-right' ),
+        'middle' => array( 'middle-left', 'middle-center', 'middle-right' ),
+        'bottom' => array( 'bottom-left', 'bottom-center', 'bottom-right' ),
+    );
+}
+
+/**
+ * Every canonical slot id, in render order.
+ *
+ * @return string[]
+ */
+function agentshell_zone_slot_ids() {
+    $ids = array();
+    foreach ( agentshell_zone_slot_rows() as $cells ) {
+        foreach ( $cells as $cell ) {
+            $ids[] = $cell;
+        }
+    }
+    return $ids;
+}
+
+/**
+ * The historical three-slot keys and the canonical slot each one means.
+ *
+ * @return array<string, string>
+ */
+function agentshell_zone_slot_aliases() {
+    return array(
+        'left'   => 'middle-left',
+        'center' => 'middle-center',
+        'right'  => 'middle-right',
+    );
+}
+
+/**
+ * Resolve one input key to its canonical slot id. Unknown keys come back
+ * unchanged so the caller (validation) can refuse them by name.
+ *
+ * @param string $key
+ * @return string
+ */
+function agentshell_zone_slot_canonical_id( $key ) {
+    $key     = (string) $key;
+    $aliases = agentshell_zone_slot_aliases();
+    return isset( $aliases[ $key ] ) ? $aliases[ $key ] : $key;
+}
+
+/**
+ * The legacy three-slot class suffix for a canonical middle-row slot.
+ *
+ * The middle row keeps the original `slot-left` / `slot-center` / `slot-right`
+ * class names in the legacy render path, because that markup is what existing
+ * stylesheets, the mobile rules and the mobile-toggle script match on.
+ *
+ * @param string $slot_id
+ * @return string Empty string for slots outside the middle row.
+ */
+function agentshell_zone_slot_legacy_class( $slot_id ) {
+    $map = array_flip( agentshell_zone_slot_aliases() );
+    return isset( $map[ $slot_id ] ) ? $map[ $slot_id ] : '';
+}
+
+/**
+ * The row a canonical slot id belongs to.
+ *
+ * @param string $slot_id
+ * @return string 'top' | 'middle' | 'bottom' | '' when unknown.
+ */
+function agentshell_zone_slot_row( $slot_id ) {
+    foreach ( agentshell_zone_slot_rows() as $row => $cells ) {
+        if ( in_array( $slot_id, $cells, true ) ) {
+            return $row;
+        }
+    }
+    return '';
+}
+
+/**
+ * Horizontal alignment values a slot may carry.
+ *
+ * @return string[]
+ */
+function agentshell_zone_align_values() {
+    return array( 'start', 'center', 'end', 'stretch' );
+}
+
+/**
+ * Vertical alignment values a row may carry.
+ *
+ * @return string[]
+ */
+function agentshell_zone_row_align_values() {
+    return array( 'start', 'center', 'end' );
+}
+
+/**
+ * Normalise one structural zone to the canonical nine-slot shape.
+ *
+ * Idempotent: normalising an already-canonical zone returns the same slots.
+ * Canonical keys win over their legacy aliases when both are present, and the
+ * result does not depend on the order the input keys arrived in — otherwise a
+ * config would normalise differently depending on how JSON happened to be
+ * ordered, which is the kind of difference that only shows up in production.
+ *
+ * Unknown slot keys are dropped here. Refusing them by name is validation's
+ * job, and validation runs on the raw input before this function does.
+ *
+ * @param array $zone
+ * @return array
+ */
+function agentshell_normalize_zone( $zone ) {
+    if ( ! is_array( $zone ) ) {
+        return $zone;
+    }
+    if ( ! isset( $zone['slots'] ) || ! is_array( $zone['slots'] ) ) {
+        return $zone;
+    }
+
+    $canonical = array_fill_keys( agentshell_zone_slot_ids(), array() );
+
+    // Pass 1: canonical keys, in any order.
+    foreach ( $zone['slots'] as $key => $blocks ) {
+        $key = (string) $key;
+        if ( ! array_key_exists( $key, $canonical ) ) {
+            continue;
+        }
+        $canonical[ $key ] = is_array( $blocks ) ? array_values( $blocks ) : array();
+    }
+
+    // Pass 2: legacy aliases fill only slots the canonical pass left empty.
+    foreach ( agentshell_zone_slot_aliases() as $legacy => $target ) {
+        if ( ! array_key_exists( $legacy, $zone['slots'] ) ) {
+            continue;
+        }
+        if ( ! empty( $canonical[ $target ] ) ) {
+            continue;
+        }
+        $blocks            = $zone['slots'][ $legacy ];
+        $canonical[ $target ] = is_array( $blocks ) ? array_values( $blocks ) : array();
+    }
+
+    $zone['slots'] = $canonical;
+
+    if ( isset( $zone['slot_align'] ) && is_array( $zone['slot_align'] ) ) {
+        $align = array();
+        foreach ( $zone['slot_align'] as $key => $value ) {
+            $slot_id = agentshell_zone_slot_canonical_id( $key );
+            if ( ! array_key_exists( $slot_id, $canonical ) ) {
+                continue;
+            }
+            if ( is_string( $value ) && in_array( $value, agentshell_zone_align_values(), true ) ) {
+                $align[ $slot_id ] = $value;
+            }
+        }
+        $zone['slot_align'] = $align;
+    }
+
+    if ( isset( $zone['row_align'] ) && is_array( $zone['row_align'] ) ) {
+        $align = array();
+        foreach ( agentshell_zone_slot_rows() as $row => $cells ) {
+            $value = $zone['row_align'][ $row ] ?? null;
+            if ( is_string( $value ) && in_array( $value, agentshell_zone_row_align_values(), true ) ) {
+                $align[ $row ] = $value;
+            }
+        }
+        $zone['row_align'] = $align;
+    }
+
+    return $zone;
+}
+
+/**
+ * Slot keys that carry blocks in both their canonical and historical form.
+ *
+ * `left` and `middle-left` are the same area. The normaliser prefers the
+ * canonical key, which is deterministic — but a payload that carries *both*
+ * with content is ambiguous, and resolving it silently loses whichever one
+ * lost. Imports are exactly where such payloads appear, so the ambiguity is
+ * surfaced rather than swallowed: validation refuses a write that would lose
+ * blocks, and the doctor warns about a stored config that already contains one.
+ *
+ * @param array $zone
+ * @return array<int, array{alias:string, canonical:string}>
+ */
+function agentshell_zone_slot_alias_conflicts( array $zone ) {
+    $conflicts = array();
+    if ( ! isset( $zone['slots'] ) || ! is_array( $zone['slots'] ) ) {
+        return $conflicts;
+    }
+    foreach ( agentshell_zone_slot_aliases() as $alias => $canonical ) {
+        $alias_blocks  = $zone['slots'][ $alias ] ?? array();
+        $canonical_blocks = $zone['slots'][ $canonical ] ?? array();
+        if ( is_array( $alias_blocks ) && ! empty( $alias_blocks )
+            && is_array( $canonical_blocks ) && ! empty( $canonical_blocks ) ) {
+            $conflicts[] = array(
+                'alias'     => $alias,
+                'canonical' => $canonical,
+            );
+        }
+    }
+    return $conflicts;
+}
+
+/**
+ * Normalise every structural zone in a config. Main is untouched: it is a
+ * vertical composition, not a slot grid.
+ *
+ * @param array $config
+ * @return array
+ */
+function agentshell_normalize_zones_config( $config ) {
+    if ( ! is_array( $config ) || ! isset( $config['zones'] ) || ! is_array( $config['zones'] ) ) {
+        return $config;
+    }
+    foreach ( $config['zones'] as $i => $zone ) {
+        if ( ! is_array( $zone ) ) {
+            continue;
+        }
+        $id = $zone['id'] ?? '';
+        if ( ! in_array( $id, array( 'header', 'footer' ), true ) ) {
+            continue;
+        }
+        $config['zones'][ $i ] = agentshell_normalize_zone( $zone );
+    }
+    return $config;
+}
+
+/**
+ * Whether a zone renders through the nine-area grid.
+ *
+ * True exactly when a slot outside the middle row holds at least one block.
+ * The middle row is where the historical three slots live, so a site that has
+ * only ever used left/center/right is never expanded — its markup, its CSS
+ * and its mobile behaviour are the ones it shipped with.
+ *
+ * @param array $zone A normalised zone.
+ * @return bool
+ */
+function agentshell_zone_is_expanded( $zone ) {
+    if ( ! is_array( $zone ) || ! isset( $zone['slots'] ) || ! is_array( $zone['slots'] ) ) {
+        return false;
+    }
+    foreach ( agentshell_zone_slot_rows() as $row => $cells ) {
+        if ( 'middle' === $row ) {
+            continue;
+        }
+        foreach ( $cells as $cell ) {
+            if ( ! empty( $zone['slots'][ $cell ] ) ) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/**
+ * The horizontal alignment for one slot, defaulting by column.
+ *
+ * The default is the historical behaviour: left-aligned in the left column,
+ * centred in the centre column, right-aligned in the right column.
+ *
+ * @param array  $zone    A normalised zone.
+ * @param string $slot_id
+ * @return string
+ */
+function agentshell_zone_slot_align( $zone, $slot_id ) {
+    $explicit = $zone['slot_align'][ $slot_id ] ?? '';
+    if ( is_string( $explicit ) && in_array( $explicit, agentshell_zone_align_values(), true ) ) {
+        return $explicit;
+    }
+    $column = substr( (string) $slot_id, strrpos( (string) $slot_id, '-' ) + 1 );
+    if ( 'center' === $column ) {
+        return 'center';
+    }
+    if ( 'right' === $column ) {
+        return 'end';
+    }
+    return 'start';
+}
+
+/**
+ * The vertical alignment for one row, defaulting to centring (which is what
+ * the tri-slot header has always done with `align-items: center`).
+ *
+ * @param array  $zone A normalised zone.
+ * @param string $row  'top' | 'middle' | 'bottom'
+ * @return string
+ */
+function agentshell_zone_row_align( $zone, $row ) {
+    $explicit = $zone['row_align'][ $row ] ?? '';
+    if ( is_string( $explicit ) && in_array( $explicit, agentshell_zone_row_align_values(), true ) ) {
+        return $explicit;
+    }
+    return 'center';
+}
+
+/**
+ * The slot grid described for interface consumers (the configurator).
+ *
+ * Labels are built here rather than in JavaScript so the browser has no list
+ * of its own to drift from the server's. `short` is the two-character map
+ * label ("TL", "MC", …).
+ *
+ * @return array<int, array{id:string,row:string,column:int,label:string,short:string}>
+ */
+function agentshell_zone_areas_for_ui() {
+    $columns = array( 'Left', 'Centre', 'Right' );
+    $areas   = array();
+    foreach ( agentshell_zone_slot_rows() as $row => $cells ) {
+        foreach ( array_values( $cells ) as $column => $slot_id ) {
+            $row_label = ucfirst( $row );
+            $areas[]   = array(
+                'id'     => $slot_id,
+                'row'    => $row,
+                'column' => $column,
+                'label'  => $row_label . ' ' . $columns[ $column ],
+                'short'  => strtoupper( substr( $row, 0, 1 ) . substr( $columns[ $column ], 0, 1 ) ),
+            );
+        }
+    }
+    return $areas;
+}
+
+/**
+ * The modifier class a structural zone needs on its container element.
+ *
+ * Accepts a zone id or an already-resolved zone array, so a caller that is
+ * about to render the zone does not read the configuration twice to ask the
+ * same question.
+ *
+ * Empty string for the three-slot path, so an unchanged site emits exactly
+ * the markup it emitted before this feature existed.
+ *
+ * @param string|array $zone_id_or_zone
+ * @return string
+ */
+function agentshell_zone_layout_class( $zone_id_or_zone ) {
+    $zone = is_array( $zone_id_or_zone )
+        ? $zone_id_or_zone
+        : agentshell_get_zone_config( $zone_id_or_zone );
+    return agentshell_zone_is_expanded( $zone ) ? 'zone-grid--expanded' : '';
+}
+
 /**
  * The configuration contract.
  *
@@ -1396,9 +1771,19 @@ function agentshell_get_config( $source = 'committed' ) {
         }
     }
 
-    // Schema self-healing: migrate flat 'composition' zones to 'slots' for header/footer
+    // Schema self-healing, two steps, both idempotent:
+    //   1. a flat 'composition' on a structural zone becomes slots (the
+    //      historical migration, preserved so old configs keep working);
+    //   2. slots are normalised to the canonical nine-area shape, with the
+    //      historical left/center/right keys mapping onto the middle row.
+    // This is the compatibility layer: it runs on every read, so a config
+    // written by any earlier version renders correctly without a migration
+    // step, and running it twice changes nothing.
     if ( isset( $config['zones'] ) && is_array( $config['zones'] ) ) {
         foreach ( $config['zones'] as &$zone ) {
+            if ( ! is_array( $zone ) ) {
+                continue;
+            }
             if ( in_array( $zone['id'] ?? '', array( 'header', 'footer' ), true ) && ! isset( $zone['slots'] ) ) {
                 $zone['slots'] = array(
                     'left'   => array(),
@@ -1407,7 +1792,11 @@ function agentshell_get_config( $source = 'committed' ) {
                 );
                 unset( $zone['composition'] );
             }
+            if ( in_array( $zone['id'] ?? '', array( 'header', 'footer' ), true ) ) {
+                $zone = agentshell_normalize_zone( $zone );
+            }
         }
+        unset( $zone );
     }
 
     return is_array( $config ) ? $config : array();
@@ -1650,10 +2039,15 @@ function agentshell_remove_widget_from_config( array $config, $id ) {
                 ) );
             }
             if ( ! empty( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
-                foreach ( array( 'left', 'center', 'right' ) as $slot_key ) {
-                    if ( ! empty( $zone['slots'][ $slot_key ] ) && is_array( $zone['slots'][ $slot_key ] ) ) {
+                // Every area, whatever its name: the zone may still be in the
+                // historical three-slot shape (left/center/right) or the
+                // canonical nine-area one. Iterating the keys that are there
+                // strips the reference in both, so removing a widget cannot
+                // leave a dangling reference the doctor would later report.
+                foreach ( $zone['slots'] as $slot_key => $slot_blocks ) {
+                    if ( is_array( $slot_blocks ) ) {
                         $zone['slots'][ $slot_key ] = array_values( array_filter(
-                            $zone['slots'][ $slot_key ],
+                            $slot_blocks,
                             function ( $block ) use ( $id ) {
                                 return ! ( ( $block['type'] ?? '' ) === 'widget' && ( $block['id'] ?? '' ) === $id );
                             }
@@ -2643,17 +3037,81 @@ function agentshell_validate_config( $config ) {
                 }
             }
             if ( isset( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
-                foreach ( array( 'left', 'center', 'right' ) as $slot ) {
-                    if ( isset( $zone['slots'][ $slot ] ) && is_array( $zone['slots'][ $slot ] ) ) {
-                        foreach ( $zone['slots'][ $slot ] as $block ) {
-                            if ( ! isset( $block['type'] ) || ! in_array( $block['type'], $allowed_block_types, true ) ) {
-                                return new WP_Error( 'invalid_slot_block_type', "Unknown slot block type: " . ( $block['type'] ?? 'null' ) );
-                            }
-                            if ( $block['type'] === 'wp_core' && isset( $block['id'] ) && ! in_array( $block['id'], $allowed_wp_core_ids, true ) ) {
-                                return new WP_Error( 'invalid_wp_core_id', "Unknown wp_core id: {$block['id']}" );
-                            }
+                $known_slots = agentshell_zone_slot_ids();
+                $aliases     = agentshell_zone_slot_aliases();
+                foreach ( $zone['slots'] as $slot_key => $slot_blocks ) {
+                    $slot_key  = (string) $slot_key;
+                    $canonical = agentshell_zone_slot_canonical_id( $slot_key );
+                    if ( ! in_array( $canonical, $known_slots, true ) ) {
+                        return new WP_Error(
+                            'invalid_slot_key',
+                            "Unknown slot key: {$slot_key}. Structural zones have nine slots: "
+                            . implode( ', ', $known_slots )
+                            . ' (the historical keys ' . implode( ', ', array_keys( $aliases ) ) . ' mean the middle row).'
+                        );
+                    }
+                    if ( ! is_array( $slot_blocks ) ) {
+                        return new WP_Error( 'invalid_slot_value', "Slot {$slot_key} must be an array of blocks." );
+                    }
+                    foreach ( $slot_blocks as $block ) {
+                        if ( ! isset( $block['type'] ) || ! in_array( $block['type'], $allowed_block_types, true ) ) {
+                            return new WP_Error( 'invalid_slot_block_type', "Unknown slot block type: " . ( $block['type'] ?? 'null' ) );
+                        }
+                        if ( $block['type'] === 'wp_core' && isset( $block['id'] ) && ! in_array( $block['id'], $allowed_wp_core_ids, true ) ) {
+                            return new WP_Error( 'invalid_wp_core_id', "Unknown wp_core id: {$block['id']}" );
                         }
                     }
+                }
+
+                // Alignment is presentation, but a value that is not one of the
+                // known classes would silently render as the default — the
+                // operator would set an alignment and see nothing change.
+                if ( isset( $zone['slot_align'] ) ) {
+                    if ( ! is_array( $zone['slot_align'] ) ) {
+                        return new WP_Error( 'invalid_slot_align', 'slot_align must be an object keyed by slot id.' );
+                    }
+                    foreach ( $zone['slot_align'] as $align_key => $align_value ) {
+                        $align_slot = agentshell_zone_slot_canonical_id( (string) $align_key );
+                        if ( ! in_array( $align_slot, $known_slots, true ) ) {
+                            return new WP_Error( 'invalid_slot_align', "slot_align names an unknown slot: {$align_key}" );
+                        }
+                        if ( ! is_string( $align_value ) || ! in_array( $align_value, agentshell_zone_align_values(), true ) ) {
+                            return new WP_Error(
+                                'invalid_slot_align',
+                                "slot_align[{$align_key}] must be one of: " . implode( ', ', agentshell_zone_align_values() )
+                            );
+                        }
+                    }
+                }
+                if ( isset( $zone['row_align'] ) ) {
+                    if ( ! is_array( $zone['row_align'] ) ) {
+                        return new WP_Error( 'invalid_row_align', 'row_align must be an object keyed by row.' );
+                    }
+                    foreach ( $zone['row_align'] as $row_key => $row_value ) {
+                        if ( ! array_key_exists( (string) $row_key, agentshell_zone_slot_rows() ) ) {
+                            return new WP_Error( 'invalid_row_align', "row_align names an unknown row: {$row_key}" );
+                        }
+                        if ( ! is_string( $row_value ) || ! in_array( $row_value, agentshell_zone_row_align_values(), true ) ) {
+                            return new WP_Error(
+                                'invalid_row_align',
+                                "row_align[{$row_key}] must be one of: " . implode( ', ', agentshell_zone_row_align_values() )
+                            );
+                        }
+                    }
+                }
+
+                // A payload that fills both `left` and `middle-left` is asking
+                // for one area twice. Normalisation would pick the canonical
+                // one and the other block would vanish, so the write is refused
+                // instead: the caller sends one of them.
+                $alias_conflicts = agentshell_zone_slot_alias_conflicts( $zone );
+                if ( ! empty( $alias_conflicts ) ) {
+                    $conflict = $alias_conflicts[0];
+                    return new WP_Error(
+                        'slot_alias_conflict',
+                        "Zone {$zone['id']} carries blocks in both '{$conflict['alias']}' and '{$conflict['canonical']}', "
+                        . 'which are the same area. Send one of them.'
+                    );
                 }
             }
         }
@@ -2697,7 +3155,10 @@ function agentshell_validate_config( $config ) {
         return new WP_Error( 'custom_js_too_large', 'custom_js exceeds 10KB.' );
     }
 
-    return $config;
+    // Validation has accepted the input; store it in canonical form so the
+    // three-slot legacy shape does not survive a write. Normalisation is
+    // idempotent, so a config that is already canonical is returned unchanged.
+    return agentshell_normalize_zones_config( $config );
 }
 
 /**
@@ -2976,14 +3437,25 @@ function agentshell_build_config_get_response() {
                     'id'          => array( 'type' => 'string' ),
                     'label'       => array( 'type' => 'string' ),
                     'composition' => array( 'type' => 'array' ),
+                    // Nine slots per structural zone: three rows of three.
+                    // The historical left/center/right keys are accepted as
+                    // aliases for the middle row and are normalised on write.
                     'slots'      => array(
                         'type'       => 'object',
                         'properties' => array(
-                            'left'   => array( 'type' => 'array' ),
-                            'center' => array( 'type' => 'array' ),
-                            'right'  => array( 'type' => 'array' ),
+                            'top-left'      => array( 'type' => 'array' ),
+                            'top-center'    => array( 'type' => 'array' ),
+                            'top-right'     => array( 'type' => 'array' ),
+                            'middle-left'   => array( 'type' => 'array' ),
+                            'middle-center' => array( 'type' => 'array' ),
+                            'middle-right'  => array( 'type' => 'array' ),
+                            'bottom-left'   => array( 'type' => 'array' ),
+                            'bottom-center' => array( 'type' => 'array' ),
+                            'bottom-right'  => array( 'type' => 'array' ),
                         ),
                     ),
+                    'slot_align'  => array( 'type' => 'object' ),
+                    'row_align'   => array( 'type' => 'object' ),
                 ),
             ),
         ),
@@ -3004,14 +3476,17 @@ function agentshell_build_config_get_response() {
             if ( isset( $zone['composition'] ) && is_array( $zone['composition'] ) ) {
                 $zone['composition'] = array_values( $zone['composition'] );
             }
-            // Normalize slot arrays to sequential arrays
+            // Normalise to the canonical nine-area shape and make every slot
+            // a sequential array, so the configurator always receives the same
+            // nine keys whatever the stored config or its vintage.
             if ( isset( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
-                foreach ( array( 'left', 'center', 'right' ) as $slot_key ) {
-                    if ( isset( $zone['slots'][ $slot_key ] ) && is_array( $zone['slots'][ $slot_key ] ) ) {
-                        $zone['slots'][ $slot_key ] = array_values( $zone['slots'][ $slot_key ] );
-                    } else {
-                        $zone['slots'][ $slot_key ] = array();
-                    }
+                $zone = agentshell_normalize_zone( $zone );
+                foreach ( agentshell_zone_slot_ids() as $slot_id ) {
+                    $zone['slots'][ $slot_id ] = array_values(
+                        ( isset( $zone['slots'][ $slot_id ] ) && is_array( $zone['slots'][ $slot_id ] ) )
+                            ? $zone['slots'][ $slot_id ]
+                            : array()
+                    );
                 }
             }
         }
@@ -3028,6 +3503,12 @@ function agentshell_build_config_get_response() {
         'defaults'              => $flat,
         'config'                => $flat,
         'zones'                 => $zones,
+        'zone_areas'            => agentshell_zone_areas_for_ui(),
+        'zone_align'            => array(
+            'slot' => agentshell_zone_align_values(),
+            'row'  => agentshell_zone_row_align_values(),
+            'rows' => array_keys( agentshell_zone_slot_rows() ),
+        ),
         'available_widgets'     => $available_widgets,
         'core_components'       => $core_components,
         'available_widget_areas'=> $available_widget_areas,

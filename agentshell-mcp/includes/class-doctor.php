@@ -17,7 +17,60 @@ class Doctor {
     const ALLOWED_BLOCKS = array( 'wp_loop', 'wp_core', 'widget', 'json_block', 'wp_widget_area' );
     const ALLOWED_CORE   = array( 'site_title', 'site_tagline', 'site_logo', 'nav_menu', 'search_form' );
     const ALLOWED_LIBS   = array( 'd3', 'mathjs' );
-    const SLOTS          = array( 'left', 'center', 'right' );
+
+    // The canonical nine-area grid (AGENTS.md §3). The theme owns the
+    // definition; these constants are the fallback for the plugin-without-theme
+    // case (tool unit tests, a plugin left active with another theme), and
+    // tests/nine-area-zones-test.php asserts the two agree.
+    const SLOTS = array(
+        'top-left', 'top-center', 'top-right',
+        'middle-left', 'middle-center', 'middle-right',
+        'bottom-left', 'bottom-center', 'bottom-right',
+    );
+    const SLOT_ALIASES = array(
+        'left'   => 'middle-left',
+        'center' => 'middle-center',
+        'right'  => 'middle-right',
+    );
+    const SLOT_ROWS = array(
+        'top'    => array( 'top-left', 'top-center', 'top-right' ),
+        'middle' => array( 'middle-left', 'middle-center', 'middle-right' ),
+        'bottom' => array( 'bottom-left', 'bottom-center', 'bottom-right' ),
+    );
+    const SLOT_ALIGN_VALUES     = array( 'start', 'center', 'end', 'stretch' );
+    const SLOT_ROW_ALIGN_VALUES = array( 'start', 'center', 'end' );
+
+    /** Canonical area ids, in render order. */
+    public static function slot_ids() {
+        return function_exists( 'agentshell_zone_slot_ids' ) ? agentshell_zone_slot_ids() : self::SLOTS;
+    }
+
+    /** Row name => area ids. */
+    public static function slot_rows() {
+        return function_exists( 'agentshell_zone_slot_rows' ) ? agentshell_zone_slot_rows() : self::SLOT_ROWS;
+    }
+
+    /** Historical key => canonical area id. */
+    public static function slot_aliases() {
+        return function_exists( 'agentshell_zone_slot_aliases' ) ? agentshell_zone_slot_aliases() : self::SLOT_ALIASES;
+    }
+
+    /** Resolve one input key to its canonical area id. */
+    public static function canonical_slot_id( $key ) {
+        $aliases = self::slot_aliases();
+        $key     = (string) $key;
+        return isset( $aliases[ $key ] ) ? $aliases[ $key ] : $key;
+    }
+
+    /** The row an area belongs to, or '' when unknown. */
+    public static function slot_row( $slot_id ) {
+        foreach ( self::slot_rows() as $row => $cells ) {
+            if ( in_array( $slot_id, $cells, true ) ) {
+                return $row;
+            }
+        }
+        return '';
+    }
 
     /**
      * Run all checks against a config.
@@ -193,13 +246,68 @@ class Doctor {
 
             $blocks = array();
             if ( isset( $zone['slots'] ) && is_array( $zone['slots'] ) ) {
-                foreach ( self::SLOTS as $slot ) {
-                    $slot_blocks = $zone['slots'][ $slot ] ?? array();
+                $known_slots = self::slot_ids();
+                foreach ( $zone['slots'] as $slot_key => $slot_blocks ) {
+                    $slot = self::canonical_slot_id( $slot_key );
+                    if ( ! in_array( $slot, $known_slots, true ) ) {
+                        self::err(
+                            $errors,
+                            'SLOT_UNKNOWN',
+                            "Zone {$id}: '{$slot_key}' is not a slot area. Areas are: " . implode( ', ', $known_slots ) . '.',
+                            array( 'zone' => $id )
+                        );
+                        continue;
+                    }
                     if ( ! is_array( $slot_blocks ) ) {
-                        self::err( $errors, 'SLOT_INVALID', "Zone {$id} slot {$slot} must be an array.", array( 'zone' => $id ) );
+                        self::err( $errors, 'SLOT_INVALID', "Zone {$id} slot {$slot_key} must be an array.", array( 'zone' => $id ) );
                         continue;
                     }
                     $blocks = array_merge( $blocks, $slot_blocks );
+                }
+
+                // A stored config can already contain the alias/canonical
+                // ambiguity that validation refuses on write. Report it: the
+                // canonical area wins when rendering, so the other block is
+                // silently not shown, and the operator should know that.
+                if ( function_exists( 'agentshell_zone_slot_alias_conflicts' ) ) {
+                    foreach ( agentshell_zone_slot_alias_conflicts( $zone ) as $conflict ) {
+                        self::warn(
+                            $warnings,
+                            'SLOT_ALIAS_CONFLICT',
+                            "Zone {$id} carries blocks in both '{$conflict['alias']}' and '{$conflict['canonical']}', which are the same area; only the canonical one renders.",
+                            array( 'zone' => $id )
+                        );
+                    }
+                }
+
+                // Alignment is presentation, but a value outside the known set
+                // would render as the default while the operator believes
+                // otherwise — an alignment control that changes nothing.
+                if ( isset( $zone['slot_align'] ) ) {
+                    if ( ! is_array( $zone['slot_align'] ) ) {
+                        self::err( $errors, 'SLOT_ALIGN_INVALID', "Zone {$id}: slot_align must be an object keyed by area.", array( 'zone' => $id ) );
+                    } else {
+                        foreach ( $zone['slot_align'] as $align_key => $align_value ) {
+                            if ( ! in_array( self::canonical_slot_id( $align_key ), $known_slots, true ) ) {
+                                self::err( $errors, 'SLOT_ALIGN_INVALID', "Zone {$id}: slot_align names an unknown area '{$align_key}'.", array( 'zone' => $id ) );
+                            } elseif ( ! in_array( $align_value, self::SLOT_ALIGN_VALUES, true ) ) {
+                                self::err( $errors, 'SLOT_ALIGN_INVALID', "Zone {$id}: slot_align[{$align_key}] must be one of " . implode( ', ', self::SLOT_ALIGN_VALUES ) . '.', array( 'zone' => $id ) );
+                            }
+                        }
+                    }
+                }
+                if ( isset( $zone['row_align'] ) ) {
+                    if ( ! is_array( $zone['row_align'] ) ) {
+                        self::err( $errors, 'ROW_ALIGN_INVALID', "Zone {$id}: row_align must be an object keyed by row.", array( 'zone' => $id ) );
+                    } else {
+                        foreach ( $zone['row_align'] as $row_key => $row_value ) {
+                            if ( ! array_key_exists( (string) $row_key, self::slot_rows() ) ) {
+                                self::err( $errors, 'ROW_ALIGN_INVALID', "Zone {$id}: row_align names an unknown row '{$row_key}'. Rows are top, middle, bottom.", array( 'zone' => $id ) );
+                            } elseif ( ! in_array( $row_value, self::SLOT_ROW_ALIGN_VALUES, true ) ) {
+                                self::err( $errors, 'ROW_ALIGN_INVALID', "Zone {$id}: row_align[{$row_key}] must be one of " . implode( ', ', self::SLOT_ROW_ALIGN_VALUES ) . '.', array( 'zone' => $id ) );
+                            }
+                        }
+                    }
                 }
             } elseif ( isset( $zone['composition'] ) ) {
                 if ( isset( $zone['composition']['type'] ) ) {

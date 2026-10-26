@@ -134,9 +134,93 @@
         };
     }
 
+    /**
+     * Pure nine-area zone model.
+     *
+     * The configurator and the Node tests share these rules so there is one
+     * definition of "which area is open", "what a move does" and "when is a
+     * zone expanded". None of it touches the DOM or the network.
+     *
+     * The canonical area list is *not* here: the server owns it and sends it
+     * in the config response (`zone_areas`). These helpers take it as an
+     * argument, which is why they cannot drift from the stored schema.
+     */
+    function make_zone_model() {
+        function ids( areas ) {
+            return ( areas || [] ).map( function ( area ) { return area.id; } );
+        }
+
+        /**
+         * The area the editor should open on: the current selection when it
+         * still exists, else the preferred one, else the middle-centre area,
+         * else the first area the server offered. Never an id the server did
+         * not offer — an unknown selection is how a panel ends up rendering
+         * an empty editor for an area that does not exist.
+         */
+        function resolve_area( areas, current, preferred ) {
+            var known = ids( areas );
+            if ( current && known.indexOf( current ) !== -1 ) { return current; }
+            if ( preferred && known.indexOf( preferred ) !== -1 ) { return preferred; }
+            if ( known.indexOf( 'middle-center' ) !== -1 ) { return 'middle-center'; }
+            return known.length ? known[ 0 ] : '';
+        }
+
+        /**
+         * Move one block between areas and return the new slots. The input is
+         * not mutated: a re-render must never depend on whether the model ran.
+         *
+         * A move onto the same area, or from an index that does not exist, is
+         * a no-op. The destination is taken as given — the caller offers only
+         * the areas the server listed, and the server validates the resulting
+         * configuration on save. This model's job is the move, not the
+         * authority on what a valid area is.
+         */
+        function move_block( slots, from, to, index ) {
+            var next = {};
+            Object.keys( slots || {} ).forEach( function ( key ) {
+                next[ key ] = ( slots[ key ] || [] ).slice();
+            } );
+            if ( ! from || ! to || from === to ) { return next; }
+            var source = next[ from ] || [];
+            if ( index < 0 || index >= source.length ) { return next; }
+            if ( ! next[ to ] ) { next[ to ] = []; }
+            var block = source.splice( index, 1 )[ 0 ];
+            next[ to ].push( block );
+            return next;
+        }
+
+        /**
+         * 'expanded' when an area outside the middle row holds a block.
+         * Mirrors agentshell_zone_is_expanded() in functions.php; the PHP is
+         * the authority for rendering, and this is the panel's label for it.
+         */
+        function layout( areas, slots ) {
+            var by_id = {};
+            ( areas || [] ).forEach( function ( area ) { by_id[ area.id ] = area; } );
+            var keys = Object.keys( slots || {} );
+            for ( var i = 0; i < keys.length; i++ ) {
+                var id  = keys[ i ];
+                var row = by_id[ id ] ? by_id[ id ].row : '';
+                if ( row !== 'middle' && ( slots[ id ] || [] ).length > 0 ) {
+                    return 'expanded';
+                }
+            }
+            return 'standard';
+        }
+
+        return {
+            resolve_area: resolve_area,
+            move_block: move_block,
+            layout: layout,
+        };
+    }
+
     if ( typeof module !== 'undefined' && module.exports ) {
-        module.exports = { make_state_model: make_state_model };
+        module.exports = { make_state_model: make_state_model, make_zone_model: make_zone_model };
     } else {
-        root.AgentshellConfiguratorState = { make_state_model: make_state_model };
+        root.AgentshellConfiguratorState = {
+            make_state_model: make_state_model,
+            make_zone_model: make_zone_model,
+        };
     }
 })( typeof window !== 'undefined' ? window : globalThis );

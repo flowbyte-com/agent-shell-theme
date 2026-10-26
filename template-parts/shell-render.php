@@ -82,9 +82,64 @@ function agentshell_render_block( array $block ) {
 }
 
 /**
+ * Render the nine-area grid for one structural zone.
+ *
+ * Every cell is emitted, including the empty ones: an empty cell is what
+ * carries the row's horizontal position, and CSS collapses it (`.zone-slot:empty
+ * { display: none }` plus explicit `grid-area` placement, so a hidden cell
+ * cannot shift its neighbours). A row whose three cells are all empty has no
+ * in-flow content and therefore no height — the collapsed-row requirement.
+ *
+ * Alignment travels as classes, never as inline styles: the json_block
+ * sanitiser strips `style=""`, and a layout that depends on inline styles is a
+ * layout that breaks the first time a block passes through it.
+ *
+ * @param array $zone A normalised zone.
+ * @return string HTML
+ */
+function agentshell_render_zone_grid( array $zone ) {
+    $html = '';
+    foreach ( agentshell_zone_slot_ids() as $slot_id ) {
+        $items = $zone['slots'][ $slot_id ] ?? array();
+        $items = is_array( $items ) ? $items : array();
+
+        $cell = '';
+        foreach ( $items as $block ) {
+            $cell .= agentshell_render_block( $block );
+        }
+
+        $row   = agentshell_zone_slot_row( $slot_id );
+        $class = implode(
+            ' ',
+            array(
+                'zone-slot',
+                'slot-' . $slot_id,
+                'align-' . agentshell_zone_slot_align( $zone, $slot_id ),
+                'valign-' . agentshell_zone_row_align( $zone, $row ),
+            )
+        );
+
+        $html .= sprintf(
+            '<div class="%s" data-slot="%s">%s</div>',
+            esc_attr( $class ),
+            esc_attr( $slot_id ),
+            $cell
+        );
+    }
+    return $html;
+}
+
+/**
  * Render a full zone by its config array.
- * Checks for 'slots' (tri-slot zones like header/footer) first,
- * then falls back to legacy 'composition' array.
+ *
+ * Three shapes, in this order:
+ *
+ *   - Nine-area grid  (`slots` with content outside the middle row). Nine
+ *     cell wrappers with explicit `data-slot` ids; CSS places each cell.
+ *   - Tri-slot        (`slots`, middle row only). The historical
+ *     left/center/right markup, byte for byte, so an unchanged site renders
+ *     exactly what it rendered before the nine-area feature existed.
+ *   - Composition     (main zone, vertical stacking).
  *
  * @param array $zone e.g. [ "id" => "main", "composition" => [...] ]
  * @return string HTML
@@ -92,19 +147,27 @@ function agentshell_render_block( array $block ) {
 function agentshell_render_zone( array $zone ) {
     $slots = $zone['slots'] ?? null;
 
-    // Tri-slot zones: header, footer with left/center/right slots
     if ( is_array( $slots ) ) {
-        $slot_keys = array( 'left', 'center', 'right' );
+        $zone = agentshell_normalize_zone( $zone );
+
+        if ( agentshell_zone_is_expanded( $zone ) ) {
+            return agentshell_render_zone_grid( $zone );
+        }
+
+        // Tri-slot zones: header, footer with the middle row only. The class
+        // suffix stays `slot-left` / `slot-center` / `slot-right` because the
+        // stylesheet, the mobile rules and the mobile toggle all match it.
         $html = '';
-        foreach ( $slot_keys as $slot_key ) {
-            $slot_items = $slots[ $slot_key ] ?? array();
+        foreach ( agentshell_zone_slot_aliases() as $legacy_key => $canonical ) {
+            $slot_items = $zone['slots'][ $canonical ] ?? array();
+            $slot_items = is_array( $slot_items ) ? $slot_items : array();
             $slot_html  = '';
             foreach ( $slot_items as $block ) {
                 $slot_html .= agentshell_render_block( $block );
             }
             $html .= sprintf(
                 '<div class="zone-slot slot-%s">%s</div>',
-                esc_attr( $slot_key ),
+                esc_attr( $legacy_key ),
                 $slot_html
             );
         }
@@ -176,9 +239,17 @@ function agentshell_get_zone_config( $zone_id ) {
     // Find saved zone by id
     foreach ( $saved as $z ) {
         if ( ( $z['id'] ?? '' ) === $zone_id ) {
-            return $z;
+            // Canonical nine-area shape, whatever the stored vintage: the
+            // renderer, the layout-mode decision and the configurator all read
+            // the same normalised zone.
+            return in_array( $zone_id, array( 'header', 'footer' ), true )
+                ? agentshell_normalize_zone( $z )
+                : $z;
         }
     }
 
-    return $defaults[ $zone_id ] ?? array();
+    $default = $defaults[ $zone_id ] ?? array();
+    return in_array( $zone_id, array( 'header', 'footer' ), true )
+        ? agentshell_normalize_zone( $default )
+        : $default;
 }

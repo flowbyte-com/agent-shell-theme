@@ -51,8 +51,11 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
-    'trusted inject into tri-slot zone appends json_block to right slot',
+    'inject into a legacy three-slot zone appends to the middle-right area',
     function () {
+        // Input is the historical three-slot shape on purpose: the tool must
+        // accept it, place the block at the end of the middle row, and write
+        // the canonical nine-area shape back (one stored shape, not two).
         $config = array(
             'zones' => array(
                 array(
@@ -69,9 +72,11 @@ Agentshell_Test::run(
         $updated = \AgentShell_MCP\Tools\agentshell_inject_json_block_into_zone( $config, 'header', '<span>badge</span>' );
 
         $zone = $updated['zones'][0];
-        Agentshell_Test::assert_equals( 'json_block', $zone['slots']['right'][0]['type'] );
-        Agentshell_Test::assert_equals( '<span>badge</span>', $zone['slots']['right'][0]['content'] );
-        Agentshell_Test::assert_equals( 1, count( $zone['slots']['left'] ) ); // unchanged
+        Agentshell_Test::assert_equals( 'json_block', $zone['slots']['middle-right'][0]['type'] );
+        Agentshell_Test::assert_equals( '<span>badge</span>', $zone['slots']['middle-right'][0]['content'] );
+        Agentshell_Test::assert_equals( 1, count( $zone['slots']['middle-left'] ) ); // unchanged, canonical id
+        Agentshell_Test::assert_false( isset( $zone['slots']['left'] ), 'the legacy key must not survive the write' );
+        Agentshell_Test::assert_false( isset( $zone['slots']['right'] ), 'the legacy key must not survive the write' );
     }
 );
 

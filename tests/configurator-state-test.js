@@ -141,5 +141,85 @@ console.log( 'configurator state-model tests' );
     eq( s.status_label(), 'Editing (staged)', 'status reflects staged changes' );
 })();
 
+// ── Nine-area zone model ────────────────────────────────────────────────────
+var makeZone = require( '../configurator/configurator-state.js' ).make_zone_model;
+
+// The area list the server sends, in render order.
+var AREAS = [
+    { id: 'top-left', row: 'top', column: 0, label: 'Top Left', short: 'TL' },
+    { id: 'top-center', row: 'top', column: 1, label: 'Top Centre', short: 'TC' },
+    { id: 'top-right', row: 'top', column: 2, label: 'Top Right', short: 'TR' },
+    { id: 'middle-left', row: 'middle', column: 0, label: 'Middle Left', short: 'ML' },
+    { id: 'middle-center', row: 'middle', column: 1, label: 'Middle Centre', short: 'MC' },
+    { id: 'middle-right', row: 'middle', column: 2, label: 'Middle Right', short: 'MR' },
+    { id: 'bottom-left', row: 'bottom', column: 0, label: 'Bottom Left', short: 'BL' },
+    { id: 'bottom-center', row: 'bottom', column: 1, label: 'Bottom Centre', short: 'BC' },
+    { id: 'bottom-right', row: 'bottom', column: 2, label: 'Bottom Right', short: 'BR' }
+];
+
+// 12. A fresh zone opens on the middle-centre area.
+(function () {
+    var z = makeZone();
+    eq( z.resolve_area( AREAS, undefined, 'middle-center' ), 'middle-center',
+        'fresh zone opens on middle-centre' );
+})();
+
+// 13. A current selection wins while it is still a real area.
+(function () {
+    var z = makeZone();
+    eq( z.resolve_area( AREAS, 'bottom-right', 'middle-center' ), 'bottom-right',
+        'existing selection is kept' );
+})();
+
+// 14. A selection the server no longer offers falls back, never to an unknown id.
+(function () {
+    var z = makeZone();
+    eq( z.resolve_area( AREAS, 'left', 'middle-center' ), 'middle-center',
+        'legacy/unknown selection falls back to middle-centre' );
+    eq( z.resolve_area( [], 'middle-center', 'middle-center' ), '',
+        'no areas at all resolves to the empty id, not a guessed one' );
+})();
+
+// 15. A move takes the block out of one area and appends it to another.
+(function () {
+    var z = makeZone();
+    var slots = {
+        'middle-left': [ { type: 'wp_core', id: 'site_logo' } ],
+        'middle-right': [ { type: 'wp_core', id: 'search_form' } ]
+    };
+    var next = z.move_block( slots, 'middle-left', 'bottom-center', 0 );
+    eq( next[ 'middle-left' ].length, 0, 'move empties the source area' );
+    eq( next[ 'bottom-center' ].length, 1, 'move appends to the destination area' );
+    eq( next[ 'bottom-center' ][ 0 ].id, 'site_logo', 'the moved block is the same block' );
+    eq( next[ 'middle-right' ].length, 1, 'unrelated areas are untouched' );
+    eq( slots[ 'middle-left' ].length, 1, 'the input slots are not mutated' );
+})();
+
+// 16. Nonsense moves are no-ops, not surprises.
+(function () {
+    var z = makeZone();
+    var slots = { 'middle-left': [ { type: 'wp_core', id: 'site_logo' } ] };
+    eq( z.move_block( slots, 'middle-left', 'middle-left', 0 )[ 'middle-left' ].length, 1,
+        'moving an area onto itself changes nothing' );
+    eq( ( z.move_block( slots, 'middle-left', 'top-left', 99 )[ 'top-left' ] || [] ).length, 0,
+        'an out-of-range index moves nothing' );
+    eq( slots[ 'middle-left' ].length, 1, 'a refused move leaves the input alone' );
+})();
+
+// 17. Layout mode follows content: middle-only stays standard, any other row expands.
+(function () {
+    var z = makeZone();
+    eq( z.layout( AREAS, { 'middle-left': [ { type: 'wp_core', id: 'site_logo' } ] } ), 'standard',
+        'middle-row content keeps the three-slot layout' );
+    eq( z.layout( AREAS, {
+        'middle-left': [ { type: 'wp_core', id: 'site_logo' } ],
+        'top-right': [ { type: 'wp_core', id: 'search_form' } ]
+    } ), 'expanded', 'top-row content switches to the nine-area layout' );
+    eq( z.layout( AREAS, {
+        'bottom-center': [ { type: 'json_block', content: '<p>x</p>' } ]
+    } ), 'expanded', 'bottom-row content switches to the nine-area layout' );
+    eq( z.layout( AREAS, {} ), 'standard', 'an empty grid is standard' );
+})();
+
 console.log( '\n' + passed + ' passed, ' + failed + ' failed' );
 if ( failed > 0 ) { process.exit( 1 ); }

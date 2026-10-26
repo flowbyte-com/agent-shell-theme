@@ -12,7 +12,11 @@
     }
     header.dataset.agentshellNav = '1';
 
-    var centerSlot = header.querySelector('.zone-slot.slot-center');
+    // The middle-centre cell: `.slot-center` in the historical three-slot
+    // layout, `data-slot="middle-center"` in the nine-area grid. Both layouts
+    // put the navigation in the same place, so the toggle looks for the place,
+    // not for one layout's class name.
+    var centerSlot = header.querySelector('.zone-slot.slot-center, .zone-slot[data-slot="middle-center"]');
     if (!centerSlot) {
         return;
     }
@@ -28,7 +32,7 @@
 
     centerSlot.id = 'agentshell-mobile-nav';
 
-    var rightSlot = header.querySelector('.zone-slot.slot-right');
+    var rightSlot = header.querySelector('.zone-slot.slot-right, .zone-slot[data-slot="middle-right"]');
     if (rightSlot) {
         rightSlot.insertBefore(button, rightSlot.firstChild);
     } else {

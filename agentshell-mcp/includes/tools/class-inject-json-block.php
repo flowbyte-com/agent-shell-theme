@@ -72,13 +72,24 @@ function agentshell_inject_json_block_into_zone( array $config, $zone_id, $html,
         if ( ( $z['id'] ?? '' ) !== $zone_id ) { continue; }
         $found = true;
         if ( isset( $z['slots'] ) && is_array( $z['slots'] ) ) {
-            // Tri-slot zone: append to the right slot (the natural end of
-            // left→center→right). Callers that need a different slot should
-            // use agentshell_update_zone_slots directly.
-            if ( ! isset( $z['slots']['right'] ) || ! is_array( $z['slots']['right'] ) ) {
-                $z['slots']['right'] = array();
+            // Structural zone: append to the middle-right area — the
+            // canonical name for "the natural end of the row" in both the
+            // nine-area grid and the historical left→center→right layout.
+            // Callers that need a different area use
+            // agentshell_update_zone_slots directly.
+            $zone_shape = $z;
+            if ( function_exists( 'agentshell_normalize_zone' ) ) {
+                $zone_shape = agentshell_normalize_zone( $zone_shape );
+            } elseif ( ! isset( $z['slots']['middle-right'] ) ) {
+                $zone_shape['slots'] = is_array( $z['slots'] ) ? $z['slots'] : array();
+                $legacy              = $z['slots']['right'] ?? array();
+                $zone_shape['slots']['middle-right'] = is_array( $legacy ) ? $legacy : array();
             }
-            $z['slots']['right'][] = $block;
+            if ( ! isset( $zone_shape['slots']['middle-right'] ) || ! is_array( $zone_shape['slots']['middle-right'] ) ) {
+                $zone_shape['slots']['middle-right'] = array();
+            }
+            $zone_shape['slots']['middle-right'][] = $block;
+            $z['slots'] = $zone_shape['slots'];
         } else {
             // Composition zone (e.g. main).
             if ( ! isset( $z['composition'] ) || ! is_array( $z['composition'] ) ) {
@@ -99,7 +110,13 @@ function agentshell_inject_json_block_into_zone( array $config, $zone_id, $html,
         }
         if ( ! $template ) { $template = array( 'id' => $zone_id ); }
         if ( isset( $template['slots'] ) && is_array( $template['slots'] ) ) {
-            $template['slots']['right'] = array( $block );
+            if ( function_exists( 'agentshell_normalize_zone' ) ) {
+                $template = agentshell_normalize_zone( $template );
+            } else {
+                $legacy = $template['slots']['right'] ?? array();
+                $template['slots'] = array( 'middle-right' => is_array( $legacy ) ? $legacy : array() );
+            }
+            $template['slots']['middle-right'] = array( $block );
         } else {
             $template['composition']   = array( $block );
         }

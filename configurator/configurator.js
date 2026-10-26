@@ -3,11 +3,22 @@
 
     // Pure state model lives in a sibling file so Node tests can
     // exercise it without a browser. The model handles idle / editing_open
-    // / locked transitions; the configurator wires the model to fetch
-    // calls and DOM events.
+    // / locked transitions and the nine-area zone editing rules; the
+    // configurator wires the model to fetch calls and DOM events.
+    //
+    // The sibling file is an enqueued dependency (functions.php), so its
+    // absence is a build error rather than a state the browser can reach. If
+    // it is somehow absent, say so and disable the zone editor rather than
+    // growing a second implementation of the same rules here.
     if ( typeof window !== 'undefined' && window.AgentshellConfiguratorState ) {
         window.AgentshellConfigState = window.AgentshellConfiguratorState.make_state_model();
+    } else if ( typeof console !== 'undefined' ) {
+        console.error( 'AgentShell: configurator-state.js did not load; the zone editor is disabled.' );
     }
+
+    const zoneModel = ( typeof window !== 'undefined' && window.AgentshellConfiguratorState )
+        ? window.AgentshellConfiguratorState.make_zone_model()
+        : null;
 
     const DEFAULTS = {
         '--zone-header-layout': 'space-between',
@@ -145,6 +156,11 @@
         state.custom_js  = cfg.custom_js  || '';
         // zones lives at the root of the response, not inside config/config
         state.zones = Array.isArray(response.zones) ? response.zones : Object.values(response.zones || {});
+        // The slot grid and its alignment vocabulary come from the server,
+        // which owns the canonical definition. The configurator never keeps
+        // its own list of area names: a second list is a second answer.
+        state.zone_areas = Array.isArray(response.zone_areas) ? response.zone_areas : [];
+        state.zone_align = response.zone_align || { slot: [], row: [], rows: [] };
         return state;
     }
 
@@ -249,9 +265,134 @@
         wireEvents();
     }
 
+    // ── Zone area picker (nine areas, one open editor) ──────────
+    // Which area of each structural zone is open in the editor. This is UI
+    // state: it is not part of the configuration and is never saved.
+    const zoneAreaSel = {};
+
+    function areaDefs() {
+        return Array.isArray(liveState.zone_areas) ? liveState.zone_areas : [];
+    }
+
+    function selectedArea(zone) {
+        const ids = areaDefs().map(function(a) { return a.id; });
+        const key = zone.id || 'zone';
+        const resolved = zoneModel.resolve_area(areaDefs(), zoneAreaSel[key], 'middle-center');
+        // An unchanged site opens on the middle row, centre column: where the
+        // historical three slots live, so an operator sees the area they know.
+        if (resolved && ids.indexOf(resolved) !== -1) {
+            zoneAreaSel[key] = resolved;
+        }
+        return resolved;
+    }
+
+    function areaLabel(id) {
+        const def = areaDefs().find(function(a) { return a.id === id; });
+        return def ? def.label : id;
+    }
+
+    function renderAreaPicker(zoneIdx, zone, selected) {
+        const defs  = areaDefs();
+        const label = zone.label || zone.id;
+        let html = `<div class="zone-area-picker" role="group" aria-label="${escAttr(label)} areas">`;
+
+        defs.forEach(function(def) {
+            const count = ((zone.slots || {})[def.id] || []).length;
+            const isSel = def.id === selected;
+            const name  = label + ' ' + def.label;
+            html += `<button type="button" class="zone-area-btn${isSel ? ' is-selected' : ''}${count ? ' has-blocks' : ''}"`
+                + ` data-zone-idx="${zoneIdx}" data-area="${escAttr(def.id)}"`
+                + ` aria-pressed="${isSel ? 'true' : 'false'}"`
+                + ` title="${escAttr(name)}">`
+                + `<span class="zone-area-short" aria-hidden="true">${escHtml(def.short || def.id)}</span>`
+                + `<span class="zone-area-count" aria-hidden="true">${count || ''}</span>`
+                + `<span class="screen-reader-text">${escHtml(name)}${count ? ', ' + count + ' blocks' : ', empty'}</span>`
+                + `</button>`;
+        });
+
+        html += `</div>`;
+
+        // The expanded layout is a consequence of content, not a switch. Say
+        // so where the operator is looking, so "why is my header three rows
+        // tall?" has an answer on screen. The rule lives in the shared model,
+        // which the Node tests exercise directly.
+        const expanded = zoneModel.layout(defs, zone.slots || {}) === 'expanded';
+        html += `<p class="zone-layout-note" data-layout="${expanded ? 'expanded' : 'standard'}">`
+            + (expanded
+                ? 'Nine-area layout: a top or bottom row has content.'
+                : 'Three-slot layout. Add a block to a top or bottom area to expand it.')
+            + `</p>`;
+
+        return html;
+    }
+
+    function renderAreaEditor(zoneIdx, zone, area) {
+        const blocks  = (zone.slots || {})[area] || [];
+        const def     = areaDefs().find(function(a) { return a.id === area; });
+        const row     = def ? def.row : '';
+        const align   = (zone.slot_align || {})[area] || '';
+        const ralign  = (zone.row_align || {})[row] || '';
+        const zlabel  = zone.label || zone.id;
+        const values  = (liveState.zone_align && liveState.zone_align.slot) || [];
+        const rows    = (liveState.zone_align && liveState.zone_align.row) || [];
+
+        let html = `<div class="zone-slot-builder" data-zone-idx="${zoneIdx}" data-slot="${escAttr(area)}">`;
+        html += `<div class="slot-header">${escHtml(areaLabel(area))}<span class="zone-id-tag">${escHtml(area)}</span></div>`;
+        html += `<div class="slot-align-row">`;
+
+        html += `<label class="zb-align-label"><span>Align</span>`
+            + `<select class="zb-align-select" data-zone-idx="${zoneIdx}" data-area="${escAttr(area)}"`
+            + ` aria-label="${escAttr(zlabel + ' ' + areaLabel(area) + ' horizontal alignment')}">`
+            + `<option value="">default</option>`
+            + values.map(function(v) {
+                return `<option value="${escAttr(v)}"${v === align ? ' selected' : ''}>${escHtml(v)}</option>`;
+            }).join('')
+            + `</select></label>`;
+
+        html += `<label class="zb-align-label"><span>Row</span>`
+            + `<select class="zb-row-align-select" data-zone-idx="${zoneIdx}" data-row="${escAttr(row)}"`
+            + ` aria-label="${escAttr(zlabel + ' ' + row + ' row vertical alignment')}">`
+            + `<option value="">default</option>`
+            + rows.map(function(v) {
+                return `<option value="${escAttr(v)}"${v === ralign ? ' selected' : ''}>${escHtml(v)}</option>`;
+            }).join('')
+            + `</select></label>`;
+
+        html += `</div>`;
+        html += `<div class="zone-blocks">`;
+        if (blocks.length === 0) {
+            html += `<div class="zone-block-empty">Empty</div>`;
+        } else {
+            blocks.forEach(function(block, blockIdx) {
+                html += renderBlockItem(zoneIdx, area, blockIdx, block);
+            });
+        }
+        html += `</div>`;
+        html += renderAddBlockRow(zoneIdx, area);
+        html += `</div>`;
+        return html;
+    }
+
+    // Move a block between areas. The write itself is the same config the
+    // server validates on save; this only moves the entry in the local draft,
+    // and the rule for "how a move works" lives in the shared zone model.
+    function moveBlockToArea(zoneIdx, fromArea, blockIdx, toArea) {
+        const zone = liveState.zones[zoneIdx];
+        if (!zone || !zone.slots || !toArea || toArea === fromArea) return;
+        zone.slots = zoneModel.move_block(zone.slots, fromArea, toArea, blockIdx);
+        // Follow the block, so the operator sees where it landed.
+        zoneAreaSel[zone.id || 'zone'] = toArea;
+        renderPanel();
+    }
+
     // ── Render the Zones section ────────────────────────────────
     function renderZonesSection() {
         let html = `<div class="panel-section"><h3>Zones</h3>`;
+
+        if (!zoneModel) {
+            html += `<p class="zone-block-empty">Zone editor unavailable: configurator-state.js did not load.</p></div>`;
+            return html;
+        }
 
         if (!liveState.zones || !liveState.zones.length) {
             html += `<p style="font-size:0.8em;color:#888;margin:0;">No zones defined.</p></div>`;
@@ -265,23 +406,21 @@
             const hasSlots = zone.slots && typeof zone.slots === 'object';
 
             if (hasSlots) {
-                // Tri-slot layout: left / center / right
-                ['left', 'center', 'right'].forEach(function(slotKey) {
-                    const slotBlocks = zone.slots[slotKey] || [];
-                    html += `<div class="zone-slot-builder" data-zone-idx="${zoneIdx}" data-slot="${slotKey}">`;
-                    html += `<div class="slot-header">${slotKey.charAt(0).toUpperCase() + slotKey.slice(1)}</div>`;
-                    html += `<div class="zone-blocks">`;
-                    if (slotBlocks.length === 0) {
-                        html += `<div class="zone-block-empty">Empty</div>`;
-                    } else {
-                        slotBlocks.forEach(function(block, blockIdx) {
-                            html += renderBlockItem(zoneIdx, slotKey, blockIdx, block);
-                        });
-                    }
-                    html += `</div>`;
-                    html += renderAddBlockRow(zoneIdx, slotKey);
-                    html += `</div>`;
-                });
+                if (!areaDefs().length) {
+                    // The server did not describe the grid (an old cached
+                    // config response, or a theme/plugin version skew). Say so
+                    // rather than offering an editor that writes nowhere.
+                    html += `<p class="zone-block-empty">Zone editor unavailable: the server did not describe the slot grid.</p>`;
+                } else {
+                    // Nine areas in three rows. One area is edited at a time:
+                    // the picker is the map, the panel below it is the
+                    // selected area. Eighteen always-expanded panels would be
+                    // unusable in a sidebar, and a 3×3 grid is the shape the
+                    // operator is actually choosing between.
+                    const area = selectedArea(zone);
+                    html += renderAreaPicker(zoneIdx, zone, area);
+                    html += renderAreaEditor(zoneIdx, zone, area);
+                }
             } else {
                 // Legacy composition: vertical list
                 const composition = zone.composition || [];
@@ -349,6 +488,28 @@
         const canMoveUp   = blockIdx > 0;
         const canMoveDown = blockIdx < (slotArr.length - 1);
 
+        // Moving between areas is a select rather than drag-and-drop: the
+        // target list is nine named places, and a keyboard-reachable control
+        // is the one that works for everybody.
+        const areas = areaDefs();
+        let moveSelect = '';
+        if (slotKey && areas.length > 1) {
+            // A plain-text name for the control: blockLabel may already carry
+            // HTML escaping, and an escaped label inside an escaped attribute
+            // reads as "&amp;amp;" to a screen reader.
+            const moveName = (block.type === 'wp_core' || block.type === 'widget')
+                ? String(block.id || blockLabel)
+                : blockLabel;
+            moveSelect = `<select class="zb-move-select" data-zone-idx="${zoneIdx}"`
+                + ` data-slot="${escAttr(slotKey)}" data-block-idx="${blockIdx}"`
+                + ` aria-label="${escAttr('Move ' + moveName + ' to another area')}" title="Move to another area">`
+                + `<option value="">Move…</option>`
+                + areas.filter(function(a) { return a.id !== slotKey; }).map(function(a) {
+                    return `<option value="${escAttr(a.id)}">${escHtml(a.label)}</option>`;
+                }).join('')
+                + `</select>`;
+        }
+
         let html = `<div class="zone-block-item" data-zone-idx="${zoneIdx}" data-slot="${slotKey || ''}" data-block-idx="${blockIdx}">`;
         html += `<div class="zone-block-info">`;
         html += `<span class="zone-block-type">${escHtml(blockLabel)}</span>`;
@@ -359,6 +520,7 @@
         }
         html += `</div>`;
         html += `<div class="zone-block-actions">`;
+        html += moveSelect;
         html += `<button class="zb-btn zb-move" data-action="moveUp" ${!canMoveUp ? 'disabled' : ''} title="Move up">&#9650;</button>`;
         html += `<button class="zb-btn zb-move" data-action="moveDown" ${!canMoveDown ? 'disabled' : ''} title="Move down">&#9660;</button>`;
         html += `<button class="zb-btn zb-delete" data-action="delete" title="Remove block">&#215;</button>`;
@@ -487,6 +649,68 @@
                         renderPanel();
                     }
                 }
+            });
+        });
+
+        // ── Area picker (which of the nine areas is open) ──
+        panel.querySelectorAll('.zone-area-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const zoneIdx = parseInt(btn.dataset.zoneIdx, 10);
+                const zone    = liveState.zones[zoneIdx];
+                if (!zone) return;
+                zoneAreaSel[zone.id || 'zone'] = btn.dataset.area;
+                renderPanel();
+                // Keep keyboard focus in the picker after the re-render: a
+                // control that loses focus on use is a control that cannot be
+                // operated without a mouse.
+                const again = panel.querySelector(
+                    `.zone-area-btn[data-zone-idx="${zoneIdx}"][data-area="${btn.dataset.area}"]`
+                );
+                if (again) again.focus();
+            });
+        });
+
+        // ── Move a block to another area ──
+        panel.querySelectorAll('.zb-move-select').forEach(sel => {
+            sel.addEventListener('change', () => {
+                if (!sel.value) return;
+                moveBlockToArea(
+                    parseInt(sel.dataset.zoneIdx, 10),
+                    sel.dataset.slot,
+                    parseInt(sel.dataset.blockIdx, 10),
+                    sel.value
+                );
+            });
+        });
+
+        // ── Alignment: per area (horizontal) and per row (vertical) ──
+        panel.querySelectorAll('.zb-align-select').forEach(sel => {
+            sel.addEventListener('change', () => {
+                const zone = liveState.zones[parseInt(sel.dataset.zoneIdx, 10)];
+                if (!zone) return;
+                const area = sel.dataset.area;
+                if (!zone.slot_align) zone.slot_align = {};
+                if (sel.value) {
+                    zone.slot_align[area] = sel.value;
+                } else {
+                    delete zone.slot_align[area];
+                }
+                renderPanel();
+            });
+        });
+
+        panel.querySelectorAll('.zb-row-align-select').forEach(sel => {
+            sel.addEventListener('change', () => {
+                const zone = liveState.zones[parseInt(sel.dataset.zoneIdx, 10)];
+                if (!zone) return;
+                const row = sel.dataset.row;
+                if (!zone.row_align) zone.row_align = {};
+                if (sel.value) {
+                    zone.row_align[row] = sel.value;
+                } else {
+                    delete zone.row_align[row];
+                }
+                renderPanel();
             });
         });
 
