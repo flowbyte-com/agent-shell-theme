@@ -31,9 +31,12 @@
 
 require_once __DIR__ . '/bootstrap.php';
 
-// The signing secret. bootstrap.php defines AGENTSHELL_REST_TOKEN as an empty
-// string, and preview_secret() deliberately treats empty as "not configured"
-// so it falls through — which is the behaviour this suite needs to pin.
+// The signing secret. The bootstrap deliberately does not define
+// AGENTSHELL_REST_TOKEN: a constant cannot be redefined, so a suite that
+// wants a particular value has to be the one that defines it. This suite
+// defines it as empty on purpose, so that preview_secret() falls through
+// to AUTH_SALT — which is the behaviour this suite needs to pin.
+if ( ! defined( 'AGENTSHELL_REST_TOKEN' ) ) { define( 'AGENTSHELL_REST_TOKEN', '' ); }
 if ( ! defined( 'AUTH_SALT' ) ) { define( 'AUTH_SALT', 'tx-preview-suite-auth-salt' ); }
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) { define( 'HOUR_IN_SECONDS', 3600 ); }
 if ( ! defined( 'MB_IN_BYTES' ) ) { define( 'MB_IN_BYTES', 1048576 ); }

@@ -191,13 +191,9 @@ function srp_site_requests( $log ) {
 
 $browser = srp_browser();
 if ( null === $browser ) {
-    Agentshell_Test::run(
-        'the request policy suite',
-        function () {
-            Agentshell_Test::assert_true( true, 'skipped: no Chrome or Chromium on this host' );
-        }
-    );
-    echo "  (skipped: no Chrome or Chromium on this host)\n";
+    // A skip, declared as one. It used to be an assertion that passed
+    // with 'skipped:' in its message, which is a skip counted as a pass.
+    Agentshell_Test::skip( 'no Chrome or Chromium on this host' );
     return;
 }
 

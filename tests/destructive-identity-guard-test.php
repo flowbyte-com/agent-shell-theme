@@ -48,8 +48,13 @@ echo "Destructive child identity guard (Gate 3 §3)\n";
 
 $live = agentshell_wp_live_config();
 if ( ! is_array( $live ) ) {
-    fwrite( STDERR, "skip: no LocalWP PHP / mysqli / test bed available\n" );
-    exit( 0 );
+    // A skip, declared as one. This used to call exit(0), which ended the
+    // whole run: the suite was `require`d into the runner's own process,
+    // so an exit here took every suite registered after it with it, and
+    // the run still reported success. A suite that cannot run says so
+    // through the skip protocol and returns.
+    Agentshell_Test::skip( 'no LocalWP PHP / mysqli / test bed available' );
+    return;
 }
 $guard_php = $live['php'];
 $guard_ini = $live['ini'];   // e.g. ['mysqli.default_socket=/path/...']

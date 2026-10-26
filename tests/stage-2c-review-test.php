@@ -54,21 +54,11 @@ if ( ! defined( 'AGENTSHELL_REST_TOKEN' ) ) { define( 'AGENTSHELL_REST_TOKEN', '
 if ( ! defined( 'AUTH_SALT' ) ) { define( 'AUTH_SALT', '' ); }
 if ( ! defined( 'LOGGED_IN_KEY' ) ) { define( 'LOGGED_IN_KEY', '' ); }
 
-// Define a real remove_filter() that the bootstrap.php stub would
-// otherwise no-op. The bootstrap is loaded next and would normally
-// declare remove_filter as a no-op; this definition must come first
-// so the no-op `function remove_filter() {}` line in bootstrap never
-// runs. (PHP forbids redeclaration.)
-function remove_filter( $tag, $callback, $priority = 10 ) {
-    $list = $GLOBALS['_agentshell_test_filters'][ $tag ] ?? array();
-    $out  = array();
-    foreach ( $list as $cb ) {
-        if ( $cb === $callback ) { continue; }
-        $out[] = $cb;
-    }
-    $GLOBALS['_agentshell_test_filters'][ $tag ] = $out;
-    return true;
-}
+// The bootstrap's remove_filter() is a real implementation now, so this
+// file does not have to declare one of its own. It used to: the
+// definition had to come before the bootstrap was loaded, because PHP
+// forbids a redeclaration — which only worked because every suite shared
+// one process.
 
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/agentshell-test-bed.php';
@@ -664,21 +654,28 @@ rev_check(
     'moved' === $second['status'],
     'second status=' . ( is_array( $second ) ? $second['status'] : 'n/a' )
 );
-$shadow_after = get_post( $shadow_id );
+$shadow_after = Published_Shadow::read_after( $shadow_id );
 $op_id_after  = (string) get_post_meta( $shadow_id, Published_Shadow::META_OP_ID, true );
 rev_check(
     'R3.1 META_OP_ID after the race is the FIRST caller\'s new_op_id (the second was refused)',
     'op-r3-x' === $op_id_after,
     'op_id_after=' . $op_id_after
 );
+// The staged slug is read through the shadow class's own reader, not
+// from the shadow's `post_name` column: the column holds a
+// non-colliding placeholder (Published_Shadow::update() re-applies it
+// after every write), and the staged slug itself is preserved in
+// META_STAGED_POST_NAME. read_after() is what the publish path
+// compares the op's after-image against, so it is what this assertion
+// has to read.
 rev_check(
     'R3.1 shadow fields are the FIRST caller\'s after-image',
-    (string) $shadow_after->post_name === 'r3-x-slug',
-    'post_name=' . $shadow_after->post_name
+    (string) ( $shadow_after['post_name'] ?? '' ) === 'r3-x-slug',
+    'post_name=' . (string) ( $shadow_after['post_name'] ?? '' )
 );
 rev_check(
     'R3.1 second caller\'s after-image is NOT reflected in the shadow',
-    (string) $shadow_after->post_name !== 'r3-y-slug'
+    (string) ( $shadow_after['post_name'] ?? '' ) !== 'r3-y-slug'
 );
 
 // (R3.1b) The CAS is per-shadow (META_OP_ID), not per-caller. A second

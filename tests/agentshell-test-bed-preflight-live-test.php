@@ -68,7 +68,7 @@ echo "live test-bed preflight drain-failure regression\n";
 
 $config = agentshell_wp_live_config_destructive();
 if ( null === $config ) {
-    echo "  SKIPPED: no test-bed config (destructive suites require tests/config/test-bed.json)\n";
+    Agentshell_Test::skip( 'no test-bed config (destructive suites require tests/config/test-bed.json)\\n' );
     Agentshell_Test::run(
         'live test-bed preflight drain-failure',
         function () {
