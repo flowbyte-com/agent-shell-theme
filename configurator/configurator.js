@@ -161,6 +161,12 @@
         // its own list of area names: a second list is a second answer.
         state.zone_areas = Array.isArray(response.zone_areas) ? response.zone_areas : [];
         state.zone_align = response.zone_align || { slot: [], row: [], rows: [] };
+        // Menus come from WordPress (via the config response), never from a
+        // list in this file: a menu created a minute ago in Appearance → Menus
+        // is selectable immediately, and a menu that was deleted is shown as
+        // unavailable rather than silently dropped.
+        state.available_menus = Array.isArray(response.available_menus) ? response.available_menus : [];
+        state.available_menu_locations = Array.isArray(response.available_menu_locations) ? response.available_menu_locations : [];
         return state;
     }
 
@@ -482,6 +488,9 @@
             const comp = coreComponents.find(c => c.id === block.id);
             blockLabel = escHtml(comp ? comp.name : (block.id || 'WP Core Component'));
             detail = block.id || '';
+            if (block.id === 'nav_menu') {
+                areaSelect = renderNavControls(zoneIdx, slotKey, blockIdx, block);
+            }
         }
 
         const slotArr = slotKey ? (zone?.slots?.[slotKey] || []) : (zone?.composition || []);
@@ -527,6 +536,94 @@
         html += `</div>`;
         html += `</div>`;
         return html;
+    }
+
+    // ── Navigation block controls ────────────────────────────────
+    // A navigation block names a WordPress menu (or a registered location),
+    // a presentation mode and an accessible label. WordPress remains the menu
+    // editor; this is selection, not a second menu builder.
+    function renderNavControls(zoneIdx, slotKey, blockIdx, block) {
+        const menus     = liveState.available_menus || [];
+        const locations = liveState.available_menu_locations || [];
+        const modes     = ['horizontal', 'vertical', 'compact'];
+        const savedMenu = block.menu || '';
+        const savedLoc  = block.location || '';
+        const mode      = block.mode || 'horizontal';
+        const label     = block.label || '';
+        const knownMenu = menus.some(m => m.slug === savedMenu);
+        const knownLoc  = locations.some(l => l.slug === savedLoc);
+        const uid       = `${zoneIdx}-${slotKey || 'c'}-${blockIdx}`;
+        const data      = `data-zone-idx="${zoneIdx}" data-slot="${slotKey || ''}" data-block-idx="${blockIdx}"`;
+
+        let html = '<div class="zb-nav-controls">';
+
+        html += `<label class="zb-nav-label" for="zb-nav-menu-${uid}">Menu</label>`;
+        html += `<select id="zb-nav-menu-${uid}" class="zb-nav-menu" ${data}>`;
+        html += `<option value="">— none (use a location) —</option>`;
+        menus.forEach(function(m) {
+            html += `<option value="${escAttr(m.slug)}"${m.slug === savedMenu ? ' selected' : ''}>`
+                + `${escHtml(m.name)}${m.count ? ' (' + m.count + ')' : ''}</option>`;
+        });
+        if (savedMenu && !knownMenu) {
+            html += `<option value="${escAttr(savedMenu)}" selected>${escHtml(savedMenu)} (unavailable)</option>`;
+        }
+        html += `</select>`;
+
+        html += `<label class="zb-nav-label" for="zb-nav-loc-${uid}">Location</label>`;
+        html += `<select id="zb-nav-loc-${uid}" class="zb-nav-location" ${data}>`;
+        html += `<option value="">— none (use a menu) —</option>`;
+        locations.forEach(function(l) {
+            const suffix = l.menu_id ? '' : ' (no menu assigned)';
+            html += `<option value="${escAttr(l.slug)}"${l.slug === savedLoc ? ' selected' : ''}>`
+                + `${escHtml(l.label || l.slug)}${escHtml(suffix)}</option>`;
+        });
+        if (savedLoc && !knownLoc) {
+            html += `<option value="${escAttr(savedLoc)}" selected>${escHtml(savedLoc)} (not registered)</option>`;
+        }
+        html += `</select>`;
+
+        html += `<label class="zb-nav-label" for="zb-nav-mode-${uid}">Mode</label>`;
+        html += `<select id="zb-nav-mode-${uid}" class="zb-nav-mode" ${data}>`;
+        modes.forEach(function(m) {
+            html += `<option value="${escAttr(m)}"${m === mode ? ' selected' : ''}>${escHtml(m)}</option>`;
+        });
+        html += `</select>`;
+
+        html += `<label class="zb-nav-label" for="zb-nav-label-${uid}">Label</label>`;
+        html += `<input id="zb-nav-label-${uid}" class="zb-nav-label-input" type="text" ${data}`
+            + ` maxlength="100" value="${escAttr(label)}"`
+            + ` placeholder="Accessible name (defaults to the menu name)">`;
+
+        if ((savedMenu && !knownMenu) || (savedLoc && !knownLoc)) {
+            html += `<p class="zb-nav-warning">This block references something this site does not have. `
+                + `Pick an existing menu or location; the saved reference is kept until you do.</p>`;
+        }
+
+        html += `</div>`;
+        return html;
+    }
+
+    function navBlockFor(el) {
+        const zone = liveState.zones[parseInt(el.dataset.zoneIdx, 10)];
+        if (!zone) return null;
+        const slotKey = el.dataset.slot || null;
+        const arr = slotKey ? (zone.slots && zone.slots[slotKey]) || [] : (zone.composition || []);
+        return arr[parseInt(el.dataset.blockIdx, 10)] || null;
+    }
+
+    function setNavField(el, field, value, rerender) {
+        const block = navBlockFor(el);
+        if (!block) return;
+        if (value === '') {
+            delete block[field];
+        } else {
+            block[field] = value;
+        }
+        // Menu and location are alternatives, not a precedence order: choosing
+        // one clears the other so the block can never carry an ambiguous pair.
+        if (field === 'menu' && value) delete block.location;
+        if (field === 'location' && value) delete block.menu;
+        if (rerender) renderPanel();
     }
 
     // ── Render the + Add Block row ────────────────────────────────
@@ -712,6 +809,22 @@
                 }
                 renderPanel();
             });
+        });
+
+        // ── Navigation block controls ──
+        panel.querySelectorAll('.zb-nav-menu').forEach(sel => {
+            sel.addEventListener('change', () => setNavField(sel, 'menu', sel.value, true));
+        });
+        panel.querySelectorAll('.zb-nav-location').forEach(sel => {
+            sel.addEventListener('change', () => setNavField(sel, 'location', sel.value, true));
+        });
+        panel.querySelectorAll('.zb-nav-mode').forEach(sel => {
+            sel.addEventListener('change', () => setNavField(sel, 'mode', sel.value, true));
+        });
+        panel.querySelectorAll('.zb-nav-label-input').forEach(inp => {
+            // Update as it is typed, without re-rendering: a re-render would
+            // take the caret away mid-word.
+            inp.addEventListener('input', () => setNavField(inp, 'label', inp.value, false));
         });
 
         // ── Add block type selector ──

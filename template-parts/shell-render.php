@@ -73,7 +73,7 @@ function agentshell_render_block( array $block ) {
                 return '';
             }
             return '<div class="wp-core-component wp-core-' . esc_attr( $id ) . '">'
-                . agentshell_render_core_component( $id )
+                . agentshell_render_core_component( $id, $block )
                 . '</div>';
 
         default:

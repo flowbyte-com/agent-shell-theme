@@ -334,6 +334,36 @@ class Doctor {
                         self::err( $errors, 'INVALID_WP_CORE_ID', "Zone {$id} block #{$i}: unknown wp_core id {$block['id']}", array( 'zone' => $id, 'core_id' => $block['id'] ) );
                     }
                 }
+                // Navigation blocks: the field rules live in the theme
+                // (agentshell_nav_block_issues) and the doctor asks rather than
+                // re-implementing them, so the import gate cannot accept a block
+                // the renderer would reject. A menu that does not resolve on
+                // *this* site is a warning, not an error: the configuration is
+                // valid, the site is missing a dependency — which is exactly the
+                // case an imported manifest describes.
+                if ( 'wp_core' === $type && 'nav_menu' === ( $block['id'] ?? '' ) && function_exists( 'agentshell_nav_block_issues' ) ) {
+                    foreach ( agentshell_nav_block_issues( $block ) as $issue ) {
+                        self::err(
+                            $errors,
+                            strtoupper( $issue['code'] ),
+                            "Zone {$id} block #{$i}: " . $issue['message'],
+                            array( 'zone' => $id, 'block' => $i )
+                        );
+                    }
+                    if ( function_exists( 'agentshell_nav_block_is_extended' )
+                        && function_exists( 'agentshell_resolve_nav_block' )
+                        && agentshell_nav_block_is_extended( $block ) ) {
+                        $resolved = agentshell_resolve_nav_block( $block );
+                        if ( empty( $resolved['ok'] ) ) {
+                            self::warn(
+                                $warnings,
+                                strtoupper( $resolved['code'] ),
+                                "Zone {$id} block #{$i}: " . $resolved['message'],
+                                array( 'zone' => $id, 'block' => $i )
+                            );
+                        }
+                    }
+                }
                 if ( 'widget' === $type ) {
                     if ( empty( $block['id'] ) ) {
                         self::err( $errors, 'WIDGET_REFERENCE_MISSING_ID', "Zone {$id} block #{$i}: widget block requires an id.", array( 'zone' => $id ) );

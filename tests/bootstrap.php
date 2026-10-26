@@ -265,6 +265,12 @@ function have_posts() { return false; }
 function the_post() {}
 function the_content() {}
 function esc_html__( $text, $domain = null ) { return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' ); }
+if ( ! function_exists( 'esc_attr__' ) ) {
+    function esc_attr__( $text, $domain = null ) { return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' ); }
+}
+if ( ! function_exists( 'is_user_logged_in' ) ) {
+    function is_user_logged_in() { return get_current_user_id() > 0; }
+}
 function esc_html( $text ) { return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' ); }
 function esc_attr( $text ) { return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' ); }
 function esc_url( $url ) { return $url; }
