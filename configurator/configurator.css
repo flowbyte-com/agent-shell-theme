@@ -1,29 +1,38 @@
 /**
- * Configurator panel and trigger.
+ * The AgentShell configurator.
  *
- * The panel is self-contained: all internal styling uses scoped CSS variables
- * so the form is always readable regardless of the site's theme, while making
- * it easy to maintain and update in one place.
+ * A dock, not a scroll. The editor is a fixed panel on the right of the
+ * viewport with three parts: a head (what state the draft is in), a rail (the
+ * contexts), and a canvas (the selected context). The actions live in their
+ * own bar at the bottom, so saving is never more than one movement away —
+ * the previous panel put Save at the end of a 3,870-pixel scroll, which is
+ * the same as putting it out of reach.
  *
- * Accent values (trigger, focus, save button) intentionally reflect --theme-accent.
+ * Every internal value is a scoped custom property, so the panel reads the
+ * same whatever the site looks like.
  */
 
 :root {
     --configurator-bg:       #ffffff;
     --configurator-surface:   #f4f4f5;
+    --configurator-surface-2: #ebebee;
     --configurator-text:      #18181b;
-    --configurator-muted:     #888888;
+    --configurator-muted:     #6b6b73;
     --configurator-border:    #e4e4e7;
     --configurator-input-bg:  #ffffff;
     --configurator-input-border: #d0d0d0;
     --configurator-btn-icon:  #555555;
     --configurator-label:     #333333;
     --configurator-placeholder: #aaaaaa;
-    --configurator-danger:    #ef4444;
+    --configurator-danger:    #b91c1c;
     --configurator-danger-bg: #fee2e2;
+    --configurator-ok:        #15803d;
+    --configurator-ok-bg:     #dcfce7;
+    --configurator-warn:      #b45309;
+    --configurator-warn-bg:   #fef3c7;
 }
 
-/* ── Trigger button ── */
+/* ── Trigger button ──────────────────────────────────────────────────────── */
 #agentshell-config-trigger {
     position: fixed;
     bottom: 1.5rem;
@@ -52,423 +61,172 @@
     transform: scale(0.97);
 }
 
-/* ── Config panel (slides in from right) ── */
+/* ── The dock ────────────────────────────────────────────────────────────── */
 #agentshell-config-panel {
     position: fixed;
     top: 0;
-    right: -420px;
-    width: 400px;
+    right: 0;
     height: 100vh;
+    height: 100dvh;
+    width: min(560px, 100vw);
+    z-index: 99999;
+    display: flex;
+    flex-direction: column;
     background: var(--configurator-bg);
     color: var(--configurator-text);
     border-left: 1px solid var(--configurator-border);
-    z-index: 99999;
-    overflow-y: auto;
-    transition: right 0.25s ease;
-    box-shadow: -4px 0 24px rgba(0,0,0,0.10);
+    box-shadow: -8px 0 30px rgba(0,0,0,0.14);
+    transform: translateX(100%);
+    /* Hidden, not merely off screen. A panel that is only translated away
+       still holds focusable controls: a keyboard user tabbing through the
+       page would walk into an editor they cannot see. `visibility` takes
+       the panel's contents out of the tab order and out of the
+       accessibility tree, and it transitions discretely, so the panel stays
+       visible for the whole of its slide-out. */
+    visibility: hidden;
+    transition: transform 220ms cubic-bezier(0.2, 0, 0, 1), visibility 220ms;
+    font-size: 14px;
+    line-height: 1.45;
 }
 
 #agentshell-config-panel.is-open {
-    right: 0;
+    transform: none;
+    visibility: visible;
 }
 
 body.config-panel-open {
     overflow: hidden;
 }
 
-/* ── Panel header ── */
-#agentshell-config-panel .panel-header {
+/* ── Head ────────────────────────────────────────────────────────────────── */
+.as-cfg__head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 1rem 1.25rem;
-    border-bottom: 1px solid #e4e4e7;
-    background: #f4f4f5;
-    position: sticky;
-    top: 0;
-    z-index: 1;
-}
-
-#agentshell-config-panel .panel-header h2 {
-    margin: 0;
-    font-size: 0.95rem;
-    font-weight: 600;
-    color: var(--configurator-text);
-}
-
-#agentshell-config-panel .panel-close {
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: var(--configurator-btn-icon);
-    padding: 0.25rem 0.5rem;
-    font-size: 1.25rem;
-    line-height: 1;
-    border-radius: 4px;
-    transition: background 0.15s, color 0.15s;
-}
-
-#agentshell-config-panel .panel-close:hover {
-    background: var(--configurator-border);
-    color: var(--configurator-text);
-}
-
-/* ── Panel sections ── */
-#agentshell-config-panel .panel-section {
-    padding: 1rem 1.25rem;
+    gap: 0.6rem;
+    padding: 0.65rem 0.9rem;
     border-bottom: 1px solid var(--configurator-border);
+    background: var(--configurator-bg);
+    flex: 0 0 auto;
 }
 
-#agentshell-config-panel .panel-section h3 {
-    margin: 0 0 0.75rem;
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
-    color: var(--configurator-muted);
-    font-weight: 600;
+.as-cfg__brand {
+    font-weight: 650;
+    letter-spacing: -0.01em;
 }
 
-/* ── Toggle row ── */
-#agentshell-config-panel .toggle-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 0.75rem;
-}
-
-#agentshell-config-panel .toggle-row label {
-    font-size: 0.85rem;
-    font-weight: 500;
-    color: var(--configurator-text);
-    margin-bottom: 0;
-}
-
-/* ── Read-only info line ── */
-#agentshell-config-panel .read-only-info {
-    font-size: 0.73rem;
-    color: var(--configurator-muted);
-    margin: 0;
-    padding: 0.4rem 0;
-    border-top: 1px solid var(--configurator-border);
-}
-
-/* ── Field rows ── */
-#agentshell-config-panel .field-row {
-    margin-bottom: 0.65rem;
-}
-
-#agentshell-config-panel .field-help {
-    font-size: 0.75rem;
-    line-height: 1.5;
-    color: var(--configurator-muted);
-    margin: 0 0 0.65rem;
-}
-
-#agentshell-config-panel .field-row label {
-    display: block;
-    font-size: 0.8rem;
-    font-weight: 500;
-    color: var(--configurator-label);
-    margin-bottom: 0.3rem;
-}
-
-/* ── Text / URL inputs ── */
-#agentshell-config-panel input[type="text"],
-#agentshell-config-panel input[type="url"],
-#agentshell-config-panel select {
-    width: 100%;
-    padding: 0.4rem 0.6rem;
-    border: 1px solid var(--configurator-input-border);
-    border-radius: 6px;
-    font-size: 0.85rem;
-    background: var(--configurator-input-bg);
-    color: var(--configurator-text);
-    box-sizing: border-box;
-    margin-bottom: 0;
-    transition: border-color 0.15s;
-    appearance: auto;
-}
-
-#agentshell-config-panel input[type="text"]:focus,
-#agentshell-config-panel input[type="url"]:focus,
-#agentshell-config-panel select:focus {
-    outline: none;
-    border-color: var(--theme-accent, #3b82f6);
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
-}
-
-#agentshell-config-panel input[type="text"]::placeholder,
-#agentshell-config-panel input[type="url"]::placeholder {
-    color: var(--configurator-placeholder);
-}
-
-/* ── Color fields (color picker + hex text side by side) ── */
-#agentshell-config-panel .color-field {
-    display: flex;
-    gap: 0.4rem;
-    align-items: center;
-}
-
-#agentshell-config-panel .color-field input[type="color"] {
-    width: 36px;
-    height: 32px;
-    border: 1px solid var(--configurator-input-border);
-    border-radius: 6px;
-    cursor: pointer;
-    padding: 2px;
-    background: var(--configurator-input-bg);
-    flex-shrink: 0;
-}
-
-#agentshell-config-panel .color-field input[type="color"]:focus {
-    outline: none;
-    border-color: var(--theme-accent, #3b82f6);
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
-}
-
-#agentshell-config-panel .color-field .color-hex {
-    flex: 1;
-    font-family: 'Courier New', monospace;
-    font-size: 0.82rem;
-    text-transform: uppercase;
-    background: var(--configurator-input-bg);
-    color: var(--configurator-text);
-    border: 1px solid var(--configurator-input-border);
-    border-radius: 6px;
-    padding: 0.3rem 0.5rem;
-}
-
-#agentshell-config-panel .color-field .color-hex:focus {
-    outline: none;
-    border-color: var(--theme-accent, #3b82f6);
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
-}
-
-/* ── Toggle switch ── */
-.toggle-switch {
-    position: relative;
-    width: 44px;
-    height: 24px;
-    flex-shrink: 0;
-}
-
-.toggle-switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-}
-
-.toggle-slider {
-    position: absolute;
-    inset: 0;
-    background: var(--configurator-input-border);
-    border-radius: 24px;
-    cursor: pointer;
-    transition: background 0.2s;
-}
-
-.toggle-slider::before {
-    content: '';
-    position: absolute;
-    width: 18px;
-    height: 18px;
-    left: 3px;
-    bottom: 3px;
-    background: var(--configurator-input-bg);
-    border-radius: 50%;
-    transition: transform 0.2s;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
-}
-
-.toggle-switch input:checked + .toggle-slider {
-    background: var(--theme-accent, #3b82f6); /* uses site accent */
-}
-
-.toggle-switch input:checked + .toggle-slider::before {
-    transform: translateX(20px);
-}
-
-/* ── Save button ── */
-#agentshell-config-panel .panel-save {
-    display: block;
-    width: 100%;
-    padding: 0.65rem;
-    background: var(--theme-accent, #3b82f6); /* uses site accent */
-    color: #ffffff;
-    border: none;
-    border-radius: 6px;
-    font-size: 0.9rem;
-    font-weight: 500;
-    cursor: pointer;
-    text-align: center;
-    transition: background 0.2s, transform 0.1s;
-    margin-top: 0.5rem;
-}
-
-#agentshell-config-panel .panel-save:hover {
-    background: color-mix(in srgb, var(--theme-accent, #3b82f6) 82%, #000);
-}
-
-#agentshell-config-panel .panel-save:active {
-    transform: translateY(1px);
-}
-
-/* ── Zone Builder ── */
-#agentshell-config-panel .zone-builder {
-    margin-bottom: 1rem;
-    border: 1px solid var(--configurator-border);
-    border-radius: 8px;
-    overflow: hidden;
-}
-
-#agentshell-config-panel .zone-builder-header {
+.as-cfg__status {
+    margin-left: auto;
+    font-size: 0.76rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
     background: var(--configurator-surface);
-    padding: 0.4rem 0.7rem;
-    font-size: 0.82rem;
-    font-weight: 600;
-    color: var(--configurator-label);
-    border-bottom: 1px solid var(--configurator-border);
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-
-#agentshell-config-panel .zone-id-tag {
-    font-size: 0.72em;
-    font-weight: 400;
     color: var(--configurator-muted);
-    font-family: monospace;
-}
-
-#agentshell-config-panel .zone-blocks {
-    padding: 0.4rem;
-}
-
-#agentshell-config-panel .zone-block-item {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.35rem 0.5rem;
-    background: var(--configurator-surface);
     border: 1px solid var(--configurator-border);
-    border-radius: 6px;
-    margin-bottom: 0.3rem;
+    white-space: nowrap;
 }
 
-#agentshell-config-panel .zone-block-item:last-child {
-    margin-bottom: 0;
+.as-cfg__status[data-status="dirty"] {
+    background: var(--configurator-warn-bg);
+    color: var(--configurator-warn);
+    border-color: transparent;
 }
 
-#agentshell-config-panel .zone-block-info {
-    flex: 1;
+.as-cfg__status[data-status="staged"] {
+    background: var(--configurator-ok-bg);
+    color: var(--configurator-ok);
+    border-color: transparent;
+}
+
+.as-cfg__status[data-status="locked"] {
+    background: var(--configurator-danger-bg);
+    color: var(--configurator-danger);
+    border-color: transparent;
+}
+
+/* ── Body: rail + canvas ────────────────────────────────────────────────── */
+.as-cfg__body {
+    flex: 1 1 auto;
+    display: flex;
+    min-height: 0;
+}
+
+.as-cfg__rail {
+    flex: 0 0 132px;
+    border-right: 1px solid var(--configurator-border);
+    background: var(--configurator-surface);
+    padding: 0.5rem 0.4rem;
     display: flex;
     flex-direction: column;
-    gap: 0.1rem;
+    gap: 0.15rem;
+    overflow-y: auto;
+}
+
+.as-cfg__tab {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--configurator-label);
+    font: inherit;
+    font-size: 0.85rem;
+    text-align: left;
+    padding: 0.45rem 0.6rem;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.as-cfg__tab:hover {
+    background: var(--configurator-surface-2);
+}
+
+.as-cfg__tab.is-selected {
+    background: var(--configurator-bg);
+    color: var(--configurator-text);
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+}
+
+.as-cfg__canvas {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 1rem 1.1rem 1.5rem;
     min-width: 0;
 }
 
-#agentshell-config-panel .zone-block-type {
-    font-size: 0.8rem;
-    font-weight: 500;
-    color: var(--configurator-text);
+.as-cfg__view {
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
 }
 
-#agentshell-config-panel .zone-block-detail {
+/* ── Headings and text ──────────────────────────────────────────────────── */
+.as-cfg__h4 {
+    margin: 0 0 0.45rem;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--configurator-muted);
+    font-weight: 650;
+}
+
+.as-cfg__lede {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--configurator-muted);
+}
+
+.as-cfg__muted {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--configurator-muted);
+}
+
+.as-cfg__hint {
+    margin: 0.15rem 0 0;
     font-size: 0.72rem;
     color: var(--configurator-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-family: monospace;
 }
 
-#agentshell-config-panel .zone-block-empty {
-    font-size: 0.78rem;
-    color: var(--configurator-placeholder);
-    text-align: center;
-    padding: 0.5rem;
-}
-
-#agentshell-config-panel .zone-slot-builder {
-    border-top: 1px solid var(--configurator-border);
-    padding: 0.4rem 0.5rem;
-}
-
-#agentshell-config-panel .slot-header {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--configurator-muted);
-    font-weight: 600;
-    margin-bottom: 0.25rem;
-    display: flex;
-    align-items: baseline;
-    gap: 0.4rem;
-}
-
-/* ── Nine-area picker ─────────────────────────────────────────────────────
- * The 3×3 map of areas. It is the whole zone at a glance: one button per
- * area, the selected one filled, a dot count on the areas that hold blocks.
- * The editor below it is the selected area only, which is what keeps 18
- * areas out of a sidebar.
- */
-#agentshell-config-panel .zone-area-picker {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 2px;
-    padding: 0.4rem;
-    background: var(--configurator-surface);
-    border-bottom: 1px solid var(--configurator-border);
-}
-
-#agentshell-config-panel .zone-area-btn {
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 1.9rem;
-    padding: 0.2rem;
-    background: transparent;
-    border: 1px solid var(--configurator-border);
-    border-radius: 4px;
-    color: var(--configurator-muted);
-    font: inherit;
-    font-size: 0.66rem;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    cursor: pointer;
-    transition: border-color 120ms ease, background 120ms ease;
-}
-
-#agentshell-config-panel .zone-area-btn:hover {
-    border-color: var(--configurator-accent, #e87a3e);
-}
-
-#agentshell-config-panel .zone-area-btn:focus-visible {
-    outline: 2px solid var(--configurator-accent, #e87a3e);
-    outline-offset: 1px;
-}
-
-#agentshell-config-panel .zone-area-btn.has-blocks {
-    color: var(--configurator-text);
-}
-
-#agentshell-config-panel .zone-area-btn.is-selected {
-    background: var(--configurator-text);
-    border-color: var(--configurator-text);
-    color: var(--configurator-surface, #fff);
-}
-
-#agentshell-config-panel .zone-area-short {
-    font-family: monospace;
-    font-size: 0.7rem;
-}
-
-/* The panel is a self-contained surface: it must not depend on the theme
- * stylesheet having loaded a visually-hidden utility. Only the accessible
- * name of a picker button uses this (the visible label is the two-letter
- * map code), so the rule lives with the panel that needs it. */
-#agentshell-config-panel .screen-reader-text {
+.as-cfg__sr {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -480,241 +238,437 @@ body.config-panel-open {
     border: 0;
 }
 
-#agentshell-config-panel .zone-area-count {
-    position: absolute;
-    top: 1px;
-    right: 3px;
-    font-size: 0.6rem;
-    line-height: 1;
-    opacity: 0.75;
+/* ── Zone switcher ──────────────────────────────────────────────────────── */
+.as-cfg__segmented {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--configurator-surface);
+    border-radius: 8px;
+    align-self: flex-start;
 }
 
-#agentshell-config-panel .zone-layout-note {
-    margin: 0;
-    padding: 0.3rem 0.6rem;
-    font-size: 0.7rem;
-    color: var(--configurator-muted);
-    border-bottom: 1px solid var(--configurator-border);
-}
-
-#agentshell-config-panel .zone-layout-note[data-layout="expanded"] {
-    color: var(--configurator-accent, #e87a3e);
-}
-
-#agentshell-config-panel .slot-align-row {
-    display: flex;
-    gap: 0.5rem;
-    margin-bottom: 0.35rem;
-}
-
-#agentshell-config-panel .zb-align-label {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    font-size: 0.68rem;
-    color: var(--configurator-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-
-#agentshell-config-panel .zb-align-label select {
-    font-size: 0.7rem;
-    padding: 0.1rem 0.2rem;
-}
-
-#agentshell-config-panel .zb-move-select {
-    font-size: 0.7rem;
-    max-width: 5.4rem;
-}
-
-#agentshell-config-panel .zone-block-area {
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-    margin-top: 0.1rem;
-}
-
-/* ── Navigation block controls ────────────────────────────────────────────
- * Four compact fields per navigation block: which menu (or location), how it
- * presents, and its accessible name. WordPress edits the items; this selects
- * the menu. */
-#agentshell-config-panel .zb-nav-controls {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    margin-top: 0.3rem;
-    padding-top: 0.3rem;
-    border-top: 1px dashed var(--configurator-border);
-}
-
-#agentshell-config-panel .zb-nav-label {
-    font-size: 0.64rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--configurator-muted);
-}
-
-#agentshell-config-panel .zb-nav-controls select,
-#agentshell-config-panel .zb-nav-label-input {
-    font-size: 0.72rem;
-    padding: 0.12rem 0.25rem;
-    width: 100%;
-    box-sizing: border-box;
-}
-
-#agentshell-config-panel .zb-nav-warning {
-    margin: 0.15rem 0 0;
-    font-size: 0.68rem;
-    line-height: 1.35;
-    color: var(--configurator-warning, #9a3412);
-}
-
-#agentshell-config-panel .zb-area-label {
-    font-size: 0.7rem;
-    color: var(--configurator-muted);
-    font-weight: 500;
-}
-
-#agentshell-config-panel .zb-area-select {
-    width: 100%;
-    padding: 0.3rem 0.5rem;
-    border: 1px solid var(--configurator-input-border);
+.as-cfg__segment {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    font: inherit;
+    font-size: 0.82rem;
+    padding: 0.32rem 0.85rem;
     border-radius: 6px;
-    font-size: 0.8rem;
-    background: var(--configurator-input-bg);
+    cursor: pointer;
+    color: var(--configurator-label);
+}
+
+.as-cfg__segment[aria-pressed="true"] {
+    background: var(--configurator-bg);
     color: var(--configurator-text);
-    box-sizing: border-box;
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.08);
 }
 
-#agentshell-config-panel .zb-area-select:focus {
-    outline: none;
-    border-color: var(--theme-accent, #3b82f6);
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+/* ── The 3×3 area map ───────────────────────────────────────────────────── */
+.as-cfg__map {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+    background: var(--configurator-surface);
+    border: 1px solid var(--configurator-border);
+    border-radius: 8px;
+    padding: 6px;
 }
 
-#agentshell-config-panel .zone-block-actions {
-    display: flex;
-    gap: 0.2rem;
-    align-items: center;
-    flex-shrink: 0;
-}
-
-#agentshell-config-panel .zb-btn {
-    width: 24px;
-    height: 24px;
-    border: 1px solid var(--configurator-input-border);
-    border-radius: 4px;
-    background: var(--configurator-input-bg);
+.as-cfg__area {
+    position: relative;
+    appearance: none;
+    min-height: 2.6rem;
+    border: 1px solid var(--configurator-border);
+    border-radius: 6px;
+    background: var(--configurator-bg);
+    color: var(--configurator-muted);
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 650;
+    letter-spacing: 0.04em;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 0.7rem;
-    color: var(--configurator-btn-icon);
-    transition: background 0.15s, border-color 0.15s, color 0.15s;
-    line-height: 1;
 }
 
-#agentshell-config-panel .zb-btn:hover:not(:disabled) {
+.as-cfg__area:hover {
+    border-color: var(--configurator-input-border);
+}
+
+.as-cfg__area.is-empty {
     background: var(--configurator-surface);
-    border-color: var(--configurator-muted);
-    color: var(--configurator-text);
+    color: var(--configurator-placeholder);
 }
 
-#agentshell-config-panel .zb-btn:disabled {
-    opacity: 0.3;
+.as-cfg__area.is-selected {
+    background: var(--configurator-text);
+    border-color: var(--configurator-text);
+    color: #fff;
+}
+
+/* The panel that holds the selected area's components. It is a different
+   thing from the map button above, and it used to share the button's class
+   name — which gave a plain section the button's border, its minimum height
+   and its pointer cursor. */
+.as-cfg__area-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.as-cfg__area-count {
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    font-size: 0.6rem;
+    line-height: 1;
+    opacity: 0.7;
+}
+
+/* ── Component list ─────────────────────────────────────────────────────── */
+.as-cfg__blocks {
+    list-style: none;
+    margin: 0 0 0.5rem;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.as-cfg__blocks-empty {
+    font-size: 0.8rem;
+    color: var(--configurator-placeholder);
+    padding: 0.35rem 0.1rem;
+}
+
+.as-cfg__block {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.45rem;
+    background: var(--configurator-surface);
+    border: 1px solid transparent;
+    border-radius: 6px;
+}
+
+.as-cfg__block.is-selected {
+    background: var(--configurator-bg);
+    border-color: var(--configurator-input-border);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.07);
+}
+
+.as-cfg__block-name {
+    flex: 1 1 auto;
+    appearance: none;
+    border: 0;
+    background: transparent;
+    font: inherit;
+    font-size: 0.83rem;
+    text-align: left;
+    padding: 0.1rem 0.15rem;
+    cursor: pointer;
+    color: var(--configurator-text);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.as-cfg__block-tools {
+    display: flex;
+    gap: 2px;
+}
+
+.as-cfg__icon {
+    appearance: none;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--configurator-btn-icon);
+    width: 1.6rem;
+    height: 1.6rem;
+    line-height: 1;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+.as-cfg__icon:hover:not(:disabled) {
+    background: var(--configurator-surface-2);
+}
+
+.as-cfg__icon:disabled {
+    opacity: 0.35;
     cursor: default;
 }
 
-#agentshell-config-panel .zb-btn.zb-delete:hover:not(:disabled) {
+.as-cfg__icon--danger:hover:not(:disabled) {
     background: var(--configurator-danger-bg);
-    border-color: var(--configurator-danger);
     color: var(--configurator-danger);
 }
 
-#agentshell-config-panel .zone-add-block {
-    padding: 0.4rem;
-    border-top: 1px solid var(--configurator-border);
+/* ── Fields ─────────────────────────────────────────────────────────────── */
+.as-cfg__field {
     display: flex;
-    gap: 0.4rem;
-    align-items: center;
-    background: var(--configurator-surface);
-}
-
-#agentshell-config-panel .zb-type-select,
-#agentshell-config-panel .zb-widget-select {
-    flex: 1;
-    padding: 0.3rem 0.5rem;
-    border: 1px solid var(--configurator-input-border);
-    border-radius: 6px;
-    font-size: 0.8rem;
-    background: var(--configurator-input-bg);
-    color: var(--configurator-text);
-}
-
-#agentshell-config-panel .zb-widget-select {
-    flex: 1;
-}
-
-/* ── Transaction pill + snapshot / discard row ── */
-
-#agentshell-config-panel .panel-tx-pill {
-    display: inline-block;
-    padding: 0.2rem 0.6rem;
-    margin: 0 0.6rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    background: var(--configurator-input-bg);
-    color: var(--configurator-text);
-    border: 1px solid var(--configurator-input-border);
-}
-
-#agentshell-config-panel .panel-tx-pill[data-tx="editing_open"] {
-    background: #fef3c7;
-    border-color: #f59e0b;
-    color: #92400e;
-}
-
-#agentshell-config-panel .panel-tx-pill[data-tx="locked"] {
-    background: #fee2e2;
-    border-color: #dc2626;
-    color: #991b1b;
-}
-
-#agentshell-config-panel .panel-tx-bar {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    padding-bottom: 0.6rem;
-    border-bottom: 1px solid var(--configurator-input-border);
+    flex-direction: column;
+    gap: 0.2rem;
     margin-bottom: 0.6rem;
 }
 
-#agentshell-config-panel .panel-btn {
-    padding: 0.4rem 0.7rem;
-    border-radius: 6px;
+.as-cfg__label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--configurator-muted);
+    font-weight: 600;
+}
+
+.as-cfg__input {
+    width: 100%;
+    box-sizing: border-box;
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 0.35rem 0.5rem;
     border: 1px solid var(--configurator-input-border);
+    border-radius: 6px;
     background: var(--configurator-input-bg);
     color: var(--configurator-text);
+}
+
+.as-cfg__input:focus-visible {
+    outline: 2px solid var(--theme-accent, #3b82f6);
+    outline-offset: 1px;
+    border-color: transparent;
+}
+
+.as-cfg__color {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+}
+
+.as-cfg__swatch {
+    width: 2.1rem;
+    height: 2.1rem;
+    padding: 0;
+    border: 1px solid var(--configurator-input-border);
+    border-radius: 6px;
+    background: var(--configurator-input-bg);
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.as-cfg__row {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+}
+
+.as-cfg__code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 0.78rem;
+    line-height: 1.5;
+    resize: vertical;
+}
+
+.as-cfg__code--large {
+    min-height: 12rem;
+}
+
+.as-cfg__json {
+    margin: 0;
+    padding: 0.6rem;
+    background: var(--configurator-surface);
+    border: 1px solid var(--configurator-border);
+    border-radius: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.72rem;
+    line-height: 1.45;
+    max-height: 18rem;
+    overflow: auto;
+    white-space: pre;
+}
+
+.as-cfg__groups {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.as-cfg__group {
+    border: 1px solid var(--configurator-border);
+    border-radius: 8px;
+    padding: 0.7rem 0.8rem 0.4rem;
+    background: var(--configurator-bg);
+}
+
+.as-cfg__inspector {
+    border: 1px solid var(--configurator-border);
+    border-radius: 8px;
+    padding: 0.7rem 0.8rem 0.4rem;
+    background: var(--configurator-surface);
+}
+
+/* ── History ────────────────────────────────────────────────────────────── */
+.as-cfg__records {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.as-cfg__record {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.4rem;
+    border-radius: 6px;
+    background: var(--configurator-surface);
+    font-size: 0.8rem;
+}
+
+/* The name is the identifier a snapshot is restored by, so it is never cut
+   off: it wraps instead. The description beside it is the part that may be
+   truncated. */
+.as-cfg__record-name {
+    font-weight: 600;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    flex: 0 1 auto;
+}
+
+.as-cfg__record-meta {
+    color: var(--configurator-muted);
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+.as-cfg__btn {
+    appearance: none;
+    font: inherit;
+    font-size: 0.82rem;
+    padding: 0.4rem 0.8rem;
+    border-radius: 6px;
+    border: 1px solid var(--configurator-input-border);
+    background: var(--configurator-bg);
+    color: var(--configurator-text);
     cursor: pointer;
 }
 
-#agentshell-config-panel .panel-btn:hover:not([disabled]) {
-    background: var(--configurator-accent);
+.as-cfg__btn:hover:not(:disabled) {
+    background: var(--configurator-surface);
+}
+
+.as-cfg__btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.as-cfg__btn--primary {
+    background: var(--theme-accent, #3b82f6);
+    border-color: transparent;
     color: #fff;
-    border-color: var(--configurator-accent);
+    font-weight: 600;
 }
 
-#agentshell-config-panel .panel-btn[disabled] {
-    opacity: 0.5;
-    cursor: not-allowed;
+.as-cfg__btn--primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--theme-accent, #3b82f6) 85%, #000);
 }
 
-#agentshell-config-panel .panel-doctor {
+.as-cfg__btn--quiet {
+    border-color: transparent;
+    background: transparent;
+    color: var(--configurator-muted);
+    text-decoration: underline;
+    padding: 0.2rem 0.35rem;
+}
+
+/* ── The action bar ─────────────────────────────────────────────────────── */
+.as-cfg__alert {
+    margin: 0 0.9rem;
+    padding: 0.5rem 0.65rem;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    background: var(--configurator-danger-bg);
+    color: var(--configurator-danger);
+    flex: 0 0 auto;
+}
+
+.as-cfg__actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 0.9rem;
+    border-top: 1px solid var(--configurator-border);
+    background: var(--configurator-bg);
+    flex: 0 0 auto;
+}
+
+.as-cfg__actions-hint {
     margin-left: auto;
-    font-size: 0.72rem;
-    color: var(--configurator-text-muted, #6b7280);
+    font-size: 0.75rem;
+    color: var(--configurator-muted);
+    text-align: right;
+}
+
+/* ── Focus ──────────────────────────────────────────────────────────────── */
+.as-cfg :focus-visible {
+    outline: 2px solid var(--theme-accent, #3b82f6);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+/* ── Narrow viewports ───────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+    #agentshell-config-panel {
+        width: 100vw;
+        border-left: 0;
+    }
+
+    .as-cfg__body {
+        flex-direction: column;
+    }
+
+    .as-cfg__rail {
+        flex: 0 0 auto;
+        flex-direction: row;
+        gap: 0.2rem;
+        overflow-x: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--configurator-border);
+        padding: 0.4rem;
+    }
+
+    .as-cfg__tab {
+        white-space: nowrap;
+    }
+}
+
+@media (max-width: 560px) {
+    .as-cfg__actions {
+        flex-wrap: wrap;
+    }
+
+    .as-cfg__actions-hint {
+        width: 100%;
+        text-align: left;
+        margin-left: 0;
+    }
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+    #agentshell-config-panel,
+    #agentshell-config-trigger {
+        transition: none !important;
+    }
 }

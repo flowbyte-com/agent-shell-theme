@@ -1,0 +1,394 @@
+<!--
+  The configurator's browser test.
+
+  This is the real interface: the theme's real stylesheet, the theme's real
+  four modules, and the markup footer.php renders. The only thing that is
+  faked is the network — the fetch stub answers the theme's own REST routes,
+  so the transport, the models, the view and the wiring are all exercised
+  as they run in a browser.
+
+  The results are written into the document title as JSON, which is what
+  tests/configurator-browser-test.js reads back. The runner passes
+  --force-prefers-reduced-motion: the panel slides in with a CSS transition,
+  and a headless browser whose virtual clock does not advance animations
+  would measure the panel while it is still off screen.
+-->
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="../configurator/configurator.css">
+<style>body{margin:0;font-family:system-ui,sans-serif;background:#f6f6f7}</style>
+</head><body>
+<div id="agentshell-config-panel" class="as-cfg" aria-hidden="false"></div>
+<button id="agentshell-config-trigger" aria-label="Open theme configurator">cfg</button>
+<script>
+var SCENARIO = ( new URLSearchParams( location.search ).get( 'scenario' ) || 'default' );
+window.__errors = [];
+window.onerror = function (m, s, l, c) { window.__errors.push(m + ' @' + l + ':' + c); };
+window.__requests = [];
+window.__opened = [];
+window.__puts = [];
+
+const ZONE_RESPONSE = {
+  config: { '--theme-bg': '#fafaf9', '--theme-text': '#1f2937', '--theme-accent': '#e87a3e',
+            '--theme-header-bg': '#ffffff', '--zone-header-layout': 'space-between', '--spacing-base': '1rem' },
+  defaults: {}, custom_css: '/* agent-set rule */', custom_js: '',
+  zones: [
+    { id: 'header', label: 'Header', slots: {
+        'top-left': [], 'top-center': [], 'top-right': [{ type: 'wp_core', id: 'nav_menu', menu: 'utility', mode: 'horizontal', label: 'Utility' }],
+        'middle-left': [{ type: 'wp_core', id: 'site_logo' }], 'middle-center': [{ type: 'wp_core', id: 'nav_menu' }],
+        'middle-right': [{ type: 'wp_core', id: 'search_form' }],
+        'bottom-left': [], 'bottom-center': [], 'bottom-right': []
+      } },
+    { id: 'main', label: 'Main', composition: [{ type: 'wp_loop' }] },
+    { id: 'footer', label: 'Footer', slots: {
+        'top-left': [{ type: 'wp_core', id: 'nav_menu', menu: 'legal', mode: 'vertical' }], 'top-center': [], 'top-right': [],
+        'middle-left': [], 'middle-center': [], 'middle-right': [],
+        'bottom-left': [], 'bottom-center': [], 'bottom-right': []
+      } }
+  ],
+  zone_areas: [
+    {id:'top-left',row:'top',column:0,label:'Top Left',short:'TL'},{id:'top-center',row:'top',column:1,label:'Top Centre',short:'TC'},
+    {id:'top-right',row:'top',column:2,label:'Top Right',short:'TR'},{id:'middle-left',row:'middle',column:0,label:'Middle Left',short:'ML'},
+    {id:'middle-center',row:'middle',column:1,label:'Middle Centre',short:'MC'},{id:'middle-right',row:'middle',column:2,label:'Middle Right',short:'MR'},
+    {id:'bottom-left',row:'bottom',column:0,label:'Bottom Left',short:'BL'},{id:'bottom-center',row:'bottom',column:1,label:'Bottom Centre',short:'BC'},
+    {id:'bottom-right',row:'bottom',column:2,label:'Bottom Right',short:'BR'}
+  ],
+  zone_align: { slot: ['start','center','end','stretch'], row: ['start','center','end'], rows: ['top','middle','bottom'] },
+  available_menus: [ {id:11,slug:'primary',name:'Main Menu',count:3}, {id:12,slug:'utility',name:'Utility',count:2}, {id:14,slug:'legal',name:'Legal',count:2} ],
+  available_menu_locations: [ {slug:'primary',label:'Primary',menu_id:11} ],
+  available_widgets: [ {id:'chart',name:'Chart',source:'file',status:'active'} ],
+  available_widget_areas: [ {id:'primary-sidebar',name:'Primary Sidebar'} ],
+  core_components: [ {id:'site_title',name:'Site Title'},{id:'site_logo',name:'Site Logo'},{id:'nav_menu',name:'Primary Navigation Menu'},{id:'search_form',name:'Search Form'} ],
+  navigation_dependencies: { menus: [ {reference:'utility',kind:'menu'}, {reference:'legal',kind:'menu'} ], locations: [] }
+};
+
+window.AgentShellConfig = { restUrl: '/', nonce: 'x', adminUrl: '/admin-ajax.php' };
+window.open = function (url) { window.__opened.push(url); return null; };
+window.confirm = function () { return true; };
+
+function respond(data, ok, status) {
+  return { ok: ok !== false, status: status || 200,
+           text: function () { return Promise.resolve(JSON.stringify(data)); } };
+}
+window.fetch = function (url, opts) {
+  var path = String(url);
+  var method = (opts && opts.method) || 'GET';
+  var body = opts && opts.body ? JSON.parse(opts.body) : null;
+  window.__requests.push(method + ' ' + path);
+
+  if (path.indexOf('/transaction/preview') !== -1) {
+    return Promise.resolve(respond({ url: 'https://example.test/?agentshell_tx=1', diff: {}, summary: {added:0,removed:0,changed:1} }));
+  }
+  if (path.indexOf('/transaction/commit') !== -1) {
+    return Promise.resolve(respond({ committed: true }));
+  }
+  if (path.indexOf('/transaction') !== -1 && method === 'POST') {
+    return Promise.resolve(respond({ id: 'tx-1', label: 'configurator save' }));
+  }
+  if (path.indexOf('/transaction') !== -1 && method === 'DELETE') {
+    return Promise.resolve(respond({ rolled_back: true }));
+  }
+  if (path.indexOf('/transaction') !== -1) {
+    if (SCENARIO === 'refusal') {
+      // A transaction is already open — with our own work staged in it.
+      return Promise.resolve(respond({ open: true, id: 'tx-mine', actor: 'me', label: 'earlier work', owned_by_us: true, has_staged: true }));
+    }
+    if (SCENARIO === 'locked') {
+      // An agent is holding the transaction: its staged work is not this
+      // session's to overwrite.
+      return Promise.resolve(respond({ open: true, id: 'tx-agent', actor: 'agent', label: 'agent work', owned_by_us: false, has_staged: true }));
+    }
+    return Promise.resolve(respond({ open: false, owned_by_us: true }));
+  }
+  if (path.indexOf('/config') !== -1 && method === 'PUT') {
+    if (body && body['--theme-bg'] === '#bad') {
+      return Promise.resolve(respond({ code: 'invalid_color_value', message: 'Invalid color value for --theme-bg: #bad' }, false, 400));
+    }
+    window.__puts.push(body);
+    return Promise.resolve(respond({}));
+  }
+  if (path.indexOf('/config') !== -1) {
+    return Promise.resolve(respond(ZONE_RESPONSE));
+  }
+  if (path.indexOf('/snapshots') !== -1 && method === 'POST') {
+    return Promise.resolve(respond({ name: body.name }));
+  }
+  if (path.indexOf('/snapshots') !== -1) {
+    return Promise.resolve(respond({ snapshots: [ {name:'before-header',label:'before header',actor:'admin',timestamp:1} ] }));
+  }
+  if (path.indexOf('/revisions') !== -1) {
+    return Promise.resolve(respond({ revisions: [ {id:'r1',label:'header colour',actor:'admin',timestamp:2} ] }));
+  }
+  return Promise.resolve(respond({}));
+};
+</script>
+<script src="../configurator/configurator-state.js"></script>
+<script src="../configurator/configurator-api.js"></script>
+<script src="../configurator/configurator-ui.js"></script>
+<script src="../configurator/configurator-app.js"></script>
+<script>
+window.__results = [];
+function ok(name, cond, detail) { window.__results.push({ name: name, pass: !!cond, detail: detail === undefined ? null : detail }); }
+function q(sel) { return document.querySelector(sel); }
+function qa(sel) { return Array.prototype.slice.call(document.querySelectorAll(sel)); }
+function byText(sel, text) { return qa(sel).filter(function (el) { return el.textContent.trim() === text; })[0]; }
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+function chip() { var el = q('.as-cfg__status'); return el ? el.textContent.trim() : '(no chip)'; }
+function areaButtons() { return qa('button.as-cfg__area'); }
+function tokenInput(token) { return q('.as-cfg__input[data-token="' + token + '"]'); }
+
+async function run() {
+  // The theme boots the editor from an inline script after the modules load.
+  window.AgentshellConfiguratorApp.boot({ restUrl: '/', nonce: 'x' });
+  document.getElementById('agentshell-config-trigger').click();
+  await wait(300);
+
+  if (SCENARIO === 'locked') {
+    await run_locked();
+    return;
+  }
+  if (SCENARIO === 'refusal') {
+    await run_refusal();
+    return;
+  }
+
+  // ── the shell ───────────────────────────────────────────────────────
+  ok('the editor opens', !!q('.as-cfg__rail'));
+  ok('the editor stays open after it loads', q('#agentshell-config-panel').classList.contains('is-open'),
+     q('#agentshell-config-panel').className);
+  ok('the dock is on screen',
+     q('#agentshell-config-panel').getBoundingClientRect().right <= window.innerWidth + 1 &&
+     q('#agentshell-config-panel').getBoundingClientRect().left >= 0,
+     JSON.stringify(q('#agentshell-config-panel').getBoundingClientRect().toJSON()));
+  ok('no JavaScript errors on open', window.__errors.length === 0, window.__errors.join('; '));
+  ok('the rail lists the four contexts', qa('.as-cfg__tab').length === 4, String(qa('.as-cfg__tab').length));
+  ok('the action bar is present', !!q('.as-cfg__actions'));
+  ok('the save button is in the action bar', !!q('.as-cfg__actions [data-focus-key="save"]'));
+  ok('the discard button is in the action bar', !!q('.as-cfg__actions [data-focus-key="discard"]'));
+  ok('the preview button is in the action bar', !!q('.as-cfg__actions [data-focus-key="preview"]'));
+  ok('the action bar is visible without scrolling',
+     q('.as-cfg__actions').getBoundingClientRect().bottom <= window.innerHeight + 1,
+     String(Math.round(q('.as-cfg__actions').getBoundingClientRect().bottom)));
+  ok('the state chip starts as saved', chip() === 'Saved', chip());
+
+  // ── Layout: the nine-area map ───────────────────────────────────────
+  ok('the header shows nine areas', areaButtons().length === 9, String(areaButtons().length));
+  ok('an empty area is marked', qa('button.as-cfg__area.is-empty').length > 0);
+  ok('an occupied area is not marked empty', qa('button.as-cfg__area.is-empty').length < 9);
+  ok('the selected area is the middle centre', q('button.as-cfg__area.is-selected').dataset.area === 'middle-center');
+  ok('the selected area is announced as pressed', q('button.as-cfg__area.is-selected').getAttribute('aria-pressed') === 'true');
+  ok('the area map is a labelled group', !!q('.as-cfg__map[aria-label]'));
+
+  q('button.as-cfg__area[data-area="top-right"]').click();
+  await wait(60);
+  ok('selecting an area opens that area', q('button.as-cfg__area.is-selected').dataset.area === 'top-right');
+  ok('the area editor shows the area title', q('.as-cfg__area-body .as-cfg__h4').textContent.indexOf('Top Right') === 0,
+     q('.as-cfg__area-body .as-cfg__h4').textContent);
+
+  var navBlock = qa('.as-cfg__block-name').filter(function (b) { return b.textContent.indexOf('Navigation') !== -1; })[0];
+  ok('the area lists its component', !!navBlock);
+  navBlock.click();
+  await wait(60);
+  ok('the inspector shows the menu selector', !!q('.as-cfg__nav-fields'));
+  ok('the menu selector lists the site menus', qa('.as-cfg__nav-fields select')[0].options.length >= 4,
+     String(qa('.as-cfg__nav-fields select')[0].options.length));
+  ok('the menu selector shows the block current menu', qa('.as-cfg__nav-fields select')[0].value === 'utility',
+     qa('.as-cfg__nav-fields select')[0].value);
+
+  var selects = qa('.as-cfg__nav-fields select');
+  selects[0].value = 'legal';
+  selects[0].dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(60);
+  ok('choosing a menu clears the location', qa('.as-cfg__nav-fields select')[1].value === '',
+     qa('.as-cfg__nav-fields select')[1].value);
+  ok('the draft is now dirty', chip() === 'Unsaved changes', chip());
+
+  // ── Discard: the previous configuration must come back exactly ──────
+  var putsBeforeDiscard = window.__puts.length;
+  q('.as-cfg__actions [data-focus-key="discard"]').click();
+  await wait(200);
+  ok('discard returns the state chip to saved', chip() === 'Saved', chip());
+  ok('discard writes nothing to the server', window.__puts.length === putsBeforeDiscard,
+     String(window.__puts.length - putsBeforeDiscard));
+  ok('discard restores the saved menu', qa('.as-cfg__nav-fields select')[0].value === 'utility',
+     qa('.as-cfg__nav-fields select')[0].value);
+
+  // ── Appearance ──────────────────────────────────────────────────────
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(60);
+  ok('the appearance context shows the global tokens', qa('.as-cfg__group').length >= 3, String(qa('.as-cfg__group').length));
+  ok('a colour field offers a swatch and a hex value', !!q('.as-cfg__swatch') && !!q('.as-cfg__input--hex'));
+  ok('the background token is the first colour', tokenInput('--theme-bg') !== null);
+
+  var hex = tokenInput('--theme-bg');
+  hex.value = '#123456';
+  hex.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+  ok('editing a token marks the draft dirty', chip() === 'Unsaved changes', chip());
+  ok('the swatch follows the typed value', q('.as-cfg__swatch').value === '#123456', q('.as-cfg__swatch').value);
+
+  // ── History ─────────────────────────────────────────────────────────
+  q('.as-cfg__tab[data-context="history"]').click();
+  await wait(120);
+  ok('the history context lists the snapshot and the revision', qa('.as-cfg__record').length >= 2,
+     String(qa('.as-cfg__record').length));
+  ok('the history context offers a restore', !!byText('.as-cfg__btn', 'Restore'));
+  ok('the history context names the open transaction state', q('.as-cfg__view').textContent.indexOf('transaction') !== -1);
+
+  // ── Advanced ────────────────────────────────────────────────────────
+  q('.as-cfg__tab[data-context="advanced"]').click();
+  await wait(60);
+  ok('the advanced context has a large CSS editor', !!q('.as-cfg__code--large') && q('.as-cfg__code--large').rows >= 12,
+     q('.as-cfg__code--large') ? String(q('.as-cfg__code--large').rows) : 'none');
+  ok('the advanced context shows the configuration as JSON', !!q('.as-cfg__json'));
+  ok('the JSON is the payload the server would receive',
+     q('.as-cfg__json').textContent.indexOf('"--theme-bg"') !== -1);
+
+  // ── Preview (the draft is still dirty) ──────────────────────────────
+  q('.as-cfg__actions [data-focus-key="preview"]').click();
+  await wait(200);
+  ok('preview asks the server for a preview URL',
+     window.__requests.join(' ').indexOf('/transaction/preview') !== -1);
+  ok('preview opens the staged site', window.__opened.length === 1 && String(window.__opened[0]).indexOf('agentshell_tx') !== -1,
+     String(window.__opened[0]));
+
+  // ── Save ────────────────────────────────────────────────────────────
+  q('.as-cfg__actions [data-focus-key="save"]').click();
+  await wait(400);
+  ok('saving puts the configuration on the wire', window.__puts.length === 1 &&
+     window.__puts[0]['--theme-bg'] === '#123456', JSON.stringify(window.__puts.length ? window.__puts[0]['--theme-bg'] : null));
+  ok('saving sends the zones', window.__puts.length === 1 && Array.isArray(window.__puts[0].zones));
+  ok('saving sends the custom CSS', window.__puts.length === 1 && window.__puts[0].custom_css === '/* agent-set rule */');
+  ok('saving opens a transaction and commits it',
+     window.__requests.join(' ').indexOf('POST /wp/v2/agentshell/transaction') !== -1 &&
+     window.__requests.join(' ').indexOf('/transaction/commit') !== -1);
+  ok('the state chip returns to saved after a save', chip() === 'Saved', chip());
+
+  // ── Keyboard: the rail is arrow-navigable ───────────────────────────
+  var tabs = qa('.as-cfg__tab');
+  tabs[0].focus();
+  tabs[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+  await wait(60);
+  ok('the arrow keys move between contexts',
+     q('.as-cfg__tab[aria-selected="true"]').dataset.context === 'appearance',
+     q('.as-cfg__tab[aria-selected="true"]').dataset.context);
+  ok('the focus follows the selected context', document.activeElement === q('.as-cfg__tab[aria-selected="true"]'));
+
+  // ── A refused save keeps the draft and explains itself ─────────────
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(60);
+  var hex2 = tokenInput('--theme-bg');
+  hex2.value = '#bad';
+  hex2.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+  q('.as-cfg__actions [data-focus-key="save"]').click();
+  await wait(400);
+  ok('a refused save shows the server message',
+     !!q('.as-cfg__alert') && !q('.as-cfg__alert').hasAttribute('hidden') &&
+     q('.as-cfg__alert').textContent.indexOf('Invalid color') !== -1,
+     q('.as-cfg__alert') ? q('.as-cfg__alert').textContent : 'no alert');
+  ok('a refused save keeps the draft', chip() === 'Unsaved changes', chip());
+  ok('a refused save does not commit', window.__puts.length === 1, String(window.__puts.length));
+  ok('a refused save rolls the transaction back',
+     window.__requests.join(' ').indexOf('DELETE /wp/v2/agentshell/transaction') !== -1);
+
+  // ── Closing with unsaved work asks first ────────────────────────────
+  var asked = 0;
+  window.confirm = function () { asked += 1; return false; };
+  q('.as-cfg__close').click();
+  await wait(60);
+  ok('closing with unsaved changes asks first', asked === 1, String(asked));
+  ok('a refused close leaves the editor open', q('.as-cfg__rail') !== null);
+
+  // ── A closed editor is not in the tab order ──────────────────────────
+  window.confirm = function () { return true; };
+  q('.as-cfg__close').click();
+  await wait(300);
+  ok('the editor closes', ! q('#agentshell-config-panel').classList.contains('is-open'));
+  ok('the closed editor is hidden from the keyboard',
+     getComputedStyle(q('#agentshell-config-panel')).visibility === 'hidden',
+     getComputedStyle(q('#agentshell-config-panel')).visibility);
+  ok('the closed editor is hidden from assistive technology',
+     q('#agentshell-config-panel').getAttribute('aria-hidden') === 'true',
+     q('#agentshell-config-panel').getAttribute('aria-hidden'));
+
+  report();
+}
+
+function report() {
+  var failed = window.__results.filter(function (r) { return !r.pass; });
+  document.title = JSON.stringify({ total: window.__results.length, failed: failed.length, failures: failed });
+}
+
+/**
+ * A refused save must not throw away a transaction it did not open.
+ *
+ * The transaction here was already open, with the operator's own staged
+ * work in it. The save fails, the message is shown and the draft is kept —
+ * but the transaction is left exactly as it was, because rolling it back
+ * would destroy work that was there before this save.
+ */
+async function run_refusal() {
+  ok('the editor opens with an open transaction', !!q('.as-cfg__rail'));
+  ok('the state is staged, not dirty', chip() === 'Staged', chip());
+
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(60);
+  var hex = tokenInput('--theme-bg');
+  hex.value = '#bad';
+  hex.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+  ok('the draft is dirty before the refused save', chip() === 'Unsaved changes', chip());
+
+  q('.as-cfg__actions [data-focus-key="save"]').click();
+  await wait(400);
+
+  ok('the refusal is reported', !!q('.as-cfg__alert') && q('.as-cfg__alert').textContent.indexOf('Invalid color') !== -1,
+     q('.as-cfg__alert') ? q('.as-cfg__alert').textContent : 'no alert');
+  ok('the draft is kept', chip() === 'Unsaved changes', chip());
+  ok('the transaction that was already open is not rolled back',
+     window.__requests.join(' ').indexOf('DELETE') === -1,
+     window.__requests.join(' '));
+  ok('the save was not committed', window.__requests.join(' ').indexOf('/transaction/commit') === -1);
+
+  report();
+}
+
+/**
+ * Workflow F: an agent is holding the transaction.
+ *
+ * The editor must respect the ownership: it may show the state, it must say
+ * who holds it, and it must not offer a save that would silently overwrite
+ * somebody else's staged work.
+ */
+async function run_locked() {
+  ok('the editor opens while another actor holds the transaction', !!q('.as-cfg__rail'));
+  ok('the state names the actor that holds the transaction', chip().indexOf('agent') !== -1, chip());
+  ok('the panel is marked as locked', q('#agentshell-config-panel').getAttribute('data-state') === 'locked',
+     q('#agentshell-config-panel').getAttribute('data-state'));
+  ok('saving is not offered', q('.as-cfg__actions [data-focus-key="save"]').hasAttribute('disabled'),
+     q('.as-cfg__actions [data-focus-key="save"]').outerHTML.slice(0, 120));
+  ok('the discard button is not offered either',
+     q('.as-cfg__actions [data-focus-key="discard"]').hasAttribute('disabled'));
+
+  // Even if something asks for a save, nothing is written. The call is
+  // made through the app's own handle, because a disabled button fires no
+  // click at all — the guard behind the button is what is being tested.
+  window.AgentshellConfigurator.save();
+  await wait(200);
+  ok('a save attempt while locked writes nothing', window.__puts.length === 0, String(window.__puts.length));
+  ok('a save attempt while locked says why',
+     !!q('.as-cfg__alert') && q('.as-cfg__alert').textContent.indexOf('Another actor') !== -1,
+     q('.as-cfg__alert') ? q('.as-cfg__alert').textContent : 'no alert');
+
+  // The rest of the editor still works for reading.
+  ok('the areas are still shown', qa('button.as-cfg__area').length === 9, String(qa('button.as-cfg__area').length));
+
+  report();
+}
+
+run().catch(function (e) {
+  document.title = JSON.stringify({ harness_error: String(e && e.message ? e.message : e), stack: e && e.stack, errors: window.__errors });
+});
+</script>
+</body></html>

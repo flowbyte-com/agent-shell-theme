@@ -320,6 +320,18 @@ $suites = array(
     'navigation-blocks'    => __DIR__ . '/navigation-blocks-test.php',
     // The navigation script's open/close/Escape rules, in Node.
     'nav-model'            => __DIR__ . '/run-nav-model.php',
+    // The redesigned editor: its own model (Node), the editor itself driven
+    // in a real browser against the theme's real stylesheet, modules and
+    // markup, and the authorisation boundary that decides who is sent it.
+    //
+    // These sit here because the runner stops at the destructive-identity-
+    // guard suite when there is no live WordPress to guard: a suite
+    // registered after it would never run in the unit-only job. The CI
+    // workflow runs the Node suites directly as well, so a skip in the
+    // runner can never be mistaken for a pass.
+    'configurator-editor'  => __DIR__ . '/run-configurator-editor.php',
+    'configurator-browser' => __DIR__ . '/run-configurator-browser.php',
+    'configurator-enqueue' => __DIR__ . '/configurator-enqueue-test.php',
     // Nine-area header/footer zones: canonical schema, the three-slot
     // compatibility layer, markup parity, layout derivation, validation,
     // and MCP ↔ configurator equivalence. Defines the wp_core stubs the

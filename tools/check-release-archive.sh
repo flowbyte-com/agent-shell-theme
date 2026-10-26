@@ -83,11 +83,12 @@ REQUIRED=(
     # administrators, so an archive without it ships a broken panel. The
     # checker refuses that archive rather than trusting the packager.
     #
-    # Only the two files whose names are stable are required here. The
-    # editor's script is split into modules by the redesign branch, so a
-    # requirement on the old single-file name would make this branch and
-    # that one conflict at merge time; the redesign branch adds its own
-    # module names to this same list.
+    # The editor is four modules and a stylesheet, and every one of them is
+    # named here: an archive that carries the panel's markup but not its
+    # script is exactly the failure this list exists to catch.
+    "configurator/configurator-app.js"
+    "configurator/configurator-api.js"
+    "configurator/configurator-ui.js"
     "configurator/configurator.css"
     "configurator/configurator-state.js"
     "widgets/.index.json"
