@@ -4388,14 +4388,25 @@ add_action( 'rest_api_init', function() {
             if ( class_exists( '\AgentShell_MCP\Transaction_Manager' ) ) {
                 $manager = \AgentShell_MCP\Transaction_Manager::instance();
                 $live    = $manager->payload();
-                if ( is_array( $live ) && $manager->is_active()
-                    && \AgentShell_MCP\Transaction_Manager::is_session_bound( $live )
-                    && ! $manager->session_matches( $live ) ) {
-                    return new WP_Error(
-                        'transaction_locked_by_session',
-                        'This configuration belongs to a transaction opened by a different editor session of this account. Its staged work cannot be overwritten from here.',
-                        array( 'status' => 409 )
-                    );
+                if ( is_array( $live ) && $manager->is_active() ) {
+                    if ( \AgentShell_MCP\Transaction_Manager::is_session_bound( $live ) && ! $manager->session_matches( $live ) ) {
+                        return new WP_Error(
+                            'transaction_locked_by_session',
+                            'This configuration belongs to a transaction opened by a different editor session of this account. Its staged work cannot be overwritten from here.',
+                            array( 'status' => 409 )
+                        );
+                    }
+                    if ( ! \AgentShell_MCP\Transaction_Manager::is_session_bound( $live ) ) {
+                        // The config endpoint is the editor's route. An
+                        // unbound row belongs to an agent (or a pre-capability
+                        // editor) and is finished by that caller's own path;
+                        // a browser must not write into it implicitly.
+                        return new WP_Error(
+                            'transaction_requires_recovery',
+                            'The open transaction was started outside this editor session. Recover it explicitly to stage configuration here.',
+                            array( 'status' => 409 )
+                        );
+                    }
                 }
             }
             $existing = agentshell_get_config();
