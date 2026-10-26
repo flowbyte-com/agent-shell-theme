@@ -339,7 +339,93 @@ not silently dropped. Malformed ids and names are refused rather than
 sanitised into a different record. A missing or already-deleted id is reported
 as `missing` and the rest of the request still applies.
 
-### 5.3 The deletion and its audit record are one operation
+### 5.3 Instant visual feedback, without giving up the preview
+
+The original configurator applied a design token to the page the moment it
+was changed:
+
+```js
+document.documentElement.style.setProperty( name, value );
+```
+
+The administrator saw the colour move while deciding whether to keep it. The
+redesigned editor dropped that: every visual change waited for Preview, which
+is safer and much less pleasant to use. The owner asked for it back, and it
+is back — as a layer, not as a return to the old mechanism.
+
+**What the layer is.** A small controller writes the draft's design tokens
+onto the page's root element as CSS custom properties. It is browser-local:
+no request, no transaction, no WordPress option, no effect on another
+visitor or another tab, and no draft JavaScript is executed. The
+configuration stays in the editor's draft model, and in the server's
+configuration only once the operator saves it. The old mechanism wrote the
+same property on the same element; what was missing was the discipline around
+it, and that is what the layer adds.
+
+**What may be shown live is the theme's decision.** A custom property that
+nothing reads cannot be shown: the browser accepts any value for any custom
+property and ignores the ones no rule consults, so a field that looks live
+and changes nothing is worse than one that says it cannot be previewed. The
+theme therefore publishes the answer — `agentshell_live_preview_tokens()`
+reads the theme's own stylesheet and returns every property it consumes
+(`var(--name)`), and the configuration response carries that list. The list
+cannot drift from the stylesheet. Of the twenty-eight settings the editor
+exposes, twenty are read by the stylesheet; the eight that are not (the
+zone layouts, the zone radii, the main zone's border width, `--font-mono`,
+`--theme-surface`, `--border-width` and `--theme-footer-accent`) are marked
+in the interface, because changing them changes nothing on the page — not in
+the live preview and not in the full one.
+
+**The value is checked by the browser.** It is handed to a real CSS property
+on a detached element and read back, so a half-typed colour or a malformed
+length is refused by the same rules the browser applies everywhere else.
+There is no second copy of the server's validation rules here. A refused
+value does not remove the override that is already on the page: the operator
+keeps the last good design on screen while the field keeps the text they
+are typing.
+
+**Two baselines.** The layer keeps what the page's own stylesheet provides —
+captured once, when the editor loads — and what should be on screen now: the
+draft, or the committed configuration after a save. A property is written
+only when the two differ. That single comparison produces every behaviour the
+editor needs:
+
+| Moment | What the page shows |
+|---|---|
+| the editor opens | the committed site, untouched: nothing is written |
+| an edit | the draft, on this page only |
+| a discard | the committed appearance again |
+| a confirmed save | the saved design, not the old one |
+
+The last row is the subtle one. The stylesheet in an open page is the one the
+server sent; a save changes the configuration but not that stylesheet. If the
+layer simply removed its overrides on save, the page would fall back to the
+old design while the site itself had the new one. Instead the committed
+values become the desired values, the properties that differ from the
+stylesheet keep an override, and the page shows what was saved. A reload
+makes the override unnecessary, and the next load writes nothing.
+
+**Restoration.** The original inline state of every property the layer
+touches is captured before the first write: whether it was declared at all,
+its value, and its priority. A property declared with an empty value is not
+the same as one that was absent, and the difference is kept. Restoring puts
+back exactly what was there and touches nothing else on the element.
+
+**Batching.** The writes are batched into a frame, with a timeout armed
+alongside `requestAnimationFrame`: a frame is not guaranteed in a background
+tab, and a live preview that stops following the operator when the tab is
+not in front is not a live preview. The browser suite found that a headless
+browser may defer the frame indefinitely, which is why the fallback exists.
+
+**The two mechanisms stay separate.** The live layer is for design tokens.
+The Preview button is unchanged: it stages the whole configuration in a
+transaction and opens the signed, WordPress-rendered preview, which is what
+covers structural changes, navigation, components and anything that is not
+a CSS custom property. The editing page keeps its local overrides; the
+preview tab is a different document and shows the staged configuration as
+the server renders it.
+
+### 5.4 The deletion and its audit record are one operation
 
 The first implementation of this wrote the history and then wrote the audit
 row, as two independent statements. That is the shape of every bug this
