@@ -473,6 +473,13 @@ $suites = array(
         'path'     => __DIR__ . '/run-configurator-picker.php',
         'requires' => 'unit',
     ),
+    // The mobile visibility of the header's and the footer's middle centre,
+    // in both layouts, measured in a browser against the theme's real
+    // stylesheet and the theme's real renderer.
+    'mobile-zone-visibility' => array(
+        'path'     => __DIR__ . '/run-mobile-zone-visibility.php',
+        'requires' => 'unit',
+    ),
     'configurator-enqueue' => array(
         'path'     => __DIR__ . '/configurator-enqueue-test.php',
         'requires' => 'unit',
