@@ -4720,6 +4720,7 @@ add_action( 'rest_api_init', function() {
                     'label'     => $snapshot['label'] ?? '',
                     'actor'     => $snapshot['actor'] ?? '',
                     'timestamp' => (int) ( $snapshot['timestamp'] ?? 0 ),
+                    'type'      => 'snapshot',
                 );
             }
             return array( 'snapshots' => $out );
@@ -4730,6 +4731,18 @@ add_action( 'rest_api_init', function() {
     register_rest_route( 'wp/v2', '/agentshell/snapshots/restore', array(
         'methods'             => 'POST',
         'callback'            => function( WP_REST_Request $request ) {
+            if ( ! class_exists( '\AgentShell_MCP\Tools\Restore_Snapshot' ) ) {
+                // Tool classes are registered on the MCP request path, not on
+                // every front-end request. A configurator restore is an
+                // ordinary REST request, so the class is loaded here rather
+                // than reported as unavailable.
+                $file = defined( 'AGENTSHELL_MCP_PLUGIN_DIR' )
+                    ? AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-restore-snapshot.php'
+                    : '';
+                if ( '' !== $file && is_file( $file ) ) {
+                    require_once $file;
+                }
+            }
             if ( ! class_exists( '\AgentShell_MCP\Tools\Restore_Snapshot' ) ) {
                 return new WP_Error( 'restore_unavailable', 'The AgentShell MCP plugin is not active.', array( 'status' => 503 ) );
             }
@@ -4755,13 +4768,20 @@ add_action( 'rest_api_init', function() {
                 return array( 'revisions' => array(), 'total' => 0 );
             }
             $items = array();
-            foreach ( (array) ( \AgentShell_MCP\Store::revisions()['items'] ?? array() ) as $item ) {
+            $stored = (array) ( \AgentShell_MCP\Store::revisions()['items'] ?? array() );
+            $tombstones = \AgentShell_MCP\Store::revision_tombstones();
+            foreach ( $stored as $item ) {
+                $parent = $item['parent'] ?? '';
                 $items[] = array(
-                    'id'        => $item['id'] ?? '',
-                    'parent'    => $item['parent'] ?? '',
-                    'timestamp' => (int) ( $item['timestamp'] ?? 0 ),
-                    'actor'     => $item['actor'] ?? '',
-                    'label'     => $item['label'] ?? '',
+                    'id'             => $item['id'] ?? '',
+                    'parent'         => $parent,
+                    'parent_deleted' => '' !== $parent && isset( $tombstones[ $parent ] ),
+                    'timestamp'      => (int) ( $item['timestamp'] ?? 0 ),
+                    'actor'          => $item['actor'] ?? '',
+                    'label'          => $item['label'] ?? '',
+                    'description'    => \AgentShell_MCP\Store::describe_revision( $item, $stored ),
+                    'operation'      => $item['operation'] ?? '',
+                    'type'           => 'revision',
                 );
             }
             return array( 'revisions' => $items, 'total' => count( $items ) );
@@ -4772,6 +4792,14 @@ add_action( 'rest_api_init', function() {
     register_rest_route( 'wp/v2', '/agentshell/revisions/restore', array(
         'methods'             => 'POST',
         'callback'            => function( WP_REST_Request $request ) {
+            if ( ! class_exists( '\AgentShell_MCP\Tools\Restore_Revision' ) ) {
+                $file = defined( 'AGENTSHELL_MCP_PLUGIN_DIR' )
+                    ? AGENTSHELL_MCP_PLUGIN_DIR . 'includes/tools/class-restore-revision.php'
+                    : '';
+                if ( '' !== $file && is_file( $file ) ) {
+                    require_once $file;
+                }
+            }
             if ( ! class_exists( '\AgentShell_MCP\Tools\Restore_Revision' ) ) {
                 return new WP_Error( 'restore_unavailable', 'The AgentShell MCP plugin is not active.', array( 'status' => 503 ) );
             }
@@ -4790,7 +4818,117 @@ add_action( 'rest_api_init', function() {
         'permission_callback' => 'agentshell_rest_auth_callback',
     ) );
 
-    register_rest_route( 'wp/v2', '/agentshell/transaction/commit', array(
+    register_rest_route( 'wp/v2', '/agentshell/snapshots/delete', array(
+        'methods'             => 'POST',
+        'callback'            => function( WP_REST_Request $request ) {
+            if ( ! class_exists( '\AgentShell_MCP\Store' ) ) {
+                return new WP_Error( 'history_unavailable', 'The AgentShell MCP plugin is not active.', array( 'status' => 503 ) );
+            }
+            $names = $request->get_param( 'names' );
+            if ( ! is_array( $names ) ) {
+                return new WP_Error( 'snapshot_names_required', 'names must be an array of snapshot names.', array( 'status' => 400 ) );
+            }
+            try {
+                $result = \AgentShell_MCP\Store::delete_snapshots(
+                    $names,
+                    sanitize_text_field( (string) $request->get_param( 'reason' ) )
+                );
+            } catch ( \InvalidArgumentException $e ) {
+                return new WP_Error( 'snapshot_delete_refused', $e->getMessage(), array( 'status' => 400 ) );
+            } catch ( \Throwable $e ) {
+                return new WP_Error( 'snapshot_delete_failed', $e->getMessage(), array( 'status' => 500 ) );
+            }
+            return agentshell_history_delete_response( $result, 'snapshot' );
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
+
+    register_rest_route( 'wp/v2', '/agentshell/revisions/delete', array(
+        'methods'             => 'POST',
+        'callback'            => function( WP_REST_Request $request ) {
+            if ( ! class_exists( '\AgentShell_MCP\Store' ) ) {
+                return new WP_Error( 'history_unavailable', 'The AgentShell MCP plugin is not active.', array( 'status' => 503 ) );
+            }
+            $ids = $request->get_param( 'ids' );
+            if ( ! is_array( $ids ) ) {
+                return new WP_Error( 'revision_ids_required', 'ids must be an array of revision ids.', array( 'status' => 400 ) );
+            }
+            try {
+                $result = \AgentShell_MCP\Store::delete_revisions(
+                    $ids,
+                    sanitize_text_field( (string) $request->get_param( 'reason' ) )
+                );
+            } catch ( \InvalidArgumentException $e ) {
+                return new WP_Error( 'revision_delete_refused', $e->getMessage(), array( 'status' => 400 ) );
+            } catch ( \Throwable $e ) {
+                return new WP_Error( 'revision_delete_failed', $e->getMessage(), array( 'status' => 500 ) );
+            }
+            return agentshell_history_delete_response( $result, 'revision' );
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
+
+    /**
+ * The response for a history deletion.
+ *
+ * The outcome is the point of this function. A deletion can end in four
+ * states, and the caller must be able to tell them apart:
+ *
+ *   - `deleted`    the records are gone and the audit log says so;
+ *   - `unchanged`  nothing matched — the records were already gone;
+ *   - `failed`     nothing was deleted, and the reason is known;
+ *   - `uncertain`  the write may or may not have landed.
+ *
+ * The last one is why the outcome is in the response at all. A caller that
+ * was told "the deletion failed" while the records were in fact gone would
+ * report a failure after an irreversible change; a caller that was told
+ * "deleted" when the write may not have landed would report a success it
+ * cannot prove. The audit state is reported alongside, so a reader can see
+ * whether the record of the deletion was written.
+ *
+ * @param array  $result The store's result.
+ * @param string $kind   'snapshot' or 'revision'.
+ * @return array|WP_Error
+ */
+function agentshell_history_delete_response( array $result, $kind ) {
+    $noun    = ( 'snapshot' === $kind ) ? 'snapshot' : 'revision';
+    $outcome = (string) ( $result['outcome'] ?? 'failed' );
+    $note    = (string) ( $result['note'] ?? '' );
+
+    $payload = array(
+        'outcome'        => $outcome,
+        'deleted'        => (array) ( $result['deleted'] ?? array() ),
+        'missing'        => (array) ( $result['missing'] ?? array() ),
+        'audit_recorded' => (bool) ( $result['audit_recorded'] ?? false ),
+        'audit_state'    => (string) ( $result['audit_state'] ?? 'none' ),
+        'atomicity'      => (array) ( $result['atomicity'] ?? array() ),
+        'note'           => $note,
+        'history_note'   => 'The committed configuration was not changed, and remaining revisions keep their recorded lineage.',
+    );
+    if ( 'revision' === $kind ) {
+        $payload['tombstones'] = array_keys( (array) ( $result['tombstones'] ?? array() ) );
+    }
+
+    if ( 'uncertain' === $outcome ) {
+        return new WP_Error(
+            'history_delete_unverified',
+            'The deletion could not be verified: ' . ( '' !== $note ? $note : 'the server could not establish whether the write landed.' )
+            . ' Reload the history to see the current state before trying again.',
+            array( 'status' => 500, 'data' => $payload )
+        );
+    }
+    if ( 'failed' === $outcome ) {
+        return new WP_Error(
+            'history_delete_failed',
+            'Nothing was deleted: ' . ( '' !== $note ? $note : 'the history changed while the deletion was being applied.' ),
+            array( 'status' => 409, 'data' => $payload )
+        );
+    }
+
+    return $payload;
+}
+
+register_rest_route( 'wp/v2', '/agentshell/transaction/commit', array(
         'methods'             => 'POST',
         'callback'            => function() {
             try {

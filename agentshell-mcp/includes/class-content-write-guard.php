@@ -91,6 +91,18 @@ class Content_Write_Guard {
     private static $engine = null;
 
     /**
+     * Cached engine verdicts, keyed by the table set they describe.
+     *
+     * The content tables and the options table are different questions, and
+     * a site may answer them differently. Keying the verdict by its table set
+     * is what keeps a write from inheriting a guarantee that was never made
+     * about the table it used.
+     *
+     * @var array<string,string>
+     */
+    private static $engines = array();
+
+    /**
      * Whether the most recent top-level run() actually held a transaction.
      *
      * @var bool
@@ -115,9 +127,33 @@ class Content_Write_Guard {
      * @throws \Throwable Whatever $write threw, after rolling back.
      */
     public static function run( callable $write ) {
+        return self::run_on( self::content_tables(), $write );
+    }
+
+    /**
+     * Run one write against a named set of tables, so that the guarantee is
+     * made about the tables the write actually touches.
+     *
+     * The content guard protects `wp_posts` and `wp_postmeta`. A write that
+     * touches other tables — the options table, for instance — cannot inherit
+     * that verdict: those tables may be transactional while the content
+     * tables are not, or the other way round, and a rollback that does not
+     * cover the table the write used is not a rollback.
+     *
+     * Passing the tables explicitly is what makes the answer honest. The
+     * reentrancy depth counter, the engine probe, the cache discard on
+     * rollback and the failure contract are all the same as for a content
+     * write.
+     *
+     * @param array    $tables The table names the write touches.
+     * @param callable $write  The write to perform.
+     * @return mixed Whatever $write returned.
+     * @throws \Throwable Whatever $write threw, after rolling back.
+     */
+    public static function run_on( array $tables, callable $write ) {
         global $wpdb;
 
-        $engine = self::engine();
+        $engine = self::engine_for( $tables );
 
         // Either we are already inside a transaction we must not commit, or
         // the tables cannot honour one. In both cases the write simply runs.
@@ -205,26 +241,47 @@ class Content_Write_Guard {
      * @return string 'InnoDB' or ''
      */
     public static function engine() {
-        if ( null !== self::$engine ) {
-            return self::$engine;
+        global $wpdb;
+        $tables = array();
+        if ( isset( $wpdb ) && is_object( $wpdb ) ) {
+            if ( ! empty( $wpdb->posts ) ) { $tables[] = $wpdb->posts; }
+            if ( ! empty( $wpdb->postmeta ) ) { $tables[] = $wpdb->postmeta; }
+        }
+        return self::engine_for( $tables );
+    }
+
+    /**
+     * The engine backing a named set of tables, or '' when they cannot roll
+     * back.
+     *
+     * The verdict is per table set, not global: a site whose content tables
+     * are InnoDB and whose options table is not has two different answers, and
+     * a write to the options table must be told the one that applies to it.
+     *
+     * @param array $tables
+     * @return string 'InnoDB' or ''
+     */
+    public static function engine_for( array $tables ) {
+        $tables = array_values( array_filter( array_map( 'strval', $tables ) ) );
+        if ( empty( $tables ) ) {
+            return '';
+        }
+        $key = implode( ',', $tables );
+        if ( array_key_exists( $key, self::$engines ) ) {
+            return self::$engines[ $key ];
         }
 
         global $wpdb;
-        self::$engine = '';
-
         if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'get_results' ) ) {
-            return self::$engine;
-        }
-        if ( empty( $wpdb->posts ) || empty( $wpdb->postmeta ) ) {
-            return self::$engine;
+            self::$engines[ $key ] = '';
+            return self::$engines[ $key ];
         }
 
         // Table names come from $wpdb, not from a caller, but they are still
         // interpolated into SQL, so they are quoted rather than trusted.
-        $tables = array( $wpdb->posts, $wpdb->postmeta );
         $quoted = array();
         foreach ( $tables as $table ) {
-            $quoted[] = "'" . addcslashes( (string) $table, "\\'" ) . "'";
+            $quoted[] = "'" . addcslashes( $table, "\\'" ) . "'";
         }
         $sql = 'SHOW TABLE STATUS WHERE Name IN (' . implode( ',', $quoted ) . ')';
 
@@ -232,16 +289,18 @@ class Content_Write_Guard {
         if ( ! is_array( $rows ) || count( $rows ) !== count( $tables ) ) {
             // Unknown: a restricted user, a replica, or a missing table. Do not
             // assume InnoDB just because it is the common answer.
-            return self::$engine;
+            self::$engines[ $key ] = '';
+            return self::$engines[ $key ];
         }
         foreach ( $rows as $row ) {
             if ( ! isset( $row->Engine ) || 'INNODB' !== strtoupper( (string) $row->Engine ) ) {
-                return self::$engine;
+                self::$engines[ $key ] = '';
+                return self::$engines[ $key ];
             }
         }
 
-        self::$engine = 'InnoDB';
-        return self::$engine;
+        self::$engines[ $key ] = 'InnoDB';
+        return self::$engines[ $key ];
     }
 
     /**
@@ -250,7 +309,34 @@ class Content_Write_Guard {
      * @return array
      */
     public static function report() {
-        $engine = self::engine();
+        $report = self::report_for( self::content_tables() );
+        // The content guard's own wording: a content write's side effects
+        // include the third-party writes a `save_post` hook made, which this
+        // transaction also rolls back.
+        $report['not_covered'] = 'side effects outside the database (email, files, outbound HTTP) and any other plugin\'s database writes made during save_post, which this transaction also rolls back';
+        return $report;
+    }
+
+    /** The tables a content write touches. */
+    private static function content_tables() {
+        global $wpdb;
+        $tables = array();
+        if ( isset( $wpdb ) && is_object( $wpdb ) ) {
+            if ( ! empty( $wpdb->posts ) ) { $tables[] = $wpdb->posts; }
+            if ( ! empty( $wpdb->postmeta ) ) { $tables[] = $wpdb->postmeta; }
+        }
+        return $tables;
+    }
+
+    /**
+     * What the caller is entitled to believe about a write against a named
+     * set of tables.
+     *
+     * @param array $tables
+     * @return array
+     */
+    public static function report_for( array $tables ) {
+        $engine = self::engine_for( $tables );
         $held   = $engine && self::$last_was_transactional;
 
         return array(
@@ -259,7 +345,7 @@ class Content_Write_Guard {
             'on_failure'            => $held
                 ? 'rolled back — nothing this call wrote remains in the database'
                 : 'not rolled back — the tables could not be opened as a transaction, so a partial write is possible',
-            'not_covered'           => 'side effects outside the database (email, files, outbound HTTP) and any other plugin\'s database writes made during save_post, which this transaction also rolls back',
+            'not_covered'           => 'side effects outside the database (email, files, outbound HTTP), and any other plugin\'s database writes made during the write, which this transaction also rolls back',
         );
     }
 
@@ -269,6 +355,7 @@ class Content_Write_Guard {
     public static function reset() {
         self::$depth                 = 0;
         self::$engine                = null;
+        self::$engines               = array();
         self::$last_was_transactional = false;
     }
 

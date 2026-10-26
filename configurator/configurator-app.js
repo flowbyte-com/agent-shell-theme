@@ -34,6 +34,7 @@
         var app = {
             config: null,
             history: { snapshots: [], revisions: [] },
+            history_selection: { snapshots: [], revisions: [] },
             message: '',
             hint: '',
             busy: false,
@@ -62,6 +63,7 @@
         /* ── loading ──────────────────────────────────────────────────── */
 
         function load() {
+            app.history_selection = { snapshots: [], revisions: [] };
             return Promise.all( [ api.get_config(), api.get_transaction() ] )
                 .then( function ( results ) {
                     var payload = results[ 1 ] || {};
@@ -1090,6 +1092,14 @@
         }
 
         function restore_snapshot( name ) {
+            var snapshot = find_snapshot( name );
+            var what = snapshot ? '"' + ( snapshot.label || snapshot.name ) + '" (' + snapshot.name + ')' : String( name );
+            if ( typeof window !== 'undefined' && typeof window.confirm === 'function' ) {
+                if ( ! window.confirm( 'Restore the snapshot ' + what + '?\n\nThis replaces the currently published configuration. '
+                    + 'A transaction must not be open.' ) ) {
+                    return Promise.resolve( false );
+                }
+            }
             app.busy = true;
             app.ui.render();
             return api.restore_snapshot( name )
@@ -1111,6 +1121,14 @@
         }
 
         function restore_revision( id ) {
+            var revision = find_revision( id );
+            var what = revision ? '"' + ( revision.description || revision.label || revision.id ) + '" (' + revision.id + ')' : String( id );
+            if ( typeof window !== 'undefined' && typeof window.confirm === 'function' ) {
+                if ( ! window.confirm( 'Restore the revision ' + what + '?\n\nThis replaces the currently published configuration. '
+                    + 'A transaction must not be open.' ) ) {
+                    return Promise.resolve( false );
+                }
+            }
             app.busy = true;
             app.ui.render();
             return api.restore_revision( id )
@@ -1129,6 +1147,150 @@
                     app.busy = false;
                     say( 'The revision was not restored: ' + error.message, 'error' );
                 } );
+        }
+
+        /* ── deleting history ─────────────────────────────────────────── */
+
+        /**
+         * Delete one or more history records, after a confirmation that names
+         * them.
+         *
+         * Deletion is not restoration: the committed configuration is never
+         * touched. The server records the request in the audit log and keeps
+         * revision tombstones, so deleting a record does not silently rewrite
+         * the lineage of the records that remain.
+         */
+        function history_label( kind ) {
+            return kind === 'snapshots' ? 'snapshot' : 'revision';
+        }
+
+        function history_title( record, kind ) {
+            if ( kind === 'snapshots' ) {
+                return '"' + ( record.label || record.name || 'snapshot' ) + '" (' + record.name + ')';
+            }
+            return ( record.description || record.label || record.id ) + ' (' + record.id + ')';
+        }
+
+        function delete_history( kind, records, reason ) {
+            records = ( records || [] ).filter( Boolean );
+            if ( ! records.length || app.busy ) { return Promise.resolve( false ); }
+
+            var noun = history_label( kind );
+            var what;
+            if ( records.length === 1 ) {
+                what = 'the ' + noun + ' ' + history_title( records[0], kind );
+            } else {
+                var names = records.slice( 0, 5 ).map( function ( record ) {
+                    return history_title( record, kind );
+                } ).join( ', ' );
+                what = records.length + ' ' + noun + 's (' + names
+                    + ( records.length > 5 ? ', and ' + ( records.length - 5 ) + ' more' : '' ) + ')';
+            }
+            var prompt = 'Delete ' + what + '?\n\nThis removes the history record. It does not change the '
+                + 'currently published configuration, and it cannot be undone.';
+            if ( typeof window !== 'undefined' && typeof window.confirm === 'function' && ! window.confirm( prompt ) ) {
+                return Promise.resolve( false );
+            }
+
+            app.busy = true;
+            app.clear_error();
+            app.ui.render();
+
+            var request = kind === 'snapshots'
+                ? api.delete_snapshots( records.map( function ( r ) { return r.name; } ), reason )
+                : api.delete_revisions( records.map( function ( r ) { return r.id; } ), reason );
+
+            return request
+                .then( function ( result ) {
+                    app.busy = false;
+                    var deleted = ( result && result.deleted ) || [];
+                    var missing = ( result && result.missing ) || [];
+                    var outcome = ( result && result.outcome ) || 'deleted';
+                    app.clear_error();
+
+                    if ( outcome === 'uncertain' ) {
+                        // The server could not establish whether the write
+                        // landed. Saying "could not be deleted" would be a
+                        // claim about a change that may have happened.
+                        app.error = { kind: 'unknown', message: ( result && result.note ) || '' };
+                        app.message = 'The deletion could not be verified. Reload the history to see the current state.';
+                    } else if ( outcome === 'failed' ) {
+                        app.error = { kind: 'validation', message: ( result && result.note ) || '' };
+                        app.message = 'Nothing was deleted: ' + ( ( result && result.note ) || 'the history changed while the deletion was being applied.' );
+                    } else if ( outcome === 'unchanged' || ! deleted.length ) {
+                        app.error = null;
+                        app.hint = 'Nothing was deleted; the selected ' + noun
+                            + ( records.length === 1 ? ' was' : 's were' ) + ' already gone.';
+                    } else {
+                        app.error = null;
+                        app.hint = 'Deleted ' + deleted.length + ' ' + noun + ( deleted.length === 1 ? '' : 's' )
+                            + ( missing.length ? '; ' + missing.length + ' already gone' : '' ) + '.';
+                        if ( result && result.note ) {
+                            app.message = result.note;
+                        }
+                    }
+                    if ( app.history_selection ) {
+                        app.history_selection[ kind ] = [];
+                    }
+                    return load_history();
+                } )
+                .then( function () { app.ui.render(); } )
+                .catch( function ( error ) {
+                    app.busy = false;
+                    // A refusal that carries an outcome is not a generic
+                    // failure: the server has already said whether anything
+                    // was deleted, and the message must not contradict it.
+                    var payload = ( error && error.data && error.data.data ) ? error.data.data : null;
+                    var outcome = payload ? ( payload.outcome || '' ) : '';
+                    if ( outcome === 'uncertain' ) {
+                        app.error = { kind: 'unknown', message: error.message };
+                        app.message = 'The deletion could not be verified. Reload the history to see the current state.';
+                    } else if ( outcome === 'failed' ) {
+                        app.error = { kind: 'validation', message: error.message };
+                        app.message = 'Nothing was deleted: ' + error.message;
+                    } else {
+                        app.error = { kind: 'validation', message: error.message };
+                        app.message = 'The ' + noun + ' could not be deleted: ' + error.message;
+                    }
+                    app.ui.render();
+                    return load_history().then( function () { app.ui.render(); } );
+                } );
+        }
+
+        function find_snapshot( nameOrRecord ) {
+            if ( nameOrRecord && typeof nameOrRecord === 'object' ) { return nameOrRecord; }
+            var list = app.history.snapshots || [];
+            for ( var i = 0; i < list.length; i++ ) {
+                if ( list[ i ].name === nameOrRecord ) { return list[ i ]; }
+            }
+            return null;
+        }
+
+        function find_revision( idOrRecord ) {
+            if ( idOrRecord && typeof idOrRecord === 'object' ) { return idOrRecord; }
+            var list = app.history.revisions || [];
+            for ( var i = 0; i < list.length; i++ ) {
+                if ( list[ i ].id === idOrRecord ) { return list[ i ]; }
+            }
+            return null;
+        }
+
+        function delete_snapshot( nameOrRecord ) {
+            var record = find_snapshot( nameOrRecord );
+            return delete_history( 'snapshots', record ? [ record ] : [] );
+        }
+
+        function delete_snapshots( records ) {
+            return delete_history( 'snapshots', records || [] );
+        }
+
+        function delete_revision( idOrRecord ) {
+            var record = find_revision( idOrRecord );
+            return delete_history( 'revisions', record ? [ record ] : [] );
+        }
+
+        function delete_revisions( records ) {
+            return delete_history( 'revisions', records || [] );
         }
 
         /* ── adding components ────────────────────────────────────────── */
@@ -1272,6 +1434,10 @@
         app.create_snapshot = create_snapshot;
         app.restore_snapshot = restore_snapshot;
         app.restore_revision = restore_revision;
+        app.delete_snapshot = delete_snapshot;
+        app.delete_snapshots = delete_snapshots;
+        app.delete_revision = delete_revision;
+        app.delete_revisions = delete_revisions;
         app.open_component_picker = open_component_picker;
         app.close = close;
         app.load = load;

@@ -297,6 +297,102 @@ opened for the save is rolled back rather than left behind for somebody else
 to find — but only when it was opened by that save, holds nothing, and is
 still that session's.
 
+### 5.2 History management
+
+The history bounded by 25 revisions and 20 snapshots had no deletion
+facility. Repeated configurator saves produced dozens of identical
+`transaction: configurator save` rows, and the only way to remove one was a
+database edit. The History view now supports individual and bulk deletion,
+and describes a revision by the change it made.
+
+**Deletion is not restoration, and it is not a second history store.** The
+routes call `Store::delete_snapshots()` and `Store::delete_revisions()`; the
+editor owns no copy. Deleting a record never writes `agentshell_config`, so
+the published site is unchanged, and the UI says so before the confirmation.
+Restoring is still refused while a transaction is open; deleting is allowed,
+because it cannot collide with staged work.
+
+**A revision's `parent` pointer is not rewritten.** Pointing a child at its
+grandparent would make the remaining history look as though the deleted
+revision never existed. Instead the removed id is kept in a tombstone map, the
+list reports `parent_deleted`, and the audit log gains one
+`revision_deleted` row naming the actor, the ids, the labels, the reason and
+the tombstones. Audit rows that referenced the deleted revision are left
+alone. The same applies to snapshots (`snapshot_deleted`). The audit log is
+still bounded at 100 rows; the tombstones are the part that survives the
+revision ring, and they are where a future reader can learn that an id existed.
+
+**The label is derived from the diff, or it is not invented.** A new revision
+stores a `description` when `Store::describe_change()` can identify the
+principal change: one changed token ("Updated accent colour"), a zone whose
+blocks changed ("Changed Footer navigation" or "Changed Footer layout"), or
+custom CSS/JS. A generic `transaction: configurator save` label is replaced by
+that description; a label the caller wrote deliberately is preserved and the
+description stored beside it. A change that cannot be identified reliably
+returns the empty string, and the old label remains. Older revisions without a
+description derive one from the stored parent config while it is still present.
+
+**Deletion is guarded like the transaction row.** `Store::cas_option()` applies
+the same value-guarded UPDATE, so two administrators deleting at once cannot
+lose one deletion, and a revision recorded between the read and the write is
+not silently dropped. Malformed ids and names are refused rather than
+sanitised into a different record. A missing or already-deleted id is reported
+as `missing` and the rest of the request still applies.
+
+### 5.3 The deletion and its audit record are one operation
+
+The first implementation of this wrote the history and then wrote the audit
+row, as two independent statements. That is the shape of every bug this
+repository keeps trying to remove: the first write succeeds, the second
+fails, and the caller is told the operation failed while the records are in
+fact gone. The history would be deleted with no record of who deleted it, and
+the interface would say "could not be deleted" about a change that had
+already happened.
+
+The correction uses the machinery that already exists — `Content_Write_Guard`
+— and adds an ordering that holds even where the machinery cannot.
+
+**One transaction.** `Content_Write_Guard::run_on()` was added for this: the
+guard now names the tables the write touches, and its verdict about whether
+those tables can roll back is per table set. The content tables and the
+options table are different questions, and a write must be told the answer
+that applies to it. The deletion runs inside one transaction over the options
+table: the audit intent, the history write and the audit confirmation are
+either all there or none of them.
+
+**The intent comes first.** The audit row is written *before* the deletion
+and marked `pending`; it is marked `deleted` only after the deletion has
+landed. Inside the transaction the intermediate state is invisible, so the
+cost is nil. Outside one — an old MyISAM options table, or a unit harness
+with no database — the order is what makes the guarantee true: a failure to
+write the audit record stops the deletion before it starts, so there is no
+ordering in which the history disappears and no audit row exists to say so.
+
+**The failures are reconciled, not guessed.** A failure between the deletion
+and the audit confirmation leaves the deletion real and the row marked
+`pending`. The server re-reads both the history and the audit log — through
+the database, not the object cache — and reports what it found:
+
+| Outcome | What it means |
+|---|---|
+| `deleted` | the records are gone and the audit log says so |
+| `unchanged` | nothing matched; the records were already gone |
+| `failed` | nothing was deleted, and the reason is known |
+| `uncertain` | the write may or may not have landed, and the server says so |
+
+The `uncertain` state exists because the alternative is a lie in one
+direction or the other. Reporting a failure after an irreversible change is
+what the first implementation did. Reporting a success the server cannot
+prove would be the opposite mistake. When the deletion happened and the
+audit row can be written afterwards, the repair is made and the result says
+it was made; when it cannot, the result says `uncertain` and the interface
+tells the operator to reload the history rather than guessing.
+
+**What is deliberately not changed.** The committed configuration is never
+written by a deletion. The `parent` pointer of a surviving revision is never
+rewritten. Audit rows that mention a deleted revision are never erased. The
+bounded history and the tombstone map are unchanged.
+
 ## 6. The REST routes that were added
 
 No MCP tool was added, and no MCP tool changed. The editor needed four things
@@ -311,8 +407,10 @@ config endpoint:
 | `/wp/v2/agentshell/transaction/preview` | GET | A signed preview URL for the staged configuration. |
 | `/wp/v2/agentshell/snapshots` | GET | The list of snapshots, to restore from. |
 | `/wp/v2/agentshell/snapshots/restore` | POST | Restore a snapshot. It calls the same tool class the agent uses. |
+| `/wp/v2/agentshell/snapshots/delete` | POST | Delete one or more named snapshots, audited, without touching the committed configuration. |
 | `/wp/v2/agentshell/revisions` | GET | The list of revisions. |
 | `/wp/v2/agentshell/revisions/restore` | POST | Restore a revision, through the same tool class. |
+| `/wp/v2/agentshell/revisions/delete` | POST | Delete one or more revisions, with tombstones that preserve remaining lineage and an audit row naming the actor and ids. |
 
 The restore routes call `AgentShell_MCP\Tools\Restore_Snapshot` and
 `AgentShell_MCP\Tools\Restore_Revision` rather than reimplementing them, so
