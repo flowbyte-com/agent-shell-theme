@@ -744,6 +744,24 @@ function agentshell_preview_width() {
 }
 
 /**
+ * Mark a preview that is drawn at a chosen width.
+ *
+ * The page is then drawn on a neutral ground, so the operator can see where
+ * the layout breaks. The class is only ever added inside an authorised
+ * preview — see agentshell_preview_width().
+ *
+ * @param array $classes The body classes.
+ * @return array
+ */
+function agentshell_preview_frame_body_class( $classes ) {
+    if ( agentshell_preview_width() > 0 ) {
+        $classes[] = 'agentshell-preview-frame';
+    }
+    return $classes;
+}
+add_filter( 'body_class', 'agentshell_preview_frame_body_class' );
+
+/**
  * The exact bytes of the custom stylesheet, as they are served.
  *
  * One function, so the inline block and the materialised file cannot
@@ -1110,15 +1128,6 @@ function agentshell_inject_saved_styles() {
             }
         }
     }
-
-    // The preview frame: the page is drawn at the requested width on a neutral
-    // ground, so the operator can see where the layout breaks.
-    add_filter( 'body_class', function ( $classes ) {
-        if ( agentshell_preview_width() > 0 ) {
-            $classes[] = 'agentshell-preview-frame';
-        }
-        return $classes;
-    } );
 
     // A staged site can be inspected at a chosen width. The width is honoured
     // ONLY inside an authorised preview: for an ordinary request the parameter
