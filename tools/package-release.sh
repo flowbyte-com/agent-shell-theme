@@ -85,6 +85,13 @@ INCLUDE=(
     "template-parts"
     "widgets"
     "assets"
+    # The configurator is a production feature, not a development tool: the
+    # theme enqueues it for administrators on every front-end page. It was
+    # missing from this list, so a distribution built from the archive shipped
+    # a configurator trigger with no panel behind it. The exclusion list named
+    # it as development material; both lists are corrected, and the checker
+    # now refuses an archive that has lost it.
+    "configurator"
     "agentshell-mcp"
     "agentshell-blocks"
 )
