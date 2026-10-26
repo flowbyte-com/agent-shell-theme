@@ -130,6 +130,18 @@ var SERVER = {
   previews: 0,
   outcomes: {},
   next_session: 0,
+  history: {
+    snapshots: [
+      { name: 'launch-day', label: 'Launch day', actor: 'admin', timestamp: 1767225600, type: 'snapshot' },
+      { name: 'before-header', label: 'Before the header change', actor: 'admin', timestamp: 1767139200, type: 'snapshot' }
+    ],
+    revisions: [
+      { id: 'r3', label: 'Updated accent colour', description: 'Updated accent colour', actor: 'admin', timestamp: 1767312000, type: 'revision' },
+      { id: 'r2', label: 'Changed footer layout', description: 'Changed footer layout', actor: 'editor', timestamp: 1767225600, type: 'revision' },
+      { id: 'r1', label: 'config_update', description: 'Updated custom CSS', actor: 'agent', timestamp: 1767139200, type: 'revision' }
+    ],
+    audit: []
+  },
 };
 
 // Fixtures that model the conditions the client must survive.
@@ -366,14 +378,57 @@ window.fetch = function (url, opts) {
     }
     return Promise.resolve(respond(SERVER.committed));
   }
-  if (path.indexOf('/snapshots') !== -1 && method === 'POST') {
-    return Promise.resolve(respond({ name: body.name }));
+  if (path.indexOf('/snapshots/delete') !== -1) {
+    if (window.__fail_history_delete) {
+      return Promise.resolve(respond({ code: 'rest_forbidden', message: 'You are not allowed to do that.' }, false, 403));
+    }
+    var delete_names = (body && body.names) || [];
+    var snap_deleted = [];
+    var snap_missing = [];
+    var force_missing = window.__history_missing_next;
+    window.__history_missing_next = false;
+    delete_names.forEach(function (name) {
+      var index = SERVER.history.snapshots.map(function (s) { return s.name; }).indexOf(name);
+      if (index === -1 || force_missing) { snap_missing.push(name); return; }
+      snap_deleted.push(name);
+      SERVER.history.snapshots.splice(index, 1);
+    });
+    if (snap_deleted.length) {
+      SERVER.history.audit.push({ operation: 'snapshot_deleted', names: snap_deleted });
+    }
+    return Promise.resolve(respond({ deleted: snap_deleted, missing: snap_missing, audit_recorded: !!snap_deleted.length }));
+  }
+  if (path.indexOf('/revisions/delete') !== -1) {
+    if (window.__fail_history_delete) {
+      return Promise.resolve(respond({ code: 'rest_forbidden', message: 'You are not allowed to do that.' }, false, 403));
+    }
+    var delete_ids = (body && body.ids) || [];
+    var rev_deleted = [];
+    var rev_missing = [];
+    var force_missing_rev = window.__history_missing_next;
+    window.__history_missing_next = false;
+    delete_ids.forEach(function (id) {
+      var index = SERVER.history.revisions.map(function (r) { return r.id; }).indexOf(id);
+      if (index === -1 || force_missing_rev) { rev_missing.push(id); return; }
+      rev_deleted.push(id);
+      SERVER.history.revisions.splice(index, 1);
+    });
+    if (rev_deleted.length) {
+      SERVER.history.audit.push({ operation: 'revision_deleted', ids: rev_deleted });
+    }
+    return Promise.resolve(respond({ deleted: rev_deleted, missing: rev_missing, audit_recorded: !!rev_deleted.length }));
+  }
+  if (path.indexOf('/snapshots/restore') !== -1) {
+    return Promise.resolve(respond({ restored: body.name }));
+  }
+  if (path.indexOf('/revisions/restore') !== -1) {
+    return Promise.resolve(respond({ restored: body.id }));
   }
   if (path.indexOf('/snapshots') !== -1) {
-    return Promise.resolve(respond({ snapshots: [ {name:'before-header',label:'before header',actor:'admin',timestamp:1} ] }));
+    return Promise.resolve(respond({ snapshots: SERVER.history.snapshots }));
   }
   if (path.indexOf('/revisions') !== -1) {
-    return Promise.resolve(respond({ revisions: [ {id:'r1',label:'header colour',actor:'admin',timestamp:2} ] }));
+    return Promise.resolve(respond({ revisions: SERVER.history.revisions }));
   }
   return Promise.resolve(respond({}));
 };
@@ -428,6 +483,10 @@ async function run() {
   }
   if (SCENARIO === 'session' || SCENARIO === 'unbound') {
     await run_session();
+    return;
+  }
+  if (SCENARIO === 'history') {
+    await run_history();
     return;
   }
   if (SCENARIO === 'commitlost') {
@@ -1192,6 +1251,128 @@ async function run_previewurlnetwork() {
   ok('the status is staged, not saved', chip() === 'Staged for preview', chip());
   ok('the draft survives', tokenInput('--theme-bg').value === '#667788', tokenInput('--theme-bg').value);
   ok('nothing was committed', window.__requests.join(' ').indexOf('/transaction/commit') === -1);
+  report();
+}
+
+
+/**
+ * History management: selecting, deleting, cancelling, missing records,
+ * permission refusal, bulk cleanup, restore, and the active-transaction rule.
+ */
+async function run_history() {
+  await wait(300);
+  q('.as-cfg__tab[data-context="history"]').click();
+  await wait(300);
+
+  var records = qa('.as-cfg__record');
+  ok('the history lists every snapshot and revision', records.length === 5, String(records.length));
+  ok('snapshots and revisions are distinguished',
+     qa('.as-cfg__record-kind--snapshot').length === 2 && qa('.as-cfg__record-kind--revision').length === 3,
+     qa('.as-cfg__record-kind--snapshot').length + '/' + qa('.as-cfg__record-kind--revision').length);
+  ok('the human save label is the change, not "configurator save"',
+     q('.as-cfg__view').textContent.indexOf('Updated accent colour') !== -1 &&
+     q('.as-cfg__view').textContent.indexOf('configurator save') === -1,
+     q('.as-cfg__view').textContent.slice(0, 240));
+  ok('a revision shows its id', q('.as-cfg__view').textContent.indexOf('r3') !== -1);
+  ok('a record shows its actor', q('.as-cfg__view').textContent.indexOf('by editor') !== -1);
+  ok('a record shows a formatted time', qa('.as-cfg__record-meta').some(function (el) {
+    return /\d{4}|\d{1,2}:\d{2}/.test(el.textContent);
+  }), qa('.as-cfg__record-meta')[0].textContent);
+  ok('restore and delete are separate actions',
+     !!q('[data-focus-key="history-restore:revisions:r3"]') &&
+     !!q('[data-focus-key="history-delete:revisions:r3"]'));
+  ok('delete is visually distinct from restore',
+     q('[data-focus-key="history-delete:revisions:r3"]').className.indexOf('as-cfg__btn--danger') !== -1 &&
+     q('[data-focus-key="history-restore:revisions:r3"]').className.indexOf('as-cfg__btn--danger') === -1);
+
+  // ── Cancellation writes nothing ─────────────────────────────────────
+  window.confirm = function () { return false; };
+  var requests_before = window.__requests.length;
+  q('[data-focus-key="history-delete:snapshots:launch-day"]').click();
+  await wait(150);
+  ok('cancelling a delete keeps the record', qa('.as-cfg__record-kind--snapshot').length === 2,
+     String(qa('.as-cfg__record-kind--snapshot').length));
+  ok('cancelling a delete sends no request',
+     window.__requests.slice(requests_before).join(' ').indexOf('/delete') === -1,
+     window.__requests.slice(requests_before).join(' '));
+
+  // ── Individual snapshot ─────────────────────────────────────────────
+  window.confirm = function () { return true; };
+  q('[data-focus-key="history-delete:snapshots:launch-day"]').click();
+  await wait(300);
+  ok('an individual snapshot is deleted', qa('.as-cfg__record-kind--snapshot').length === 1,
+     String(qa('.as-cfg__record-kind--snapshot').length));
+  ok('the deleted snapshot is gone', !q('[data-focus-key="history-delete:snapshots:launch-day"]'));
+  ok('the deletion is reported', window.AgentshellConfigurator.hint.indexOf('Deleted 1 snapshot') !== -1,
+     window.AgentshellConfigurator.hint);
+  ok('the deletion is audited', SERVER.history.audit.some(function (row) { return row.operation === 'snapshot_deleted'; }));
+
+  // ── Individual revision ─────────────────────────────────────────────
+  q('[data-focus-key="history-delete:revisions:r2"]').click();
+  await wait(300);
+  ok('an individual revision is deleted', qa('.as-cfg__record-kind--revision').length === 2,
+     String(qa('.as-cfg__record-kind--revision').length));
+  ok('the deleted revision is gone', !q('[data-focus-key="history-delete:revisions:r2"]'));
+  ok('the revision deletion is audited', SERVER.history.audit.some(function (row) { return row.operation === 'revision_deleted'; }));
+
+  // ── Bulk cleanup ────────────────────────────────────────────────────
+  q('[data-focus-key="history-select-all:revisions"]').click();
+  await wait(120);
+  ok('select all selects every revision',
+     q('[data-focus-key="history-delete-selected:revisions"]').textContent.indexOf('(2)') !== -1,
+     q('[data-focus-key="history-delete-selected:revisions"]').textContent);
+  q('[data-focus-key="history-delete-selected:revisions"]').click();
+  await wait(400);
+  ok('bulk deletion removes every selected revision', qa('.as-cfg__record-kind--revision').length === 0,
+     String(qa('.as-cfg__record-kind--revision').length));
+  ok('bulk deletion is reported', window.AgentshellConfigurator.hint.indexOf('Deleted 2 revisions') !== -1,
+     window.AgentshellConfigurator.hint);
+  ok('bulk deletion leaves the snapshot', qa('.as-cfg__record-kind--snapshot').length === 1);
+
+  // ── Already gone ────────────────────────────────────────────────────
+  window.__history_missing_next = true;
+  await window.AgentshellConfigurator.delete_snapshot({ name: 'ghost', label: 'Ghost snapshot' });
+  await wait(250);
+  ok('a missing record is reported as already gone',
+     window.AgentshellConfigurator.hint.indexOf('already gone') !== -1,
+     window.AgentshellConfigurator.hint);
+
+  // ── Permission refusal ──────────────────────────────────────────────
+  window.__fail_history_delete = true;
+  await window.AgentshellConfigurator.delete_snapshot({ name: 'before-header', label: 'Before the header change' });
+  await wait(250);
+  ok('a permission refusal is reported',
+     window.AgentshellConfigurator.message.indexOf('could not be deleted') !== -1,
+     window.AgentshellConfigurator.message);
+  ok('a refused deletion leaves the record', !!q('[data-focus-key="history-delete:snapshots:before-header"]'));
+  window.__fail_history_delete = false;
+
+  // ── Restoring a remaining record still works ────────────────────────
+  var restores_before = window.__requests.filter(function (r) { return r.indexOf('/snapshots/restore') !== -1; }).length;
+  q('[data-focus-key="history-restore:snapshots:before-header"]').click();
+  await wait(300);
+  ok('a remaining snapshot can be restored',
+     window.__requests.filter(function (r) { return r.indexOf('/snapshots/restore') !== -1; }).length === restores_before + 1,
+     window.__requests.join(' '));
+  ok('the restore is reported', window.AgentshellConfigurator.hint.indexOf('Snapshot restored') !== -1,
+     window.AgentshellConfigurator.hint);
+
+  // ── An open transaction refuses restore, not deletion ───────────────
+  await window.AgentshellConfigurator.api.begin_transaction('history test');
+  await window.AgentshellConfigurator.refresh_transaction();
+  q('.as-cfg__tab[data-context="history"]').click();
+  await wait(120);
+  ok('restore is refused while a transaction is open',
+     q('[data-focus-key="history-restore:snapshots:before-header"]').hasAttribute('disabled'));
+  ok('deletion is still offered while a transaction is open',
+     !q('[data-focus-key="history-delete:snapshots:before-header"]').hasAttribute('disabled'));
+  ok('the history view explains the difference',
+     q('.as-cfg__view').textContent.indexOf('Deleting history is allowed') !== -1);
+  await window.AgentshellConfigurator.discard_changes();
+  await wait(250);
+
+  ok('history changes never touched the committed configuration',
+     SERVER.committed.config['--theme-bg'] === '#fafaf9', SERVER.committed.config['--theme-bg']);
   report();
 }
 

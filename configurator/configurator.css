@@ -525,12 +525,87 @@ body.config-panel-open {
 
 .as-cfg__record {
     display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.3rem 0.4rem;
+    align-items: flex-start;
+    gap: 0.45rem;
+    padding: 0.4rem 0.45rem;
     border-radius: 6px;
     background: var(--configurator-surface);
     font-size: 0.8rem;
+}
+
+.as-cfg__record.is-selected {
+    background: color-mix(in srgb, var(--theme-accent, #3b82f6) 10%, var(--configurator-surface));
+}
+
+.as-cfg__record-check {
+    margin: 0.25rem 0 0;
+    flex: 0 0 auto;
+}
+
+.as-cfg__record-main {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.as-cfg__record-kind {
+    align-self: flex-start;
+    font-size: 0.66rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-weight: 700;
+    padding: 0.05rem 0.3rem;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+}
+
+.as-cfg__record-kind--snapshot {
+    color: color-mix(in srgb, var(--theme-accent, #3b82f6) 80%, #000);
+}
+
+.as-cfg__record-kind--revision {
+    color: var(--configurator-muted);
+}
+
+.as-cfg__record-title {
+    font-weight: 600;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.as-cfg__record-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    margin-left: auto;
+    flex: 0 0 auto;
+}
+
+.as-cfg__history-tools {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin: 0.15rem 0 0.4rem;
+}
+
+.as-cfg__check {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.78rem;
+    color: var(--configurator-muted);
+}
+
+.as-cfg__btn--danger {
+    color: var(--configurator-danger);
+    border-color: color-mix(in srgb, var(--configurator-danger) 45%, transparent);
+}
+
+.as-cfg__btn--danger:hover:not(:disabled) {
+    background: var(--configurator-danger-bg);
 }
 
 /* The name is the identifier a snapshot is restored by, so it is never cut
@@ -545,10 +620,9 @@ body.config-panel-open {
 
 .as-cfg__record-meta {
     color: var(--configurator-muted);
-    flex: 1 1 auto;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    flex: 0 1 auto;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 /* ── Buttons ────────────────────────────────────────────────────────────── */

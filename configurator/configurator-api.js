@@ -130,11 +130,17 @@
             restore_snapshot: function ( name ) {
                 return request( 'snapshots/restore', { method: 'POST', body: { name: name } } );
             },
+            delete_snapshots: function ( names, reason ) {
+                return request( 'snapshots/delete', { method: 'POST', body: { names: names, reason: reason || '' } } );
+            },
             list_revisions: function () {
                 return request( 'revisions' );
             },
             restore_revision: function ( id ) {
                 return request( 'revisions/restore', { method: 'POST', body: { id: id } } );
+            },
+            delete_revisions: function ( ids, reason ) {
+                return request( 'revisions/delete', { method: 'POST', body: { ids: ids, reason: reason || '' } } );
             },
         };
     }

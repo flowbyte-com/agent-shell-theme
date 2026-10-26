@@ -367,6 +367,13 @@ $suites = array(
         'path'     => __DIR__ . '/configurator-transaction-read-test.php',
         'requires' => 'unit',
     ),
+    // History management: descriptive revision labels, individual and bulk
+    // deletion, tombstones that preserve lineage, audit rows that outlive the
+    // revision ring, and the committed configuration staying untouched.
+    'history-management' => array(
+        'path'     => __DIR__ . '/history-management-test.php',
+        'requires' => 'unit',
+    ),
     // Loads the real Store, Doctor and Transaction_Manager and drives the
     // lease with a frozen clock, so it belongs after the suites that have
     // already put those in memory.

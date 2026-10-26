@@ -713,14 +713,153 @@
             return view;
         }
 
+        /** A stable, human date for a history row. */
+        function format_when( timestamp ) {
+            var seconds = Number( timestamp ) || 0;
+            if ( ! seconds ) { return 'unknown time'; }
+            var date = new Date( seconds * 1000 );
+            try {
+                return date.toLocaleString( undefined, { dateStyle: 'medium', timeStyle: 'short' } );
+            } catch ( e ) {
+                return date.toISOString().replace( 'T', ' ' ).slice( 0, 16 ) + ' UTC';
+            }
+        }
+
+        function history_key( kind, record ) {
+            return kind === 'snapshots' ? record.name : record.id;
+        }
+
+        function history_selected( kind, record ) {
+            var list = app.history_selection[ kind ] || [];
+            var key = history_key( kind, record );
+            return list.some( function ( item ) { return history_key( kind, item ) === key; } );
+        }
+
+        function toggle_history_selection( kind, record, checked ) {
+            var list = ( app.history_selection[ kind ] || [] ).slice();
+            var key = history_key( kind, record );
+            list = list.filter( function ( item ) { return history_key( kind, item ) !== key; } );
+            if ( checked ) { list.push( record ); }
+            app.history_selection[ kind ] = list;
+            app.ui.render();
+        }
+
+        function history_toolbar( kind, records, busy ) {
+            var selected = app.history_selection[ kind ] || [];
+            var all = records.length > 0 && selected.length === records.length;
+            var noun = kind === 'snapshots' ? 'snapshots' : 'revisions';
+            return h( 'div', { class: 'as-cfg__history-tools' }, [
+                h( 'label', { class: 'as-cfg__check' }, [
+                    h( 'input', {
+                        type: 'checkbox', checked: all ? true : null,
+                        'data-focus-key': 'history-select-all:' + kind,
+                        onchange: function ( e ) {
+                            app.history_selection[ kind ] = e.target.checked ? records.slice() : [];
+                            app.ui.render();
+                        },
+                    } ),
+                    h( 'span', {}, [ 'Select all ' + noun ] ),
+                ] ),
+                h( 'button', {
+                    type: 'button', class: 'as-cfg__btn as-cfg__btn--danger',
+                    'data-focus-key': 'history-delete-selected:' + kind,
+                    disabled: ( ! selected.length || busy ) ? 'disabled' : null,
+                    title: selected.length
+                        ? 'Delete the selected ' + noun + '; the live configuration is not changed'
+                        : 'Select at least one ' + ( kind === 'snapshots' ? 'snapshot' : 'revision' ),
+                    onclick: function () {
+                        if ( kind === 'snapshots' ) { app.delete_snapshots( selected ); }
+                        else { app.delete_revisions( selected ); }
+                    },
+                }, [ 'Delete selected' + ( selected.length ? ' (' + selected.length + ')' : '' ) ] ),
+            ] );
+        }
+
+        function history_record( kind, record, busy ) {
+            var is_snapshot = kind === 'snapshots';
+            var title = is_snapshot
+                ? ( record.label || record.name )
+                : ( record.description || record.label || record.id );
+            var meta = [
+                format_when( record.timestamp ),
+                record.actor ? 'by ' + record.actor : '',
+                is_snapshot ? record.name : record.id,
+            ].filter( function ( part ) { return !! part; } ).join( ' · ' );
+            if ( ! is_snapshot && record.parent_deleted ) {
+                meta += ' · parent revision removed';
+            }
+            var key = history_key( kind, record );
+            var restore = is_snapshot
+                ? function () { app.restore_snapshot( record.name ); }
+                : function () { app.restore_revision( record.id ); };
+            var remove = is_snapshot
+                ? function () { app.delete_snapshot( record ); }
+                : function () { app.delete_revision( record ); };
+            return h( 'li', { class: 'as-cfg__record' + ( history_selected( kind, record ) ? ' is-selected' : '' ) }, [
+                h( 'input', {
+                    type: 'checkbox', class: 'as-cfg__record-check',
+                    checked: history_selected( kind, record ) ? true : null,
+                    'aria-label': 'Select ' + ( is_snapshot ? 'snapshot ' + record.name : 'revision ' + record.id ),
+                    'data-focus-key': 'history-select:' + kind + ':' + key,
+                    onchange: function ( e ) { toggle_history_selection( kind, record, e.target.checked ); },
+                } ),
+                h( 'div', { class: 'as-cfg__record-main' }, [
+                    h( 'span', { class: 'as-cfg__record-kind as-cfg__record-kind--' + ( is_snapshot ? 'snapshot' : 'revision' ) },
+                        [ is_snapshot ? 'Snapshot' : 'Revision' ] ),
+                    h( 'span', { class: 'as-cfg__record-title' }, [ title ] ),
+                    h( 'span', { class: 'as-cfg__record-meta' }, [ meta ] ),
+                ] ),
+                h( 'div', { class: 'as-cfg__record-actions' }, [
+                    h( 'button', {
+                        type: 'button', class: 'as-cfg__btn as-cfg__btn--quiet',
+                        'data-focus-key': 'history-restore:' + kind + ':' + key,
+                        disabled: busy ? 'disabled' : null,
+                        title: busy ? 'Commit or discard the open transaction first' : 'Restore this ' + ( is_snapshot ? 'snapshot' : 'revision' ),
+                        onclick: restore,
+                    }, [ 'Restore' ] ),
+                    h( 'button', {
+                        type: 'button', class: 'as-cfg__btn as-cfg__btn--danger as-cfg__btn--quiet',
+                        'data-focus-key': 'history-delete:' + kind + ':' + key,
+                        disabled: app.busy ? 'disabled' : null,
+                        title: 'Delete this ' + ( is_snapshot ? 'snapshot' : 'revision' ) + '; the live configuration is not changed',
+                        onclick: remove,
+                    }, [ 'Delete' ] ),
+                ] ),
+            ] );
+        }
+
+        function history_section( kind, heading, records, busy ) {
+            var section = h( 'section', { class: 'as-cfg__history-section' } );
+            section.appendChild( h( 'h4', { class: 'as-cfg__h4' }, [ heading ] ) );
+            if ( ! records.length ) {
+                section.appendChild( h( 'p', { class: 'as-cfg__muted' }, [
+                    kind === 'snapshots' ? 'No snapshots yet.' : 'No revisions recorded yet.',
+                ] ) );
+                return section;
+            }
+            section.appendChild( history_toolbar( kind, records, busy ) );
+            var list = h( 'ul', { class: 'as-cfg__records' } );
+            records.forEach( function ( record ) {
+                list.appendChild( history_record( kind, record, busy ) );
+            } );
+            section.appendChild( list );
+            return section;
+        }
+
         function history_view() {
             var view = h( 'div', { class: 'as-cfg__view' } );
             var tx_state = app.tx.get_state();
-            var busy = app.tx.is_active();
+            var tx_open = app.tx.is_active();
+
+            view.appendChild( h( 'p', { class: 'as-cfg__lede' }, [
+                'Every save keeps a revision, and a snapshot is a named copy you choose to keep. '
+                + 'Deleting a history record removes it from this list; it never changes the currently published configuration. '
+                + 'Restoring is refused while a transaction is open.',
+            ] ) );
 
             view.appendChild( h( 'h4', { class: 'as-cfg__h4' }, [ 'Open transaction' ] ) );
             view.appendChild( h( 'p', { class: 'as-cfg__muted' }, [
-                busy
+                tx_open
                     ? ( tx_state.tx && tx_state.tx.has_staged ? 'There are staged changes in this transaction. Save or discard them from the actions below.' : 'A transaction is open with no changes staged yet.' )
                     : 'No transaction is open. Saving from this editor opens one and commits it when it succeeds.',
             ] ) );
@@ -739,50 +878,13 @@
                 }, [ 'Snapshot' ] ),
             ] ) ) );
 
-            view.appendChild( h( 'h4', { class: 'as-cfg__h4' }, [ 'Snapshots' ] ) );
-            var snapshots = app.history.snapshots || [];
-            if ( ! snapshots.length ) {
-                view.appendChild( h( 'p', { class: 'as-cfg__muted' }, [ 'No snapshots yet.' ] ) );
-            } else {
-                var snap_list = h( 'ul', { class: 'as-cfg__records' } );
-                snapshots.forEach( function ( snapshot ) {
-                    snap_list.appendChild( h( 'li', { class: 'as-cfg__record' }, [
-                        h( 'span', { class: 'as-cfg__record-name' }, [ snapshot.name ] ),
-                        h( 'span', { class: 'as-cfg__record-meta' }, [ ' — ' + ( snapshot.label || '' ) + ( snapshot.actor ? ' by ' + snapshot.actor : '' ) ] ),
-                        h( 'button', {
-                            type: 'button', class: 'as-cfg__btn as-cfg__btn--quiet',
-                            disabled: busy ? 'disabled' : null,
-                            title: busy ? 'Commit or discard the open transaction first' : 'Restore this snapshot',
-                            onclick: function () { app.restore_snapshot( snapshot.name ); },
-                        }, [ 'Restore' ] ),
-                    ] ) );
-                } );
-                view.appendChild( snap_list );
-            }
+            view.appendChild( history_section( 'snapshots', 'Snapshots', app.history.snapshots || [], tx_open ) );
+            view.appendChild( history_section( 'revisions', 'Revisions', app.history.revisions || [], tx_open ) );
 
-            view.appendChild( h( 'h4', { class: 'as-cfg__h4' }, [ 'Revisions' ] ) );
-            var revisions = app.history.revisions || [];
-            if ( ! revisions.length ) {
-                view.appendChild( h( 'p', { class: 'as-cfg__muted' }, [ 'No revisions recorded yet.' ] ) );
-            } else {
-                var rev_list = h( 'ul', { class: 'as-cfg__records' } );
-                revisions.slice( 0, 12 ).forEach( function ( revision ) {
-                    rev_list.appendChild( h( 'li', { class: 'as-cfg__record' }, [
-                        h( 'span', { class: 'as-cfg__record-name' }, [ revision.label || revision.id ] ),
-                        h( 'span', { class: 'as-cfg__record-meta' }, [ ' — ' + ( revision.actor || '' ) ] ),
-                        h( 'button', {
-                            type: 'button', class: 'as-cfg__btn as-cfg__btn--quiet',
-                            disabled: busy ? 'disabled' : null,
-                            title: busy ? 'Commit or discard the open transaction first' : 'Restore this revision',
-                            onclick: function () { app.restore_revision( revision.id ); },
-                        }, [ 'Restore' ] ),
-                    ] ) );
-                } );
-                view.appendChild( rev_list );
-            }
-
-            if ( busy ) {
-                view.appendChild( h( 'p', { class: 'as-cfg__muted' }, [ 'Restoring is refused while a transaction is open: commit or discard it first.' ] ) );
+            if ( tx_open ) {
+                view.appendChild( h( 'p', { class: 'as-cfg__muted' }, [
+                    'Restoring is refused while a transaction is open: commit or discard it first. Deleting history is allowed, because it does not touch the configuration.',
+                ] ) );
             }
             return view;
         }
