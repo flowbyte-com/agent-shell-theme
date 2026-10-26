@@ -165,6 +165,10 @@ $config_after_commits = $config_after_commits[1];
 list( $status, $deleted ) = request( 'POST', 'snapshots/delete', array( 'names' => array( $drop ) ) );
 check( 'an individual snapshot delete is accepted', 200 === $status, 'HTTP ' . $status );
 check( 'the snapshot delete reports the name', in_array( $drop, (array) ( $deleted['deleted'] ?? array() ), true ) );
+check( 'the deletion reports a confirmed outcome', 'deleted' === ( $deleted['outcome'] ?? '' ), 'outcome=' . ( $deleted['outcome'] ?? 'none' ) );
+check( 'the deletion reports that its audit record was written', 'deleted' === ( $deleted['audit_state'] ?? '' ), 'audit_state=' . ( $deleted['audit_state'] ?? 'none' ) );
+check( 'the deletion ran inside a database transaction', ! empty( $deleted['atomicity']['database_transaction'] ),
+    json_encode( $deleted['atomicity'] ?? array() ) );
 check( 'the deleted snapshot is gone', ! in_array( $drop, snapshot_names(), true ) );
 check( 'the other snapshot survives', in_array( $keep, snapshot_names(), true ) );
 $config_after_snapshot_delete = request( 'GET', 'config' )[1];
@@ -176,6 +180,7 @@ $middle = $created[1]; // The second-newest: its child's parent points at it.
 list( $status, $deleted ) = request( 'POST', 'revisions/delete', array( 'ids' => array( $middle ) ) );
 check( 'an individual revision delete is accepted', 200 === $status, 'HTTP ' . $status );
 check( 'the revision delete reports the id', in_array( $middle, (array) ( $deleted['deleted'] ?? array() ), true ) );
+check( 'the revision deletion reports a confirmed outcome', 'deleted' === ( $deleted['outcome'] ?? '' ), 'outcome=' . ( $deleted['outcome'] ?? 'none' ) );
 check( 'the tombstone is recorded', in_array( $middle, (array) ( $deleted['tombstones'] ?? array() ), true ) );
 
 list( $status, $list ) = request( 'GET', 'revisions' );

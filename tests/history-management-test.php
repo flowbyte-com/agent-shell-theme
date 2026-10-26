@@ -13,6 +13,7 @@ require_once __DIR__ . '/bootstrap.php';
 
 $GLOBALS['_agentshell_test_login'] = 'owner';
 
+require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-content-write-guard.php';
 require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-store.php';
 
 use AgentShell_MCP\Store;
@@ -254,6 +255,163 @@ Agentshell_Test::run(
         try { Store::delete_snapshots( array( '../before-header' ) ); } catch ( \InvalidArgumentException $e ) { $bad_name_threw = true; }
         Agentshell_Test::assert_true( $bad_name_threw, 'a name that sanitises to something else is refused' );
         Agentshell_Test::assert_true( null !== Store::get_snapshot( 'before-header' ), 'the near-miss record is untouched' );
+    }
+);
+
+Agentshell_Test::run(
+    'a failed audit write leaves the history alone',
+    function () {
+        agentshell_test_reset();
+        $GLOBALS['_agentshell_test_login'] = 'owner';
+        history_seed_revisions( 3 );
+
+        // The failure is injected at the first write of the operation: the
+        // audit record itself. Nothing may be deleted, because the record of
+        // the deletion could not be written.
+        $GLOBALS['_agentshell_test_history_audit_fail'] = true;
+        $result = Store::delete_revisions( array( 'r2' ) );
+        unset( $GLOBALS['_agentshell_test_history_audit_fail'] );
+
+        Agentshell_Test::assert_equals( array(), $result['deleted'], 'nothing was deleted' );
+        Agentshell_Test::assert_true( in_array( $result['outcome'], array( 'failed', 'unchanged' ), true ), 'the outcome is a confirmed non-deletion' );
+        $ids = array_column( Store::revisions()['items'], 'id' );
+        Agentshell_Test::assert_true( in_array( 'r2', $ids, true ), 'the revision is still there' );
+        Agentshell_Test::assert_equals( 3, count( $ids ), 'no revision was removed' );
+
+        $found = false;
+        foreach ( Store::audit_log() as $entry ) {
+            if ( 'revision_deleted' === ( $entry['operation'] ?? '' ) ) { $found = true; break; }
+        }
+        Agentshell_Test::assert_false( $found, 'no deletion was recorded' );
+    }
+);
+
+Agentshell_Test::run(
+    'a failure between the deletion and the audit confirmation is reconciled',
+    function () {
+        agentshell_test_reset();
+        $GLOBALS['_agentshell_test_login'] = 'owner';
+        history_seed_revisions( 3 );
+
+        // The failure is injected at the third write: the confirmation that
+        // the deletion happened. The deletion itself has already landed, so
+        // the outcome must not be reported as a failure.
+        $GLOBALS['_agentshell_test_history_finalise_fail'] = true;
+        $result = Store::delete_revisions( array( 'r2' ) );
+        unset( $GLOBALS['_agentshell_test_history_finalise_fail'] );
+
+        Agentshell_Test::assert_equals( 'deleted', $result['outcome'], 'the deletion is reported as a deletion' );
+        Agentshell_Test::assert_equals( array( 'r2' ), $result['deleted'] );
+        $ids = array_column( Store::revisions()['items'], 'id' );
+        Agentshell_Test::assert_false( in_array( 'r2', $ids, true ), 'the revision is gone' );
+
+        // The audit log must say what happened — either the row says the
+        // deletion happened, or the row says it is still to be confirmed.
+        // What must never happen is no row at all.
+        $row = null;
+        foreach ( Store::audit_log() as $entry ) {
+            if ( 'revision_deleted' === ( $entry['operation'] ?? '' ) ) { $row = $entry; break; }
+        }
+        Agentshell_Test::assert_true( is_array( $row ), 'the deletion is recorded' );
+        Agentshell_Test::assert_true( in_array( $row['changed']['state'] ?? '', array( 'deleted', 'pending' ), true ),
+            'the record states what is known: ' . ( $row['changed']['state'] ?? 'none' ) );
+        Agentshell_Test::assert_equals( array( 'r2' ), $row['changed']['ids'] ?? array() );
+    }
+);
+
+Agentshell_Test::run(
+    'a failure at the history write leaves the history and the record in step',
+    function () {
+        agentshell_test_reset();
+        $GLOBALS['_agentshell_test_login'] = 'owner';
+        history_seed_revisions( 3 );
+
+        $GLOBALS['_agentshell_test_history_cas_fail'] = true;
+        $result = Store::delete_revisions( array( 'r2' ) );
+        unset( $GLOBALS['_agentshell_test_history_cas_fail'] );
+
+        Agentshell_Test::assert_equals( array(), $result['deleted'], 'nothing was deleted' );
+        $ids = array_column( Store::revisions()['items'], 'id' );
+        Agentshell_Test::assert_true( in_array( 'r2', $ids, true ), 'the revision is still there' );
+
+        // The intent row, if it survived, must not claim the deletion
+        // happened.
+        $row = null;
+        foreach ( Store::audit_log() as $entry ) {
+            if ( 'revision_deleted' === ( $entry['operation'] ?? '' ) ) { $row = $entry; break; }
+        }
+        if ( is_array( $row ) ) {
+            Agentshell_Test::assert_equals( 'failed', $row['changed']['state'] ?? '', 'the record says the deletion did not complete' );
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'a revision recorded while the deletion is being applied is not lost',
+    function () {
+        agentshell_test_reset();
+        $GLOBALS['_agentshell_test_login'] = 'owner';
+        history_seed_revisions( 3 );
+
+        // A concurrent writer appends a revision between the read and the
+        // write. The deletion must not remove it.
+        $GLOBALS['_agentshell_test_history_cas_fail'] = true;
+        $before = Store::revisions();
+        $items  = $before['items'];
+        $items[] = array(
+            'id'        => 'r99',
+            'parent'    => $items[0]['id'],
+            'timestamp' => time(),
+            'actor'     => 'someone-else',
+            'label'     => 'recorded concurrently',
+            'config'    => history_config(),
+        );
+        $before['items'] = $items;
+        $GLOBALS['_agentshell_test_options']['agentshell_revisions'] = $before;
+
+        $result = Store::delete_revisions( array( 'r2' ) );
+        unset( $GLOBALS['_agentshell_test_history_cas_fail'] );
+
+        $ids = array_column( Store::revisions()['items'], 'id' );
+        Agentshell_Test::assert_true( in_array( 'r99', $ids, true ), 'the concurrent revision survived' );
+        Agentshell_Test::assert_true( in_array( 'r2', $ids, true ), 'the requested revision was not deleted either, because the write was refused' );
+    }
+);
+
+Agentshell_Test::run(
+    'deleting history never touches the committed configuration',
+    function () {
+        agentshell_test_reset();
+        $GLOBALS['_agentshell_test_login'] = 'owner';
+        $GLOBALS['_agentshell_test_options']['agentshell_config'] = history_config();
+        $before = $GLOBALS['_agentshell_test_options']['agentshell_config'];
+        history_seed_revisions( 2 );
+        Store::create_snapshot( 'astb-test', 'A test snapshot' );
+
+        Store::delete_revisions( array( 'r1' ) );
+        Store::delete_snapshots( array( 'astb-test' ) );
+
+        Agentshell_Test::assert_equals( $before, $GLOBALS['_agentshell_test_options']['agentshell_config'] );
+    }
+);
+
+Agentshell_Test::run(
+    'the deletion reports what it may be believed about',
+    function () {
+        agentshell_test_reset();
+        $GLOBALS['_agentshell_test_login'] = 'owner';
+        history_seed_revisions( 2 );
+
+        $result = Store::delete_revisions( array( 'r1' ) );
+        Agentshell_Test::assert_true( isset( $result['atomicity']['database_transaction'] ), 'the result carries an atomicity block' );
+        Agentshell_Test::assert_true( isset( $result['atomicity']['on_failure'] ), 'the block says what a failure would do' );
+        Agentshell_Test::assert_equals( 'deleted', $result['outcome'] );
+        Agentshell_Test::assert_equals( 'deleted', $result['audit_state'] );
+
+        // Nothing to delete is a different answer from a failure.
+        $again = Store::delete_revisions( array( 'r1' ) );
+        Agentshell_Test::assert_equals( 'unchanged', $again['outcome'] );
+        Agentshell_Test::assert_equals( array( 'r1' ), $again['missing'] );
     }
 );
 

@@ -1205,13 +1205,29 @@
                     app.busy = false;
                     var deleted = ( result && result.deleted ) || [];
                     var missing = ( result && result.missing ) || [];
+                    var outcome = ( result && result.outcome ) || 'deleted';
                     app.clear_error();
-                    if ( deleted.length ) {
-                        app.hint = 'Deleted ' + deleted.length + ' ' + noun + ( deleted.length === 1 ? '' : 's' )
-                            + ( missing.length ? '; ' + missing.length + ' already gone' : '' ) + '.';
-                    } else {
+
+                    if ( outcome === 'uncertain' ) {
+                        // The server could not establish whether the write
+                        // landed. Saying "could not be deleted" would be a
+                        // claim about a change that may have happened.
+                        app.error = { kind: 'unknown', message: ( result && result.note ) || '' };
+                        app.message = 'The deletion could not be verified. Reload the history to see the current state.';
+                    } else if ( outcome === 'failed' ) {
+                        app.error = { kind: 'validation', message: ( result && result.note ) || '' };
+                        app.message = 'Nothing was deleted: ' + ( ( result && result.note ) || 'the history changed while the deletion was being applied.' );
+                    } else if ( outcome === 'unchanged' || ! deleted.length ) {
+                        app.error = null;
                         app.hint = 'Nothing was deleted; the selected ' + noun
                             + ( records.length === 1 ? ' was' : 's were' ) + ' already gone.';
+                    } else {
+                        app.error = null;
+                        app.hint = 'Deleted ' + deleted.length + ' ' + noun + ( deleted.length === 1 ? '' : 's' )
+                            + ( missing.length ? '; ' + missing.length + ' already gone' : '' ) + '.';
+                        if ( result && result.note ) {
+                            app.message = result.note;
+                        }
                     }
                     if ( app.history_selection ) {
                         app.history_selection[ kind ] = [];
@@ -1221,9 +1237,23 @@
                 .then( function () { app.ui.render(); } )
                 .catch( function ( error ) {
                     app.busy = false;
+                    // A refusal that carries an outcome is not a generic
+                    // failure: the server has already said whether anything
+                    // was deleted, and the message must not contradict it.
+                    var payload = ( error && error.data && error.data.data ) ? error.data.data : null;
+                    var outcome = payload ? ( payload.outcome || '' ) : '';
+                    if ( outcome === 'uncertain' ) {
+                        app.error = { kind: 'unknown', message: error.message };
+                        app.message = 'The deletion could not be verified. Reload the history to see the current state.';
+                    } else if ( outcome === 'failed' ) {
+                        app.error = { kind: 'validation', message: error.message };
+                        app.message = 'Nothing was deleted: ' + error.message;
+                    } else {
+                        app.error = { kind: 'validation', message: error.message };
+                        app.message = 'The ' + noun + ' could not be deleted: ' + error.message;
+                    }
                     app.ui.render();
-                    say( 'The ' + noun + ' could not be deleted: ' + error.message, 'error' );
-                    return false;
+                    return load_history().then( function () { app.ui.render(); } );
                 } );
         }
 

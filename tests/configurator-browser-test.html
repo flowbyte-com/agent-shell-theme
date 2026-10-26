@@ -382,6 +382,13 @@ window.fetch = function (url, opts) {
     if (window.__fail_history_delete) {
       return Promise.resolve(respond({ code: 'rest_forbidden', message: 'You are not allowed to do that.' }, false, 403));
     }
+    if (window.__history_uncertain) {
+      return Promise.resolve(respond({
+        code: 'history_delete_unverified',
+        message: 'The deletion could not be verified: the server could not establish whether the write landed.',
+        data: { status: 500, data: { outcome: 'uncertain', deleted: [], missing: [], audit_state: 'none' } }
+      }, false, 500));
+    }
     var delete_names = (body && body.names) || [];
     var snap_deleted = [];
     var snap_missing = [];
@@ -396,11 +403,20 @@ window.fetch = function (url, opts) {
     if (snap_deleted.length) {
       SERVER.history.audit.push({ operation: 'snapshot_deleted', names: snap_deleted });
     }
-    return Promise.resolve(respond({ deleted: snap_deleted, missing: snap_missing, audit_recorded: !!snap_deleted.length }));
+    return Promise.resolve(respond({ outcome: snap_deleted.length ? 'deleted' : 'unchanged',
+      deleted: snap_deleted, missing: snap_missing, audit_recorded: !!snap_deleted.length,
+      audit_state: snap_deleted.length ? 'deleted' : 'none' }));
   }
   if (path.indexOf('/revisions/delete') !== -1) {
     if (window.__fail_history_delete) {
       return Promise.resolve(respond({ code: 'rest_forbidden', message: 'You are not allowed to do that.' }, false, 403));
+    }
+    if (window.__history_uncertain) {
+      return Promise.resolve(respond({
+        code: 'history_delete_unverified',
+        message: 'The deletion could not be verified: the server could not establish whether the write landed.',
+        data: { status: 500, data: { outcome: 'uncertain', deleted: [], missing: [], audit_state: 'none' } }
+      }, false, 500));
     }
     var delete_ids = (body && body.ids) || [];
     var rev_deleted = [];
@@ -416,7 +432,9 @@ window.fetch = function (url, opts) {
     if (rev_deleted.length) {
       SERVER.history.audit.push({ operation: 'revision_deleted', ids: rev_deleted });
     }
-    return Promise.resolve(respond({ deleted: rev_deleted, missing: rev_missing, audit_recorded: !!rev_deleted.length }));
+    return Promise.resolve(respond({ outcome: rev_deleted.length ? 'deleted' : 'unchanged',
+      deleted: rev_deleted, missing: rev_missing, audit_recorded: !!rev_deleted.length,
+      audit_state: rev_deleted.length ? 'deleted' : 'none' }));
   }
   if (path.indexOf('/snapshots/restore') !== -1) {
     return Promise.resolve(respond({ restored: body.name }));
@@ -1356,6 +1374,21 @@ async function run_history() {
      window.__requests.join(' '));
   ok('the restore is reported', window.AgentshellConfigurator.hint.indexOf('Snapshot restored') !== -1,
      window.AgentshellConfigurator.hint);
+
+  // ── An outcome the server could not verify ──────────────────────────
+  window.__history_uncertain = true;
+  await window.AgentshellConfigurator.delete_snapshot({ name: 'before-header', label: 'Before the header change' });
+  await wait(300);
+  ok('an unverified deletion is not reported as a failure',
+     window.AgentshellConfigurator.message.indexOf('could not be verified') !== -1,
+     window.AgentshellConfigurator.message);
+  ok('an unverified deletion does not claim that nothing was deleted',
+     window.AgentshellConfigurator.message.indexOf('Nothing was deleted') === -1,
+     window.AgentshellConfigurator.message);
+  ok('an unverified deletion does not claim that the record was deleted',
+     window.AgentshellConfigurator.message.indexOf('Deleted 1') === -1,
+     window.AgentshellConfigurator.message);
+  window.__history_uncertain = false;
 
   // ── An open transaction refuses restore, not deletion ───────────────
   await window.AgentshellConfigurator.api.begin_transaction('history test');

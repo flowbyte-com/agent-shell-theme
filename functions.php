@@ -4795,12 +4795,7 @@ add_action( 'rest_api_init', function() {
             } catch ( \Throwable $e ) {
                 return new WP_Error( 'snapshot_delete_failed', $e->getMessage(), array( 'status' => 500 ) );
             }
-            return array(
-                'deleted'        => $result['deleted'],
-                'missing'        => $result['missing'],
-                'audit_recorded' => $result['audit_recorded'],
-                'history_note'   => 'The committed configuration was not changed.',
-            );
+            return agentshell_history_delete_response( $result, 'snapshot' );
         },
         'permission_callback' => 'agentshell_rest_auth_callback',
     ) );
@@ -4825,18 +4820,72 @@ add_action( 'rest_api_init', function() {
             } catch ( \Throwable $e ) {
                 return new WP_Error( 'revision_delete_failed', $e->getMessage(), array( 'status' => 500 ) );
             }
-            return array(
-                'deleted'        => $result['deleted'],
-                'missing'        => $result['missing'],
-                'tombstones'     => array_keys( $result['tombstones'] ),
-                'audit_recorded' => $result['audit_recorded'],
-                'history_note'   => 'The committed configuration was not changed, and remaining revisions keep their recorded lineage.',
-            );
+            return agentshell_history_delete_response( $result, 'revision' );
         },
         'permission_callback' => 'agentshell_rest_auth_callback',
     ) );
 
-    register_rest_route( 'wp/v2', '/agentshell/transaction/commit', array(
+    /**
+ * The response for a history deletion.
+ *
+ * The outcome is the point of this function. A deletion can end in four
+ * states, and the caller must be able to tell them apart:
+ *
+ *   - `deleted`    the records are gone and the audit log says so;
+ *   - `unchanged`  nothing matched — the records were already gone;
+ *   - `failed`     nothing was deleted, and the reason is known;
+ *   - `uncertain`  the write may or may not have landed.
+ *
+ * The last one is why the outcome is in the response at all. A caller that
+ * was told "the deletion failed" while the records were in fact gone would
+ * report a failure after an irreversible change; a caller that was told
+ * "deleted" when the write may not have landed would report a success it
+ * cannot prove. The audit state is reported alongside, so a reader can see
+ * whether the record of the deletion was written.
+ *
+ * @param array  $result The store's result.
+ * @param string $kind   'snapshot' or 'revision'.
+ * @return array|WP_Error
+ */
+function agentshell_history_delete_response( array $result, $kind ) {
+    $noun    = ( 'snapshot' === $kind ) ? 'snapshot' : 'revision';
+    $outcome = (string) ( $result['outcome'] ?? 'failed' );
+    $note    = (string) ( $result['note'] ?? '' );
+
+    $payload = array(
+        'outcome'        => $outcome,
+        'deleted'        => (array) ( $result['deleted'] ?? array() ),
+        'missing'        => (array) ( $result['missing'] ?? array() ),
+        'audit_recorded' => (bool) ( $result['audit_recorded'] ?? false ),
+        'audit_state'    => (string) ( $result['audit_state'] ?? 'none' ),
+        'atomicity'      => (array) ( $result['atomicity'] ?? array() ),
+        'note'           => $note,
+        'history_note'   => 'The committed configuration was not changed, and remaining revisions keep their recorded lineage.',
+    );
+    if ( 'revision' === $kind ) {
+        $payload['tombstones'] = array_keys( (array) ( $result['tombstones'] ?? array() ) );
+    }
+
+    if ( 'uncertain' === $outcome ) {
+        return new WP_Error(
+            'history_delete_unverified',
+            'The deletion could not be verified: ' . ( '' !== $note ? $note : 'the server could not establish whether the write landed.' )
+            . ' Reload the history to see the current state before trying again.',
+            array( 'status' => 500, 'data' => $payload )
+        );
+    }
+    if ( 'failed' === $outcome ) {
+        return new WP_Error(
+            'history_delete_failed',
+            'Nothing was deleted: ' . ( '' !== $note ? $note : 'the history changed while the deletion was being applied.' ),
+            array( 'status' => 409, 'data' => $payload )
+        );
+    }
+
+    return $payload;
+}
+
+register_rest_route( 'wp/v2', '/agentshell/transaction/commit', array(
         'methods'             => 'POST',
         'callback'            => function() {
             try {

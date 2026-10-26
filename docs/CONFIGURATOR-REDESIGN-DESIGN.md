@@ -339,6 +339,60 @@ not silently dropped. Malformed ids and names are refused rather than
 sanitised into a different record. A missing or already-deleted id is reported
 as `missing` and the rest of the request still applies.
 
+### 5.3 The deletion and its audit record are one operation
+
+The first implementation of this wrote the history and then wrote the audit
+row, as two independent statements. That is the shape of every bug this
+repository keeps trying to remove: the first write succeeds, the second
+fails, and the caller is told the operation failed while the records are in
+fact gone. The history would be deleted with no record of who deleted it, and
+the interface would say "could not be deleted" about a change that had
+already happened.
+
+The correction uses the machinery that already exists — `Content_Write_Guard`
+— and adds an ordering that holds even where the machinery cannot.
+
+**One transaction.** `Content_Write_Guard::run_on()` was added for this: the
+guard now names the tables the write touches, and its verdict about whether
+those tables can roll back is per table set. The content tables and the
+options table are different questions, and a write must be told the answer
+that applies to it. The deletion runs inside one transaction over the options
+table: the audit intent, the history write and the audit confirmation are
+either all there or none of them.
+
+**The intent comes first.** The audit row is written *before* the deletion
+and marked `pending`; it is marked `deleted` only after the deletion has
+landed. Inside the transaction the intermediate state is invisible, so the
+cost is nil. Outside one — an old MyISAM options table, or a unit harness
+with no database — the order is what makes the guarantee true: a failure to
+write the audit record stops the deletion before it starts, so there is no
+ordering in which the history disappears and no audit row exists to say so.
+
+**The failures are reconciled, not guessed.** A failure between the deletion
+and the audit confirmation leaves the deletion real and the row marked
+`pending`. The server re-reads both the history and the audit log — through
+the database, not the object cache — and reports what it found:
+
+| Outcome | What it means |
+|---|---|
+| `deleted` | the records are gone and the audit log says so |
+| `unchanged` | nothing matched; the records were already gone |
+| `failed` | nothing was deleted, and the reason is known |
+| `uncertain` | the write may or may not have landed, and the server says so |
+
+The `uncertain` state exists because the alternative is a lie in one
+direction or the other. Reporting a failure after an irreversible change is
+what the first implementation did. Reporting a success the server cannot
+prove would be the opposite mistake. When the deletion happened and the
+audit row can be written afterwards, the repair is made and the result says
+it was made; when it cannot, the result says `uncertain` and the interface
+tells the operator to reload the history rather than guessing.
+
+**What is deliberately not changed.** The committed configuration is never
+written by a deletion. The `parent` pointer of a surviving revision is never
+rewritten. Audit rows that mention a deleted revision are never erased. The
+bounded history and the tombstone map are unchanged.
+
 ## 6. The REST routes that were added
 
 No MCP tool was added, and no MCP tool changed. The editor needed four things

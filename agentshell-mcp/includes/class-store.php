@@ -233,58 +233,597 @@ class Store {
      * the copy existed and who removed it, because the snapshot itself no
      * longer can be.
      *
+     * The deletion and its audit record are one operation. See
+     * delete_history() for what that means and what it guarantees.
+     *
      * @param array  $names
      * @param string $reason
-     * @return array { deleted: string[], missing: string[], audit_recorded: bool }
+     * @return array { deleted: string[], missing: string[], outcome: string, audit_recorded: bool, audit_state: string, atomicity: array }
      */
     public static function delete_snapshots( array $names, $reason = '' ) {
         $names = self::normalise_snapshot_names( $names );
         if ( empty( $names ) ) {
             throw new \InvalidArgumentException( 'No snapshot names were supplied.' );
         }
+        return self::delete_history( 'snapshots', $names, $reason );
+    }
+
+    /**
+     * Delete revisions, preserving the lineage of the ones that remain.
+     *
+     * The `parent` pointer on every remaining revision is left exactly as it
+     * was recorded. Deleting a revision therefore does not silently rewrite a
+     * child to point at a grandparent — that would falsify the history — and
+     * it does not delete the audit rows that mention the removed id. Instead
+     * the id is recorded in a tombstone map, the list reports
+     * `parent_deleted`, and a new audit row names who removed what and why.
+     *
+     * @param array  $ids
+     * @param string $reason
+     * @return array { deleted: string[], missing: string[], tombstones: array, outcome: string, audit_recorded: bool, audit_state: string, atomicity: array }
+     */
+    public static function delete_revisions( array $ids, $reason = '' ) {
+        $ids = self::normalise_revision_ids( $ids );
+        if ( empty( $ids ) ) {
+            throw new \InvalidArgumentException( 'No revision ids were supplied.' );
+        }
+        return self::delete_history( 'revisions', $ids, $reason );
+    }
+
+    // ── Deleting history, and its audit record, as one operation ──────
+
+    /**
+     * Delete history records and record the deletion, as one operation.
+     *
+     * The problem this solves: deleting the records and writing the audit row
+     * are two writes. If the first succeeds and the second fails, the history
+     * is gone and nobody can find out who removed it — and the caller, told
+     * the write failed, is left believing the records are still there.
+     *
+     * The mechanism is two layers, and the second one is what makes the
+     * guarantee hold when the first is unavailable:
+     *
+     * 1. **One transaction.** The audit intent, the history write and the
+     *    audit confirmation run inside a single SQL transaction over the
+     *    options table (`Content_Write_Guard::run_on()`). Either all three
+     *    land or none does.
+     * 2. **The intent comes first.** The audit row is written *before* the
+     *    history, and it is finalised after. So even where the options table
+     *    cannot be transactional — an old MyISAM table, a unit harness with
+     *    no database — a failure to write the audit record stops the
+     *    deletion before it starts. There is no ordering in which the history
+     *    disappears and no audit row exists to say so.
+     *
+     * A failure between the deletion and the audit confirmation leaves the
+     * deletion real and the audit row marked `pending`. That is reconciled,
+     * not hidden: the server re-reads both the history and the audit log and
+     * reports what it found.
+     *
+     * The outcome is one of:
+     *
+     *   - `deleted`    the records are gone and the audit log says so;
+     *   - `unchanged`  nothing matched — the records were already gone;
+     *   - `failed`     nothing was deleted, and the reason is known;
+     *   - `uncertain`  the write may or may not have landed, and the server
+     *                  says so rather than guessing.
+     *
+     * @param string $kind   'snapshots' or 'revisions'.
+     * @param array  $ids    The names or ids the caller asked to delete.
+     * @param string $reason
+     * @return array
+     */
+    private static function delete_history( $kind, array $ids, $reason ) {
+        $history_key     = ( 'snapshots' === $kind ) ? self::SNAPSHOTS_KEY : self::REVISIONS_KEY;
+        $audit_operation = ( 'snapshots' === $kind ) ? 'snapshot_deleted' : 'revision_deleted';
+        $id_field        = ( 'snapshots' === $kind ) ? 'names' : 'ids';
+        $delete_id       = 'del_' . bin2hex( random_bytes( 8 ) );
+        $actor           = self::actor();
+        $last_error      = 'The history changed while the deletion was being applied.';
 
         for ( $attempt = 0; $attempt < 3; $attempt++ ) {
-            $snapshots = self::snapshots();
-            if ( ! is_array( $snapshots ) ) {
-                $snapshots = array();
-            }
-            $deleted = array();
-            $missing = array();
-            $labels  = array();
-            $next    = $snapshots;
+            $history_current = self::read_history_option( $history_key );
+            $plan            = self::plan_history_deletion( $kind, $history_current, $ids, $reason );
 
-            foreach ( $names as $name ) {
-                if ( isset( $snapshots[ $name ] ) ) {
-                    $deleted[] = $name;
-                    $labels[ $name ] = (string) ( $snapshots[ $name ]['label'] ?? '' );
-                    unset( $next[ $name ] );
-                } else {
-                    $missing[] = $name;
-                }
+            if ( empty( $plan['deleted'] ) ) {
+                // Nothing matched. There is nothing to delete and nothing to
+                // record: a deletion that removed nothing did not happen.
+                return self::history_result(
+                    'unchanged',
+                    array(),
+                    $plan['missing'],
+                    'none',
+                    false,
+                    array(),
+                    $reason,
+                    'Those ' . ( 'snapshots' === $kind ? 'snapshots are' : 'revisions are' ) . ' already gone.'
+                );
             }
-            if ( empty( $deleted ) ) {
-                return array( 'deleted' => array(), 'missing' => $missing, 'audit_recorded' => false );
-            }
-            if ( ! self::cas_option( self::SNAPSHOTS_KEY, $snapshots, $next ) ) {
+
+            $audit_current = self::audit_log();
+            $pending_row   = self::history_audit_row( $audit_operation, $actor, $plan, $reason, $delete_id, 'pending', $id_field );
+            $final_row     = $pending_row;
+            $final_row['changed']['state'] = 'deleted';
+            $audit_pending = self::audit_with_row( $audit_current, $pending_row );
+            $audit_final   = self::audit_with_row( $audit_current, $final_row );
+
+            $result = self::attempt_history_deletion(
+                $history_key,
+                $history_current,
+                $plan,
+                $audit_current,
+                $audit_pending,
+                $audit_final,
+                $delete_id,
+                $kind
+            );
+
+            if ( 'conflict' === ( $result['outcome'] ?? '' ) ) {
+                // Another writer moved the row under us. Re-read and try
+                // again; the record they wrote is part of the new state.
+                $last_error = $result['reason'];
                 continue;
             }
 
-            self::record_event(
-                self::actor(),
-                'snapshot_deleted',
-                array(
-                    'names'   => $deleted,
-                    'labels'  => $labels,
-                    'count'   => count( $deleted ),
-                    'reason'  => (string) $reason,
-                )
-            );
-            return array( 'deleted' => $deleted, 'missing' => $missing, 'audit_recorded' => true );
+            return $result;
         }
 
-        throw new \InvalidArgumentException(
-            'Configuration history changed while the snapshots were being deleted. Nothing was deleted; retry.'
+        return self::history_result(
+            'failed',
+            array(),
+            $ids,
+            'none',
+            false,
+            array(),
+            $reason,
+            $last_error . ' Nothing was deleted; try again.'
         );
+    }
+
+    /**
+     * What deleting these ids would do, given the history as it is now.
+     *
+     * @return array { deleted: string[], missing: string[], next: mixed, labels: array, stones: array }
+     */
+    private static function plan_history_deletion( $kind, $history_current, array $ids, $reason = '' ) {
+        $deleted = array();
+        $missing = array();
+        $labels  = array();
+        $stones  = array();
+
+        if ( 'snapshots' === $kind ) {
+            $current = is_array( $history_current ) ? $history_current : array();
+            $next    = $current;
+            foreach ( $ids as $id ) {
+                if ( ! isset( $current[ $id ] ) ) {
+                    $missing[] = $id;
+                    continue;
+                }
+                $deleted[] = $id;
+                $labels[ $id ] = (string) ( $current[ $id ]['label'] ?? '' );
+                unset( $next[ $id ] );
+            }
+            return array(
+                'deleted' => $deleted,
+                'missing' => $missing,
+                'next'    => $next,
+                'labels'  => $labels,
+                'stones'  => array(),
+            );
+        }
+
+        $current = is_array( $history_current ) ? $history_current : array();
+        $items   = isset( $current['items'] ) && is_array( $current['items'] ) ? $current['items'] : array();
+        $dead    = isset( $current['deleted'] ) && is_array( $current['deleted'] ) ? $current['deleted'] : array();
+
+        $by_id = array();
+        foreach ( $items as $item ) {
+            if ( is_array( $item ) && isset( $item['id'] ) ) {
+                $by_id[ (string) $item['id'] ] = $item;
+            }
+        }
+
+        $next_items = array();
+        foreach ( $items as $item ) {
+            if ( is_array( $item ) && isset( $item['id'] ) && in_array( (string) $item['id'], $ids, true ) ) {
+                $id         = (string) $item['id'];
+                $deleted[]  = $id;
+                $labels[ $id ] = (string) ( $item['label'] ?? '' );
+                $stones[ $id ] = array(
+                    'at'        => time(),
+                    'actor'     => self::actor(),
+                    'label'     => (string) ( $item['label'] ?? '' ),
+                    'timestamp' => (int) ( $item['timestamp'] ?? 0 ),
+                    'parent'    => $item['parent'] ?? null,
+                    'reason'    => (string) $reason,
+                );
+                continue;
+            }
+            $next_items[] = $item;
+        }
+        foreach ( $ids as $id ) {
+            if ( ! isset( $by_id[ $id ] ) ) {
+                $missing[] = $id;
+            }
+        }
+        foreach ( $stones as $id => $stone ) {
+            $dead[ $id ] = $stone;
+        }
+
+        $next         = $current;
+        $next['items']   = array_values( $next_items );
+        $next['deleted'] = $dead;
+
+        return array(
+            'deleted' => $deleted,
+            'missing' => $missing,
+            'next'    => $next,
+            'labels'  => $labels,
+            'stones'  => $stones,
+        );
+    }
+
+    /**
+     * The audit row for a deletion.
+     */
+    private static function history_audit_row( $operation, $actor, array $plan, $reason, $delete_id, $state, $id_field ) {
+        $changed = array(
+            'count'     => count( $plan['deleted'] ),
+            'labels'    => $plan['labels'],
+            'reason'    => (string) $reason,
+            'delete_id' => $delete_id,
+            'state'     => $state,
+        );
+        $changed[ $id_field ] = $plan['deleted'];
+        if ( ! empty( $plan['stones'] ) ) {
+            $changed['tombstones'] = $plan['stones'];
+        }
+        return array(
+            'timestamp'   => time(),
+            'actor'       => $actor,
+            'operation'   => $operation,
+            'changed'     => $changed,
+            'revision_id' => null,
+        );
+    }
+
+    /** The audit log with one row at the front. */
+    private static function audit_with_row( array $log, array $row ) {
+        array_unshift( $log, $row );
+        if ( count( $log ) > self::MAX_AUDIT ) {
+            $log = array_slice( $log, 0, self::MAX_AUDIT );
+        }
+        return $log;
+    }
+
+    /**
+     * Perform one attempt at the deletion, and say exactly what happened.
+     *
+     * @return array
+     */
+    private static function attempt_history_deletion( $history_key, $history_current, array $plan, $audit_current, $audit_pending, $audit_final, $delete_id, $kind ) {
+        global $wpdb;
+        $tables = ( isset( $wpdb ) && is_object( $wpdb ) && ! empty( $wpdb->options ) ) ? array( $wpdb->options ) : array();
+
+        // Test seams: a failure injected at each of the three writes, so the
+        // guarantee is proved at the points where it can be broken.
+        $fail_audit   = ! empty( $GLOBALS['_agentshell_test_history_audit_fail'] );
+        $fail_history = ! empty( $GLOBALS['_agentshell_test_history_cas_fail'] );
+        $fail_final   = ! empty( $GLOBALS['_agentshell_test_history_finalise_fail'] );
+
+        try {
+            $write = function () use ( $history_key, $history_current, $plan, $audit_current, $audit_pending, $audit_final, $fail_audit, $fail_history, $fail_final ) {
+                // 1. The intent, before anything is removed.
+                if ( $fail_audit || ! self::cas_option( self::AUDIT_KEY, $audit_current, $audit_pending, false ) ) {
+                    throw new \RuntimeException( 'history_conflict:audit' );
+                }
+                // 2. The deletion itself.
+                if ( $fail_history || ! self::cas_option( $history_key, $history_current, $plan['next'], false ) ) {
+                    throw new \RuntimeException( 'history_conflict:history' );
+                }
+                // 3. The confirmation that the deletion happened.
+                if ( $fail_final || ! self::cas_option( self::AUDIT_KEY, $audit_pending, $audit_final, false ) ) {
+                    throw new \RuntimeException( 'history_conflict:finalise' );
+                }
+                return true;
+            };
+
+            if ( class_exists( '\AgentShell_MCP\Content_Write_Guard' ) ) {
+                Content_Write_Guard::run_on( $tables, $write );
+            } else {
+                // The guard is part of this plugin, so this is a belt-and-braces
+                // path rather than an expected one. The write-ahead ordering
+                // below still holds: the audit record is written first.
+                $write();
+            }
+
+            self::flush_option_cache( $history_key );
+            self::flush_option_cache( self::AUDIT_KEY );
+
+            return self::history_result(
+                'deleted',
+                $plan['deleted'],
+                $plan['missing'],
+                'deleted',
+                true,
+                $plan['stones'],
+                '',
+                '',
+                self::history_atomicity_report( $tables )
+            );
+        } catch ( \Throwable $e ) {
+            self::flush_option_cache( $history_key );
+            self::flush_option_cache( self::AUDIT_KEY );
+
+            if ( 0 === strpos( (string) $e->getMessage(), 'history_conflict' ) ) {
+                // Another writer moved a row, or a seam refused a write. The
+                // records may or may not have moved; only a re-read can say.
+                $state = self::reconcile_history_deletion( $history_key, $kind, $plan, $delete_id );
+                if ( 'gone' === $state['records'] ) {
+                    // The records are gone. Was it us? The audit row says so
+                    // if it was written; if it is still `pending`, the
+                    // deletion happened and its confirmation did not.
+                    if ( $state['audit_row'] ) {
+                        $repaired = self::repair_history_audit_row( $delete_id, $state['audit_row'] );
+                        return self::history_result(
+                            'deleted',
+                            $plan['deleted'],
+                            $plan['missing'],
+                            $repaired ? 'deleted' : 'pending',
+                            (bool) $state['audit_row'],
+                            $plan['stones'],
+                            '',
+                            $repaired ? '' : 'The deletion was recorded, but the audit log could not be updated to say so.',
+                            self::history_atomicity_report( $tables )
+                        );
+                    }
+                    // The records are gone and there is no audit row for
+                    // them. The deletion is real and the record is missing;
+                    // write the record now if that is possible.
+                    $repaired = self::repair_history_audit_row( $delete_id, null, $plan, $kind );
+                    if ( $repaired ) {
+                        return self::history_result(
+                            'deleted',
+                            $plan['deleted'],
+                            $plan['missing'],
+                            'deleted',
+                            true,
+                            $plan['stones'],
+                            '',
+                            'The audit record for this deletion was written after the fact.',
+                            self::history_atomicity_report( $tables )
+                        );
+                    }
+                    return self::history_result(
+                        'uncertain',
+                        $plan['deleted'],
+                        $plan['missing'],
+                        'none',
+                        false,
+                        $plan['stones'],
+                        '',
+                        'The records were removed but the audit record for the deletion could not be written, and whether this deletion caused it could not be established.',
+                        self::history_atomicity_report( $tables )
+                    );
+                }
+
+                // The records are still there: nothing was deleted. The
+                // intent row, if it survived, is marked as not completed.
+                self::mark_history_audit_failed( $delete_id );
+                return array(
+                    'outcome' => 'conflict',
+                    'reason'  => 'The history changed while the deletion was being applied.',
+                );
+            }
+
+            // A failure that is not a conflict — a database error, most
+            // likely. Reconcile before saying anything about the outcome.
+            $state = self::reconcile_history_deletion( $history_key, $kind, $plan, $delete_id );
+            if ( 'gone' === $state['records'] ) {
+                $repaired = self::repair_history_audit_row( $delete_id, $state['audit_row'] );
+                return self::history_result(
+                    'deleted',
+                    $plan['deleted'],
+                    $plan['missing'],
+                    $repaired ? 'deleted' : ( $state['audit_row'] ? 'pending' : 'none' ),
+                    (bool) $state['audit_row'],
+                    $plan['stones'],
+                    '',
+                    $repaired ? '' : 'The deletion happened, but its audit record could not be completed.',
+                    self::history_atomicity_report( $tables )
+                );
+            }
+            self::mark_history_audit_failed( $delete_id );
+            return self::history_result(
+                'failed',
+                array(),
+                $plan['missing'],
+                'none',
+                false,
+                array(),
+                '',
+                'Nothing was deleted: ' . $e->getMessage(),
+                self::history_atomicity_report( $tables )
+            );
+        }
+    }
+
+    /**
+     * Re-read the history and the audit log, and say what is actually there.
+     *
+     * The read bypasses the object cache, because the question is what is in
+     * the database — a cached value would answer the wrong question.
+     *
+     * @return array { records: 'gone'|'present', audit_row: array|null }
+     */
+    private static function reconcile_history_deletion( $history_key, $kind, array $plan, $delete_id ) {
+        $history = self::read_option_direct( $history_key );
+        $present = array();
+        if ( 'snapshots' === $kind ) {
+            $history = is_array( $history ) ? $history : array();
+            foreach ( $plan['deleted'] as $id ) {
+                if ( isset( $history[ $id ] ) ) { $present[] = $id; }
+            }
+        } else {
+            $history = is_array( $history ) ? $history : array();
+            $items   = isset( $history['items'] ) && is_array( $history['items'] ) ? $history['items'] : array();
+            $ids     = array();
+            foreach ( $items as $item ) {
+                if ( is_array( $item ) && isset( $item['id'] ) ) { $ids[] = (string) $item['id']; }
+            }
+            foreach ( $plan['deleted'] as $id ) {
+                if ( in_array( $id, $ids, true ) ) { $present[] = $id; }
+            }
+        }
+
+        $row = null;
+        foreach ( (array) self::read_option_direct( self::AUDIT_KEY ) as $entry ) {
+            if ( is_array( $entry ) && ( $entry['changed']['delete_id'] ?? null ) === $delete_id ) {
+                $row = $entry;
+                break;
+            }
+        }
+
+        return array(
+            'records'   => empty( $present ) ? 'gone' : 'present',
+            'audit_row' => $row,
+        );
+    }
+
+    /**
+     * Mark a deletion's audit row as not completed.
+     *
+     * Best effort: the row is there to say what was attempted, and a row that
+     * says "pending" when the attempt failed is a lie of a different kind.
+     */
+    private static function mark_history_audit_failed( $delete_id ) {
+        $log = self::read_option_direct( self::AUDIT_KEY );
+        if ( ! is_array( $log ) ) { return false; }
+        $next = $log;
+        $hit  = false;
+        foreach ( $next as $index => $entry ) {
+            if ( is_array( $entry ) && ( $entry['changed']['delete_id'] ?? null ) === $delete_id ) {
+                if ( 'pending' !== ( $entry['changed']['state'] ?? '' ) ) { return true; }
+                $next[ $index ]['changed']['state'] = 'failed';
+                $next[ $index ]['changed']['note']  = 'The deletion did not complete.';
+                $hit = true;
+                break;
+            }
+        }
+        if ( ! $hit ) { return false; }
+        $ok = self::cas_option( self::AUDIT_KEY, $log, $next, false );
+        self::flush_option_cache( self::AUDIT_KEY );
+        return $ok;
+    }
+
+    /**
+     * Complete (or write) the audit record for a deletion that happened.
+     *
+     * @param string      $delete_id
+     * @param array|null  $row     The existing row, when there is one.
+     * @param array|null  $plan    The deletion plan, when a row must be written.
+     * @param string      $kind
+     * @return bool Whether the record now says the deletion happened.
+     */
+    private static function repair_history_audit_row( $delete_id, $row, $plan = null, $kind = 'revisions' ) {
+        $log = self::read_option_direct( self::AUDIT_KEY );
+        if ( ! is_array( $log ) ) { $log = array(); }
+
+        if ( is_array( $row ) ) {
+            $next = $log;
+            foreach ( $next as $index => $entry ) {
+                if ( is_array( $entry ) && ( $entry['changed']['delete_id'] ?? null ) === $delete_id ) {
+                    $next[ $index ]['changed']['state'] = 'deleted';
+                    $next[ $index ]['changed']['note']  = 'The audit record was completed after the deletion.';
+                    $ok = self::cas_option( self::AUDIT_KEY, $log, $next, false );
+                    self::flush_option_cache( self::AUDIT_KEY );
+                    return $ok;
+                }
+            }
+        }
+
+        if ( null === $plan ) { return false; }
+
+        $operation = ( 'snapshots' === $kind ) ? 'snapshot_deleted' : 'revision_deleted';
+        $id_field  = ( 'snapshots' === $kind ) ? 'names' : 'ids';
+        $new_row   = self::history_audit_row( $operation, self::actor(), $plan, '', $delete_id, 'deleted', $id_field );
+        $new_row['changed']['note'] = 'The audit record for this deletion was written after the deletion.';
+        $next = self::audit_with_row( $log, $new_row );
+        $ok   = self::cas_option( self::AUDIT_KEY, $log, $next, false );
+        self::flush_option_cache( self::AUDIT_KEY );
+        return $ok;
+    }
+
+    /** The result shape every history deletion answers with. */
+    private static function history_result( $outcome, array $deleted, array $missing, $audit_state, $audit_recorded, array $stones, $reason, $note, $atomicity = null ) {
+        return array(
+            'deleted'        => array_values( $deleted ),
+            'missing'        => array_values( $missing ),
+            'tombstones'     => $stones,
+            'outcome'        => $outcome,
+            'audit_recorded' => (bool) $audit_recorded,
+            'audit_state'    => $audit_state,
+            'reason'         => (string) $reason,
+            'note'           => (string) $note,
+            'atomicity'      => is_array( $atomicity ) ? $atomicity : array(
+                'database_transaction' => false,
+                'engine'                => null,
+                'on_failure'            => 'not rolled back — the options table could not be opened as a transaction, so a partial write is possible',
+                'not_covered'           => 'the audit record is written before the deletion, so a failure to write it stops the deletion rather than losing it',
+            ),
+        );
+    }
+
+    /**
+     * What the caller may believe about the write that just ran.
+     *
+     * The guard's own report when it is available; otherwise the honest
+     * answer for an unprotected write, which the write-ahead ordering still
+     * makes safe in the only way that matters — a failure to write the audit
+     * record stops the deletion instead of losing it.
+     */
+    private static function history_atomicity_report( array $tables ) {
+        if ( class_exists( '\AgentShell_MCP\Content_Write_Guard' ) ) {
+            return Content_Write_Guard::report_for( $tables );
+        }
+        return array(
+            'database_transaction' => false,
+            'engine'                => null,
+            'on_failure'            => 'not rolled back — the options table could not be opened as a transaction, so a partial write is possible',
+            'not_covered'           => 'the audit record is written before the deletion, so a failure to write it stops the deletion rather than losing it',
+        );
+    }
+
+    /** The history option as it is now. */
+    private static function read_history_option( $key ) {
+        $value = get_option( $key, array() );
+        return is_array( $value ) ? $value : array();
+    }
+
+    /**
+     * Read an option from the database, bypassing the object cache.
+     *
+     * Used only when reconciling: the question is what the database holds,
+     * and a cached answer would be a stale one.
+     */
+    private static function read_option_direct( $key ) {
+        global $wpdb;
+        if ( isset( $wpdb ) && is_object( $wpdb ) && ! empty( $wpdb->options ) && method_exists( $wpdb, 'get_var' ) ) {
+            $raw = $wpdb->get_var(
+                $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", $key )
+            );
+            if ( null === $raw ) { return null; }
+            return function_exists( 'maybe_unserialize' ) ? maybe_unserialize( $raw ) : $raw;
+        }
+        return get_option( $key, null );
+    }
+
+    /** Drop the cached copies of one option. */
+    private static function flush_option_cache( $key ) {
+        if ( function_exists( 'wp_cache_delete' ) ) {
+            wp_cache_delete( $key, 'options' );
+            wp_cache_delete( 'notoptions', 'options' );
+            wp_cache_delete( 'alloptions', 'options' );
+        }
     }
 
     private static function normalise_snapshot_names( array $names ) {
@@ -308,114 +847,6 @@ class Store {
             );
         }
         return $out;
-    }
-
-    /**
-     * Delete revisions, preserving the lineage of the ones that remain.
-     *
-     * The `parent` pointer on every remaining revision is left exactly as it
-     * was recorded. Deleting a revision therefore does not silently rewrite a
-     * child to point at a grandparent — that would falsify the history — and
-     * it does not delete the audit rows that mention the removed id. Instead
-     * the id is recorded in a tombstone map, the list reports
-     * `parent_deleted`, and a new audit row names who removed what and why.
-     *
-     * @param array  $ids
-     * @param string $reason
-     * @return array { deleted: string[], missing: string[], tombstones: array, audit_recorded: bool }
-     */
-    public static function delete_revisions( array $ids, $reason = '' ) {
-        $ids = self::normalise_revision_ids( $ids );
-        if ( empty( $ids ) ) {
-            throw new \InvalidArgumentException( 'No revision ids were supplied.' );
-        }
-
-        for ( $attempt = 0; $attempt < 3; $attempt++ ) {
-            $data  = self::revisions();
-            $items = isset( $data['items'] ) && is_array( $data['items'] ) ? $data['items'] : array();
-            $dead  = isset( $data['deleted'] ) && is_array( $data['deleted'] ) ? $data['deleted'] : array();
-
-            $by_id  = array();
-            foreach ( $items as $item ) {
-                if ( is_array( $item ) && isset( $item['id'] ) ) {
-                    $by_id[ (string) $item['id'] ] = $item;
-                }
-            }
-
-            $deleted = array();
-            $missing = array();
-            $labels  = array();
-            $stones  = array();
-            $next    = array();
-
-            foreach ( $items as $item ) {
-                if ( is_array( $item ) && isset( $item['id'] ) && in_array( (string) $item['id'], $ids, true ) ) {
-                    $id        = (string) $item['id'];
-                    $deleted[] = $id;
-                    $labels[ $id ] = (string) ( $item['label'] ?? '' );
-                    $stones[ $id ] = array(
-                        'at'        => time(),
-                        'actor'     => self::actor(),
-                        'label'     => (string) ( $item['label'] ?? '' ),
-                        'timestamp' => (int) ( $item['timestamp'] ?? 0 ),
-                        'parent'    => $item['parent'] ?? null,
-                        'reason'    => (string) $reason,
-                    );
-                    continue;
-                }
-                $next[] = $item;
-            }
-            foreach ( $ids as $id ) {
-                if ( ! isset( $by_id[ $id ] ) ) {
-                    $missing[] = $id;
-                }
-            }
-
-            if ( empty( $deleted ) ) {
-                return array(
-                    'deleted'        => array(),
-                    'missing'        => $missing,
-                    'tombstones'     => array(),
-                    'audit_recorded' => false,
-                );
-            }
-
-            foreach ( $stones as $id => $stone ) {
-                $dead[ $id ] = $stone;
-            }
-
-            $row = $data;
-            $row['items']   = array_values( $next );
-            $row['deleted'] = $dead;
-
-            if ( ! self::cas_option( self::REVISIONS_KEY, $data, $row ) ) {
-                continue;
-            }
-
-            self::record_event(
-                self::actor(),
-                'revision_deleted',
-                array(
-                    'ids'      => $deleted,
-                    'labels'   => $labels,
-                    'count'    => count( $deleted ),
-                    'reason'   => (string) $reason,
-                    // The tombstones are the record of what no longer exists;
-                    // the audit row is what survives the 25-revision ring.
-                    'tombstones' => $stones,
-                )
-            );
-            return array(
-                'deleted'        => $deleted,
-                'missing'        => $missing,
-                'tombstones'     => $stones,
-                'audit_recorded' => true,
-            );
-        }
-
-        throw new \InvalidArgumentException(
-            'Configuration history changed while the revisions were being deleted. Nothing was deleted; retry.'
-        );
     }
 
     private static function normalise_revision_ids( array $ids ) {
@@ -655,16 +1086,41 @@ class Store {
      * `$wpdb` is available (the unit harness), the ordinary option write is the
      * only path and its return value is the verdict.
      *
+     * The cache flush is optional because a write inside a transaction must
+     * not be published to the object cache before it commits: another request
+     * would cache the uncommitted value and the rollback would leave the
+     * cache holding something the database never had. The caller flushes once
+     * the transaction is over.
+     *
      * @param string $key
      * @param mixed  $expected
      * @param mixed  $next
+     * @param bool   $flush_cache
      * @return bool
      */
-    private static function cas_option( $key, $expected, $next ) {
+    private static function cas_option( $key, $expected, $next, $flush_cache = true ) {
         global $wpdb;
         if ( ! isset( $wpdb ) || empty( $wpdb->options ) || ! function_exists( 'maybe_serialize' ) ) {
-            return (bool) update_option( $key, $next, false );
+            $ok = (bool) update_option( $key, $next, false );
+            if ( $flush_cache ) {
+                self::flush_option_cache( $key );
+            }
+            return $ok;
         }
+
+        // A row that does not exist yet cannot be guarded by a comparison
+        // with its current bytes: there are none. The write is an INSERT
+        // then, and `add_option()` refuses to overwrite a row another
+        // writer created in the meantime — the same "exactly one writer
+        // wins" rule, expressed for a row that has no value to compare.
+        if ( ! self::option_row_exists( $key ) ) {
+            $ok = (bool) add_option( $key, $next, '', false );
+            if ( $flush_cache ) {
+                self::flush_option_cache( $key );
+            }
+            return $ok;
+        }
+
         $expected_bytes = maybe_serialize( $expected );
         $next_bytes     = maybe_serialize( $next );
         $affected       = $wpdb->query(
@@ -675,10 +1131,8 @@ class Store {
                 $expected_bytes
             )
         );
-        if ( function_exists( 'wp_cache_delete' ) ) {
-            wp_cache_delete( $key, 'options' );
-            wp_cache_delete( 'notoptions', 'options' );
-            wp_cache_delete( 'alloptions', 'options' );
+        if ( $flush_cache ) {
+            self::flush_option_cache( $key );
         }
         if ( 1 === (int) $affected ) {
             return true;
@@ -690,6 +1144,23 @@ class Store {
             return null !== $current && (string) $current === (string) $expected_bytes;
         }
         return false;
+    }
+
+    /**
+     * Does the options table hold a row for this key?
+     *
+     * Read through the database rather than the object cache: the question
+     * is what the row store holds, and a cached answer would be a stale one.
+     */
+    private static function option_row_exists( $key ) {
+        global $wpdb;
+        if ( ! isset( $wpdb ) || empty( $wpdb->options ) || ! method_exists( $wpdb, 'get_var' ) ) {
+            return null !== get_option( $key, null );
+        }
+        $raw = $wpdb->get_var(
+            $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", $key )
+        );
+        return null !== $raw;
     }
 
     // ── Diffing ──────────────────────────────────────────────────
