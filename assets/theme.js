@@ -206,8 +206,15 @@
                 nav.id = 'agentshell-nav-' + uid;
             }
 
-            init_compact( nav, function () { uid += 1; return uid; } );
-            init_submenus( nav, function () { uid += 1; return uid; } );
+            // One controller per nav: the compact toggle and the submenu
+            // toggles share it, so "is a submenu open?" is one question with
+            // one answer. Escape has to know the difference: it closes the
+            // submenu that is open, and only collapses the whole menu when
+            // nothing inside it is open.
+            var controller = { open_submenus: [] };
+
+            init_compact( nav, controller, function () { uid += 1; return uid; } );
+            init_submenus( nav, controller, function () { uid += 1; return uid; } );
         } );
     }
 
@@ -218,7 +225,7 @@
      * (button first, list second), so a `vertical` or `compact` menu reads as
      * "Menu ▾" followed by nothing until it is asked for.
      */
-    function init_compact( nav, next_uid ) {
+    function init_compact( nav, controller, next_uid ) {
         if ( ! nav.classList.contains( 'wp-core-nav--compact' ) ) {
             return;
         }
@@ -247,11 +254,19 @@
         } );
 
         nav.addEventListener( 'keydown', function ( event ) {
-            if ( event.key === 'Escape' && nav.classList.contains( 'is-open' ) ) {
-                nav.classList.remove( 'is-open' );
-                button.setAttribute( 'aria-expanded', 'false' );
-                button.focus();
+            if ( event.key !== 'Escape' || ! nav.classList.contains( 'is-open' ) ) {
+                return;
             }
+            // A submenu inside this menu is open: Escape belongs to that
+            // submenu, not to the whole menu. Collapsing the menu here would
+            // hide the submenu that is still "open" in the accessibility tree
+            // and would move focus into a collapsed list.
+            if ( controller.open_submenus.length ) {
+                return;
+            }
+            nav.classList.remove( 'is-open' );
+            button.setAttribute( 'aria-expanded', 'false' );
+            button.focus();
         } );
     }
 
@@ -263,7 +278,15 @@
      * and would make the menu behave differently from every other WordPress
      * menu on the web.
      */
-    function init_submenus( nav, next_uid ) {
+    function init_submenus( nav, controller, next_uid ) {
+        // A vertical menu's nested items are always visible — that is what the
+        // mode means — so a disclosure button would announce a collapsed state
+        // that does not exist, and pressing it would set aria-expanded="true"
+        // on a list that never closed. No button, no claim.
+        if ( nav.classList.contains( 'wp-core-nav--vertical' ) ) {
+            return;
+        }
+
         var parents = nav.querySelectorAll( 'li.menu-item-has-children, li.page_item_has_children' );
         if ( ! parents.length ) {
             return;
@@ -291,6 +314,9 @@
                 item.li.classList.toggle( 'is-open', is_open );
                 item.toggle.setAttribute( 'aria-expanded', is_open ? 'true' : 'false' );
             } );
+            // Published so the compact toggle's Escape can tell "a submenu is
+            // open" from "nothing inside this menu is open".
+            controller.open_submenus = open.slice();
         }
 
         function close_all() {
