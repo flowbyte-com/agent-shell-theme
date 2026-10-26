@@ -126,17 +126,37 @@ function agentshell_enqueue_assets() {
         return;
     }
     wp_enqueue_style( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.css', array( 'agentshell-style' ), filemtime( get_template_directory() . '/configurator/configurator.css' ) );
-    // The pure state + zone model is a real dependency of the panel, not a
-    // test-only file. Without this handle the browser never receives
+    // The configurator is four small modules with one dependency each: the pure
+    // models, the transport, the view, and the wiring. They are separate files
+    // so each can be read — and tested — on its own, and so a change to the
+    // view does not drag the transport along with it.
+    //
+    // The models are a real dependency of the panel, not a test-only file.
+    // Without this handle the browser never receives
     // window.AgentshellConfiguratorState, and the panel silently loses the
-    // transaction pill, the save gate and the nine-area editing rules.
-    wp_enqueue_script( 'agentshell-configurator-state', get_template_directory_uri() . '/configurator/configurator-state.js', array(), filemtime( get_template_directory() . '/configurator/configurator-state.js' ), true );
-    wp_enqueue_script( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.js', array( 'agentshell-configurator-state' ), filemtime( get_template_directory() . '/configurator/configurator.js' ), true );
+    // transaction state, the save gate and the nine-area editing rules.
+    $configurator_dir = get_template_directory() . '/configurator/';
+    $configurator_url = get_template_directory_uri() . '/configurator/';
+    wp_enqueue_script( 'agentshell-configurator-state', $configurator_url . 'configurator-state.js', array(), filemtime( $configurator_dir . 'configurator-state.js' ), true );
+    wp_enqueue_script( 'agentshell-configurator-api', $configurator_url . 'configurator-api.js', array(), filemtime( $configurator_dir . 'configurator-api.js' ), true );
+    wp_enqueue_script( 'agentshell-configurator-ui', $configurator_url . 'configurator-ui.js', array(), filemtime( $configurator_dir . 'configurator-ui.js' ), true );
+    wp_enqueue_script( 'agentshell-configurator', $configurator_url . 'configurator-app.js', array( 'agentshell-configurator-state', 'agentshell-configurator-api', 'agentshell-configurator-ui' ), filemtime( $configurator_dir . 'configurator-app.js' ), true );
     wp_localize_script( 'agentshell-configurator', 'AgentShellConfig', array(
         'adminUrl'   => admin_url( 'admin-ajax.php' ),
         'restUrl'    => rest_url(),
         'nonce'      => wp_create_nonce( 'wp_rest' ),
     ) );
+
+    // Start the editor. The boot is deferred to the end of the document so
+    // the modules above it have been parsed, and it is a no-op when the
+    // markup the editor attaches to is not on the page.
+    wp_add_inline_script(
+        'agentshell-configurator',
+        'document.addEventListener("DOMContentLoaded",function(){'
+        . 'if(window.AgentshellConfiguratorApp&&window.AgentShellConfig){'
+        . 'window.AgentshellConfiguratorApp.boot({restUrl:window.AgentShellConfig.restUrl,nonce:window.AgentShellConfig.nonce});'
+        . '}});'
+    );
 }
 add_action( 'wp_enqueue_scripts', 'agentshell_enqueue_assets' );
 
@@ -700,6 +720,30 @@ function agentshell_zones_for_render() {
 }
 
 /**
+ * The width a preview should be rendered at, if the request asked for one.
+ *
+ * Only an authorised preview may ask: the parameter is read through
+ * agentshell_is_preview_request(), which is true only after a credential has
+ * verified. A width outside 320–1600 pixels is ignored rather than clamped,
+ * so a mistake produces the ordinary page instead of an unusable one.
+ *
+ * @return int 0 when there is no width to honour.
+ */
+function agentshell_preview_width() {
+    if ( ! agentshell_is_preview_request() ) {
+        return 0;
+    }
+    if ( ! isset( $_GET['as_preview_width'] ) ) {
+        return 0;
+    }
+    $width = (int) $_GET['as_preview_width'];
+    if ( $width < 320 || $width > 1600 ) {
+        return 0;
+    }
+    return $width;
+}
+
+/**
  * The exact bytes of the custom stylesheet, as they are served.
  *
  * One function, so the inline block and the materialised file cannot
@@ -1065,6 +1109,28 @@ function agentshell_inject_saved_styles() {
                 }
             }
         }
+    }
+
+    // The preview frame: the page is drawn at the requested width on a neutral
+    // ground, so the operator can see where the layout breaks.
+    add_filter( 'body_class', function ( $classes ) {
+        if ( agentshell_preview_width() > 0 ) {
+            $classes[] = 'agentshell-preview-frame';
+        }
+        return $classes;
+    } );
+
+    // A staged site can be inspected at a chosen width. The width is honoured
+    // ONLY inside an authorised preview: for an ordinary request the parameter
+    // does nothing at all, so it cannot be used to narrow somebody else's page
+    // or to smuggle a layout change into a shared cache.
+    $preview_width = agentshell_preview_width();
+    if ( $preview_width > 0 ) {
+        echo "<style id='agentshell-preview-width'>
+#agentshell-root { width: " . (int) $preview_width . "px; max-width: " . (int) $preview_width . "px; }
+body.agentshell-preview-frame { background: #d4d4d8; }
+body.agentshell-preview-frame #agentshell-root { box-shadow: 0 0 0 1px #a1a1aa; background: #fff; }
+</style>\n";
     }
 
     // Structural prohibition: prevent agents from breaking the FSE layout
@@ -4168,6 +4234,153 @@ add_action( 'rest_api_init', function() {
             } catch ( \Throwable $e ) {
                 return new WP_Error( 'transaction_rollback_failed', $e->getMessage(), array( 'status' => 500 ) );
             }
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
+
+    // ── Preview ────────────────────────────────────────────────────────
+    // The editor's Preview button opens the staged site in a new tab. The
+    // render is WordPress's own: the credential below is the same one the
+    // agent preview uses, and the page that answers it substitutes the staged
+    // configuration server-side. Nothing about the site is re-rendered in
+    // JavaScript, so what the operator previews is what a visitor would get.
+    register_rest_route( 'wp/v2', '/agentshell/transaction/preview', array(
+        'methods'             => 'GET',
+        'callback'            => function() {
+            if ( ! class_exists( '\AgentShell_MCP\Transaction_Manager' ) ) {
+                return new WP_Error(
+                    'preview_unavailable',
+                    'The AgentShell MCP plugin is not active, so there is no transaction to preview.',
+                    array( 'status' => 503 )
+                );
+            }
+            $tx = \AgentShell_MCP\Transaction_Manager::instance();
+            if ( ! $tx->is_active() ) {
+                return new WP_Error(
+                    'no_transaction',
+                    'No transaction is open. Save the changes in the editor first, or open a transaction with the agent tooling.',
+                    array( 'status' => 409 )
+                );
+            }
+
+            // Only the actor who owns the transaction may mint a credential
+            // for it. Somebody else's staged work is not this session's to
+            // look at, and the render gate would refuse the credential anyway.
+            $payload = $tx->payload();
+            if ( ( $payload['actor'] ?? '' ) !== \AgentShell_MCP\Store::actor() ) {
+                return new WP_Error(
+                    'transaction_locked_by_other',
+                    'Another actor owns the open transaction; the staged work cannot be previewed from here.',
+                    array( 'status' => 409 )
+                );
+            }
+
+            try {
+                $args = \AgentShell_MCP\Transaction_Manager::preview_args();
+            } catch ( \Throwable $e ) {
+                return new WP_Error( 'preview_unavailable', $e->getMessage(), array( 'status' => 409 ) );
+            }
+
+            $diff = $tx->preview();
+            return array(
+                'url'     => add_query_arg( $args, home_url( '/' ) ),
+                'args'    => $args,
+                'diff'    => $diff,
+                'summary' => array(
+                    'added'   => count( $diff['added'] ?? array() ),
+                    'removed' => count( $diff['removed'] ?? array() ),
+                    'changed' => count( $diff['changed'] ?? array() ),
+                ),
+                'tip'     => 'This URL carries a signed preview credential. It shows the staged configuration and expires.',
+            );
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
+
+    // ── History ────────────────────────────────────────────────────────
+    // Snapshots and revisions already exist as MCP tools over the same store.
+    // The editor reads them through these routes rather than growing its own
+    // history system, and the writes go through the very same tool classes
+    // the agent uses, so "restore" means one thing in AgentShell.
+    register_rest_route( 'wp/v2', '/agentshell/snapshots', array(
+        'methods'             => 'GET',
+        'callback'            => function() {
+            if ( ! class_exists( '\AgentShell_MCP\Store' ) ) {
+                return array( 'snapshots' => array() );
+            }
+            $out = array();
+            foreach ( (array) \AgentShell_MCP\Store::snapshots() as $snapshot ) {
+                $out[] = array(
+                    'name'      => $snapshot['name'] ?? '',
+                    'label'     => $snapshot['label'] ?? '',
+                    'actor'     => $snapshot['actor'] ?? '',
+                    'timestamp' => (int) ( $snapshot['timestamp'] ?? 0 ),
+                );
+            }
+            return array( 'snapshots' => $out );
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
+
+    register_rest_route( 'wp/v2', '/agentshell/snapshots/restore', array(
+        'methods'             => 'POST',
+        'callback'            => function( WP_REST_Request $request ) {
+            if ( ! class_exists( '\AgentShell_MCP\Tools\Restore_Snapshot' ) ) {
+                return new WP_Error( 'restore_unavailable', 'The AgentShell MCP plugin is not active.', array( 'status' => 503 ) );
+            }
+            $name = sanitize_key( (string) $request->get_param( 'name' ) );
+            if ( '' === $name ) {
+                return new WP_Error( 'snapshot_name_required', 'A snapshot name is required.', array( 'status' => 400 ) );
+            }
+            try {
+                $tool   = new \AgentShell_MCP\Tools\Restore_Snapshot();
+                $result = $tool->execute( array( 'name' => $name ) );
+            } catch ( \Throwable $e ) {
+                return new WP_Error( 'snapshot_restore_failed', $e->getMessage(), array( 'status' => 409 ) );
+            }
+            return $result;
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
+
+    register_rest_route( 'wp/v2', '/agentshell/revisions', array(
+        'methods'             => 'GET',
+        'callback'            => function() {
+            if ( ! class_exists( '\AgentShell_MCP\Store' ) ) {
+                return array( 'revisions' => array(), 'total' => 0 );
+            }
+            $items = array();
+            foreach ( (array) ( \AgentShell_MCP\Store::revisions()['items'] ?? array() ) as $item ) {
+                $items[] = array(
+                    'id'        => $item['id'] ?? '',
+                    'parent'    => $item['parent'] ?? '',
+                    'timestamp' => (int) ( $item['timestamp'] ?? 0 ),
+                    'actor'     => $item['actor'] ?? '',
+                    'label'     => $item['label'] ?? '',
+                );
+            }
+            return array( 'revisions' => $items, 'total' => count( $items ) );
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
+
+    register_rest_route( 'wp/v2', '/agentshell/revisions/restore', array(
+        'methods'             => 'POST',
+        'callback'            => function( WP_REST_Request $request ) {
+            if ( ! class_exists( '\AgentShell_MCP\Tools\Restore_Revision' ) ) {
+                return new WP_Error( 'restore_unavailable', 'The AgentShell MCP plugin is not active.', array( 'status' => 503 ) );
+            }
+            $id = sanitize_text_field( (string) $request->get_param( 'id' ) );
+            if ( '' === $id ) {
+                return new WP_Error( 'revision_id_required', 'A revision id is required.', array( 'status' => 400 ) );
+            }
+            try {
+                $tool   = new \AgentShell_MCP\Tools\Restore_Revision();
+                $result = $tool->execute( array( 'id' => $id ) );
+            } catch ( \Throwable $e ) {
+                return new WP_Error( 'revision_restore_failed', $e->getMessage(), array( 'status' => 409 ) );
+            }
+            return $result;
         },
         'permission_callback' => 'agentshell_rest_auth_callback',
     ) );
