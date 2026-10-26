@@ -79,6 +79,17 @@ REQUIRED=(
     "template-parts/shell-render.php"
     "template-parts/widgets.php"
     "assets/theme.js"
+    # The configurator is a production feature: the theme enqueues it for
+    # administrators, so an archive without it ships a broken panel. The
+    # checker refuses that archive rather than trusting the packager.
+    #
+    # Only the two files whose names are stable are required here. The
+    # editor's script is split into modules by the redesign branch, so a
+    # requirement on the old single-file name would make this branch and
+    # that one conflict at merge time; the redesign branch adds its own
+    # module names to this same list.
+    "configurator/configurator.css"
+    "configurator/configurator-state.js"
     "widgets/.index.json"
     "widgets/hello-world.php"
     "agentshell-mcp/agentshell-mcp.php"

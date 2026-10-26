@@ -102,7 +102,7 @@ part of a deployment.
 | `tests/` | 2,924,740 | 3.2 MB | development |
 | `docs/` | 786,897 | 884 KB | development (design records) |
 | `skills/` | 51,619 | 84 KB | development (agent skill documents) |
-| `configurator/` | 60,426 | 72 KB | development (the design tool) |
+| `configurator/` | 60,426 | 72 KB | **production** — the theme enqueues it for administrators (corrected; see the note below) |
 | `outputs/` | 115,452 | 164 KB | development (generated output, tracked) |
 | `tools/` | 15,137 | 24 KB | development (the release tooling) |
 | `jr-mut/` | 180,727 | 192 KB | **historical evidence** — deliberately preserved, see `docs/STAGE-2C-DESIGN.md` §`jr-mut/ preserved` |
@@ -168,9 +168,21 @@ it does not run inside WordPress, and the release archive deliberately
 does not carry it.
 
 **Not required at runtime** — everything else in the checkout: the test
-suite, the design records, the agent skills, the configurator, the
+suite, the design records, the agent skills, the
 release tooling, the generated outputs, the historical `jr-mut/` copy,
 and the repository's own `screenshot.png`.
+
+**Correction (2026-10-26) — the configurator is production material.**
+This record classified `configurator/` as development material, on the
+reasoning that it is a tool rather than part of the site. That reasoning
+was wrong about the destination: `functions.php` enqueues the configurator's
+stylesheet and script for every administrator on every front-end page, and
+the trigger button is rendered by `footer.php`. A distribution without the
+directory therefore shipped a configurator trigger with no panel behind it.
+`configurator/` is now part of what the release archive carries, and
+`tools/check-release-archive.sh` requires the three files the theme
+enqueues, so an archive that loses them is refused rather than deployed.
+The measurement above stands; the classification does not.
 
 ---
 
@@ -185,7 +197,7 @@ list of exclusions (`tools/release-exclusions.sh`), so an exclusion
 forgotten in one is caught by the build.
 
 The exclusions cover `.git`, `.worktrees`, `tests/`, `tools/`,
-`configurator/`, `skills/`, `docs/`, `outputs/`, `dist/`, the daemon,
+`skills/`, `docs/`, `outputs/`, `dist/`, the daemon,
 the CI workflow, and — at any depth — `*.log`, `*.sql`, `*.tar.gz`,
 `*.zip`, `*.key`, `*.pem`, `screenshot.png` and `pi-session-*.html`.
 
@@ -327,8 +339,10 @@ was removed at the same time.
 ### 6.3 Nothing else was changed
 
 No development file was deleted to make a number smaller. The test
-suite, the design records, the skills, the configurator, the generated
-outputs and the preserved `jr-mut/` copy are all still here.
+suite, the design records, the skills, the generated
+outputs and the preserved `jr-mut/` copy are all still here. The
+configurator is still here too — it simply ships, which is a packaging
+decision rather than a deletion.
 
 ---
 
@@ -360,7 +374,7 @@ into the three places WordPress expects. The whole thing is 1.4 MB.
 **Never deploy:**
 
 `.git` · `.worktrees` · `tests/` · `docs/` · `tools/` · `skills/` ·
-`configurator/` · `outputs/` · `dist/` · `agentshell-mcp-daemon/` ·
+`outputs/` · `dist/` · `agentshell-mcp-daemon/` ·
 `jr-mut/` · the repository's `screenshot.png` · any development
 database · the test-bed profile or its credentials · the local
 Application Password · backup archives.
