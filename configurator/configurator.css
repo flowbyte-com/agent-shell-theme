@@ -665,6 +665,66 @@ body.config-panel-open {
     }
 }
 
+/* ── The zone's own appearance, behind a disclosure ───────────────────────
+   In the Layout context the zone's tokens sit below the area map, the
+   component list and the whole inspector. On a 1440x900 laptop the zone's
+   colours were 68 pixels of scrolling away; on a phone, 172. They are a
+   disclosure there, so the structure is what the context opens with and
+   the appearance is one click away.
+   ------------------------------------------------------------------------- */
+.as-cfg__disclosure {
+    border: 1px solid var(--configurator-border);
+    border-radius: 8px;
+    background: var(--configurator-surface);
+    padding: 0 0.75rem;
+}
+
+.as-cfg__disclosure-summary {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.1rem 0.5rem;
+    padding: 0.6rem 0;
+    cursor: pointer;
+    list-style: none;
+    font-size: 0.85rem;
+}
+
+.as-cfg__disclosure-summary::-webkit-details-marker {
+    display: none;
+}
+
+.as-cfg__disclosure-summary::before {
+    content: '\25B8';
+    color: var(--configurator-muted);
+    display: inline-block;
+    width: 0.8em;
+    transition: transform 120ms ease;
+}
+
+.as-cfg__disclosure[open] > .as-cfg__disclosure-summary::before {
+    transform: rotate(90deg);
+}
+
+.as-cfg__disclosure-summary:focus-visible {
+    outline: 2px solid var(--configurator-accent, #e87a3e);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+.as-cfg__disclosure-title {
+    font-weight: 600;
+}
+
+.as-cfg__disclosure-hint {
+    font-size: 0.72rem;
+    color: var(--configurator-muted);
+}
+
+.as-cfg__disclosure .as-cfg__groups {
+    padding-bottom: 0.7rem;
+}
+
 /* ── The component picker ─────────────────────────────────────────────────
    One dialog, rendered inside the dock. It covers the dock rather than the
    viewport, because it belongs to the editor: the site behind it stays
