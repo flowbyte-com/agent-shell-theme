@@ -389,6 +389,16 @@ async function run_picker() {
      String(qa('.as-cfg__block').length - blocksBefore));
   ok('opening the picker does not dirty the draft', chip() === 'Saved', chip());
 
+  // The picker is modal: the rest of the dock must not be reachable while
+  // it is open, or a click on Save would go straight through it.
+  var saveButton = q('.as-cfg__actions [data-focus-key="save"]');
+  var saveRect = saveButton.getBoundingClientRect();
+  var atSave = document.elementFromPoint(saveRect.left + saveRect.width / 2, saveRect.top + saveRect.height / 2);
+  ok('the picker covers the action bar', atSave && atSave.closest('.as-cfg__picker-overlay') !== null,
+     atSave ? atSave.className || atSave.tagName : 'nothing');
+  ok('the save button is not the thing under the pointer while the picker is open',
+     atSave !== saveButton);
+
   // ── the choices ──────────────────────────────────────────────────────
   var options = qa('.as-cfg__picker-option');
   ok('the picker lists the components', options.length >= 4, String(options.length));

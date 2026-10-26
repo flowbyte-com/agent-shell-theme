@@ -678,7 +678,7 @@ body.config-panel-open {
     align-items: center;
     justify-content: center;
     padding: 1rem;
-    background: rgba(24, 24, 27, 0.32);
+    background: rgba(24, 24, 27, 0.45);
 }
 
 .as-cfg__picker {
