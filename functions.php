@@ -3372,6 +3372,14 @@ function agentshell_flatten_config( array $config ) {
         '--radius-base'     => array( 'design', 'layout', 'radius' ),
         '--zone-header-height' => array( 'design', 'layout', 'headerHeight' ),
         '--zone-footer-height' => array( 'design', 'layout', 'footerHeight' ),
+        // borderWidth/borderStyle are legitimate geometry keys: the
+        // agentshell_set_shape tool has always written them to
+        // design.layout, and the doctor allows them there. The custom
+        // properties are the values the stylesheet consumes, so they win
+        // when both exist; these entries are the fallback that makes a
+        // historical layout-only configuration render and reach the editor.
+        '--border-width'    => array( 'design', 'layout', 'borderWidth' ),
+        '--border-style'    => array( 'design', 'layout', 'borderStyle' ),
     );
 
     foreach ( $map as $var => $path ) {
@@ -3427,6 +3435,17 @@ function agentshell_unflatten_config( array $flat, array $existing ) {
         '--zone-footer-height' => array( 'design', 'layout', 'footerHeight' ),
     );
 
+    // Shape tokens live in two places, and the two must not diverge. A
+    // historical configuration may carry only design.layout.borderWidth /
+    // borderStyle (the shape the set_shape tool wrote before the custom
+    // properties were added); a configurator edit sends the custom
+    // property. Writing both keeps the geometry the design-system tool
+    // reports equal to the CSS the stylesheet applies.
+    $shape_to_layout = array(
+        '--border-width' => 'borderWidth',
+        '--border-style' => 'borderStyle',
+    );
+
     // Deep-merge $flat into a copy of $existing
     $merged = $existing;
     foreach ( $flat as $key => $value ) {
@@ -3448,6 +3467,23 @@ function agentshell_unflatten_config( array $flat, array $existing ) {
         }
         if ( $key === 'layout' ) {
             $merged['layout'] = is_array( $value ) ? $value : array();
+            continue;
+        }
+        if ( isset( $shape_to_layout[ $key ] ) ) {
+            if ( ! is_string( $value ) ) {
+                continue;
+            }
+            if ( ! isset( $merged['design'] ) || ! is_array( $merged['design'] ) ) {
+                $merged['design'] = array();
+            }
+            if ( ! isset( $merged['design']['layout'] ) || ! is_array( $merged['design']['layout'] ) ) {
+                $merged['design']['layout'] = array();
+            }
+            if ( ! isset( $merged['design']['custom_css_vars'] ) || ! is_array( $merged['design']['custom_css_vars'] ) ) {
+                $merged['design']['custom_css_vars'] = array();
+            }
+            $merged['design']['layout'][ $shape_to_layout[ $key ] ] = $value;
+            $merged['design']['custom_css_vars'][ $key ]          = $value;
             continue;
         }
         if ( isset( $css_to_path[ $key ] ) ) {
@@ -3493,8 +3529,13 @@ function agentshell_validate_config( $config ) {
     $allowed_typography = array(
         'fontFamily', 'mono', 'baseSize', 'scale',
     );
+    // borderWidth and borderStyle are not unknown keys: agentshell_set_shape
+    // writes them, the doctor allows them, and a site that used the shape
+    // tool has them stored. They used to be refused here, which made every
+    // unrelated PUT — an Appearance colour, a shadow preset — fail with
+    // "Unknown layout key: borderWidth" before the edit was ever applied.
     $allowed_layout = array(
-        'radius', 'headerHeight', 'footerHeight',
+        'radius', 'headerHeight', 'footerHeight', 'borderWidth', 'borderStyle',
     );
     $allowed_zone_ids = array( 'header', 'main', 'footer' );
     $allowed_block_types = array(
@@ -3543,6 +3584,26 @@ function agentshell_validate_config( $config ) {
         foreach ( $config['design']['layout'] as $key => $val ) {
             if ( ! in_array( $key, $allowed_layout, true ) ) {
                 return new WP_Error( 'invalid_layout_key', "Unknown layout key: {$key}" );
+            }
+            // Accepting the key is not accepting any value. These are the
+            // same shapes agentshell_set_shape accepts, so a stored value
+            // the tool could have written still passes and a value that
+            // would break the stylesheet does not.
+            if ( $key === 'borderWidth' ) {
+                if ( ! is_string( $val ) || ! preg_match( '/^(?:0|\d*\.?\d+(?:px|rem|em))$/', $val ) ) {
+                    return new WP_Error(
+                        'invalid_layout_value',
+                        "borderWidth must be a CSS length (e.g. 1px, 2px, 0): {$val}"
+                    );
+                }
+            }
+            if ( $key === 'borderStyle' ) {
+                if ( ! is_string( $val ) || ! in_array( $val, array( 'solid', 'dashed', 'dotted', 'none' ), true ) ) {
+                    return new WP_Error(
+                        'invalid_layout_value',
+                        "borderStyle must be one of: solid, dashed, dotted, none: {$val}"
+                    );
+                }
             }
         }
     }
