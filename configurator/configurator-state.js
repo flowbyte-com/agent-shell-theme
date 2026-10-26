@@ -86,6 +86,20 @@
             return state;
         }
 
+        /**
+         * Record that this transaction has accepted staged work.
+         *
+         * The server is authoritative; this only keeps the local mirror from
+         * reporting an open transaction with nothing in it between the PUT
+         * and the next GET.
+         */
+        function mark_staged() {
+            if ( state.mode === 'editing_open' && state.tx ) {
+                state.tx.has_staged = true;
+            }
+            return state;
+        }
+
         function begin( label ) {
             // Caller must perform the network call and pass the result.
             // This just transitions the local state.
@@ -166,6 +180,7 @@
             get_state: get_state,
             set_tx_snapshot: set_tx_snapshot,
             begin: begin,
+            mark_staged: mark_staged,
             commit: commit,
             rollback: rollback,
             can_save: can_save,
@@ -336,6 +351,7 @@
             block: -1,                // index of the selected block, -1 = none
             draft: null,              // { vars, custom_css, custom_js, zones }
             saved: null,              // the same shape, as the server last reported it
+            staged: null,             // the draft last accepted into the open transaction
         };
 
         function clone( value ) {
@@ -372,10 +388,24 @@
             return state;
         }
 
-        /** Load a configuration response into the draft, and mark it saved. */
-        function load( payload ) {
-            state.draft = draft_from( payload );
-            state.saved = clone( state.draft );
+        /**
+         * Load a configuration response into the draft.
+         *
+         * `stagedPayload` is the owner's staged configuration, in the same
+         * shape as a GET, when a transaction survived a reload. In that case
+         * the draft is the staged work (what the operator was previewing) and
+         * `saved` remains the committed state, so "Staged for preview" and
+         * "Changes since preview" are both true statements after a reload.
+         */
+        function load( payload, stagedPayload ) {
+            state.saved = draft_from( payload );
+            if ( stagedPayload ) {
+                state.draft = draft_from( stagedPayload );
+                state.staged = clone( state.draft );
+            } else {
+                state.draft = clone( state.saved );
+                state.staged = null;
+            }
             return state;
         }
 
@@ -383,13 +413,43 @@
         function accept_saved( payload ) {
             state.draft = draft_from( payload );
             state.saved = clone( state.draft );
+            state.staged = null;
             return state;
         }
 
         /** Throw the draft away and go back to what the server last reported. */
         function discard() {
             state.draft = clone( state.saved );
+            state.staged = null;
             return state;
+        }
+
+        /** The draft the open transaction last accepted. */
+        function mark_staged() {
+            state.staged = clone( state.draft );
+            return state.staged;
+        }
+
+        function clear_staged() {
+            state.staged = null;
+        }
+
+        function has_staged() {
+            return state.staged !== null;
+        }
+
+        /**
+         * Has the draft moved since it was last staged for preview?
+         *
+         * With no staged snapshot this is true: an open transaction whose
+         * staged work this session never saw is not this draft, so the draft
+         * must be staged before it can be previewed or saved.
+         */
+        function is_modified_since_staged() {
+            if ( ! state.staged ) {
+                return true;
+            }
+            return JSON.stringify( state.draft ) !== JSON.stringify( state.staged );
         }
 
         function draft_from( payload ) {
@@ -555,7 +615,15 @@
             return true;
         }
 
-        /** The status the action bar shows. */
+        /**
+         * The status the action bar shows.
+         *
+         * A staged draft is never described as Saved. The four states that
+         * matter to an operator are distinguished from the data: committed,
+         * edited locally, staged for preview, and edited again since that
+         * preview. "Locked" is the server's answer about somebody else's
+         * transaction, not a local guess.
+         */
         function status( tx_model ) {
             var tx_state = tx_model ? tx_model.get_state() : { mode: 'idle' };
             if ( 'locked' === tx_state.mode ) {
@@ -565,12 +633,33 @@
                     can_save: false,
                 };
             }
-            if ( is_dirty() ) {
+
+            var open = tx_state.mode === 'editing_open';
+            var dirty = is_dirty();
+
+            if ( open && state.staged ) {
+                if ( is_modified_since_staged() ) {
+                    return { key: 'staged_dirty', label: 'Changes since preview', can_save: true };
+                }
+                return { key: 'staged', label: 'Staged for preview', can_save: true };
+            }
+
+            if ( open && tx_state.tx && tx_state.tx.has_staged ) {
+                // The server says the transaction holds staged work, but this
+                // session has not seen it (it belongs to another editor
+                // session of the same account). Do not call it this draft's
+                // preview and do not silently overwrite it.
+                return { key: 'staged_foreign_session', label: 'Staged in another session', can_save: true };
+            }
+
+            if ( dirty ) {
                 return { key: 'dirty', label: 'Unsaved changes', can_save: true };
             }
-            if ( tx_state.mode === 'editing_open' ) {
-                return { key: 'staged', label: 'Staged', can_save: true };
+
+            if ( open ) {
+                return { key: 'transaction', label: 'Transaction open', can_save: true };
             }
+
             return { key: 'saved', label: 'Saved', can_save: true };
         }
 
@@ -583,6 +672,10 @@
             load: load,
             accept_saved: accept_saved,
             discard: discard,
+            mark_staged: mark_staged,
+            clear_staged: clear_staged,
+            has_staged: has_staged,
+            is_modified_since_staged: is_modified_since_staged,
             is_dirty: is_dirty,
             zone: zone,
             area_list: area_list,

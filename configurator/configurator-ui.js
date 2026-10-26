@@ -852,7 +852,7 @@
 
         function render() {
             var state = editor().get_state();
-            var status = editor().status( app.tx );
+            var status = ( typeof app.status === 'function' ) ? app.status() : editor().status( app.tx );
 
             var panel = document.getElementById( 'agentshell-config-panel' );
             if ( ! panel ) { return; }
