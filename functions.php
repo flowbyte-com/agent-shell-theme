@@ -3504,6 +3504,23 @@ function agentshell_unflatten_config( array $flat, array $existing ) {
                 }
             }
             unset( $ref );
+
+            // A configuration that carries this property as an explicit
+            // custom variable — a historical `set_css_var` — would otherwise
+            // shadow this change: the flatten prefers the custom variable, so
+            // the edit would be stored and never rendered. The operator would
+            // see a colour in the editor that the site does not show.
+            //
+            // The custom variable is written with the same value, so the
+            // precedence rule ("an explicit custom variable wins") is kept
+            // and the change is still the one that is rendered. The shape
+            // tokens above already work this way, for the same reason.
+            if ( isset( $merged['design']['custom_css_vars'] )
+                && is_array( $merged['design']['custom_css_vars'] )
+                && array_key_exists( $key, $merged['design']['custom_css_vars'] )
+                && is_string( $value ) ) {
+                $merged['design']['custom_css_vars'][ $key ] = $value;
+            }
         } elseif ( strpos( $key, '--' ) === 0 ) {
             // Wildcard: any --key not in legacy map goes to custom_css_vars
             if ( ! isset( $merged['design'] ) ) {

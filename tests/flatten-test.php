@@ -86,6 +86,60 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
+    'a change is not shadowed by the custom variable that used to win',
+    function () {
+        // A configuration that carries a legacy custom variable for a
+        // palette key: the flatten prefers it, so a change written to the
+        // palette path alone would be stored and never rendered. The editor
+        // would show a colour the site does not show.
+        $config = array(
+            'design' => array(
+                'colors' => array(
+                    'primary' => '#0e1013',
+                ),
+                'custom_css_vars' => array(
+                    '--theme-header-bg' => '#0e1013',
+                ),
+            ),
+        );
+
+        $merged = agentshell_unflatten_config(
+            array( '--theme-header-bg' => '#16a34a' ),
+            $config
+        );
+
+        Agentshell_Test::assert_equals( '#16a34a', $merged['design']['colors']['primary'], 'the palette path is written' );
+        Agentshell_Test::assert_equals( '#16a34a', $merged['design']['custom_css_vars']['--theme-header-bg'],
+            'the custom variable that shadows it is written with the same value' );
+
+        $flat = agentshell_flatten_config( $merged );
+        Agentshell_Test::assert_equals( '#16a34a', $flat['--theme-header-bg'],
+            'and the change is the one the site renders' );
+    }
+);
+
+Agentshell_Test::run(
+    'a change to a key with no custom variable leaves the custom variables alone',
+    function () {
+        $config = array(
+            'design' => array(
+                'colors' => array( 'primary' => '#0e1013' ),
+                'custom_css_vars' => array( '--theme-footer-bg' => '#0e1013' ),
+            ),
+        );
+
+        $merged = agentshell_unflatten_config( array( '--theme-header-bg' => '#16a34a' ), $config );
+
+        Agentshell_Test::assert_equals( '#0e1013', $merged['design']['custom_css_vars']['--theme-footer-bg'],
+            'an unrelated custom variable is untouched' );
+        Agentshell_Test::assert_false(
+            array_key_exists( '--theme-header-bg', $merged['design']['custom_css_vars'] ),
+            'no custom variable is invented for a key that had none'
+        );
+    }
+);
+
+Agentshell_Test::run(
     'unset custom_css_vars preserves legacy map values',
     function () {
         $config = array(
