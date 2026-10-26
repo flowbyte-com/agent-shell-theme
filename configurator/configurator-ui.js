@@ -610,6 +610,12 @@
                     'data-focus-key': 'zone:' + zone.id,
                     onclick: function () {
                         editor().set_zone( zone.id );
+                        // The area to open is the one the server offered, not
+                        // one the editor assumed: a site whose grid does not
+                        // carry the middle-centre area opens the first area
+                        // it does have, rather than an area that is not
+                        // there.
+                        editor().set_area( app.zone.resolve_area( config().zone_areas || [], null, 'middle-center' ) );
                         app.on_change();
                     },
                 }, [ zone.label ] ) );

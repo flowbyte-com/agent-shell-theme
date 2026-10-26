@@ -17,8 +17,9 @@
  *   4. Re-read the configuration, so the editor shows what the server stored
  *      rather than what it was asked to store.
  *
- * A failed save rolls the transaction back, because a transaction opened for
- * a save that failed is not work anybody wants to find later.
+ * A failed save rolls the transaction back — but only the transaction that
+ * save opened. A transaction that was already open is the operator's own
+ * staged work, and a refusal must not throw it away.
  */
 (function ( root ) {
     'use strict';
@@ -37,6 +38,11 @@
             busy: false,
             editor: editor,
             tx: tx,
+            // The slot-grid rules: which area to open on, what a move does,
+            // when a zone renders as nine areas. The view asks this model
+            // rather than deciding for itself, so the rules the server and
+            // the tools use are the rules the editor uses.
+            zone: zone,
         };
 
 
