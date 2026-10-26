@@ -24,13 +24,18 @@
 # This file is sourced, not executed. It defines arrays and nothing else.
 
 # Root rules: directories of the repository itself.
+#
+# The configurator is NOT one of them. It is a production feature: the theme
+# enqueues it for administrators on every front-end page, so a distribution
+# without it ships a configurator trigger whose assets 404 and a panel that
+# cannot open. The size audit classified it as development material, which
+# was right about its *origin* and wrong about its *destination*.
 EXCLUDE_ROOT=(
     ".git"                 # git's own directory
     ".github"              # the CI workflow and its scripts
     ".worktrees"           # other checkouts
     "tests"                # the test suite and every fixture it carries
     "tools"                # the release tooling itself
-    "configurator"         # the design tool
     "skills"               # agent skill documents
     "dist"                 # previous archives
     "outputs"              # generated output

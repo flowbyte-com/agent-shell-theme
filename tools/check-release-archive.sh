@@ -79,6 +79,12 @@ REQUIRED=(
     "template-parts/shell-render.php"
     "template-parts/widgets.php"
     "assets/theme.js"
+    # The configurator is a production feature: the theme enqueues it for
+    # administrators, so an archive without it ships a broken panel. The
+    # checker refuses that archive rather than trusting the packager.
+    "configurator/configurator.js"
+    "configurator/configurator.css"
+    "configurator/configurator-state.js"
     "widgets/.index.json"
     "widgets/hello-world.php"
     "agentshell-mcp/agentshell-mcp.php"
