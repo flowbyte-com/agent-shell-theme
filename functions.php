@@ -764,6 +764,40 @@ function agentshell_preview_frame_body_class( $classes ) {
 add_filter( 'body_class', 'agentshell_preview_frame_body_class' );
 
 /**
+ * The secret a preview credential is signed with.
+ *
+ * One rule, everywhere:
+ *
+ *   1. AGENTSHELL_REST_TOKEN, when it is set to a non-empty value.
+ *   2. AUTH_SALT, when it is set to a non-empty value.
+ *   3. Nothing at all — and then no preview credential is offered, because
+ *      a credential signed with an empty secret is one anybody can
+ *      compute.
+ *
+ * The owner of the rule is the MCP plugin's
+ * `Transaction_Manager::preview_secret()`, which every other preview path
+ * already uses. This function asks it for the answer when the plugin is
+ * loaded, and applies the same rule when the theme is used without the
+ * plugin. The two must agree: the theme verifies a profile preview with
+ * this secret, and the screenshot tool mints one with it, so a key that
+ * the tool produces is a key the theme accepts — and only that key.
+ *
+ * @return string The secret, or an empty string when none is configured.
+ */
+function agentshell_preview_secret() {
+    if ( class_exists( '\AgentShell_MCP\Transaction_Manager' ) ) {
+        return (string) \AgentShell_MCP\Transaction_Manager::preview_secret();
+    }
+    // The plugin is not loaded. Apply the same rule.
+    foreach ( array( 'AGENTSHELL_REST_TOKEN', 'AUTH_SALT' ) as $name ) {
+        if ( defined( $name ) && is_string( constant( $name ) ) && '' !== constant( $name ) ) {
+            return (string) constant( $name );
+        }
+    }
+    return '';
+}
+
+/**
  * The exact bytes of the custom stylesheet, as they are served.
  *
  * One function, so the inline block and the materialised file cannot
@@ -1092,17 +1126,26 @@ function agentshell_inject_saved_styles() {
     // Theme profile preview: ?agentshell_preview=<profile> renders a saved
     // profile's design tokens as :root overrides — read-only and never
     // persisted. Authorized either by a logged-in browser session, or by an
-    // HMAC key derived from AGENTSHELL_REST_TOKEN (used by the headless
+    // HMAC key derived from the site's preview secret (used by the headless
     // screenshot tool, which has no session).
     if ( isset( $_GET['agentshell_preview'] ) ) {
         $profiles = get_option( 'agentshell_theme_profiles', array() );
         $name     = sanitize_key( wp_unslash( $_GET['agentshell_preview'] ) );
         if ( $name && isset( $profiles[ $name ]['design'] ) && is_array( $profiles[ $name ]['design'] ) ) {
             $authorized = is_user_logged_in();
-            if ( ! $authorized && defined( 'AGENTSHELL_REST_TOKEN' ) && isset( $_GET['agentshell_preview_key'] ) ) {
-                $expected  = hash_hmac( 'sha256', $name, AGENTSHELL_REST_TOKEN );
-                $provided  = sanitize_text_field( wp_unslash( $_GET['agentshell_preview_key'] ) );
-                $authorized = hash_equals( $expected, $provided );
+            if ( ! $authorized && isset( $_GET['agentshell_preview_key'] ) ) {
+                // The secret, and the same secret the tool that mints the
+                // key uses. It used to be AGENTSHELL_REST_TOKEN alone, and
+                // only when the constant was *defined* — so a site that
+                // defined it as an empty string signed and verified its
+                // profile previews with an empty secret, which anybody can
+                // compute. See agentshell_preview_secret().
+                $secret = agentshell_preview_secret();
+                if ( '' !== $secret ) {
+                    $expected  = hash_hmac( 'sha256', $name, $secret );
+                    $provided  = sanitize_text_field( wp_unslash( $_GET['agentshell_preview_key'] ) );
+                    $authorized = hash_equals( $expected, $provided );
+                }
             }
             if ( $authorized ) {
                 $preview = array( 'design' => $profiles[ $name ]['design'] );
