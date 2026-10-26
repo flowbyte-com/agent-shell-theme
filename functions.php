@@ -126,10 +126,11 @@ function agentshell_enqueue_assets() {
         return;
     }
     wp_enqueue_style( 'agentshell-configurator', get_template_directory_uri() . '/configurator/configurator.css', array( 'agentshell-style' ), filemtime( get_template_directory() . '/configurator/configurator.css' ) );
-    // The configurator is four small modules with one dependency each: the pure
-    // models, the transport, the view, and the wiring. They are separate files
-    // so each can be read — and tested — on its own, and so a change to the
-    // view does not drag the transport along with it.
+    // The configurator is five small modules with one dependency each: the
+    // pure models, the transport, the component picker, the view, and the
+    // wiring. They are separate files so each can be read — and tested — on
+    // its own, and so a change to the view does not drag the transport
+    // along with it.
     //
     // The models are a real dependency of the panel, not a test-only file.
     // Without this handle the browser never receives
@@ -139,8 +140,9 @@ function agentshell_enqueue_assets() {
     $configurator_url = get_template_directory_uri() . '/configurator/';
     wp_enqueue_script( 'agentshell-configurator-state', $configurator_url . 'configurator-state.js', array(), filemtime( $configurator_dir . 'configurator-state.js' ), true );
     wp_enqueue_script( 'agentshell-configurator-api', $configurator_url . 'configurator-api.js', array(), filemtime( $configurator_dir . 'configurator-api.js' ), true );
+    wp_enqueue_script( 'agentshell-configurator-picker', $configurator_url . 'configurator-picker.js', array(), filemtime( $configurator_dir . 'configurator-picker.js' ), true );
     wp_enqueue_script( 'agentshell-configurator-ui', $configurator_url . 'configurator-ui.js', array(), filemtime( $configurator_dir . 'configurator-ui.js' ), true );
-    wp_enqueue_script( 'agentshell-configurator', $configurator_url . 'configurator-app.js', array( 'agentshell-configurator-state', 'agentshell-configurator-api', 'agentshell-configurator-ui' ), filemtime( $configurator_dir . 'configurator-app.js' ), true );
+    wp_enqueue_script( 'agentshell-configurator', $configurator_url . 'configurator-app.js', array( 'agentshell-configurator-state', 'agentshell-configurator-api', 'agentshell-configurator-picker', 'agentshell-configurator-ui' ), filemtime( $configurator_dir . 'configurator-app.js' ), true );
     wp_localize_script( 'agentshell-configurator', 'AgentShellConfig', array(
         'adminUrl'   => admin_url( 'admin-ajax.php' ),
         'restUrl'    => rest_url(),

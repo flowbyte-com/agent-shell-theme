@@ -136,11 +136,13 @@ function main() {
         var plain = run_scenario( browser, harness, profile, 'default' );
         var locked = run_scenario( browser, harness, profile, 'locked' );
         var refusal = run_scenario( browser, harness, profile, 'refusal' );
+        var picker = run_scenario( browser, harness, profile, 'picker' );
         report = {
-            total: ( plain.total || 0 ) + ( locked.total || 0 ) + ( refusal.total || 0 ),
+            total: ( plain.total || 0 ) + ( locked.total || 0 ) + ( refusal.total || 0 ) + ( picker.total || 0 ),
             failures: ( plain.failures || [] )
                 .concat( locked.failures || [] )
-                .concat( refusal.failures || [] ),
+                .concat( refusal.failures || [] )
+                .concat( picker.failures || [] ),
         };
     } finally {
         try { fs.rmSync( profile, { recursive: true, force: true } ); } catch ( e2 ) {}

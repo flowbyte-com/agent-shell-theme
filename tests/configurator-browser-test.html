@@ -124,6 +124,7 @@ window.fetch = function (url, opts) {
 </script>
 <script src="../configurator/configurator-state.js"></script>
 <script src="../configurator/configurator-api.js"></script>
+<script src="../configurator/configurator-picker.js"></script>
 <script src="../configurator/configurator-ui.js"></script>
 <script src="../configurator/configurator-app.js"></script>
 <script>
@@ -149,6 +150,10 @@ async function run() {
   }
   if (SCENARIO === 'refusal') {
     await run_refusal();
+    return;
+  }
+  if (SCENARIO === 'picker') {
+    await run_picker();
     return;
   }
 
@@ -355,6 +360,168 @@ async function run_refusal() {
 }
 
 /**
+ * The component picker.
+ *
+ * The choices are made in a dialog inside the editor, not in a native
+ * prompt that asked for a number. This covers what the prompt could not
+ * do: show the choices, name them, take the keyboard, dismiss without
+ * changing anything, and give the focus back.
+ */
+async function run_picker() {
+  var addButton = q('[data-focus-key^="add:"]');
+  ok('the area offers a way to add a component', !!addButton);
+  ok('it is a button, not a select', addButton && addButton.tagName === 'BUTTON',
+     addButton ? addButton.tagName : 'none');
+
+  // ── opening it changes nothing ───────────────────────────────────────
+  var blocksBefore = qa('.as-cfg__block').length;
+  addButton.focus();
+  addButton.click();
+  await wait(80);
+
+  ok('the picker opens', !!q('.as-cfg__picker'));
+  ok('the picker is a dialog', q('.as-cfg__picker').getAttribute('role') === 'dialog');
+  ok('the picker is modal', q('.as-cfg__picker').getAttribute('aria-modal') === 'true');
+  ok('the picker is named', !!q('.as-cfg__picker').getAttribute('aria-labelledby'));
+  ok('the picker lives inside the editor',
+     q('#agentshell-config-panel').contains(q('.as-cfg__picker')));
+  ok('opening the picker adds nothing', qa('.as-cfg__block').length === blocksBefore,
+     String(qa('.as-cfg__block').length - blocksBefore));
+  ok('opening the picker does not dirty the draft', chip() === 'Saved', chip());
+
+  // The picker is modal: the rest of the dock must not be reachable while
+  // it is open, or a click on Save would go straight through it.
+  var saveButton = q('.as-cfg__actions [data-focus-key="save"]');
+  var saveRect = saveButton.getBoundingClientRect();
+  var atSave = document.elementFromPoint(saveRect.left + saveRect.width / 2, saveRect.top + saveRect.height / 2);
+  ok('the picker covers the action bar', atSave && atSave.closest('.as-cfg__picker-overlay') !== null,
+     atSave ? atSave.className || atSave.tagName : 'nothing');
+  ok('the save button is not the thing under the pointer while the picker is open',
+     atSave !== saveButton);
+
+  // ── the choices ──────────────────────────────────────────────────────
+  var options = qa('.as-cfg__picker-option');
+  ok('the picker lists the components', options.length >= 4, String(options.length));
+  ok('the choices are named, not numbered',
+     options[0].textContent.indexOf('Site Title') !== -1 ||
+     options[0].textContent.indexOf('Navigation') !== -1,
+     options[0] ? options[0].textContent : 'none');
+  ok('no choice is a bare number',
+     !q('.as-cfg__picker-list').textContent.match(/(^|\s)\d+\.\s/),
+     q('.as-cfg__picker-list').textContent.slice(0, 80));
+  ok('the groups are named',
+     q('.as-cfg__picker-list').textContent.indexOf('WordPress components') !== -1);
+  ok('the insertion area is stated',
+     q('.as-cfg__picker-target').textContent.indexOf('Adding to') !== -1,
+     q('.as-cfg__picker-target').textContent);
+  ok('the insertion area names the zone and the area',
+     q('.as-cfg__picker-target').textContent.indexOf('Header') !== -1 &&
+     q('.as-cfg__picker-target').textContent.indexOf('Middle Centre') !== -1,
+     q('.as-cfg__picker-target').textContent);
+
+  // ── the keyboard ─────────────────────────────────────────────────────
+  ok('the focus is in the picker', q('.as-cfg__picker').contains(document.activeElement),
+     document.activeElement ? document.activeElement.className : 'none');
+  ok('the filter field has the focus',
+     document.activeElement && document.activeElement.className.indexOf('as-cfg__picker-filter') !== -1,
+     document.activeElement ? document.activeElement.className : 'none');
+
+  var firstActive = q('.as-cfg__picker-option.is-active');
+  ok('a choice is highlighted', !!firstActive);
+  ok('the highlighted choice is announced',
+     q('.as-cfg__picker-live').textContent.length > 0,
+     q('.as-cfg__picker-live').textContent);
+
+  // Arrow down moves the highlight.
+  q('.as-cfg__picker-filter').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+  await wait(40);
+  var secondActive = q('.as-cfg__picker-option.is-active');
+  ok('the arrow keys move the highlight', !!secondActive && secondActive !== firstActive);
+  ok('the highlight is marked for assistive technology',
+     secondActive && secondActive.getAttribute('aria-selected') === 'true');
+  ok('the filter points at the highlighted choice',
+     q('.as-cfg__picker-filter').getAttribute('aria-activedescendant') === secondActive.id);
+
+  // Escape dismisses it and puts the focus back.
+  q('.as-cfg__picker-filter').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await wait(60);
+  ok('Escape dismisses the picker', !q('.as-cfg__picker'));
+  ok('Escape adds nothing', qa('.as-cfg__block').length === blocksBefore,
+     String(qa('.as-cfg__block').length - blocksBefore));
+  ok('Escape does not dirty the draft', chip() === 'Saved', chip());
+  ok('the focus goes back to where it came from',
+     document.activeElement === addButton,
+     document.activeElement ? document.activeElement.getAttribute('data-focus-key') : 'none');
+
+  // ── the keyboard alone can make a choice ─────────────────────────────
+  addButton.click();
+  await wait(80);
+  q('.as-cfg__picker-filter').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+  await wait(40);
+  var toChoose = q('.as-cfg__picker-option.is-active');
+  var chosenLabel = toChoose ? toChoose.textContent : '';
+  q('.as-cfg__picker-filter').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await wait(80);
+  ok('Enter chooses the highlighted component', !q('.as-cfg__picker'));
+  ok('the chosen component was added', qa('.as-cfg__block').length === blocksBefore + 1,
+     String(qa('.as-cfg__block').length - blocksBefore));
+  ok('the chosen component is the one that was highlighted',
+     qa('.as-cfg__block').slice(-1)[0].textContent.indexOf(chosenLabel.split('from')[0].trim()) !== -1,
+     chosenLabel);
+  ok('choosing a component dirties the draft', chip() === 'Unsaved changes', chip());
+
+  // ── cancelling changes nothing ───────────────────────────────────────
+  var blocksBeforeCancel = qa('.as-cfg__block').length;
+  addButton.click();
+  await wait(80);
+  q('.as-cfg__picker [data-focus-key="picker-cancel"]').click();
+  await wait(60);
+  ok('cancelling closes the picker', !q('.as-cfg__picker'));
+  ok('cancelling adds nothing', qa('.as-cfg__block').length === blocksBeforeCancel,
+     String(qa('.as-cfg__block').length - blocksBeforeCancel));
+  ok('cancelling leaves the draft as it was', chip() === 'Unsaved changes', chip());
+
+  // ── the filter ───────────────────────────────────────────────────────
+  addButton.click();
+  await wait(80);
+  var filter = q('.as-cfg__picker-filter');
+  filter.value = 'logo';
+  filter.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+  var filtered = qa('.as-cfg__picker-option');
+  ok('the filter narrows the choices', filtered.length === 1, String(filtered.length));
+  ok('the filtered choice is the one that matched',
+     filtered.length === 1 && filtered[0].textContent.indexOf('Site Logo') !== -1,
+     filtered.length ? filtered[0].textContent : 'none');
+
+  // A filter that matches nothing says so.
+  filter.value = 'zzzznotathing';
+  filter.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+  ok('a filter that matches nothing says so',
+     !q('.as-cfg__picker-empty').hasAttribute('hidden') &&
+     q('.as-cfg__picker-empty').textContent.indexOf('Nothing matches') !== -1,
+     q('.as-cfg__picker-empty').textContent);
+
+  // Enter with nothing to choose adds nothing.
+  var blocksBeforeEmpty = qa('.as-cfg__block').length;
+  filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await wait(60);
+  ok('Enter with no match adds nothing', qa('.as-cfg__block').length === blocksBeforeEmpty);
+
+  // ── discarding the picker's work ─────────────────────────────────────
+  q('.as-cfg__picker-filter').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await wait(60);
+  q('.as-cfg__actions [data-focus-key="discard"]').click();
+  await wait(150);
+  ok('discarding removes what the picker added', qa('.as-cfg__block').length === blocksBefore,
+     String(qa('.as-cfg__block').length - blocksBefore));
+  ok('discarding returns the draft to saved', chip() === 'Saved', chip());
+
+  report();
+}
+
+/**
  * Workflow F: an agent is holding the transaction.
  *
  * The editor must respect the ownership: it may show the state, it must say
@@ -383,6 +550,24 @@ async function run_locked() {
 
   // The rest of the editor still works for reading.
   ok('the areas are still shown', qa('button.as-cfg__area').length === 9, String(qa('button.as-cfg__area').length));
+
+  // The picker is a local edit: it changes the draft, never the server.
+  // While another actor holds the transaction the draft cannot be saved,
+  // so the picker may still be used — but nothing reaches the server.
+  var addButton = q('[data-focus-key^="add:"]');
+  ok('the area still offers a way to add a component', !!addButton);
+  addButton.click();
+  await wait(80);
+  ok('the picker opens while another actor holds the transaction', !!q('.as-cfg__picker'));
+  var blocksBefore = qa('.as-cfg__block').length;
+  q('.as-cfg__picker-option').click();
+  await wait(80);
+  ok('a choice changes the draft', qa('.as-cfg__block').length === blocksBefore + 1,
+     String(qa('.as-cfg__block').length - blocksBefore));
+  ok('a choice while locked writes nothing to the server', window.__puts.length === 0,
+     String(window.__puts.length));
+  ok('saving is still refused while another actor holds the transaction',
+     q('.as-cfg__actions [data-focus-key="save"]').hasAttribute('disabled'));
 
   report();
 }

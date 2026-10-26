@@ -467,6 +467,12 @@ $suites = array(
         'path'     => __DIR__ . '/run-configurator-browser.php',
         'requires' => 'unit',
     ),
+    // The component picker's choices: the vocabulary the server supports,
+    // the names it uses, and what it says when the site offers nothing.
+    'configurator-picker' => array(
+        'path'     => __DIR__ . '/run-configurator-picker.php',
+        'requires' => 'unit',
+    ),
     'configurator-enqueue' => array(
         'path'     => __DIR__ . '/configurator-enqueue-test.php',
         'requires' => 'unit',

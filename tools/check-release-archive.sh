@@ -88,6 +88,7 @@ REQUIRED=(
     # script is exactly the failure this list exists to catch.
     "configurator/configurator-app.js"
     "configurator/configurator-api.js"
+    "configurator/configurator-picker.js"
     "configurator/configurator-ui.js"
     "configurator/configurator.css"
     "configurator/configurator-state.js"

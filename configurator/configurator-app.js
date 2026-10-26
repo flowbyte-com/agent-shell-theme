@@ -325,61 +325,74 @@
 
         /* ── adding components ────────────────────────────────────────── */
 
-        function pick_core_component( zone_id, area_id ) {
-            var components = ( app.config && app.config.core_components ) || [];
-            if ( ! components.length ) {
-                say( 'This site has no WordPress components to add.', 'error' );
+        /**
+         * Open the component picker for an area.
+         *
+         * One picker, used for every zone and every area. The choices come
+         * from the server's own configuration, so the picker cannot offer
+         * a component the site does not have, and the names it shows are
+         * the server's names rather than numbers an operator has to
+         * translate.
+         *
+         * Nothing is added until a choice is made: the picker reports the
+         * choice, and this function is what acts on it.
+         *
+         * @param {string} zone_id
+         * @param {string|null} area_id
+         * @param {Element|null} trigger The element to return the focus to.
+         */
+        function open_component_picker( zone_id, area_id, trigger ) {
+            var picker = options.picker || root.AgentshellConfiguratorPicker;
+            if ( ! picker || typeof picker.open !== 'function' ) {
+                say( 'The component picker is not available.', 'error' );
                 return;
             }
-            var choice = window.prompt( 'Which component?\n\n' + components.map( function ( c, i ) {
-                return ( i + 1 ) + '. ' + c.name;
-            } ).join( '\n' ) );
-            if ( choice === null ) { return; }
-            var index = parseInt( choice, 10 ) - 1;
-            if ( ! components[ index ] ) {
-                say( 'That is not one of the components on this site.', 'error' );
+
+            var panel = document.getElementById( 'agentshell-config-panel' );
+            if ( ! panel ) {
+                say( 'The component picker is not available.', 'error' );
                 return;
             }
-            editor.add_block( zone_id, area_id, { type: 'wp_core', id: components[ index ].id } );
-            on_change();
+
+            var groups = picker.build_choices( app.config );
+            var target = component_picker_target( zone_id, area_id );
+
+            picker.open( {
+                host: panel,
+                groups: groups,
+                target: target,
+                returnFocus: trigger || null,
+                onChoose: function ( item ) {
+                    var block = { type: item.type };
+                    if ( item.id ) { block.id = item.id; }
+                    if ( ! editor.add_block( zone_id, area_id, block ) ) {
+                        say( 'That component could not be added here.', 'error' );
+                        return;
+                    }
+                    say( item.label + ' was added to ' + target + '.', 'info' );
+                    on_change();
+                },
+            } );
         }
 
-        function pick_widget( zone_id, area_id ) {
-            var widgets = ( app.config && app.config.available_widgets ) || [];
-            if ( ! widgets.length ) {
-                say( 'This site has no widgets registered.', 'error' );
-                return;
+        /**
+         * Where a component would land, in words.
+         *
+         * The operator is told this before choosing, so "Add component"
+         * never has to be guessed at.
+         */
+        function component_picker_target( zone_id, area_id ) {
+            var state = editor.get_state();
+            var zones = ( app.config && app.config.zones ) || [];
+            var zone = zones.filter( function ( z ) { return z.id === zone_id; } )[ 0 ];
+            var zone_label = zone && zone.label ? zone.label : ( zone_id || 'this zone' );
+            if ( ! area_id ) {
+                return zone_label;
             }
-            var choice = window.prompt( 'Which widget?\n\n' + widgets.map( function ( w, i ) {
-                return ( i + 1 ) + '. ' + ( w.name || w.id );
-            } ).join( '\n' ) );
-            if ( choice === null ) { return; }
-            var index = parseInt( choice, 10 ) - 1;
-            if ( ! widgets[ index ] ) {
-                say( 'That is not one of the widgets on this site.', 'error' );
-                return;
-            }
-            editor.add_block( zone_id, area_id, { type: 'widget', id: widgets[ index ].id } );
-            on_change();
-        }
-
-        function pick_widget_area( zone_id, area_id ) {
-            var areas = ( app.config && app.config.available_widget_areas ) || [];
-            if ( ! areas.length ) {
-                say( 'This site has no widget areas registered.', 'error' );
-                return;
-            }
-            var choice = window.prompt( 'Which widget area?\n\n' + areas.map( function ( a, i ) {
-                return ( i + 1 ) + '. ' + ( a.name || a.id );
-            } ).join( '\n' ) );
-            if ( choice === null ) { return; }
-            var index = parseInt( choice, 10 ) - 1;
-            if ( ! areas[ index ] ) {
-                say( 'That is not one of the widget areas on this site.', 'error' );
-                return;
-            }
-            editor.add_block( zone_id, area_id, { type: 'wp_widget_area', id: areas[ index ].id } );
-            on_change();
+            var areas = ( app.config && app.config.zone_areas ) || [];
+            var area = areas.filter( function ( a ) { return a.id === area_id; } )[ 0 ];
+            var area_label = area && area.label ? area.label : area_id;
+            return zone_label + ' · ' + area_label;
         }
 
         /* ── closing ──────────────────────────────────────────────────── */
@@ -404,9 +417,7 @@
         app.create_snapshot = create_snapshot;
         app.restore_snapshot = restore_snapshot;
         app.restore_revision = restore_revision;
-        app.pick_core_component = pick_core_component;
-        app.pick_widget = pick_widget;
-        app.pick_widget_area = pick_widget_area;
+        app.open_component_picker = open_component_picker;
         app.close = close;
         app.load = load;
 
@@ -441,7 +452,13 @@
             nonce: options.nonce || '',
         } );
 
-        var app = make_app( { api: api, editor: editor, tx: tx, zone: zone } );
+        var app = make_app( {
+            api: api,
+            editor: editor,
+            tx: tx,
+            zone: zone,
+            picker: options.picker || root.AgentshellConfiguratorPicker,
+        } );
         app.ui = uiModule.make_ui( { app: app } );
 
         // Reachable for debugging and for the browser tests: one handle on
