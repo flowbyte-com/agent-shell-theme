@@ -166,5 +166,9 @@ Agentshell_Test::run(
     }
 );
 
-Agentshell_Test::summary();
-exit( Agentshell_Test::summary() === true ? 0 : 1 );
+// The unified runner calls this file and reads the shared counters; the
+// file must not decide the process's exit status itself, or it would end
+// the run that asked for it.
+if ( ! defined( 'AGENTSHELL_TEST_AGGREGATE' ) ) {
+    exit( Agentshell_Test::summary() ? 0 : 1 );
+}

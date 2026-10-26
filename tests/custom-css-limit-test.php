@@ -93,6 +93,21 @@ function css_multibyte_of_bytes( $bytes ) {
     return $out;
 }
 
+/**
+ * How many characters a UTF-8 string has.
+ *
+ * The point of this test is that the limit counts *bytes* and not
+ * characters, so the fixture has to be counted in characters to prove
+ * it. mb_strlen() would be the obvious way, but mbstring is an optional
+ * extension: a suite that calls it fatally dies on a host without it,
+ * and a fatal in a suite is a suite that did not run. The regex is
+ * portable and counts the same thing.
+ */
+function css_character_count( $string ) {
+    $count = preg_match_all( '/./us', (string) $string, $matches );
+    return false === $count ? strlen( (string) $string ) : $count;
+}
+
 function css_reset() {
     agentshell_test_reset();
     Tx::unfreeze_time();
@@ -145,7 +160,7 @@ Agentshell_Test::run(
         // characters, one byte over the limit — refused.
         $over = $exact . 'a';
         Agentshell_Test::assert_true(
-            mb_strlen( $over ) < CSS_LIMIT,
+            css_character_count( $over ) < CSS_LIMIT,
             'the over-limit fixture must still be under the limit in characters'
         );
         Agentshell_Test::assert_false(

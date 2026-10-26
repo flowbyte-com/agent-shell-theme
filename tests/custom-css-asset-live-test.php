@@ -23,13 +23,10 @@ echo "live custom stylesheet asset (real WordPress)\n";
 // resolution refuses to fall back to LocalWP auto-discovery.
 $config = agentshell_wp_live_config_destructive();
 if ( null === $config ) {
-    Agentshell_Test::run(
-        'live custom-css asset suite',
-        function () {
-            Agentshell_Test::assert_true( true, 'skipped: no test-bed config (destructive suites require tests/config/test-bed.json)' );
-        }
-    );
-    echo "  (skipped: destructive suites require a test-bed config; tests/config/test-bed.json not present or invalid)\n";
+    // A skip, declared as one. It used to be an assertion that
+    // passed with 'skipped:' in its message, which is a skip
+    // counted as a pass.
+    Agentshell_Test::skip( 'no test-bed config (destructive suites require tests/config/test-bed.json)' );
     return;
 }
 

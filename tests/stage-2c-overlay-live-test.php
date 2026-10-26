@@ -62,7 +62,7 @@ echo "Stage 2c overlay live tests (Milestone 3: live overlay against the test si
 // be reached by accident.
 $config = agentshell_wp_live_config_destructive();
 if ( null === $config ) {
-    echo "  SKIPPED: no test-bed config — destructive integration suite requires a real test site\n";
+    Agentshell_Test::skip( 'no test-bed config — destructive integration suite requires a real test site\\n' );
     Agentshell_Test::run(
         'stage-2c-overlay-live: no test-bed config',
         function () { Agentshell_Test::assert_true( true, 'skipped' ); }
@@ -70,7 +70,7 @@ if ( null === $config ) {
     return;
 }
 if ( ! class_exists( 'mysqli' ) ) {
-    echo "  SKIPPED: this PHP has no mysqli, so the fail-closed check cannot run\n";
+    Agentshell_Test::skip( 'this PHP has no mysqli, so the fail-closed check cannot run\\n' );
     Agentshell_Test::run(
         'stage-2c-overlay-live: no mysqli',
         function () { Agentshell_Test::assert_true( true, 'skipped' ); }

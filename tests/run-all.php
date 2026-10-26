@@ -2,6 +2,48 @@
 /**
  * Unified test runner — runs every suite, exits non-zero on any failure.
  *
+ * How a suite runs
+ * ----------------
+ * Each suite is a **process**, not a file the runner `require`s. The
+ * runner spawns `tests/run-suite.php` for it, that script loads the
+ * harness, requires the suite, and prints a machine-readable verdict.
+ * The runner reads the verdict and aggregates it.
+ *
+ * This is not a preference. The runner used to `require` every suite
+ * into its own process, which made the runner's lifecycle the suites'
+ * lifecycle: a suite that called `exit()` — as `destructive-identity-guard`
+ * did when it found no live WordPress — ended the *whole run*, silently,
+ * with a success exit code. Every suite registered after it was skipped
+ * without a word, and the totals the runner printed described a fraction
+ * of the work. A suite is now a process, so it can exit, die or be
+ * skipped without touching the run, and a suite that stops without
+ * reporting a result is reported as **incomplete** — a failure of the
+ * run, not a silent omission.
+ *
+ * The environment is resolved once, here, with the same functions the
+ * suites use, so the runner and a suite cannot disagree about whether
+ * an environment exists. That disagreement was the other half of the
+ * early-exit defect: the runner judged a suite eligible because a
+ * *profile file* existed, while the suite judged it ineligible because
+ * the profile did not *resolve*.
+ *
+ * Every suite declares what it requires, next to its path:
+ *
+ *   'unit'        — no external dependency. Always eligible.
+ *   'testbed'     — needs the opt-in test-bed profile, and only reads it.
+ *   'live'        — needs a resolvable live WordPress, and only reads it.
+ *   'destructive' — needs a *verified* test bed and writes to it: the
+ *                   profile, the mysqli extension in the runner's PHP,
+ *                   the fail-closed identity check and the HTTP identity
+ *                   handshake must all be in place.
+ *
+ * A suite that cannot run is **skipped with a reason**, and a skip is
+ * never counted as a pass. A suite that declares a skip in the suite
+ * itself says so through `Agentshell_Test::skip()`.
+ *
+ * The report distinguishes passed, failed, skipped and incomplete, and
+ * the exit status is non-zero if anything failed or was incomplete.
+ *
  * Suites:
  *   - security         Commit 1 capability boundary
  *   - hardening        Commit 2 sink hardening
@@ -76,6 +118,10 @@
  *                      substitute, field-level overlay filters, permalink
  *                      family, and template_redirect headers
  *
+ *   - run-all-lifecycle  the runner's own regression test: an early-exiting
+ *                      suite is incomplete, the suite after it still runs, a
+ *                      failure is a failure and a skip is a skip
+ *
  * The run fingerprints the checkout before it starts and again after it ends.
  * A test that writes into the working tree turns every other suite into a
  * reader of mutated production code — a failure mode that looks exactly like a
@@ -89,6 +135,7 @@ require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/mutation-sandbox.php';
 require_once __DIR__ . '/agentshell-test-bed.php';
 require_once __DIR__ . '/wp-live.php';
+require_once __DIR__ . '/runner-dispatch.php';
 
 define( 'AGENTSHELL_TEST_AGGREGATE', true );
 
@@ -270,39 +317,97 @@ $suites = array(
     // First: this suite loads the real AgentShell_MCP\Store, which later
     // suites then reuse instead of installing their own stubs. Anything that
     // needs a different Store has to run before it, in its own process.
-    'transaction-preview'  => __DIR__ . '/transaction-preview-test.php',
-    'post-preview'         => __DIR__ . '/post-preview-test.php',
+    'transaction-preview' => array(
+        'path'     => __DIR__ . '/transaction-preview-test.php',
+        'requires' => 'unit',
+    ),
+    'post-preview' => array(
+        'path'     => __DIR__ . '/post-preview-test.php',
+        'requires' => 'unit',
+    ),
     // Shares the fixture globals with post-preview above, so it must run in the
     // same process and after it.
-    'preview-credential-hygiene' => __DIR__ . '/preview-credential-hygiene-test.php',
-    'published-preview-credential-hygiene' => __DIR__ . '/published-preview-credential-hygiene-test.php',
-    'published-preview-transport' => __DIR__ . '/published-preview-transport-test.php',
+    'preview-credential-hygiene' => array(
+        'path'     => __DIR__ . '/preview-credential-hygiene-test.php',
+        'requires' => 'unit',
+    ),
+    'published-preview-credential-hygiene' => array(
+        'path'     => __DIR__ . '/published-preview-credential-hygiene-test.php',
+        'requires' => 'unit',
+    ),
+    'published-preview-transport' => array(
+        'path'     => __DIR__ . '/published-preview-transport-test.php',
+        'requires' => 'unit',
+    ),
     // Loads the real Store, Doctor and Transaction_Manager and reads the
     // preview gate's credential, so it belongs beside the suites that have
     // already put those in memory.
-    'config-consistency'   => __DIR__ . '/config-consistency-test.php',
+    'config-consistency' => array(
+        'path'     => __DIR__ . '/config-consistency-test.php',
+        'requires' => 'unit',
+    ),
+    // The configuration's round trip through the REST surface: what is
+    // stored is what is read back, and what is read back is what a
+    // second read agrees with. Unit-only.
+    'config-roundtrip' => array(
+        'path'     => __DIR__ . '/config-roundtrip-test.php',
+        'requires' => 'unit',
+    ),
     // Loads the real Store, Doctor and Transaction_Manager and drives the
     // lease with a frozen clock, so it belongs after the suites that have
     // already put those in memory.
-    'transaction-lease'    => __DIR__ . '/transaction-lease-test.php',
+    'transaction-lease' => array(
+        'path'     => __DIR__ . '/transaction-lease-test.php',
+        'requires' => 'unit',
+    ),
     // Defines wp_insert_post()/wp_update_post()/get_permalink() stubs for the
     // runner's shared process, and drives the bounded content-write guard with
     // a recording wpdb. Runs after the suites that need the real Store.
-    'content-write'        => __DIR__ . '/content-write-test.php',
+    'content-write' => array(
+        'path'     => __DIR__ . '/content-write-test.php',
+        'requires' => 'unit',
+    ),
     // Needs those same stubs, and a real WordPress. Skips without one.
-    'content-write-live'   => __DIR__ . '/content-write-live-test.php',
+    'content-write-live' => array(
+        'path'     => __DIR__ . '/content-write-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Defines get_post_meta()/wp_delete_post() for the runner's shared process,
     // which the earlier content-write stubs deliberately did not, and drives the
     // journal's compensation path against them.
-    'journal-recovery'     => __DIR__ . '/journal-recovery-test.php',
+    'journal-recovery' => array(
+        'path'     => __DIR__ . '/journal-recovery-test.php',
+        'requires' => 'unit',
+    ),
     // Needs that post meta, and a real WordPress and database — which is the
     // point of it, since the marker lookup and the force delete are exactly what
     // a stub would agree with for the wrong reason. Skips without one.
-    'journal-recovery-live' => __DIR__ . '/journal-recovery-live-test.php',
-    'security'             => __DIR__ . '/security-test.php',
-    'hardening'            => __DIR__ . '/hardening-test.php',
-    'inject-block'         => __DIR__ . '/inject-block-test.php',
-    'widget-registry'      => __DIR__ . '/widget-registry-test.php',
+    'journal-recovery-live' => array(
+        'path'     => __DIR__ . '/journal-recovery-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
+    'security' => array(
+        'path'     => __DIR__ . '/security-test.php',
+        'requires' => 'unit',
+    ),
+    'hardening' => array(
+        'path'     => __DIR__ . '/hardening-test.php',
+        'requires' => 'unit',
+    ),
+    'inject-block' => array(
+        'path'     => __DIR__ . '/inject-block-test.php',
+        'requires' => 'unit',
+    ),
+    'widget-registry' => array(
+        'path'     => __DIR__ . '/widget-registry-test.php',
+        'requires' => 'unit',
+    ),
     // HAL 9001 remediation regression: a widget's init function must
     // actually be called. A widget's init_js only *registers* an
     // initialiser, and nothing invoked it, so every widget that needed
@@ -310,16 +415,41 @@ $suites = array(
     // in Node against a small DOM stub; the PHP half checks that the
     // runtime the theme emits recognises the attribute the renderers
     // emit. Non-destructive unit suite.
-    'widget-init'          => __DIR__ . '/widget-init-test.php',
-    'widget-root-marker'  => __DIR__ . '/widget-root-marker-test.php',
-    'render-block'         => __DIR__ . '/render-block-test.php',
+    'widget-init' => array(
+        'path'     => __DIR__ . '/widget-init-test.php',
+        'requires' => 'unit',
+    ),
+    'widget-root-marker' => array(
+        'path'     => __DIR__ . '/widget-root-marker-test.php',
+        'requires' => 'unit',
+    ),
+    // The widget area and widget asset surfaces: which areas the doctor
+    // accepts, and that a widget's CSS is emitted once. Unit-only.
+    'widget-areas' => array(
+        'path'     => __DIR__ . '/widget-areas-test.php',
+        'requires' => 'unit',
+    ),
+    'widget-assets-emit' => array(
+        'path'     => __DIR__ . '/widget-assets-emit-test.php',
+        'requires' => 'unit',
+    ),
+    'render-block' => array(
+        'path'     => __DIR__ . '/render-block-test.php',
+        'requires' => 'unit',
+    ),
     // Navigation blocks: menu selection, resolution, the no-substitution
     // guarantee, unique ids, escaping, the doctor's dependency warnings and
     // MCP ↔ configurator equivalence. Must run before nine-area-zones, which
     // reuses the menu stubs this suite installs first (tests/agentshell-nav-stubs.php).
-    'navigation-blocks'    => __DIR__ . '/navigation-blocks-test.php',
+    'navigation-blocks' => array(
+        'path'     => __DIR__ . '/navigation-blocks-test.php',
+        'requires' => 'unit',
+    ),
     // The navigation script's open/close/Escape rules, in Node.
-    'nav-model'            => __DIR__ . '/run-nav-model.php',
+    'nav-model' => array(
+        'path'     => __DIR__ . '/run-nav-model.php',
+        'requires' => 'unit',
+    ),
     // The redesigned editor: its own model (Node), the editor itself driven
     // in a real browser against the theme's real stylesheet, modules and
     // markup, and the authorisation boundary that decides who is sent it.
@@ -329,25 +459,58 @@ $suites = array(
     // registered after it would never run in the unit-only job. The CI
     // workflow runs the Node suites directly as well, so a skip in the
     // runner can never be mistaken for a pass.
-    'configurator-editor'  => __DIR__ . '/run-configurator-editor.php',
-    'configurator-browser' => __DIR__ . '/run-configurator-browser.php',
-    'configurator-enqueue' => __DIR__ . '/configurator-enqueue-test.php',
+    'configurator-editor' => array(
+        'path'     => __DIR__ . '/run-configurator-editor.php',
+        'requires' => 'unit',
+    ),
+    'configurator-browser' => array(
+        'path'     => __DIR__ . '/run-configurator-browser.php',
+        'requires' => 'unit',
+    ),
+    'configurator-enqueue' => array(
+        'path'     => __DIR__ . '/configurator-enqueue-test.php',
+        'requires' => 'unit',
+    ),
     // Nine-area header/footer zones: canonical schema, the three-slot
     // compatibility layer, markup parity, layout derivation, validation,
     // and MCP ↔ configurator equivalence. Defines the wp_core stubs the
     // shared bootstrap omits, guarded with function_exists().
-    'nine-area-zones'      => __DIR__ . '/nine-area-zones-test.php',
+    'nine-area-zones' => array(
+        'path'     => __DIR__ . '/nine-area-zones-test.php',
+        'requires' => 'unit',
+    ),
     // Live HTTP regression for the WordPress on-demand block-style pipeline.
     // Reads the rendered home page and asserts that WP's own template
     // enhancement output buffer ran to completion (no placeholder stubs
     // survive in <head>). Skips cleanly when no runtime is reachable.
-    'block-style-pipeline' => __DIR__ . '/block-style-pipeline-test.php',
-    'flatten'              => __DIR__ . '/flatten-test.php',
-    'doctor'               => __DIR__ . '/doctor-test.php',
-    'audit-log'            => __DIR__ . '/audit-log-test.php',
-    'static-token-auth'    => __DIR__ . '/static-token-auth-test.php',
-    'app-password-auth'    => __DIR__ . '/app-password-auth-test.php',
-    'tool-schema'          => __DIR__ . '/tool-schema-test.php',
+    'block-style-pipeline' => array(
+        'path'     => __DIR__ . '/block-style-pipeline-test.php',
+        'requires' => 'unit',
+    ),
+    'flatten' => array(
+        'path'     => __DIR__ . '/flatten-test.php',
+        'requires' => 'unit',
+    ),
+    'doctor' => array(
+        'path'     => __DIR__ . '/doctor-test.php',
+        'requires' => 'unit',
+    ),
+    'audit-log' => array(
+        'path'     => __DIR__ . '/audit-log-test.php',
+        'requires' => 'unit',
+    ),
+    'static-token-auth' => array(
+        'path'     => __DIR__ . '/static-token-auth-test.php',
+        'requires' => 'unit',
+    ),
+    'app-password-auth' => array(
+        'path'     => __DIR__ . '/app-password-auth-test.php',
+        'requires' => 'unit',
+    ),
+    'tool-schema' => array(
+        'path'     => __DIR__ . '/tool-schema-test.php',
+        'requires' => 'unit',
+    ),
     // Section E regression: agentshell_mcp_execute_tool filter must have
     // an accepted_args that matches its callback's parameter count. The
     // pre-fix source had a 4-parameter callback registered with
@@ -356,7 +519,10 @@ $suites = array(
     // METHOD_NOT_FOUND the dispatcher wants. Non-destructive: reads
     // the plugin source and exercises the filter via the test
     // bootstrap, no WordPress install required.
-    'mcp-execute-tool-dispatch' => __DIR__ . '/mcp-execute-tool-dispatch-test.php',
+    'mcp-execute-tool-dispatch' => array(
+        'path'     => __DIR__ . '/mcp-execute-tool-dispatch-test.php',
+        'requires' => 'unit',
+    ),
     // Gate 3 §3: every destructive child script (`tests/*-live-child.php`)
     // must call agentshell_destructive_child_identity_guard() before
     // require_once wp-load.php and exit 7 when the wp_root does not match
@@ -365,68 +531,183 @@ $suites = array(
     // even when the parent is bypassed. Negative cases (bad wp_root,
     // integration site's wp_root, wrong sentinel) refuse; the contaminated
     // test bed refuses until Phase 4 restores it.
-    'destructive-identity-guard' => __DIR__ . '/destructive-identity-guard-test.php',
-    'destructive-identity-guard-siteurl' => __DIR__ . '/destructive-identity-guard-siteurl-test.php',
-    'bootstrap-contract' => __DIR__ . '/bootstrap-contract-test.php',
-    'security-headers'     => __DIR__ . '/security-headers-test.php',
-    'daemon-version'       => __DIR__ . '/daemon-version-test.php',
-    'navigation'           => __DIR__ . '/navigation-test.php',
-    'navigation-live'      => __DIR__ . '/navigation-live-test.php',
+    'destructive-identity-guard' => array(
+        'path'     => __DIR__ . '/destructive-identity-guard-test.php',
+        'requires' => 'live',
+    ),    // Read-only against a live WordPress: it resolves one itself and
+    // asserts that a destructive child refuses the wrong installation.
+
+    'destructive-identity-guard-siteurl' => array(
+        'path'     => __DIR__ . '/destructive-identity-guard-siteurl-test.php',
+        'requires' => 'testbed',
+    ),    // Needs the opt-in test-bed profile: it asserts something about the
+    // profile's own contents, so it has nothing to assert without one.
+
+    'bootstrap-contract' => array(
+        'path'     => __DIR__ . '/bootstrap-contract-test.php',
+        'requires' => 'unit',
+    ),
+    'security-headers' => array(
+        'path'     => __DIR__ . '/security-headers-test.php',
+        'requires' => 'unit',
+    ),
+    'daemon-version' => array(
+        'path'     => __DIR__ . '/daemon-version-test.php',
+        'requires' => 'unit',
+    ),
+    'navigation' => array(
+        'path'     => __DIR__ . '/navigation-test.php',
+        'requires' => 'unit',
+    ),
+    'navigation-live' => array(
+        'path'     => __DIR__ . '/navigation-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Independent navigation blocks against a real WordPress: a named menu, a
     // registered location, nested items, unique list ids across placements,
     // and no substitution when a menu is missing. Destructive (creates and
     // deletes its own menus), so it is gated like navigation-live.
-    'navigation-blocks-live' => __DIR__ . '/navigation-blocks-live-test.php',
-    'screenshot'           => __DIR__ . '/screenshot-test.php',
-    'screenshot-privacy'   => __DIR__ . '/screenshot-privacy-test.php',
+    'navigation-blocks-live' => array(
+        'path'     => __DIR__ . '/navigation-blocks-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
+    'screenshot' => array(
+        'path'     => __DIR__ . '/screenshot-test.php',
+        'requires' => 'unit',
+    ),
+    'screenshot-privacy' => array(
+        'path'     => __DIR__ . '/screenshot-privacy-test.php',
+        'requires' => 'unit',
+    ),
     // The request policy: what a capture is allowed to ask for, and what
     // the browser is told when it asks for something else. The first is
     // the decision, the second is the interception that enforces it
     // against a browser that pauses every request, and the third is the
     // same property against a real browser and two disposable sites.
-    'browser-request-policy' => __DIR__ . '/browser-request-policy-test.php',
-    'screenshot-interception' => __DIR__ . '/screenshot-interception-test.php',
-    'screenshot-request-policy-live' => __DIR__ . '/screenshot-request-policy-live-test.php',
-    'browser-isolation'    => __DIR__ . '/browser-isolation-test.php',
-    'browser-trust'        => __DIR__ . '/browser-trust-test.php',
-    'configurator-state'   => __DIR__ . '/run-configurator-state.php',
-    'mutation-sandbox'     => __DIR__ . '/mutation-sandbox-test.php',
+    'browser-request-policy' => array(
+        'path'     => __DIR__ . '/browser-request-policy-test.php',
+        'requires' => 'unit',
+    ),
+    'screenshot-interception' => array(
+        'path'     => __DIR__ . '/screenshot-interception-test.php',
+        'requires' => 'unit',
+    ),
+    'screenshot-request-policy-live' => array(
+        'path'     => __DIR__ . '/screenshot-request-policy-live-test.php',
+        'requires' => 'unit',
+    ),
+    'browser-isolation' => array(
+        'path'     => __DIR__ . '/browser-isolation-test.php',
+        'requires' => 'unit',
+    ),
+    'browser-trust' => array(
+        'path'     => __DIR__ . '/browser-trust-test.php',
+        'requires' => 'unit',
+    ),
+    'configurator-state' => array(
+        'path'     => __DIR__ . '/run-configurator-state.php',
+        'requires' => 'unit',
+    ),
+    // The runner's own regression test: a suite that exits early is
+    // reported as incomplete, a suite registered after it still runs, a
+    // failing suite is reported as failed, and a skipped suite is never
+    // counted as a pass. Unit-only.
+    'run-all-lifecycle' => array(
+        'path'     => __DIR__ . '/run-all-lifecycle-test.php',
+        'requires' => 'unit',
+    ),
+    'mutation-sandbox' => array(
+        'path'     => __DIR__ . '/mutation-sandbox-test.php',
+        'requires' => 'unit',
+    ),
     // Stage 2c Milestone 1: the journal/claim foundation. Unit-only.
-    'stage-2c-foundation'  => __DIR__ . '/stage-2c-foundation-test.php',
+    'stage-2c-foundation' => array(
+        'path'     => __DIR__ . '/stage-2c-foundation-test.php',
+        'requires' => 'unit',
+    ),
     // Stage 2c Milestone 2: private-shadow creation, successive authorised
     // edits, idempotency. Unit-only; needs the wp_insert_post/wp_update_post
     // stubs defined inline. Runs after journal-recovery so the postmeta
     // store is already in memory if it ever needs to be.
-    'stage-2c-shadow'      => __DIR__ . '/stage-2c-shadow-test.php',
+    'stage-2c-shadow' => array(
+        'path'     => __DIR__ . '/stage-2c-shadow-test.php',
+        'requires' => 'unit',
+    ),
     // Stage 2c Milestone 3: secure published-content preview overlay.
     // Unit-only; covers credential mint/verify, the overlay's verify_and_install
     // gates, the_posts substitute, field-level overlay filters, permalink
     // family, and template_redirect headers. Live verification is in
     // stage-2c-overlay-live-test.php and is gated on the test-bed check.
-    'stage-2c-overlay'     => __DIR__ . '/stage-2c-overlay-test.php',
+    'stage-2c-overlay' => array(
+        'path'     => __DIR__ . '/stage-2c-overlay-test.php',
+        'requires' => 'unit',
+    ),
+    // The Stage 2c review: the invariants the M5 audit produced, checked
+    // against the classes as they are now. Unit-only.
+    'stage-2c-review' => array(
+        'path'     => __DIR__ . '/stage-2c-review-test.php',
+        'requires' => 'unit',
+    ),
+    // The publish-edit tool's unit half: the allowlist, the claim, the
+    // shadow, and the refusal cascade, all against stubs. The live half
+    // is stage-2c-publish-edit-live below. Unit-only.
+    'stage-2c-publish-edit' => array(
+        'path'     => __DIR__ . '/stage-2c-publish-edit-test.php',
+        'requires' => 'unit',
+    ),
     // Stage 2c Milestone 3 live verification: the production overlay
     // code path against a real WordPress install. Gated on the test-bed
     // fail-closed check having passed; otherwise skipped cleanly.
-    'stage-2c-overlay-live'=> __DIR__ . '/stage-2c-overlay-live-test.php',
+    'stage-2c-overlay-live' => array(
+        'path'     => __DIR__ . '/stage-2c-overlay-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Stage 2c Milestone 4 live verification: the publish-edit tool
     // against a real WordPress install. Runs the same publication
     // path the unit tests drive with a recording wpdb, but with
     // wp_update_post against a real wp_posts row, a real advisory
     // lock, a real per-original claim swap, and a real anonymous
     // HTTP request that walks the permalink redirect chain.
-    'stage-2c-publish-edit-live' => __DIR__ . '/stage-2c-publish-edit-live-test.php',
+    'stage-2c-publish-edit-live' => array(
+        'path'     => __DIR__ . '/stage-2c-publish-edit-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Stage 2c M5-s2 self-test: confirms the end-of-suite leak
     // check reports synthetic agentshell_published_claim_* rows
     // and synthetic _agentshell_shadow_* postmeta rows. Gated on
     // the same test-bed fail-closed check the other destructive
     // live suites use.
-    'stage-2c-leak-check-live' => __DIR__ . '/stage-2c-leak-check-live-test.php',
+    'stage-2c-leak-check-live' => array(
+        'path'     => __DIR__ . '/stage-2c-leak-check-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Stage 2c M5-t1 race regression: two concurrent publish_edit
     // calls (R1) and two concurrent publish_edit_reconcile calls
     // (R2) against the same op_id. Spawns two child PHP processes
     // per race with file-based barriers, asserts exactly one
     // committed / reconciled and one refused. Destructive live.
-    'stage-2c-publish-edit-race-live' => __DIR__ . '/stage-2c-publish-edit-race-live-test.php',
+    'stage-2c-publish-edit-race-live' => array(
+        'path'     => __DIR__ . '/stage-2c-publish-edit-race-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Stage 2c M5-t2 post-COMMIT recovery: spawn a pre-commit child
     // that runs the publish SQL transaction and exits without
     // reconciliation, then spawn a fresh-process child that calls
@@ -435,34 +716,70 @@ $suites = array(
     // 1, the shadow and claim survive, reconciliation settles without
     // re-publishing, and a second reconcile is mutation-free.
     // Destructive live.
-    'stage-2c-publish-edit-recovery-live' => __DIR__ . '/stage-2c-publish-edit-recovery-live-test.php',
+    'stage-2c-publish-edit-recovery-live' => array(
+        'path'     => __DIR__ . '/stage-2c-publish-edit-recovery-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Stage 2c M5-t3 end-to-end acceptance: the full published-edit
     // lifecycle against a real WordPress install — page → claim →
     // shadow → stage → preview (real HTTP) → publish → reconcile,
     // plus retry safety, anonymous-isolation, forged / expired /
     // wrong-actor credentials, baseline drift, and outside-the-
     // four-fields shadow changes. Destructive live.
-    'stage-2c-end-to-end-live' => __DIR__ . '/stage-2c-end-to-end-live-test.php',
+    'stage-2c-end-to-end-live' => array(
+        'path'     => __DIR__ . '/stage-2c-end-to-end-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Gate 3 Section D regression: journal-only commit must succeed
     // without a dummy set_css_var, must preserve the persisted config,
     // and must not regress the empty-tx refuse or the staged-only path.
     // Destructive live: gated on the same fail-closed check the other
     // destructive suites use.
-    'journal-only-commit-live' => __DIR__ . '/journal-only-commit-live-test.php',
+    'journal-only-commit-live' => array(
+        'path'     => __DIR__ . '/journal-only-commit-live-test.php',
+        'requires' => 'destructive',
+    ),
+    // The rollback evidence a journal-only commit leaves behind, against
+    // a real WordPress. Destructive: it writes to the test site.
+    'rollback-evidence-live' => array(
+        'path'     => __DIR__ . '/rollback-evidence-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Gate 3 Task 4 regression: create_draft must not refuse the second
     // and subsequent creates in a single transaction, must not refuse on
     // a site with prior journal state, and must fail closed on a
     // tampered-signature journal or a stuck-intended tx. Eight scenarios
     // plus a no-orphan teardown, all through a real WordPress install
     // with the journal and the option cache. Destructive live.
-    'create-draft-cas-persistent-live' => __DIR__ . '/create-draft-cas-persistent-live-test.php',
+    'create-draft-cas-persistent-live' => array(
+        'path'     => __DIR__ . '/create-draft-cas-persistent-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Phase 1 port of the integration worktree's F7/F8 refusal
     // scenarios (tampered-signature journal, stuck intended op) as a
     // separate destructive-live suite, leaving the development
     // create-draft-cas-persistent-live F0–F9 (stress + idempotency
     // resume) intact. Destructive live: gated on the same fail-closed
     // check the other destructive suites use.
-    'create-draft-cas-refusal-live' => __DIR__ . '/create-draft-cas-refusal-live-test.php',
+    'create-draft-cas-refusal-live' => array(
+        'path'     => __DIR__ . '/create-draft-cas-refusal-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Gate 3 Task 5 regression: the new `agentshell_edit_published`
     // staging tool. Exercised through the same real WordPress install
     // the other destructive live suites use, against a per-run
@@ -476,7 +793,10 @@ $suites = array(
     // lost race. Staging the same configuration twice inside one second
     // failed, and so did a journal head whose compare fields had not
     // moved. Non-destructive unit suite.
-    'transaction-cas' => __DIR__ . '/transaction-cas-test.php',
+    'transaction-cas' => array(
+        'path'     => __DIR__ . '/transaction-cas-test.php',
+        'requires' => 'unit',
+    ),
     // HAL 9001 remediation regression: the custom CSS size limit. The
     // limit is 256 KiB (262,144 bytes), measured in bytes of the UTF-8
     // encoding, and it is applied in the theme's validator, in the MCP
@@ -484,17 +804,26 @@ $suites = array(
     // theme import. The exact boundary (262,144 accepted, 262,145
     // refused) and the byte-not-character measurement are pinned here.
     // Non-destructive unit suite.
-    'custom-css-limit'      => __DIR__ . '/custom-css-limit-test.php',
+    'custom-css-limit' => array(
+        'path'     => __DIR__ . '/custom-css-limit-test.php',
+        'requires' => 'unit',
+    ),
     // The custom stylesheet as a static, cacheable file: the file's bytes
     // and the inline block's bytes are the same string, the URL changes
     // exactly when the content changes, a materialisation failure leaves
     // the site rendering inline, and the pruning touches nothing but this
     // feature's own old files. Non-destructive unit suite.
-    'custom-css-asset'      => __DIR__ . '/custom-css-asset-test.php',
+    'custom-css-asset' => array(
+        'path'     => __DIR__ . '/custom-css-asset-test.php',
+        'requires' => 'unit',
+    ),
     // The deployment is a build, and this suite asserts what it carries.
     // It builds the archive, so it runs after the suites that change the
     // working tree.
-    'release-archive'       => __DIR__ . '/release-archive-test.php',
+    'release-archive' => array(
+        'path'     => __DIR__ . '/release-archive-test.php',
+        'requires' => 'unit',
+    ),
     // HAL 9001 remediation regression: the saved-configuration token
     // block is CSS, not HTML. It was emitted with esc_attr() — the HTML
     // attribute escaper — inside a <style> element, where entities are
@@ -503,36 +832,66 @@ $suites = array(
     // the characters CSS needs and removes the ones that could end a
     // declaration, open a rule or close the element. Non-destructive
     // unit suite.
-    'css-context'           => __DIR__ . '/css-context-test.php',
+    'css-context' => array(
+        'path'     => __DIR__ . '/css-context-test.php',
+        'requires' => 'unit',
+    ),
+    // The layout tokens: the four known layout keys, and the deep merge
+    // of a user's breakpoints over the defaults. Unit-only.
+    'layout-css' => array(
+        'path'     => __DIR__ . '/layout-css-test.php',
+        'requires' => 'unit',
+    ),
     // HAL 9001 remediation regression: a missing argument is refused by
     // name instead of raising a PHP warning and creating something the
     // caller never asked for. Non-destructive unit suite.
-    'argument-handling'   => __DIR__ . '/argument-handling-test.php',
+    'argument-handling' => array(
+        'path'     => __DIR__ . '/argument-handling-test.php',
+        'requires' => 'unit',
+    ),
     // HAL 9001 remediation regression: the small diagnostics defects. The
     // type scale reaches the CSS variables instead of being stored and
     // ignored; the doctor does not warn about a widget the operator
     // retired; the update response names the fields it wrote; the
     // daemon's compatibility notice is verbose-only. Non-destructive unit
     // suite.
-    'diagnostics'         => __DIR__ . '/diagnostics-test.php',
+    'diagnostics' => array(
+        'path'     => __DIR__ . '/diagnostics-test.php',
+        'requires' => 'unit',
+    ),
     // HAL 9001 remediation regression: the documented tool count must
     // equal the number the plugins register. A count that is written
     // down can only be kept right by remembering to change it; this one
     // fails the build when it drifts. Non-destructive unit suite.
-    'tool-count'          => __DIR__ . '/tool-count-test.php',
+    'tool-count' => array(
+        'path'     => __DIR__ . '/tool-count-test.php',
+        'requires' => 'unit',
+    ),
     // The documentation gates of AGENTS.md §9, executable: a stale tool
     // count, a duplicated tool table or a contradicted source-of-truth
     // statement is a build failure, not a surprise for whoever reads
     // the file next.
-    'doc-consistency'     => __DIR__ . '/doc-consistency-test.php',
+    'doc-consistency' => array(
+        'path'     => __DIR__ . '/doc-consistency-test.php',
+        'requires' => 'unit',
+    ),
     // Site identity and reading settings: the bounded surface, its
     // validation, and the projection onto WordPress's own options.
-    'site-settings'       => __DIR__ . '/site-settings-test.php',
+    'site-settings' => array(
+        'path'     => __DIR__ . '/site-settings-test.php',
+        'requires' => 'unit',
+    ),
     // The DevTools client's wire format: pure functions, no browser.
-    'cdp'                 => __DIR__ . '/cdp-test.php',
+    'cdp' => array(
+        'path'     => __DIR__ . '/cdp-test.php',
+        'requires' => 'unit',
+    ),
     // The narrow-viewport capture, against a real browser. Skips when the
     // host has no Chrome.
-    'viewport-live'       => __DIR__ . '/viewport-live-test.php',
+    'viewport-live' => array(
+        'path'     => __DIR__ . '/viewport-live-test.php',
+        'requires' => 'unit',
+    ),
     // HAL 9001 remediation regression: the published-edit field
     // preservation contract. A partial edit must inherit every field the
     // caller did not name (title, slug, excerpt) instead of blanking it,
@@ -542,16 +901,40 @@ $suites = array(
     // staged values, and the publish step must refuse to write a field
     // the transaction never authorised. Destructive live: gated on the
     // same fail-closed check the other destructive suites use.
-    'edit-published-preservation-live' => __DIR__ . '/edit-published-preservation-live-test.php',
+    'edit-published-preservation-live' => array(
+        'path'     => __DIR__ . '/edit-published-preservation-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // HAL 9001 remediation regression: the MCP route to a staged edit of
     // a published page. The published-preview overlay credential existed
     // but no tool exposed it, so the only way to see a staged edit was to
     // capture the shadow row's id by hand, on an undocumented route.
     // Destructive live: gated on the same fail-closed check the other
     // destructive suites use.
-    'published-preview-live' => __DIR__ . '/published-preview-live-test.php',
-    'published-preview-ownership-live' => __DIR__ . '/published-preview-ownership-live-test.php',
-    'edit-published-live' => __DIR__ . '/edit-published-live-test.php',
+    'published-preview-live' => array(
+        'path'     => __DIR__ . '/published-preview-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
+    'published-preview-ownership-live' => array(
+        'path'     => __DIR__ . '/published-preview-ownership-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
+    'edit-published-live' => array(
+        'path'     => __DIR__ . '/edit-published-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Phase 3 regression: the preflight's `multi_query` + drain
     // sequence must catch queued-statement failures (a duplicate-key
     // collision surfaced by `next_result()` after the first
@@ -560,26 +943,56 @@ $suites = array(
     // caller. The child constructs an in-process poison baseline so
     // the failure is deterministic. Destructive live: gated on the
     // same fail-closed check the other destructive suites use.
-    'agentshell-test-bed-preflight-live' => __DIR__ . '/agentshell-test-bed-preflight-live-test.php',
+    'agentshell-test-bed-preflight-live' => array(
+        'path'     => __DIR__ . '/agentshell-test-bed-preflight-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Site settings against a real WordPress: a staged setting does not
     // reach the live site, a commit applies it, a rollback does not, and a
     // refused setting changes nothing. Destructive: it writes the site's
     // own options (and restores them).
-    'site-settings-live'  => __DIR__ . '/site-settings-live-test.php',
+    'site-settings-live' => array(
+        'path'     => __DIR__ . '/site-settings-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // The custom stylesheet as a static file, against a real WordPress: a
     // staged stylesheet never reaches a file, the preview inlines it, a
     // commit materialises it with the same bytes the inline block would
     // have carried, and a snapshot restore re-materialises. Destructive:
     // it writes the site's own configuration (and restores it).
-    'custom-css-asset-live' => __DIR__ . '/custom-css-asset-live-test.php',
+    'custom-css-asset-live' => array(
+        'path'     => __DIR__ . '/custom-css-asset-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Reversible content deletion against a real WordPress: the content
     // reaches the Trash and not the bin, a restore brings it back, both
     // operations are idempotent, and every refusal leaves the content
     // exactly as it was. Destructive: it creates and removes content.
-    'content-trash-live'  => __DIR__ . '/content-trash-live-test.php',
+    'content-trash-live' => array(
+        'path'     => __DIR__ . '/content-trash-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // Compact responses: the default contract is unchanged, and the
     // compact form is measurably smaller. Destructive: it creates content.
-    'compact-response-live' => __DIR__ . '/compact-response-live-test.php',
+    'compact-response-live' => array(
+        'path'     => __DIR__ . '/compact-response-live-test.php',
+        'requires' => 'destructive',
+    ),    // Destructive: it writes to the test site, so it runs only against a
+    // *verified* test bed — the profile, mysqli in the runner's PHP, the
+    // fail-closed identity check and the HTTP identity handshake.
+
     // audit_written contract regression: the
     // `reconciliation.audit_written` field is now an honest,
     // independently-verified boolean response. Covers the
@@ -591,148 +1004,80 @@ $suites = array(
     // (same tx_id, different op_id; same (tx_id, op_id),
     // wrong operation), and existing staging/rollback
     // preservation. Non-destructive unit suite.
-    'audit-written' => __DIR__ . '/audit-written-test.php',
+    'audit-written' => array(
+        'path'     => __DIR__ . '/audit-written-test.php',
+        'requires' => 'unit',
+    ),
+    // The draft tools' bootstrap: the require_once lines in the plugin
+    // are present, correctly ordered, and the classes load. Unit-only.
+    'draft-tools-bootstrap' => array(
+        'path'     => __DIR__ . '/draft-tools-bootstrap-test.php',
+        'requires' => 'unit',
+    ),
 );
 
-$total_passed   = 0;
-$total_failed   = 0;
-$failed_suites  = array();
-$skipped_suites = array();
-
-// Destructive live suites are gated on the fail-closed check having
-// actually run and passed. The list mirrors the four `-live-test.php`
-// files that spawn children against the test site. When the runner
-// is unverified (no mysqli extension in the runner's PHP), the
-// check failed, or the HTTP identity handshake failed, these suites
-// are replaced with an explicit "skipped: not verified" pass so the
-// report shows the destructive verification as **unexecuted**, not
-// as silently passing.
-$destructive_live_suites = array(
-    'content-write-live',
-    'journal-recovery-live',
-    'navigation-live',
-    'navigation-blocks-live',
-    'stage-2c-leak-check-live',
-    'stage-2c-overlay-live',
-    'stage-2c-publish-edit-live',
-    'stage-2c-publish-edit-race-live',
-    'stage-2c-publish-edit-recovery-live',
-    'stage-2c-end-to-end-live',
-    'journal-only-commit-live',
-    'create-draft-cas-persistent-live',
-    'create-draft-cas-refusal-live',
-    'edit-published-live',
-    'edit-published-preservation-live',
-    'published-preview-live',
-    'agentshell-test-bed-preflight-live',
-    'site-settings-live',
-    'content-trash-live',
-    'compact-response-live',
-);
+// ── the environment, resolved once ───────────────────────────────────────────
+// What this machine can offer is decided here, once, and every suite is
+// judged against the same answer. The runner used to decide a suite's
+// eligibility from the *presence of a profile file*, while the suite
+// decided it from whether that profile *resolved*; the two disagreed,
+// and the suite's `exit()` ended the whole run. The environment is now
+// resolved with the same functions the suites use, and the disagreement
+// cannot arise.
 $verification_unverified = $test_bed_unverified;
 $verification_failed     = ( is_array( $test_bed_cfg ) && is_array( $test_bed_check ) && ! $test_bed_check['ok'] );
 $verification_http_fail  = ( is_array( $test_bed_cfg ) && ! $test_bed_http_ok );
 
-// Suites that *read* the test-bed profile and assert something about the
-// live test installation. They are not destructive — they do not mutate the
-// site — but they cannot be answered without one: the profile names a
-// wp_root, a sentinel and a siteurl, and the assertions are about what the
-// live installation reports. In an environment with no test bed (a plain
-// unit run, or CI's unit job) they are **unexecuted**, not passing.
-//
-// Before this list existed these two suites failed in any environment
-// without a test-bed profile: the assertion "test-bed config must load"
-// could not be satisfied by the absence of the thing it was asserting
-// about. A suite that cannot run is reported as skipped, with the reason,
-// so the report never claims a guarantee it did not check.
-$test_bed_required_suites = array(
-    'destructive-identity-guard',
-    'destructive-identity-guard-siteurl',
-);
+$agentshell_environment = agentshell_runner_environment( array(
+    'test_bed_cfg'   => $test_bed_cfg,
+    'test_bed_check' => $test_bed_check,
+    'http_ok'        => $test_bed_http_ok,
+    'unverified'     => $test_bed_unverified,
+    'live'           => agentshell_wp_live_config(),
+    'destructive'    => agentshell_wp_live_config_destructive(),
+) );
 
-foreach ( $suites as $name => $path ) {
-    echo "\n=== $name ===\n";
-    // Explicit "no test bed config" gate: when no test-bed.json is
-    // present, the destructive live suites (which spawn children
-    // against a real WordPress install) cannot run. The unit-only
-    // path is the legitimate default for `php tests/run-all.php`
-    // without a config; the destructive integration verification
-    // is opt-in. The skip is recorded in the report so the test
-    // output makes clear which suites are *integration* and which
-    // are unit-only.
-    if ( ! is_array( $test_bed_cfg ) && in_array( $name, $destructive_live_suites, true ) ) {
-        echo "  SKIPPED: no test-bed config — destructive integration suite requires\n";
-        echo "           a verified test installation. The unit-only mode is the\n";
-        echo "           legitimate default; the destructive path is opt-in via\n";
-        echo "           tests/config/test-bed.json.\n";
-        $skipped_suites[ $name ] = 'no_test_bed_config';
-        Agentshell_Test::$passed = 0;
-        Agentshell_Test::$failed = 0;
-        Agentshell_Test::summary();
-        continue;
-    }
-    if ( $verification_unverified && in_array( $name, $destructive_live_suites, true ) ) {
-        echo "  SKIPPED: runner is unverified (no mysqli in the runner's PHP).\n";
-        echo "           Re-run with the test-bed's PHP to enable destructive verification.\n";
-        $skipped_suites[ $name ] = 'unverified';
-        Agentshell_Test::$passed = 0;
-        Agentshell_Test::$failed = 0;
-        Agentshell_Test::summary();
-        continue;
-    }
-    if ( $verification_failed && in_array( $name, $destructive_live_suites, true ) ) {
-        echo "  SKIPPED: fail-closed check failed (refusal: " . $test_bed_check['refusal'] . ").\n";
-        $skipped_suites[ $name ] = 'failed_verification';
-        Agentshell_Test::$passed = 0;
-        Agentshell_Test::$failed = 0;
-        Agentshell_Test::summary();
-        continue;
-    }
-    if ( in_array( $name, $test_bed_required_suites, true ) && ! is_array( $test_bed_cfg ) ) {
-        echo "  SKIPPED: no test-bed config — this suite asserts something about the\n";
-        echo "           live test installation (profile, sentinel, siteurl), so it has\n";
-        echo "           nothing to assert against without one. It is unexecuted, not\n";
-        echo "           passing.\n";
-        $skipped_suites[ $name ] = 'no_test_bed_config';
-        Agentshell_Test::$passed = 0;
-        Agentshell_Test::$failed = 0;
-        Agentshell_Test::summary();
-        continue;
-    }
-    if ( $verification_http_fail && in_array( $name, $destructive_live_suites, true ) ) {
-        echo "  SKIPPED: HTTP identity handshake failed — HTTP site is not the same\n";
-        echo "           installation as the CLI/DB path the runner verified. The\n";
-        echo "           destructive live suites are gated on the round-trip, not\n";
-        echo "           on hostname/port matching alone.\n";
-        $skipped_suites[ $name ] = 'failed_http_identity';
-        Agentshell_Test::$passed = 0;
-        Agentshell_Test::$failed = 0;
-        Agentshell_Test::summary();
-        continue;
-    }
-    Agentshell_Test::$passed = 0;
-    Agentshell_Test::$failed = 0;
-    Agentshell_Test::$current_test = '';
-    require $path;
-    Agentshell_Test::summary();
-    $total_passed += Agentshell_Test::$passed;
-    $total_failed += Agentshell_Test::$failed;
-    if ( Agentshell_Test::$failed > 0 ) {
-        $failed_suites[] = $name;
-    }
-}
+echo "\n=== ENVIRONMENT ===\n";
+echo "unit suites:        always available\n";
+echo "test-bed profile:   " . ( $agentshell_environment['testbed'] ? 'present' : 'absent' ) . "\n";
+echo "live WordPress:     " . ( $agentshell_environment['live'] ? 'resolved' : 'not resolved' ) . "\n";
+echo "verified test bed:  " . ( $agentshell_environment['destructive'] ? 'verified' : 'not verified' ) . "\n";
+
+// ── the run ─────────────────────────────────────────────────────────────────
+// Every suite runs in its own process (tests/run-suite.php). A suite that
+// exits, dies, or is skipped can no longer end the run, and every suite
+// produces a verdict the summary can report.
+$agentshell_run = agentshell_dispatch_suites( $suites, $agentshell_environment, true );
+
+$total_passed   = $agentshell_run['passed'];
+$total_failed   = $agentshell_run['failed'];
+$failed_suites  = $agentshell_run['failed_suites'];
+$skipped_suites = $agentshell_run['skipped'];
+$incomplete_suites = $agentshell_run['incomplete'];
 
 echo "\n=== TOTAL ===\n";
 echo "$total_passed passed, $total_failed failed";
 if ( ! empty( $skipped_suites ) ) {
     echo ", " . count( $skipped_suites ) . " skipped";
-    foreach ( $skipped_suites as $n => $why ) {
-        echo "\n  skipped: $n ($why)";
-    }
+}
+if ( ! empty( $incomplete_suites ) ) {
+    echo ", " . count( $incomplete_suites ) . " incomplete";
 }
 echo "\n";
+if ( ! empty( $skipped_suites ) ) {
+    echo "\nSkipped suites (unexecuted, with the reason):\n";
+    foreach ( $skipped_suites as $n => $why ) {
+        echo "  $n — $why\n";
+    }
+}
+if ( ! empty( $incomplete_suites ) ) {
+    echo "\nIncomplete suites (the suite stopped without reporting a result):\n";
+    foreach ( $incomplete_suites as $n => $why ) {
+        echo "  $n — $why\n";
+    }
+}
 if ( ! empty( $failed_suites ) ) {
-    echo "Failed suites: " . implode( ', ', $failed_suites ) . "\n";
+    echo "\nFailed suites: " . implode( ', ', $failed_suites ) . "\n";
 }
 
 // ── checkout integrity ──────────────────────────────────────────────────────

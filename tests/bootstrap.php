@@ -21,7 +21,17 @@
  */
 
 if ( ! defined( 'ABSPATH' ) ) { define( 'ABSPATH', __DIR__ ); }
-if ( ! defined( 'AGENTSHELL_REST_TOKEN' ) ) { define( 'AGENTSHELL_REST_TOKEN', '' ); }
+// The signing secret is deliberately NOT defined here.
+//
+// It used to be defined as an empty string, which is not the same thing
+// as leaving it undefined, and it cost a suite its secret: a constant
+// cannot be redefined, so a suite that wanted a usable secret could not
+// have one. Every consumer checks the *value*, so an empty definition
+// and no definition behave the same for them — except where the code
+// asks `defined()` alone, where an empty definition would let a preview
+// key be checked against an empty secret. Leaving it undefined is both
+// what production does (the constant comes from wp-config.php) and the
+// safer of the two.
 if ( ! defined( 'DAY_IN_SECONDS' ) ) { define( 'DAY_IN_SECONDS', 86400 ); }
 if ( ! function_exists( 'wp_schedule_event' ) ) {
     function wp_schedule_event( $timestamp, $recurrence, $hook ) { return true; }
@@ -890,10 +900,37 @@ function apply_filters( $tag, $value, ...$args ) {
 }
 function do_action() {}
 if ( ! function_exists( 'remove_filter' ) ) {
-    function remove_filter() {}
+    /**
+     * Remove a registered callback, as WordPress does.
+     *
+     * This used to be a no-op, and a no-op is a trap: production code
+     * that removes a filter — the preview gate's own suppression, the
+     * admin bar suppression — would appear to have left the filter in
+     * place, so a suite asserting the effect would be asserting the
+     * stub's behaviour rather than the code's. One suite even had to
+     * declare its own `remove_filter` before this file was loaded, which
+     * only worked because the suites shared one process.
+     */
+    function remove_filter( $tag = '', $callback = null, $priority = 10 ) {
+        if ( empty( $GLOBALS['_agentshell_test_filters'][ $tag ] ) ) { return false; }
+        $list    = $GLOBALS['_agentshell_test_filters'][ $tag ];
+        $kept    = array();
+        $removed = false;
+        foreach ( $list as $registered ) {
+            if ( null === $callback || $registered === $callback ) {
+                $removed = true;
+                continue;
+            }
+            $kept[] = $registered;
+        }
+        $GLOBALS['_agentshell_test_filters'][ $tag ] = $kept;
+        return $removed;
+    }
 }
 if ( ! function_exists( 'remove_action' ) ) {
-    function remove_action() {}
+    function remove_action( $tag = '', $callback = null, $priority = 10 ) {
+        return remove_filter( $tag, $callback, $priority );
+    }
 }
 
 /**
@@ -991,6 +1028,41 @@ class Agentshell_Test {
     public static $failed = 0;
     public static $current_test = '';
 
+    /**
+     * Whether the suite declared that it could not run, and why.
+     *
+     * A suite that cannot run must say so through `skip()`. It must not
+     * simply return, and it must not exit: a suite that returns without
+     * a verdict is indistinguishable from one that ran and passed, and a
+     * suite that exits ends the process it was required from. The runner
+     * reads these two fields to tell "passed" from "skipped", and a skip
+     * is never counted as a pass.
+     */
+    public static $skipped = false;
+    public static $skip_reason = '';
+
+    /**
+     * How many times a summary has been printed.
+     *
+     * A few suites print their own summary (they can also be run
+     * directly). The suite runner uses this to avoid printing a second
+     * one, so the report never shows two totals for the same suite.
+     */
+    public static $summaries = 0;
+
+    /**
+     * Declare that this suite cannot run here, and why.
+     *
+     * @param string $reason A sentence the reader can act on.
+     * @return bool Always true, so a caller can `return Agentshell_Test::skip( … );`.
+     */
+    public static function skip( $reason ) {
+        self::$skipped    = true;
+        self::$skip_reason = (string) $reason;
+        echo "  SKIPPED: " . self::$skip_reason . "\n";
+        return true;
+    }
+
     public static function run( $name, callable $fn ) {
         self::$current_test = $name;
         try {
@@ -1025,7 +1097,12 @@ class Agentshell_Test {
         }
     }
     public static function summary() {
-        echo "\n" . self::$passed . " passed, " . self::$failed . " failed\n";
+        self::$summaries++;
+        echo "\n" . self::$passed . " passed, " . self::$failed . " failed";
+        if ( self::$skipped ) {
+            echo ", skipped (" . self::$skip_reason . ")";
+        }
+        echo "\n";
         return self::$failed === 0;
     }
 }

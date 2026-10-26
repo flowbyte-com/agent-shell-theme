@@ -555,6 +555,21 @@ function s2cs_seed_original( $id, $title = 'Original Title', $content = 'Origina
 }
 
 function s2cs_seed_shadow( $shadow_id, $original_id, $op_id, $fields ) {
+    // The staged slug lives in META_STAGED_POST_NAME, not in the shadow's
+    // `post_name` column. The column holds a non-colliding placeholder, so
+    // the publish step's write of the original cannot meet the staged slug
+    // in the same flat namespace; Published_Shadow::create() writes the
+    // meta and Published_Shadow::read_after() reads it. A fixture that
+    // only fills the column is a fixture of an older contract, and the
+    // publish path refuses every edit such a fixture stages.
+    //
+    // When the staged fields do not name a slug, the effective slug is
+    // the original's own: that is the rule Edit_Published applies, and
+    // the rule the op's after-image is built from.
+    $staged_post_name = array_key_exists( 'post_name', $fields )
+        ? (string) $fields['post_name']
+        : (string) ( $GLOBALS['_agentshell_test_posts'][ (int) $original_id ]->post_name ?? '' );
+
     $GLOBALS['_agentshell_test_posts'][ (int) $shadow_id ] = (object) array(
         'ID'                => (int) $shadow_id,
         'post_type'         => 'page',
@@ -562,7 +577,7 @@ function s2cs_seed_shadow( $shadow_id, $original_id, $op_id, $fields ) {
         'post_title'        => (string) ( $fields['post_title']   ?? '' ),
         'post_content'      => (string) ( $fields['post_content'] ?? '' ),
         'post_excerpt'      => (string) ( $fields['post_excerpt'] ?? '' ),
-        'post_name'         => (string) ( $fields['post_name']    ?? '' ),
+        'post_name'         => '__as_shadow_' . (int) $original_id . '_' . (int) $shadow_id,
         'post_author'       => 1,
         'post_parent'       => (int) $original_id,
         'post_date_gmt'     => '2026-10-01 00:00:00',
@@ -571,6 +586,7 @@ function s2cs_seed_shadow( $shadow_id, $original_id, $op_id, $fields ) {
     update_post_meta( $shadow_id, Published_Shadow::META_SHADOW_FOR, (string) $original_id );
     update_post_meta( $shadow_id, Published_Shadow::META_TX_ID, (string) $GLOBALS['__s2c_txid'] );
     update_post_meta( $shadow_id, Published_Shadow::META_OP_ID, (string) $op_id );
+    update_post_meta( $shadow_id, Published_Shadow::META_STAGED_POST_NAME, $staged_post_name );
 }
 
 function s2cs_begin_tx( $actor = 'agent-1', $label = 'M4 test' ) {
@@ -1881,6 +1897,10 @@ if ( $GLOBALS['__s2c_fail'] > 0 ) {
             echo "  FAIL  " . $r['name'] . ( $r['detail'] ? '  [' . $r['detail'] . ']' : '' ) . "\n";
         }
     }
-    exit( 1 );
 }
-exit( 0 );
+// The unified runner calls this file and reads the shared counters; the
+// file must not decide the process's exit status itself, or it would
+// end the run that asked for it.
+if ( ! defined( 'AGENTSHELL_TEST_AGGREGATE' ) ) {
+    exit( $GLOBALS['__s2c_fail'] > 0 ? 1 : 0 );
+}
