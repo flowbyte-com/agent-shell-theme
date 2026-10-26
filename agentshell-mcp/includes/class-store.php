@@ -576,9 +576,27 @@ class Store {
                             self::history_atomicity_report( $tables )
                         );
                     }
-                    // The records are gone and there is no audit row for
-                    // them. The deletion is real and the record is missing;
-                    // write the record now if that is possible.
+                    if ( $state['other_row'] ) {
+                        // Another request deleted the same records, and its
+                        // audit row says so. This request removed nothing:
+                        // the record is gone, but not because of this call,
+                        // and a second deletion row would misdescribe one
+                        // removal as two.
+                        return self::history_result(
+                            'unchanged',
+                            array(),
+                            $plan['deleted'],
+                            'none',
+                            false,
+                            array(),
+                            '',
+                            'Another request had already deleted those records.',
+                            self::history_atomicity_report( $tables )
+                        );
+                    }
+                    // The records are gone and no deletion of them was
+                    // recorded at all. The deletion is real and the record is
+                    // missing; write the record now if that is possible.
                     $repaired = self::repair_history_audit_row( $delete_id, null, $plan, $kind );
                     if ( $repaired ) {
                         return self::history_result(
@@ -619,6 +637,19 @@ class Store {
             // likely. Reconcile before saying anything about the outcome.
             $state = self::reconcile_history_deletion( $history_key, $kind, $plan, $delete_id );
             if ( 'gone' === $state['records'] ) {
+                if ( ! $state['audit_row'] && $state['other_row'] ) {
+                    return self::history_result(
+                        'unchanged',
+                        array(),
+                        $plan['deleted'],
+                        'none',
+                        false,
+                        array(),
+                        '',
+                        'Another request had already deleted those records.',
+                        self::history_atomicity_report( $tables )
+                    );
+                }
                 $repaired = self::repair_history_audit_row( $delete_id, $state['audit_row'] );
                 return self::history_result(
                     'deleted',
@@ -675,17 +706,36 @@ class Store {
             }
         }
 
+        $log = (array) self::read_option_direct( self::AUDIT_KEY );
         $row = null;
-        foreach ( (array) self::read_option_direct( self::AUDIT_KEY ) as $entry ) {
+        foreach ( $log as $entry ) {
             if ( is_array( $entry ) && ( $entry['changed']['delete_id'] ?? null ) === $delete_id ) {
                 $row = $entry;
                 break;
             }
         }
 
+        // Another request may have deleted the same records. Its audit row
+        // says so, and the difference matters: the record is gone, but this
+        // request did not delete it, and saying otherwise would put a second
+        // deletion in the log for one removal.
+        $other = null;
+        if ( null === $row ) {
+            foreach ( $log as $entry ) {
+                if ( ! is_array( $entry ) ) { continue; }
+                $changed = isset( $entry['changed'] ) && is_array( $entry['changed'] ) ? $entry['changed'] : array();
+                $ids = (array) ( $changed['ids'] ?? $changed['names'] ?? array() );
+                if ( array_intersect( $ids, $plan['deleted'] ) ) {
+                    $other = $entry;
+                    break;
+                }
+            }
+        }
+
         return array(
             'records'   => empty( $present ) ? 'gone' : 'present',
             'audit_row' => $row,
+            'other_row' => $other,
         );
     }
 

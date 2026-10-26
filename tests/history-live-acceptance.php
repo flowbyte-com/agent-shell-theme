@@ -209,11 +209,71 @@ check( 'every selected revision is deleted',
 	count( array_intersect( $remaining, (array) ( $bulk['deleted'] ?? array() ) ) ) === count( $remaining ) );
 check( 'no disposable revision remains', empty( array_intersect( $remaining, revision_ids() ) ) );
 
-// ── 6. Permission refusal ──────────────────────────────────────────────
+// ── 6. Competing deletions ─────────────────────────────────────────────
+// Two requests deleting the same record at the same moment. Exactly one
+// may report the record deleted; the other must report it as already gone
+// rather than deleting it twice or losing one of the two requests.
+list( $status, $seed ) = request( 'POST', 'transaction', array( 'label' => 'history competition' ) );
+$seed_session = (string) ( $seed['editor_session'] ?? '' );
+$seed_payload = payload_from( (array) request( 'GET', 'config' )[1] );
+$seed_payload['--theme-bg'] = '#123123';
+request( 'PUT', 'config', $seed_payload, true, $seed_session );
+request( 'POST', 'transaction/commit', null, true, $seed_session );
+$contested = null;
+foreach ( revision_ids() as $id ) {
+    if ( ! in_array( $id, $created, true ) ) { $contested = $id; break; }
+}
+if ( null === $contested ) {
+    check( 'a record to delete twice exists', false, 'no fresh revision was recorded' );
+} else {
+    $multi   = curl_multi_init();
+    $handles = array();
+    for ( $i = 0; $i < 2; $i++ ) {
+        $ch = curl_init( $base . '/wp-json/wp/v2/agentshell/revisions/delete' );
+        $headers = array(
+            'Accept: application/json',
+            'Content-Type: application/json',
+            'Authorization: Basic ' . base64_encode( $user . ':' . $pass ),
+        );
+        curl_setopt_array( $ch, array(
+            CURLOPT_CUSTOMREQUEST  => 'POST',
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER     => $headers,
+            CURLOPT_POSTFIELDS     => json_encode( array( 'ids' => array( $contested ) ) ),
+            CURLOPT_TIMEOUT        => 30,
+        ) );
+        curl_multi_add_handle( $multi, $ch );
+        $handles[] = $ch;
+    }
+    $running = null;
+    do {
+        curl_multi_exec( $multi, $running );
+        curl_multi_select( $multi, 0.1 );
+    } while ( $running > 0 );
+    $bodies = array();
+    $statuses = array();
+    foreach ( $handles as $ch ) {
+        $bodies[] = json_decode( (string) curl_multi_getcontent( $ch ), true );
+        $statuses[] = (int) curl_getinfo( $ch, CURLINFO_HTTP_CODE );
+        curl_multi_remove_handle( $multi, $ch );
+    }
+    curl_multi_close( $multi );
+    $reported_deleted = 0;
+    foreach ( $bodies as $body ) {
+        if ( is_array( $body ) && in_array( 'deleted', (array) ( $body['outcome'] ?? '' ), true ) ) {
+            $reported_deleted++;
+        }
+    }
+    check( 'two competing deletions of one record: exactly one reports it deleted',
+        1 === $reported_deleted, 'reported deleted by ' . $reported_deleted . ' of 2' );
+    check( 'the record is gone exactly once', ! in_array( $contested, revision_ids(), true ) );
+}
+
+// ── 7. Permission refusal ──────────────────────────────────────────────
 list( $status ) = request( 'POST', 'revisions/delete', array( 'ids' => array( 'r1' ) ), false );
 check( 'an unauthenticated delete is refused', 401 === $status, 'HTTP ' . $status );
 
-// ── 7. Restore safety and the active-transaction conflict ─────────────
+// ── 8. Restore safety and the active-transaction conflict ─────────────
 $current_for_restore = request( 'GET', 'config' )[1];
 list( $status ) = request( 'POST', 'snapshot', array( 'name' => $keep . 'r', 'label' => 'Acceptance restore ' . $run ) );
 check( 'a restore snapshot is created', 200 === $status, 'HTTP ' . $status );
@@ -241,7 +301,7 @@ check( 'restoring is refused while a transaction is open', 409 === $status, 'HTT
 request( 'DELETE', 'transaction', null, true, $token );
 check( 'the conflicting transaction is gone', empty( request( 'GET', 'transaction' )[1]['open'] ) );
 
-// ── 8. Restore the committed configuration and clean up ────────────────
+// ── 9. Restore the committed configuration and clean up ────────────────
 $cleanup_ids = revision_ids();
 list( $status, $restore_begin ) = request( 'POST', 'transaction', array( 'label' => 'history acceptance restore' ) );
 $restore_session = (string) ( $restore_begin['editor_session'] ?? '' );
