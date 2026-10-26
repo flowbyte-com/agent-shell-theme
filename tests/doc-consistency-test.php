@@ -308,6 +308,53 @@ function doc_gate_css_limit_files( array $files ) {
     return $offenders;
 }
 
+/**
+ * Markdown tables whose rows do not all have the same number of cells.
+ *
+ * A fused row is invisible in a diff that shows one long line, and a table
+ * with one malformed row renders as garbage in every Markdown viewer — the
+ * pointer table in AGENTS.md §8 once lost a row that way, and the gate that
+ * checks AGENTS.md's *claims* said nothing about its *shape*.
+ *
+ * @param array<string,string> $files
+ * @return array<int,string>
+ */
+function doc_gate_malformed_tables( array $files ) {
+    $offenders = array();
+    foreach ( $files as $rel => $body ) {
+        $lines   = explode( "\n", $body );
+        $in_table = false;
+        $expected = 0;
+        foreach ( $lines as $number => $line ) {
+            $line = trim( $line );
+            if ( '' === $line ) {
+                $in_table = false;
+                continue;
+            }
+            if ( 0 !== strpos( $line, '|' ) ) {
+                $in_table = false;
+                continue;
+            }
+            // Only unescaped pipes separate cells: a cell may legitimately
+            // contain `\|` (a credential format, for instance).
+            $cells = count( preg_split( '/(?<!\\\\)\|/', $line ) ) - 2;
+            if ( $cells < 2 ) {
+                $in_table = false;
+                continue;
+            }
+            if ( ! $in_table ) {
+                $in_table = true;
+                $expected = $cells;
+                continue;
+            }
+            if ( $cells !== $expected ) {
+                $offenders[] = $rel . ':' . ( $number + 1 ) . ' has ' . $cells . ' cells, the table has ' . $expected;
+            }
+        }
+    }
+    return $offenders;
+}
+
 $doc_files = doc_gate_files();
 
 Agentshell_Test::run(
@@ -316,6 +363,17 @@ Agentshell_Test::run(
         Agentshell_Test::assert_true(
             count( $doc_files ) > 5,
             'the gate must actually read the repository, not an empty set'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'every markdown table has rows of one shape',
+    function () use ( $doc_files ) {
+        Agentshell_Test::assert_equals(
+            array(),
+            doc_gate_malformed_tables( $doc_files ),
+            'a fused or truncated table row is a broken table'
         );
     }
 );
