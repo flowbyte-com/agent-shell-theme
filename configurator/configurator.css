@@ -533,11 +533,14 @@ body.config-panel-open {
     font-size: 0.8rem;
 }
 
+/* The name is the identifier a snapshot is restored by, so it is never cut
+   off: it wraps instead. The description beside it is the part that may be
+   truncated. */
 .as-cfg__record-name {
     font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    flex: 0 1 auto;
 }
 
 .as-cfg__record-meta {
