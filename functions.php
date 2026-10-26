@@ -142,7 +142,11 @@ function agentshell_enqueue_assets() {
     wp_enqueue_script( 'agentshell-configurator-api', $configurator_url . 'configurator-api.js', array(), filemtime( $configurator_dir . 'configurator-api.js' ), true );
     wp_enqueue_script( 'agentshell-configurator-picker', $configurator_url . 'configurator-picker.js', array(), filemtime( $configurator_dir . 'configurator-picker.js' ), true );
     wp_enqueue_script( 'agentshell-configurator-ui', $configurator_url . 'configurator-ui.js', array(), filemtime( $configurator_dir . 'configurator-ui.js' ), true );
-    wp_enqueue_script( 'agentshell-configurator', $configurator_url . 'configurator-app.js', array( 'agentshell-configurator-state', 'agentshell-configurator-api', 'agentshell-configurator-picker', 'agentshell-configurator-ui' ), filemtime( $configurator_dir . 'configurator-app.js' ), true );
+    // The live-style layer: the browser-local overlay that shows a design
+    // change on the page as it is made. It is a model, not a view, and it is
+    // loaded before the app that wires it.
+    wp_enqueue_script( 'agentshell-configurator-live-style', $configurator_url . 'configurator-live-style.js', array( 'agentshell-configurator-state' ), filemtime( $configurator_dir . 'configurator-live-style.js' ), true );
+    wp_enqueue_script( 'agentshell-configurator', $configurator_url . 'configurator-app.js', array( 'agentshell-configurator-state', 'agentshell-configurator-api', 'agentshell-configurator-picker', 'agentshell-configurator-ui', 'agentshell-configurator-live-style' ), filemtime( $configurator_dir . 'configurator-app.js' ), true );
     wp_localize_script( 'agentshell-configurator', 'AgentShellConfig', array(
         'adminUrl'   => admin_url( 'admin-ajax.php' ),
         'restUrl'    => rest_url(),
@@ -3543,6 +3547,23 @@ function agentshell_unflatten_config( array $flat, array $existing ) {
                 }
             }
             unset( $ref );
+
+            // A configuration that carries this property as an explicit
+            // custom variable — a historical `set_css_var` — would otherwise
+            // shadow this change: the flatten prefers the custom variable, so
+            // the edit would be stored and never rendered. The operator would
+            // see a colour in the editor that the site does not show.
+            //
+            // The custom variable is written with the same value, so the
+            // precedence rule ("an explicit custom variable wins") is kept
+            // and the change is still the one that is rendered. The shape
+            // tokens above already work this way, for the same reason.
+            if ( isset( $merged['design']['custom_css_vars'] )
+                && is_array( $merged['design']['custom_css_vars'] )
+                && array_key_exists( $key, $merged['design']['custom_css_vars'] )
+                && is_string( $value ) ) {
+                $merged['design']['custom_css_vars'][ $key ] = $value;
+            }
         } elseif ( strpos( $key, '--' ) === 0 ) {
             // Wildcard: any --key not in legacy map goes to custom_css_vars
             if ( ! isset( $merged['design'] ) ) {
@@ -4035,6 +4056,52 @@ function agentshell_build_config_get_response() {
  * @param array $config
  * @return array
  */
+/**
+ * The CSS custom properties the theme's own stylesheet consumes.
+ *
+ * A design token that nothing reads cannot be shown live. The editor's
+ * instant visual feedback works by writing a custom property on the page's
+ * root element; if the stylesheet never reads that property, the browser
+ * accepts the value and nothing happens — a field that looks like it works
+ * and does not. The editor therefore asks the theme which properties it
+ * really uses, rather than guessing from the names of the settings.
+ *
+ * The answer is read from the stylesheet itself: every `var(--name)` in it
+ * is a property the page renders with. A token that is only *defined* and
+ * never read is not in the list, and neither is one the stylesheet never
+ * mentions.
+ *
+ * The list is the theme's own, so it cannot drift from the stylesheet: a
+ * token the theme starts using appears, and one it stops using disappears.
+ *
+ * @return string[] Custom property names, sorted.
+ */
+function agentshell_live_preview_tokens() {
+    static $tokens = null;
+    if ( null !== $tokens ) {
+        return $tokens;
+    }
+
+    $tokens = array();
+    // The theme's own stylesheet, not a child theme's: the tokens are
+    // declared by the theme that renders them, and a child theme's
+    // stylesheet is a different file with a different (or no) vocabulary.
+    $dir = function_exists( 'get_template_directory' ) ? get_template_directory() : __DIR__;
+    $file = $dir . '/style.css';
+    if ( is_string( $file ) && is_readable( $file ) ) {
+        $css = (string) @file_get_contents( $file );
+        if ( preg_match_all( '/var\(\s*(--[a-z0-9_-]+)/i', $css, $matches ) ) {
+            foreach ( $matches[1] as $name ) {
+                $tokens[ strtolower( $name ) ] = true;
+            }
+        }
+    }
+
+    $tokens = array_values( array_keys( $tokens ) );
+    sort( $tokens );
+    return $tokens;
+}
+
 function agentshell_build_config_response( array $config ) {
     $flat = agentshell_flatten_config( $config );
 
@@ -4186,6 +4253,7 @@ function agentshell_build_config_response( array $config ) {
 
     return array(
         'schema'                => $schema,
+        'live_tokens'           => agentshell_live_preview_tokens(),
         'defaults'              => $flat,
         'config'                => $flat,
         'zones'                 => $zones,

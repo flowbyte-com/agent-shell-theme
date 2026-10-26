@@ -58,55 +58,6 @@
         return el;
     }
 
-    /* ── the design tokens the editor exposes ──────────────────────────────
-     *
-     * A token belongs to a *scope* (global, header, main, footer) and to a
-     * group within it. The previous panel grouped tokens by kind — every
-     * border width together, every colour together — so a header colour sat
-     * five screens away from the header's own area map. Scope is what the
-     * operator is thinking about.
-     */
-    var TOKENS = {
-        '--theme-bg':            { type: 'color', scope: 'global', group: 'Colours', label: 'Background' },
-        '--theme-surface':       { type: 'color', scope: 'global', group: 'Colours', label: 'Surface' },
-        '--theme-text':          { type: 'color', scope: 'global', group: 'Colours', label: 'Text' },
-        '--theme-accent':        { type: 'color', scope: 'global', group: 'Colours', label: 'Accent' },
-        '--theme-border':        { type: 'color', scope: 'global', group: 'Colours', label: 'Border' },
-
-        '--font-base':           { type: 'text',  scope: 'global', group: 'Typography', label: 'Base font' },
-        '--font-mono':           { type: 'text',  scope: 'global', group: 'Typography', label: 'Mono font' },
-
-        '--spacing-base':        { type: 'text',  scope: 'global', group: 'Spacing', label: 'Base spacing' },
-
-        '--border-width':        { type: 'text',  scope: 'global', group: 'Borders & shadows', label: 'Border width' },
-        '--border-style':        { type: 'select', scope: 'global', group: 'Borders & shadows', label: 'Border style',
-                                   options: [ { value: 'solid', label: 'Solid' }, { value: 'dashed', label: 'Dashed' }, { value: 'none', label: 'None' } ] },
-        '--theme-shadow':        { type: 'shadow', scope: 'global', group: 'Borders & shadows', label: 'Island shadow' },
-
-        '--zone-header-layout':  { type: 'select', scope: 'header', group: 'Layout', label: 'Header layout',
-                                   options: [ { value: 'flex-start', label: 'Left' }, { value: 'center', label: 'Centre' }, { value: 'space-between', label: 'Space between' } ] },
-        '--theme-header-bg':     { type: 'color', scope: 'header', group: 'Colours', label: 'Background' },
-        '--theme-header-text':   { type: 'color', scope: 'header', group: 'Colours', label: 'Text' },
-        '--theme-header-accent': { type: 'color', scope: 'header', group: 'Colours', label: 'Accent' },
-        '--theme-header-border': { type: 'color', scope: 'header', group: 'Colours', label: 'Border line' },
-        '--zone-header-border-width': { type: 'text', scope: 'header', group: 'Borders', label: 'Border width' },
-        '--zone-header-radius':  { type: 'text', scope: 'header', group: 'Borders', label: 'Corner radius' },
-
-        '--zone-main-align':     { type: 'select', scope: 'main', group: 'Layout', label: 'Content align',
-                                   options: [ { value: 'flex-start', label: 'Top' }, { value: 'center', label: 'Middle' } ] },
-        '--zone-main-border-width': { type: 'text', scope: 'main', group: 'Borders', label: 'Border width' },
-        '--zone-main-radius':    { type: 'text', scope: 'main', group: 'Borders', label: 'Corner radius' },
-
-        '--zone-footer-layout':  { type: 'select', scope: 'footer', group: 'Layout', label: 'Footer layout',
-                                   options: [ { value: 'flex-start', label: 'Left' }, { value: 'center', label: 'Centre' }, { value: 'space-between', label: 'Space between' } ] },
-        '--theme-footer-bg':     { type: 'color', scope: 'footer', group: 'Colours', label: 'Background' },
-        '--theme-footer-text':   { type: 'color', scope: 'footer', group: 'Colours', label: 'Text' },
-        '--theme-footer-accent': { type: 'color', scope: 'footer', group: 'Colours', label: 'Accent' },
-        '--theme-footer-border': { type: 'color', scope: 'footer', group: 'Colours', label: 'Border line' },
-        '--zone-footer-border-width': { type: 'text', scope: 'footer', group: 'Borders', label: 'Border width' },
-        '--zone-footer-radius':  { type: 'text', scope: 'footer', group: 'Borders', label: 'Corner radius' },
-    };
-
     /* ── shadow presets ──────────────────────────────────────────────────
      *
      * A preset is a CSS `box-shadow` value, because the stylesheet uses the
@@ -155,6 +106,19 @@
 
         function editor() { return app.editor; }
         function config() { return app.config || {}; }
+
+        /**
+         * The design tokens the editor exposes.
+         *
+         * The vocabulary itself lives in the state module (`TOKENS`),
+         * because two places that list the same tokens will drift: the view
+         * renders the fields, and the live-style layer has to know which CSS
+         * property each token is checked against. The app hands the map in,
+         * and the view renders what it is given.
+         */
+        function tokens() {
+            return app.tokens || {};
+        }
 
         /* ── fields ────────────────────────────────────────────────────── */
 
@@ -281,10 +245,33 @@
         }
 
         function token_field( name, meta, value ) {
-            if ( meta.type === 'color' ) { return color_field( name, meta, value ); }
-            if ( meta.type === 'select' ) { return select_field( name, meta, value ); }
-            if ( meta.type === 'shadow' ) { return shadow_field( name, meta, value ); }
-            return text_field( name, meta, value );
+            var field;
+            if ( meta.type === 'color' ) { field = color_field( name, meta, value ); }
+            else if ( meta.type === 'select' ) { field = select_field( name, meta, value ); }
+            else if ( meta.type === 'shadow' ) { field = shadow_field( name, meta, value ); }
+            else { field = text_field( name, meta, value ); }
+            if ( ! is_live_token( name ) ) {
+                // The theme's stylesheet does not read this property, so
+                // nothing on the page — live or in the full preview — would
+                // change. Saying so is better than a field that looks like
+                // it works.
+                field.appendChild( h( 'p', { class: 'as-cfg__hint as-cfg__hint--warn' },
+                    [ 'The theme\'s stylesheet does not read this setting, so it changes nothing on the page.'] ) );
+            }
+            return field;
+        }
+
+        /**
+         * Does the theme's stylesheet read this token?
+         *
+         * The server publishes the list of properties the theme's own
+         * stylesheet consumes. A property outside it is not rendered, so the
+         * live-style layer leaves it alone and the interface says so.
+         */
+        function is_live_token( name ) {
+            var live = config().live_tokens;
+            if ( ! Array.isArray( live ) ) { return false; }
+            return live.indexOf( name ) !== -1;
         }
 
         function normalise_color( value ) {
@@ -617,8 +604,9 @@
             var opts = options2 || {};
             var groups = {};
             var vars = ( editor().get_state().draft || { vars: {} } ).vars || {};
-            Object.keys( TOKENS ).forEach( function ( name ) {
-                var meta = TOKENS[ name ];
+            var vocabulary = tokens();
+            Object.keys( vocabulary ).forEach( function ( name ) {
+                var meta = vocabulary[ name ];
                 if ( meta.scope !== scope ) { return; }
                 if ( ! groups[ meta.group ] ) { groups[ meta.group ] = []; }
                 groups[ meta.group ].push( { name: name, meta: meta, value: vars[ name ] || '' } );
@@ -708,7 +696,11 @@
 
         function appearance_view() {
             var view = h( 'div', { class: 'as-cfg__view' } );
-            view.appendChild( h( 'p', { class: 'as-cfg__lede' }, [ 'The settings that apply to the whole site. Zone-specific settings live with their zone in Layout.' ] ) );
+            view.appendChild( h( 'p', { class: 'as-cfg__lede' }, [
+                'The settings that apply to the whole site. Zone-specific settings live with their zone in Layout. ',
+                'A change you make here appears on this page immediately — it is a preview of the design, not a change to the site, ',
+                'until you save it.',
+            ] ) );
             view.appendChild( token_groups( 'global' ) );
             return view;
         }
@@ -1080,18 +1072,18 @@
             if ( tab ) { tab.focus(); }
         }
 
-        return { render: render, TOKENS: TOKENS, CONTEXTS: CONTEXTS };
+        return { render: render, tokens: tokens, CONTEXTS: CONTEXTS };
     }
 
     if ( typeof module !== 'undefined' && module.exports ) {
         module.exports = {
-            make_ui: make_ui, h: h, TOKENS: TOKENS,
+            make_ui: make_ui, h: h,
             SHADOW_PRESETS: SHADOW_PRESETS, SHADOW_CUSTOM: SHADOW_CUSTOM,
             matching_shadow_preset: matching_shadow_preset,
         };
     } else {
         root.AgentshellConfiguratorUi = {
-            make_ui: make_ui, h: h, TOKENS: TOKENS,
+            make_ui: make_ui, h: h,
             SHADOW_PRESETS: SHADOW_PRESETS, SHADOW_CUSTOM: SHADOW_CUSTOM,
             matching_shadow_preset: matching_shadow_preset,
         };

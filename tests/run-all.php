@@ -643,6 +643,13 @@ $suites = array(
         'path'     => __DIR__ . '/browser-trust-test.php',
         'requires' => 'unit',
     ),
+    // The live-style layer: the browser-local overlay of the draft's design
+    // tokens. Its bookkeeping is tested in Node; what it does to the page is
+    // tested in a real browser, and against the real site.
+    'configurator-live-style' => array(
+        'path'     => __DIR__ . '/run-configurator-live-style.php',
+        'requires' => 'unit',
+    ),
     'configurator-state' => array(
         'path'     => __DIR__ . '/run-configurator-state.php',
         'requires' => 'unit',

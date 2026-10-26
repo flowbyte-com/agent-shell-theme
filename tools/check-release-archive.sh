@@ -90,6 +90,7 @@ REQUIRED=(
     "configurator/configurator-api.js"
     "configurator/configurator-picker.js"
     "configurator/configurator-ui.js"
+    "configurator/configurator-live-style.js"
     "configurator/configurator.css"
     "configurator/configurator-state.js"
     "widgets/.index.json"

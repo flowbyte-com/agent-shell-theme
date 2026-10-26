@@ -151,9 +151,10 @@ function main() {
         var previewnetwork = run_scenario( browser, harness, profile, 'previewnetwork' );
         var previewurlnetwork = run_scenario( browser, harness, profile, 'previewurlnetwork' );
         var history = run_scenario( browser, harness, profile, 'history' );
+        var live = run_scenario( browser, harness, profile, 'live' );
         var scenarios = [ plain, locked, refusal, picker, workflow, blocked, session, unbound,
             commitlost, commitlostrefresh, refreshaftercommit, commitfail,
-            previewstagefail, previewnetwork, previewurlnetwork, history ];
+            previewstagefail, previewnetwork, previewurlnetwork, history, live ];
         report = {
             total: scenarios.reduce( function ( sum, r ) { return sum + ( r.total || 0 ); }, 0 ),
             failures: scenarios.reduce( function ( all, r ) { return all.concat( r.failures || [] ); }, [] ),

@@ -30,6 +30,13 @@
         var tx = options.tx;
         var zone = options.zone;
         var session = options.session || null;
+        var live = options.live_style || null;
+        var tokens = options.tokens || {};
+        // The values the page's own stylesheet provides are captured once, when
+        // the editor first loads. They are not captured again afterwards: the
+        // stylesheet in an open page is the one the server sent, and a save
+        // changes the configuration without changing that stylesheet.
+        var live_baseline_captured = false;
 
         var app = {
             config: null,
@@ -74,8 +81,20 @@
                         session.clear();
                     }
                     app.config = results[ 0 ];
+                    if ( live ) {
+                        // The theme publishes the properties its stylesheet
+                        // really reads. Until it has, the live layer writes
+                        // nothing: a token nothing reads would look like it
+                        // worked and change nothing.
+                        live.set_vocabulary( ( app.config && app.config.live_tokens ) || [] );
+                        if ( ! live_baseline_captured ) {
+                            live.set_stylesheet( ( app.config && app.config.config ) || {} );
+                            live_baseline_captured = true;
+                        }
+                    }
                     editor.load( results[ 0 ], staged );
                     tx.set_tx_snapshot( payload );
+                    sync_live();
                     app.clear_error();
                     return load_history();
                 } )
@@ -98,6 +117,32 @@
             } );
         }
 
+        /* ── the live-style layer ─────────────────────────────────────── */
+
+        /**
+         * Put the draft's design tokens on the page, in this browser only.
+         *
+         * The draft model is the source of truth; this only shows it. No
+         * request is sent, no transaction is opened, and nothing is written
+         * to WordPress.
+         */
+        function sync_live() {
+            if ( ! live ) { return; }
+            var state = editor.get_state();
+            live.set_desired( ( state.draft && state.draft.vars ) || {} );
+            live.apply();
+        }
+
+        /**
+         * Show the committed configuration again, as the page's stylesheet
+         * would render it.
+         */
+        function show_committed() {
+            if ( ! live ) { return; }
+            live.set_desired( ( app.config && app.config.config ) || {} );
+            live.apply();
+        }
+
         /* ── changes ──────────────────────────────────────────────────── */
 
         function on_change( options2 ) {
@@ -105,6 +150,7 @@
             // re-rendering the whole canvas, so the caret stays where the
             // operator left it.
             app.clear_error();
+            sync_live();
             if ( options2 && options2.live ) {
                 update_status();
                 // A live edit does not re-render the canvas (the caret must
@@ -345,6 +391,11 @@
                 .then( function ( config ) {
                     app.config = config;
                     editor.accept_saved( config );
+                    // The configuration on the server has changed; the
+                    // stylesheet in this page has not. The live layer keeps
+                    // showing the committed values, so the page does not
+                    // appear to fall back to the old design.
+                    sync_live();
                     app.busy = false;
                     app.hint = 'Saved.';
                     app.clear_error();
@@ -357,6 +408,7 @@
                     // unknown. A later load replaces it with the server's
                     // canonical form.
                     editor.accept_draft_as_saved();
+                    sync_live();
                     app.busy = false;
                     app.hint = '';
                     app.error = null;
@@ -734,6 +786,9 @@
                 .then( function ( config ) {
                     app.config = config;
                     editor.accept_saved( config );
+                    // The draft is gone; the page goes back to what the
+                    // committed configuration looks like.
+                    sync_live();
                     app.busy = false;
                     app.hint = 'Discarded.';
                     app.clear_error();
@@ -1413,6 +1468,8 @@
             if ( editor.is_dirty() && ! window.confirm( 'There are unsaved changes. Close the editor and lose them?' ) ) {
                 return;
             }
+            // The edits are being lost, so the page stops showing them.
+            show_committed();
             close_panel();
         }
 
@@ -1426,6 +1483,8 @@
         app.preview = preview;
         app.take_over = take_over;
         app.session = session;
+        app.live = live;
+        app.tokens = tokens;
         // Exposed for the same reason as the app handle itself: the browser
         // acceptance test must be able to drop one response to reproduce a
         // network failure without a second transport. It is not an
@@ -1464,6 +1523,7 @@
         var state = options.state || root.AgentshellConfiguratorState;
         var apiModule = options.api || root.AgentshellConfiguratorApi;
         var uiModule = options.ui || root.AgentshellConfiguratorUi;
+        var liveModule = options.live_style_module || root.AgentshellConfiguratorLiveStyle;
 
         var editor = options.editor || state.make_editor_model();
         var tx = options.tx || state.make_state_model();
@@ -1479,12 +1539,22 @@
             session: session,
         } );
 
+        // The live-style layer: a browser-local overlay of the draft's design
+        // tokens. It is created here, with the token vocabulary the models
+        // hold, so that the view and the layer agree on what a token is.
+        var live = options.live_style || null;
+        if ( ! live && liveModule && typeof liveModule.make_live_style_controller === 'function' ) {
+            live = liveModule.make_live_style_controller( { tokens: state.TOKENS || {} } );
+        }
+
         var app = make_app( {
             api: api,
             editor: editor,
             tx: tx,
             zone: zone,
             session: session,
+            live_style: live,
+            tokens: state.TOKENS || {},
             picker: options.picker || root.AgentshellConfiguratorPicker,
         } );
         app.ui = uiModule.make_ui( { app: app } );

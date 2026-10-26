@@ -583,6 +583,12 @@ body.config-panel-open {
     flex: 0 0 auto;
 }
 
+/* A setting the theme's stylesheet does not read: it changes nothing on the
+   page, and the interface says so rather than letting the field look live. */
+.as-cfg__hint--warn {
+    color: var(--configurator-danger);
+}
+
 .as-cfg__history-tools {
     display: flex;
     align-items: center;
