@@ -30,7 +30,10 @@ window.__puts = [];
 
 const ZONE_RESPONSE = {
   config: { '--theme-bg': '#fafaf9', '--theme-text': '#1f2937', '--theme-accent': '#e87a3e',
-            '--theme-header-bg': '#ffffff', '--zone-header-layout': 'space-between', '--spacing-base': '1rem' },
+            '--theme-header-bg': '#ffffff', '--zone-header-layout': 'space-between', '--spacing-base': '1rem',
+            // A stored custom shadow: not one of the presets, so the editor
+            // must select "Custom" and leave the value alone.
+            '--theme-shadow': '0 2px 4px rgba(0,0,0,0.12)' },
   defaults: {}, custom_css: '/* agent-set rule */', custom_js: '',
   zones: [
     { id: 'header', label: 'Header', slots: {
@@ -101,8 +104,10 @@ window.fetch = function (url, opts) {
     return Promise.resolve(respond({ open: false, owned_by_us: true }));
   }
   if (path.indexOf('/config') !== -1 && method === 'PUT') {
-    if (body && body['--theme-bg'] === '#bad') {
-      return Promise.resolve(respond({ code: 'invalid_color_value', message: 'Invalid color value for --theme-bg: #bad' }, false, 400));
+    // #bad is a valid three-digit hex colour, so it is not a refusal. The
+    // fixture uses a value the server's own regex refuses.
+    if (body && body['--theme-bg'] === '#zzzzzz') {
+      return Promise.resolve(respond({ code: 'invalid_color_value', message: 'Invalid color value for background: #zzzzzz' }, false, 400));
     }
     window.__puts.push(body);
     return Promise.resolve(respond({}));
@@ -260,6 +265,65 @@ async function run() {
   ok('a colour field offers a swatch and a hex value', !!q('.as-cfg__swatch') && !!q('.as-cfg__input--hex'));
   ok('the background token is the first colour', tokenInput('--theme-bg') !== null);
 
+  // ── Shadows: a preset is a CSS value, and the two controls agree ─────
+  var SHADOW_CUSTOM = window.AgentshellConfiguratorUi.SHADOW_CUSTOM;
+  var presets = window.AgentshellConfiguratorUi.SHADOW_PRESETS;
+  var shadowSelect = tokenInput('--theme-shadow');
+  var shadowInput = q('.as-cfg__input--shadow');
+  ok('the island shadow has a preset select and a raw value', !!shadowSelect && !!shadowInput);
+  ok('a stored custom shadow is preserved', shadowInput.value === '0 2px 4px rgba(0,0,0,0.12)',
+     shadowInput.value);
+  ok('a stored custom shadow selects Custom', shadowSelect.value === SHADOW_CUSTOM, shadowSelect.value);
+
+  function applies_as_shadow(value) {
+    var probe = document.createElement('div');
+    probe.style.setProperty('--theme-shadow', value);
+    probe.style.boxShadow = 'var(--theme-shadow)';
+    document.body.appendChild(probe);
+    var computed = getComputedStyle(probe).boxShadow;
+    document.body.removeChild(probe);
+    return computed;
+  }
+  var literal = document.createElement('div');
+  literal.style.boxShadow = 'soft';
+  ok('the old literal "soft" is not a CSS shadow', literal.style.boxShadow === '', literal.style.boxShadow);
+
+  presets.forEach(function (preset) {
+    ok('the ' + preset.label + ' preset is a valid computed shadow',
+       preset.value === 'none' ? applies_as_shadow(preset.value) === 'none' : applies_as_shadow(preset.value) !== '',
+       applies_as_shadow(preset.value));
+  });
+
+  var soft = presets.filter(function (p) { return p.label === 'Soft'; })[0];
+  shadowSelect.value = soft.value;
+  shadowSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(80);
+  ok('choosing a preset writes the CSS value into the raw field', shadowInput.value === soft.value,
+     shadowInput.value);
+  ok('choosing a preset marks the draft dirty', chip() === 'Unsaved changes', chip());
+
+  var customTyped = '0 3px 7px rgba(0,0,0,0.18)';
+  shadowInput.value = customTyped;
+  shadowInput.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+  ok('typing a custom shadow keeps the raw value', shadowInput.value === customTyped, shadowInput.value);
+  ok('typing a custom shadow selects Custom', shadowSelect.value === SHADOW_CUSTOM, shadowSelect.value);
+
+  shadowSelect.value = 'none';
+  shadowSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(80);
+  ok('choosing None writes the CSS keyword', shadowInput.value === 'none', shadowInput.value);
+
+  // Discarding puts the stored custom shadow back, and the select with it.
+  q('.as-cfg__actions [data-focus-key="discard"]').click();
+  await wait(200);
+  ok('discard restores the stored custom shadow',
+     q('.as-cfg__input--shadow').value === '0 2px 4px rgba(0,0,0,0.12)',
+     q('.as-cfg__input--shadow').value);
+  ok('discard restores the Custom selection',
+     tokenInput('--theme-shadow').value === SHADOW_CUSTOM,
+     tokenInput('--theme-shadow').value);
+
   var hex = tokenInput('--theme-bg');
   hex.value = '#123456';
   hex.dispatchEvent(new Event('input', { bubbles: true }));
@@ -318,7 +382,7 @@ async function run() {
   q('.as-cfg__tab[data-context="appearance"]').click();
   await wait(60);
   var hex2 = tokenInput('--theme-bg');
-  hex2.value = '#bad';
+  hex2.value = '#zzzzzz';
   hex2.dispatchEvent(new Event('input', { bubbles: true }));
   await wait(60);
   q('.as-cfg__actions [data-focus-key="save"]').click();
@@ -375,7 +439,7 @@ async function run_refusal() {
   q('.as-cfg__tab[data-context="appearance"]').click();
   await wait(60);
   var hex = tokenInput('--theme-bg');
-  hex.value = '#bad';
+  hex.value = '#zzzzzz';
   hex.dispatchEvent(new Event('input', { bubbles: true }));
   await wait(60);
   ok('the draft is dirty before the refused save', chip() === 'Unsaved changes', chip());

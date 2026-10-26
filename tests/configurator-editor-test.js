@@ -18,6 +18,7 @@
 
 var state = require( '../configurator/configurator-state.js' );
 var api_module = require( '../configurator/configurator-api.js' );
+var ui = require( '../configurator/configurator-ui.js' );
 
 var make_editor = state.make_editor_model;
 var make_api = api_module.make_api;
@@ -42,6 +43,35 @@ function deep_eq( a, b, msg ) {
 }
 
 console.log( 'configurator editor-model and transport tests' );
+
+// ── 0. Shadow presets are CSS values, and custom values survive ───────────
+//
+// The stylesheet consumes --theme-shadow in `box-shadow: var(--theme-shadow)`.
+// A preset whose value is a name ("soft") is accepted by the editor and
+// discarded by the browser, so the draft says it changed and the page does
+// not. Node cannot compute a box-shadow, so this checks the model's shape;
+// tests/configurator-browser-test.html checks the computed styles.
+( function () {
+    var presets = ui.SHADOW_PRESETS;
+    ok( presets.length >= 2, 'there is more than one shadow preset' );
+    presets.forEach( function ( preset ) {
+        ok( preset.value.trim().length > 0, 'the ' + preset.label + ' preset has a value' );
+        ok( preset.value === 'none' || ! /^[a-z]+$/i.test( preset.value ),
+            'the ' + preset.label + ' preset is a value, not a bare name (' + preset.value + ')' );
+        ok( preset.value === 'none' || /\d/.test( preset.value ),
+            'the ' + preset.label + ' preset is a CSS shadow value (' + preset.value + ')' );
+        ok( ui.matching_shadow_preset( preset.value ) === preset,
+            'the ' + preset.label + ' preset matches itself' );
+    } );
+
+    var custom = '0 2px 4px rgba(0,0,0,0.12)';
+    eq( ui.matching_shadow_preset( custom ), null, 'a custom shadow matches no preset' );
+    eq( ui.matching_shadow_preset( '  ' + presets[ 1 ].value + '  ' ), presets[ 1 ],
+        'surrounding whitespace does not defeat preset matching' );
+    eq( ui.matching_shadow_preset( '' ), null, 'an empty value is not a preset' );
+    ok( ui.SHADOW_CUSTOM !== ui.matching_shadow_preset( presets[ 0 ].value ),
+        'the custom sentinel can never be mistaken for a preset value' );
+} )();
 
 var PAYLOAD = {
     config: {

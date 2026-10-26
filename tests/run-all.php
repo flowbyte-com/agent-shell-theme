@@ -353,6 +353,13 @@ $suites = array(
         'path'     => __DIR__ . '/config-roundtrip-test.php',
         'requires' => 'unit',
     ),
+    // The stored configuration's historical geometry (design.layout
+    // borderWidth/borderStyle) and the unrelated-edit refusal it used to
+    // cause. Unit-only, with the real captured shape as its fixture.
+    'config-legacy-layout' => array(
+        'path'     => __DIR__ . '/config-legacy-layout-test.php',
+        'requires' => 'unit',
+    ),
     // Loads the real Store, Doctor and Transaction_Manager and drives the
     // lease with a frozen clock, so it belongs after the suites that have
     // already put those in memory.

@@ -1,0 +1,77 @@
+{
+  "_comment": "Captured read-only from the disposable agentshell-demo.local installation on 2026-10-26, then trimmed of widget source and long content. The shape is the point: design.layout carries borderWidth and borderStyle, the custom properties carry the values the stylesheet consumes, and the header/footer still use the historical three-slot keys.",
+  "zones": [
+    {
+      "id": "header",
+      "label": "Header",
+      "slots": {
+        "left": [
+          {
+            "type": "json_block",
+            "content": "<a class=\"as-brand\" href=\"/\"><span class=\"as-brand__mark\">AS</span><span class=\"as-brand__name\">AgentShell</span><span class=\"as-brand__tag\">showcase</span></a>"
+          }
+        ],
+        "center": [ { "type": "wp_core", "id": "nav_menu" } ],
+        "right": [ { "type": "wp_core", "id": "search_form" } ]
+      }
+    },
+    {
+      "id": "main",
+      "label": "Main",
+      "composition": [
+        { "type": "wp_loop" },
+        { "type": "widget", "id": "tool-atlas" }
+      ]
+    },
+    {
+      "id": "footer",
+      "label": "Footer",
+      "slots": {
+        "left": [ { "type": "json_block", "content": "<p class=\"as-foot\">AgentShell &middot; a WordPress theme agents can read</p>" } ],
+        "center": [],
+        "right": [ { "type": "widget", "id": "status-strip" } ]
+      }
+    }
+  ],
+  "design": {
+    "colors": {
+      "background": "#0a0a0f",
+      "surface": "#12141a",
+      "text": "#e9e7e2",
+      "border": "#2a2e36",
+      "accent": "#ff7a2f",
+      "primary": "#0e1013",
+      "secondary": "#0b0d10"
+    },
+    "typography": {
+      "fontFamily": "Lato, Ubuntu, system-ui, sans-serif",
+      "mono": "Ubuntu Mono, DejaVu Sans Mono, monospace",
+      "baseSize": "1rem",
+      "scale": "1.25"
+    },
+    "layout": {
+      "radius": "10px",
+      "borderWidth": "1px",
+      "borderStyle": "solid"
+    },
+    "custom_css_vars": {
+      "--theme-text-muted": "#9aa1a9",
+      "--theme-accent-strong": "#e05c12",
+      "--theme-header-bg": "#0e1013",
+      "--theme-header-text": "#e9e7e2",
+      "--theme-footer-bg": "#0b0d10",
+      "--theme-footer-text": "#9aa1a9",
+      "--border-width": "1px",
+      "--border-style": "solid",
+      "--theme-header-accent": "#ff7a2f"
+    }
+  },
+  "layout": [],
+  "widgets": [
+    { "id": "status-strip", "name": "Status Strip" }
+  ],
+  "custom_css": "/* AgentShell showcase design layer */\n#zone-main { --as-max: 1180px; }\n",
+  "widget_overrides": {
+    "hello-world": { "status": "disabled" }
+  }
+}

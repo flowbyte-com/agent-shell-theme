@@ -107,11 +107,35 @@
         '--zone-footer-radius':  { type: 'text', scope: 'footer', group: 'Borders', label: 'Corner radius' },
     };
 
+    /* ── shadow presets ──────────────────────────────────────────────────
+     *
+     * A preset is a CSS `box-shadow` value, because the stylesheet uses the
+     * token directly (`box-shadow: var(--theme-shadow)`). The previous list
+     * offered `soft` — a name, not a value — so choosing it stored a token
+     * the browser discarded and the page kept its previous shadow while the
+     * editor said it had changed.
+     *
+     * `SHADOW_CUSTOM` is a mode, never a value: choosing it leaves the raw
+     * field alone and puts the caret in it. It is what the select shows when
+     * the stored value is not one of the presets, so an existing custom
+     * shadow is preserved rather than silently replaced.
+     */
     var SHADOW_PRESETS = [
         { value: 'none', label: 'None' },
-        { value: 'soft', label: 'Soft' },
-        { value: '0 4px 6px rgba(0,0,0,0.1)', label: 'Custom' },
+        { value: '0 1px 2px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.06)', label: 'Soft' },
+        { value: '0 8px 20px -6px rgba(0,0,0,0.2)', label: 'Medium' },
+        { value: '0 16px 40px -8px rgba(0,0,0,0.3)', label: 'Strong' },
     ];
+    var SHADOW_CUSTOM = '__custom__';
+
+    /** The preset whose value is exactly this shadow, or null. */
+    function matching_shadow_preset( value ) {
+        var wanted = String( value === null || value === undefined ? '' : value ).trim();
+        for ( var i = 0; i < SHADOW_PRESETS.length; i++ ) {
+            if ( SHADOW_PRESETS[ i ].value === wanted ) { return SHADOW_PRESETS[ i ]; }
+        }
+        return null;
+    }
 
     var CONTEXTS = [
         { id: 'layout',     label: 'Layout' },
@@ -208,25 +232,48 @@
 
         function shadow_field( name, meta, value ) {
             var id = 'as-cfg-t-' + name.replace( /[^a-z0-9]/gi, '-' );
+            var current = String( value === null || value === undefined ? '' : value );
+            var input;
+
             var select = h( 'select', {
                 id: id, class: 'as-cfg__input as-cfg__select', 'data-token': name, 'data-focus-key': 'token:' + name,
                 onchange: function ( e ) {
+                    // "Custom" is a mode, not a shadow. Choosing it keeps the
+                    // value the operator already has and moves the caret to
+                    // the field that can change it; any other choice is a
+                    // valid CSS value and is written as one.
+                    if ( e.target.value === SHADOW_CUSTOM ) {
+                        if ( input ) { input.focus(); }
+                        return;
+                    }
+                    if ( input ) { input.value = e.target.value; }
                     editor().set_token( name, e.target.value );
                     app.on_change();
                 },
             } );
-            var known = SHADOW_PRESETS.some( function ( p ) { return p.value === value; } );
+
+            var known = matching_shadow_preset( current );
             SHADOW_PRESETS.forEach( function ( preset ) {
-                select.appendChild( h( 'option', { value: preset.value, text: preset.label, selected: preset.value === value } ) );
+                select.appendChild( h( 'option', {
+                    value: preset.value,
+                    text: preset.label,
+                    selected: known ? preset.value === current : false,
+                } ) );
             } );
-            if ( ! known && value ) {
-                select.appendChild( h( 'option', { value: value, text: 'Custom', selected: true } ) );
-            }
-            var input = h( 'input', {
-                type: 'text', class: 'as-cfg__input as-cfg__input--shadow', value: value || '',
+            // Always present, so the raw field and the select can stay in
+            // step when the operator types a value that is not a preset.
+            select.appendChild( h( 'option', {
+                value: SHADOW_CUSTOM, text: 'Custom', selected: ! known,
+            } ) );
+
+            input = h( 'input', {
+                type: 'text', class: 'as-cfg__input as-cfg__input--shadow', value: current,
                 'aria-label': 'Shadow value', 'data-focus-key': 'shadow:' + name,
                 oninput: function ( e ) {
-                    editor().set_token( name, e.target.value );
+                    var typed = e.target.value;
+                    var match = matching_shadow_preset( typed );
+                    select.value = match ? match.value : SHADOW_CUSTOM;
+                    editor().set_token( name, typed );
                     app.on_change( { live: true } );
                 },
             } );
@@ -925,8 +972,16 @@
     }
 
     if ( typeof module !== 'undefined' && module.exports ) {
-        module.exports = { make_ui: make_ui, h: h, TOKENS: TOKENS };
+        module.exports = {
+            make_ui: make_ui, h: h, TOKENS: TOKENS,
+            SHADOW_PRESETS: SHADOW_PRESETS, SHADOW_CUSTOM: SHADOW_CUSTOM,
+            matching_shadow_preset: matching_shadow_preset,
+        };
     } else {
-        root.AgentshellConfiguratorUi = { make_ui: make_ui, h: h, TOKENS: TOKENS };
+        root.AgentshellConfiguratorUi = {
+            make_ui: make_ui, h: h, TOKENS: TOKENS,
+            SHADOW_PRESETS: SHADOW_PRESETS, SHADOW_CUSTOM: SHADOW_CUSTOM,
+            matching_shadow_preset: matching_shadow_preset,
+        };
     }
 })( typeof window !== 'undefined' ? window : globalThis );
