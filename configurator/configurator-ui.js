@@ -354,38 +354,19 @@
         }
 
         function add_component( zone_id, area_id ) {
-            var select = h( 'select', {
-                class: 'as-cfg__input as-cfg__select', 'aria-label': 'Add a component to this area',
+            // A button, not a select: the choices are made in the picker,
+            // which can show what they are. A select offered four kinds of
+            // component and then asked a native dialog which one, which
+            // is two steps through two interfaces to make one choice.
+            var button = h( 'button', {
+                type: 'button', class: 'as-cfg__btn as-cfg__btn--wide',
+                'aria-label': 'Add a component to ' + ( area_id || 'this zone' ),
                 'data-focus-key': 'add:' + zone_id + ':' + ( area_id || 'composition' ),
-                onchange: function ( e ) {
-                    var type = e.target.value;
-                    e.target.value = '';
-                    if ( ! type ) { return; }
-                    if ( type === 'wp_core' ) {
-                        app.pick_core_component( zone_id, area_id );
-                        return;
-                    }
-                    if ( type === 'widget' ) {
-                        app.pick_widget( zone_id, area_id );
-                        return;
-                    }
-                    if ( type === 'wp_widget_area' ) {
-                        app.pick_widget_area( zone_id, area_id );
-                        return;
-                    }
-                    editor().add_block( zone_id, area_id, { type: type } );
-                    app.on_change();
+                onclick: function ( e ) {
+                    app.open_component_picker( zone_id, area_id, e.currentTarget );
                 },
-            } );
-            select.appendChild( h( 'option', { value: '', text: '+ Add component…' } ) );
-            [ { value: 'wp_core', label: 'WordPress component' },
-              { value: 'widget', label: 'Widget' },
-              { value: 'wp_widget_area', label: 'Widget area' },
-              { value: 'json_block', label: 'HTML block' },
-              { value: 'wp_loop', label: 'Content loop' } ].forEach( function ( option ) {
-                select.appendChild( h( 'option', { value: option.value, text: option.label } ) );
-            } );
-            return select;
+            }, [ '+ Add component' ] );
+            return button;
         }
 
         /* ── the block inspector ─────────────────────────────────────────── */

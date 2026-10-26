@@ -665,6 +665,153 @@ body.config-panel-open {
     }
 }
 
+/* ── The component picker ─────────────────────────────────────────────────
+   One dialog, rendered inside the dock. It covers the dock rather than the
+   viewport, because it belongs to the editor: the site behind it stays
+   visible, and the dock's own action bar stays where it was.
+   ------------------------------------------------------------------------- */
+.as-cfg__picker-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background: rgba(24, 24, 27, 0.32);
+}
+
+.as-cfg__picker {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 30rem;
+    max-height: 100%;
+    background: var(--configurator-bg);
+    border: 1px solid var(--configurator-border);
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+    overflow: hidden;
+}
+
+.as-cfg__picker-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.9rem 1rem 1rem;
+    min-height: 0;
+}
+
+.as-cfg__picker-title {
+    margin: 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.as-cfg__picker-target {
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--configurator-muted);
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+}
+
+.as-cfg__picker-target-value {
+    color: var(--configurator-text);
+    font-weight: 600;
+}
+
+.as-cfg__picker-filter {
+    font-size: 0.85rem;
+}
+
+.as-cfg__picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    overflow-y: auto;
+    min-height: 0;
+    max-height: 17rem;
+    padding: 0.15rem;
+    border: 1px solid var(--configurator-border);
+    border-radius: 8px;
+    background: var(--configurator-surface);
+}
+
+.as-cfg__picker-group {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--configurator-muted);
+    padding: 0.5rem 0.4rem 0.2rem;
+}
+
+.as-cfg__picker-option {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6rem;
+    padding: 0.35rem 0.45rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+.as-cfg__picker-option:hover {
+    background: var(--configurator-surface-2);
+}
+
+/* The highlighted option is the one the keyboard is on. It is marked with
+   a border as well as a colour, so it does not depend on colour alone. */
+.as-cfg__picker-option.is-active {
+    background: var(--configurator-bg);
+    border: 1px solid var(--configurator-accent, #e87a3e);
+    padding: calc(0.35rem - 1px) calc(0.45rem - 1px);
+    font-weight: 600;
+}
+
+.as-cfg__picker-option-detail {
+    font-size: 0.72rem;
+    color: var(--configurator-muted);
+    white-space: nowrap;
+}
+
+.as-cfg__picker-empty {
+    margin: 0;
+    padding: 0.5rem 0.4rem;
+    font-size: 0.8rem;
+    color: var(--configurator-muted);
+}
+
+.as-cfg__picker-live {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--configurator-muted);
+    min-height: 1em;
+}
+
+.as-cfg__picker-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.4rem;
+    padding: 0.6rem 1rem;
+    border-top: 1px solid var(--configurator-border);
+    background: var(--configurator-surface);
+}
+
+.as-cfg__btn--wide {
+    width: 100%;
+    justify-content: center;
+}
+
+/* The dock is the picker's containing block, so the picker must be able
+   to sit above the canvas without the canvas's scroll clipping it. */
+#agentshell-config-panel {
+    isolation: isolate;
+}
+
 /* ── Reduced motion ─────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
     #agentshell-config-panel,

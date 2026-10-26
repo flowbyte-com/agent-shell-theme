@@ -155,6 +155,11 @@ jobs:
       - name: Configurator editor model (Node)
         run: node tests/configurator-editor-test.js
 
+      # The component picker's choices: the vocabulary the server supports,
+      # the names it uses, and what it says when the site offers nothing.
+      - name: Configurator component picker (Node)
+        run: node tests/configurator-picker-test.js
+
       # The editor itself, driven in a real browser against the theme's
       # real stylesheet, modules and markup — including the case where
       # another actor holds the open transaction. A missing browser is a
