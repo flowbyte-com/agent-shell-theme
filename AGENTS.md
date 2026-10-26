@@ -309,6 +309,18 @@ An agent must therefore not describe a run as "transactional" if it used either 
 
 **The proposed contract's *full* form (every content tool journals; a SQL transaction wraps the commit; navigation joins the transaction; preview sees staged content) is Stage 2+ and remains a proposal.** The truthful lifecycle for `create_draft` is the only production lifecycle today; everything else is configuration-staged or immediate-write as it has been since v1. Design and status: [`docs/CONTENT-TRANSACTIONS-DESIGN.md`](docs/CONTENT-TRANSACTIONS-DESIGN.md).
 
+### 6.1a The secret a preview credential is signed with (normative, implemented)
+
+**Every preview credential is signed with one secret, and one rule decides what it is.** `Transaction_Manager::preview_secret()` is the owner of that rule:
+
+1. `AGENTSHELL_REST_TOKEN`, when it is set to a **non-empty** value.
+2. `AUTH_SALT`, when it is set to a **non-empty** value.
+3. Nothing at all — and then **no preview credential is offered at all**, because a credential signed with an empty secret is one anybody can compute.
+
+**A constant that is defined but empty is not a secret.** A site that puts `AGENTSHELL_REST_TOKEN` in `wp-config.php` with no value must not be treated as having one.
+
+Every path that mints or verifies a preview credential uses this rule. The theme asks for the answer through `agentshell_preview_secret()`, which asks the owner when the MCP plugin is loaded and applies the same rule when it is not; the screenshot tool asks the owner directly. The two agree by construction, so **a key the tool produces is a key the theme accepts — and only that key**.
+
 ### 6.2 Transaction lease and stale recovery (normative, implemented)
 
 A transaction lives in one option row. Nothing removes that row except a `commit` or `rollback` the owner actually reached, so before this lease existed a crashed session wedged the site permanently. The lease is the fix, and it is part of the contract:

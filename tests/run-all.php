@@ -487,11 +487,10 @@ $suites = array(
         'path'     => __DIR__ . '/run-configurator-picker.php',
         'requires' => 'unit',
     ),
-    // The mobile visibility of the header's and the footer's middle centre,
-    // in both layouts, measured in a browser against the theme's real
-    // stylesheet and the theme's real renderer.
-    'mobile-zone-visibility' => array(
-        'path'     => __DIR__ . '/run-mobile-zone-visibility.php',
+    // The secret a preview credential is signed with: one rule, in one
+    // place, and an empty secret is not a secret.
+    'preview-secret' => array(
+        'path'     => __DIR__ . '/preview-secret-test.php',
         'requires' => 'unit',
     ),
     'configurator-enqueue' => array(
@@ -1039,6 +1038,13 @@ $suites = array(
     // are present, correctly ordered, and the classes load. Unit-only.
     'draft-tools-bootstrap' => array(
         'path'     => __DIR__ . '/draft-tools-bootstrap-test.php',
+        'requires' => 'unit',
+    ),
+    // The mobile visibility of the header's and the footer's middle centre,
+    // in both layouts, measured in a browser against the theme's real
+    // stylesheet and the theme's real renderer.
+    'mobile-zone-visibility' => array(
+        'path'     => __DIR__ . '/run-mobile-zone-visibility.php',
         'requires' => 'unit',
     ),
 );
