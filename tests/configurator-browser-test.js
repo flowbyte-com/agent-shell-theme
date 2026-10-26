@@ -135,9 +135,12 @@ function main() {
         // actor holds the transaction.
         var plain = run_scenario( browser, harness, profile, 'default' );
         var locked = run_scenario( browser, harness, profile, 'locked' );
+        var refusal = run_scenario( browser, harness, profile, 'refusal' );
         report = {
-            total: ( plain.total || 0 ) + ( locked.total || 0 ),
-            failures: ( plain.failures || [] ).concat( locked.failures || [] ),
+            total: ( plain.total || 0 ) + ( locked.total || 0 ) + ( refusal.total || 0 ),
+            failures: ( plain.failures || [] )
+                .concat( locked.failures || [] )
+                .concat( refusal.failures || [] ),
         };
     } finally {
         try { fs.rmSync( profile, { recursive: true, force: true } ); } catch ( e2 ) {}

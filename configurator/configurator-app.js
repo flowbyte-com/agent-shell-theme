@@ -132,10 +132,17 @@
             var opened = null;
             var tx_state = tx.get_state();
 
+            // Whether *this* save opened the transaction. A transaction that
+            // was already open is the operator's own staged work, and a
+            // failed save must not throw it away: only the transaction this
+            // save opened is rolled back when the save fails.
+            var opened_here = false;
+
             var begin = ( tx_state.mode === 'editing_open' )
                 ? Promise.resolve( null )
                 : api.begin_transaction( 'configurator save' ).then( function ( result ) {
                     tx.begin( 'configurator save' );
+                    opened_here = true;
                     return result;
                 } );
 
@@ -163,6 +170,13 @@
                 } )
                 .catch( function ( error ) {
                     app.busy = false;
+                    if ( ! opened_here ) {
+                        // The transaction was not ours to close. Say what
+                        // happened and leave it as it was.
+                        app.ui.render();
+                        say( 'Not saved: ' + error.message, 'error' );
+                        return;
+                    }
                     // The transaction was opened for this save; leave nothing
                     // behind for the operator to find later.
                     var rollback = api.rollback_transaction().catch( function () { return null; } );

@@ -89,6 +89,10 @@ window.fetch = function (url, opts) {
     return Promise.resolve(respond({ rolled_back: true }));
   }
   if (path.indexOf('/transaction') !== -1) {
+    if (SCENARIO === 'refusal') {
+      // A transaction is already open — with our own work staged in it.
+      return Promise.resolve(respond({ open: true, id: 'tx-mine', actor: 'me', label: 'earlier work', owned_by_us: true, has_staged: true }));
+    }
     if (SCENARIO === 'locked') {
       // An agent is holding the transaction: its staged work is not this
       // session's to overwrite.
@@ -141,6 +145,10 @@ async function run() {
 
   if (SCENARIO === 'locked') {
     await run_locked();
+    return;
+  }
+  if (SCENARIO === 'refusal') {
+    await run_refusal();
     return;
   }
 
@@ -298,6 +306,40 @@ async function run() {
 function report() {
   var failed = window.__results.filter(function (r) { return !r.pass; });
   document.title = JSON.stringify({ total: window.__results.length, failed: failed.length, failures: failed });
+}
+
+/**
+ * A refused save must not throw away a transaction it did not open.
+ *
+ * The transaction here was already open, with the operator's own staged
+ * work in it. The save fails, the message is shown and the draft is kept —
+ * but the transaction is left exactly as it was, because rolling it back
+ * would destroy work that was there before this save.
+ */
+async function run_refusal() {
+  ok('the editor opens with an open transaction', !!q('.as-cfg__rail'));
+  ok('the state is staged, not dirty', chip() === 'Staged', chip());
+
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(60);
+  var hex = tokenInput('--theme-bg');
+  hex.value = '#bad';
+  hex.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+  ok('the draft is dirty before the refused save', chip() === 'Unsaved changes', chip());
+
+  q('.as-cfg__actions [data-focus-key="save"]').click();
+  await wait(400);
+
+  ok('the refusal is reported', !!q('.as-cfg__alert') && q('.as-cfg__alert').textContent.indexOf('Invalid color') !== -1,
+     q('.as-cfg__alert') ? q('.as-cfg__alert').textContent : 'no alert');
+  ok('the draft is kept', chip() === 'Unsaved changes', chip());
+  ok('the transaction that was already open is not rolled back',
+     window.__requests.join(' ').indexOf('DELETE') === -1,
+     window.__requests.join(' '));
+  ok('the save was not committed', window.__requests.join(' ').indexOf('/transaction/commit') === -1);
+
+  report();
 }
 
 /**
