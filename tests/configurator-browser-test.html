@@ -15,11 +15,21 @@
 -->
 <!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="../style.css">
 <link rel="stylesheet" href="../configurator/configurator.css">
-<style>body{margin:0;font-family:system-ui,sans-serif;background:#f6f6f7}</style>
+<!-- The body background is the theme's own (var(--theme-bg)), so the live
+     assertions read a colour the stylesheet really paints. -->
+<style>body{margin:0;font-family:system-ui,sans-serif}</style>
 </head><body>
 <div id="agentshell-config-panel" class="as-cfg" aria-hidden="false"></div>
 <button id="agentshell-config-trigger" aria-label="Open theme configurator">cfg</button>
+<!-- The zones the theme's stylesheet paints. They are here so the live-style
+     layer has something real to move: a colour token is only visible if the
+     stylesheet reads it, and that is what the live scenario asserts. -->
+<header id="zone-header"><nav class="zone-slot"></nav></header>
+<main id="zone-main"><div class="zone-content"></div></main>
+<footer id="zone-footer"><div class="zone-slot"></div></footer>
+<nav class="shell-nav"><ul class="sub-menu" id="as-shadow-probe" style="display:block"><li><a href="#">probe</a></li></ul></nav>
 <script>
 var SCENARIO = ( new URLSearchParams( location.search ).get( 'scenario' ) || 'default' );
 window.__errors = [];
@@ -28,12 +38,21 @@ window.__requests = [];
 window.__opened = [];
 window.__puts = [];
 
+// The properties the theme's stylesheet reads. The server publishes this
+// list; the harness answers with the same one, so the live-style layer is
+// exercised against the vocabulary the theme really uses.
+const LIVE_TOKENS = [ '--theme-bg', '--theme-text', '--theme-accent', '--theme-header-bg', '--theme-footer-bg',
+                      '--theme-header-text', '--theme-footer-text', '--theme-header-border', '--theme-footer-border',
+                      '--theme-border', '--font-base', '--spacing-base', '--border-style', '--theme-shadow',
+                      '--zone-header-border-width', '--zone-footer-border-width', '--zone-main-align' ];
+
 const ZONE_RESPONSE = {
   config: { '--theme-bg': '#fafaf9', '--theme-text': '#1f2937', '--theme-accent': '#e87a3e',
             '--theme-header-bg': '#ffffff', '--zone-header-layout': 'space-between', '--spacing-base': '1rem',
             // A stored custom shadow: not one of the presets, so the editor
             // must select "Custom" and leave the value alone.
             '--theme-shadow': '0 2px 4px rgba(0,0,0,0.12)' },
+  live_tokens: LIVE_TOKENS,
   defaults: {}, custom_css: '/* agent-set rule */', custom_js: '',
   zones: [
     { id: 'header', label: 'Header', slots: {
@@ -66,6 +85,22 @@ const ZONE_RESPONSE = {
 };
 
 window.AgentShellConfig = { restUrl: '/', nonce: 'x', adminUrl: '/admin-ajax.php' };
+
+// The theme prints the committed design tokens as a :root block, and the
+// page is painted with them. The harness does the same, so the live
+// assertions read the colours and shadows a visitor would see — and so a
+// save that does not change this page's stylesheet is visible as such.
+(function () {
+  var css = ':root {\n';
+  Object.keys(ZONE_RESPONSE.config).forEach(function (key) {
+    if (key.indexOf('--') === 0) { css += '    ' + key + ': ' + ZONE_RESPONSE.config[key] + ';\n'; }
+  });
+  css += '}\n';
+  var style = document.createElement('style');
+  style.id = 'agentshell-saved-config';
+  style.textContent = css;
+  document.head.appendChild(style);
+})();
 
 // A small stateful server, so the browser test exercises the real workflow:
 // a PUT inside a transaction stages, a commit promotes, a rollback discards.
@@ -455,6 +490,7 @@ window.fetch = function (url, opts) {
 <script src="../configurator/configurator-api.js"></script>
 <script src="../configurator/configurator-picker.js"></script>
 <script src="../configurator/configurator-ui.js"></script>
+<script src="../configurator/configurator-live-style.js"></script>
 <script src="../configurator/configurator-app.js"></script>
 <script>
 window.__results = [];
@@ -505,6 +541,10 @@ async function run() {
   }
   if (SCENARIO === 'history') {
     await run_history();
+    return;
+  }
+  if (SCENARIO === 'live') {
+    await run_live();
     return;
   }
   if (SCENARIO === 'commitlost') {
@@ -1406,6 +1446,121 @@ async function run_history() {
 
   ok('history changes never touched the committed configuration',
      SERVER.committed.config['--theme-bg'] === '#fafaf9', SERVER.committed.config['--theme-bg']);
+  report();
+}
+
+
+/**
+ * The instant visual feedback.
+ *
+ * The page behind the editor must follow a design change as it is made, in
+ * this browser, without a request, without a transaction, and without a
+ * change to anything the server holds. The assertions read the theme's own
+ * computed styles, so they are about what the page looks like rather than
+ * about what the code believes it wrote.
+ */
+async function run_live() {
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(250);
+
+  function body_bg() { return getComputedStyle(document.body).backgroundColor; }
+  function header_bg() { return getComputedStyle(document.getElementById('zone-header')).backgroundColor; }
+  function footer_bg() { return getComputedStyle(document.getElementById('zone-footer')).backgroundColor; }
+  function probe_shadow() { return getComputedStyle(document.getElementById('as-shadow-probe')).boxShadow; }
+  function set_token(name, value) {
+    var input = tokenInput(name);
+    if ( ! input ) { throw new Error( 'no field for ' + name ); }
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  function token_value(name) {
+    var input = tokenInput(name);
+    return input ? input.value : null;
+  }
+
+  ok('the page starts at the committed colour', body_bg() === 'rgb(250, 250, 249)', body_bg());
+  ok('the page starts at the committed header colour', header_bg() === 'rgb(255, 255, 255)', header_bg());
+
+  var requests_before = window.__requests.length;
+  set_token('--theme-bg', '#123456');
+  await wait(200);
+
+  ok('a colour change reaches the page immediately', body_bg() === 'rgb(18, 52, 86)', body_bg());
+  ok('the change was not sent to the server', window.__requests.length === requests_before,
+     window.__requests.slice(requests_before).join(' '));
+  ok('no transaction was opened', window.__requests.join(' ').indexOf('POST /wp/v2/agentshell/transaction') === -1);
+  ok('nothing was staged', window.__puts.length === 0, String(window.__puts.length));
+  ok('the editor reports unsaved changes', chip() === 'Unsaved changes', chip());
+
+  // The header has its own colours, and they are edited in the zone's own
+  // appearance — the place they live.
+  q('.as-cfg__tab[data-context="layout"]').click();
+  await wait(200);
+  set_token('--theme-header-bg', '#00ff00');
+  await wait(200);
+  ok('the header colour reaches the page', header_bg() === 'rgb(0, 255, 0)', header_bg());
+  ok('the body colour did not change with it', body_bg() === 'rgb(18, 52, 86)', body_bg());
+
+  q('.as-cfg__tab[data-context="footer"]') ;
+  await wait(50);
+
+  // An incomplete colour is the operator's to fix. It must not reach the page.
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(200);
+  set_token('--theme-bg', '#12');
+  await wait(200);
+  ok('an incomplete colour does not corrupt the page', body_bg() === 'rgb(18, 52, 86)', body_bg());
+  ok('the incomplete text is kept as typed', token_value('--theme-bg') === '#12', token_value('--theme-bg'));
+
+  set_token('--theme-bg', '#123456');
+  await wait(200);
+  ok('a valid colour reaches the page again', body_bg() === 'rgb(18, 52, 86)', body_bg());
+
+  // The shadow presets are real CSS values, and the page must show them.
+  var shadow_select = tokenInput('--theme-shadow');
+  shadow_select.value = 'none';
+  shadow_select.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  ok('the None preset removes the shadow', probe_shadow() === 'none', probe_shadow());
+
+  shadow_select.value = '0 1px 2px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.06)';
+  shadow_select.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  ok('the Soft preset paints a real shadow', probe_shadow() !== 'none' && probe_shadow().indexOf('rgba') !== -1, probe_shadow());
+
+  // A setting the stylesheet does not read changes nothing, and says so.
+  q('.as-cfg__tab[data-context="layout"]').click();
+  await wait(200);
+  ok('a setting the theme does not read is marked', !!q('.as-cfg__hint--warn'),
+     q('.as-cfg__hint--warn') ? q('.as-cfg__hint--warn').textContent : 'no warning');
+
+  // Discard puts the page back.
+  q('.as-cfg__actions [data-focus-key="discard"]').click();
+  await wait(600);
+  ok('discard returns the page to the committed colour', body_bg() === 'rgb(250, 250, 249)', body_bg());
+  ok('discard returns the header colour', header_bg() === 'rgb(255, 255, 255)', header_bg());
+  ok('discard returns the shadow', probe_shadow() !== 'none', probe_shadow());
+  ok('discard did not commit', window.__requests.join(' ').indexOf('/transaction/commit') === -1);
+
+  // Save publishes the change, and the page must not fall back to the old
+  // design afterwards.
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(200);
+  set_token('--theme-bg', '#654321');
+  await wait(200);
+  ok('the change is on the page before saving', body_bg() === 'rgb(101, 67, 33)', body_bg());
+  q('.as-cfg__actions [data-focus-key="save"]').click();
+  await wait(800);
+  ok('the save committed the change', SERVER.committed.config['--theme-bg'] === '#654321',
+     SERVER.committed.config['--theme-bg']);
+  ok('the page still shows the saved colour', body_bg() === 'rgb(101, 67, 33)', body_bg());
+  ok('the editor reports Saved', chip() === 'Saved', chip());
+
+  // A reload of the editor (not the page) must not undo the committed value.
+  await window.AgentshellConfigurator.load();
+  await wait(400);
+  ok('a reload keeps the saved colour on the page', body_bg() === 'rgb(101, 67, 33)', body_bg());
+
   report();
 }
 

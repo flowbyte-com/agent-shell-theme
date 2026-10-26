@@ -150,6 +150,12 @@ jobs:
       - name: Configurator state model (Node)
         run: node tests/configurator-state-test.js
 
+      # The live-style layer: the browser-local overlay of the draft's design
+      # tokens. Its bookkeeping is here; what it does to the page is proved by
+      # the browser suite below, with the browser's own parser.
+      - name: Configurator live-style layer (Node)
+        run: node tests/configurator-live-style-test.js
+
       # The redesigned editor's own model: what is selected, what is dirty,
       # what a move does, and what the transport does with a refusal.
       - name: Configurator editor model (Node)

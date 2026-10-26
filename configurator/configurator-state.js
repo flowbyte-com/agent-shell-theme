@@ -45,6 +45,63 @@
 (function ( root ) {
     'use strict';
 
+    /* ── The design tokens the editor exposes ────────────────────────────
+     *
+     * A token belongs to a *scope* (global, header, main, footer) and to a
+     * group within it. The previous panel grouped tokens by kind — every
+     * border width together, every colour together — so a header colour sat
+     * five screens away from the header's own area map. Scope is what the
+     * operator is thinking about.
+     *
+     * `probe` is the CSS property the value is checked against before the
+     * live-style layer puts it on the page. It is the browser's own parser
+     * that decides, so a half-typed colour or a malformed length is refused
+     * without a second copy of the server's validation rules: the value is
+     * handed to a real property and read back. It is also what keeps a
+     * token that the stylesheet never reads out of the live vocabulary —
+     * the server publishes the list the theme actually consumes.
+     */
+    var TOKENS = {
+        '--theme-bg':            { type: 'color', scope: 'global', group: 'Colours', label: 'Background', probe: 'color' },
+        '--theme-surface':       { type: 'color', scope: 'global', group: 'Colours', label: 'Surface', probe: 'color' },
+        '--theme-text':          { type: 'color', scope: 'global', group: 'Colours', label: 'Text', probe: 'color' },
+        '--theme-accent':        { type: 'color', scope: 'global', group: 'Colours', label: 'Accent', probe: 'color' },
+        '--theme-border':        { type: 'color', scope: 'global', group: 'Colours', label: 'Border', probe: 'color' },
+
+        '--font-base':           { type: 'text',  scope: 'global', group: 'Typography', label: 'Base font', probe: 'fontFamily' },
+        '--font-mono':           { type: 'text',  scope: 'global', group: 'Typography', label: 'Mono font', probe: 'fontFamily' },
+
+        '--spacing-base':        { type: 'text',  scope: 'global', group: 'Spacing', label: 'Base spacing', probe: 'width' },
+
+        '--border-width':        { type: 'text',  scope: 'global', group: 'Borders & shadows', label: 'Border width', probe: 'width' },
+        '--border-style':        { type: 'select', scope: 'global', group: 'Borders & shadows', label: 'Border style', probe: 'borderStyle',
+                                   options: [ { value: 'solid', label: 'Solid' }, { value: 'dashed', label: 'Dashed' }, { value: 'none', label: 'None' } ] },
+        '--theme-shadow':        { type: 'shadow', scope: 'global', group: 'Borders & shadows', label: 'Island shadow', probe: 'boxShadow' },
+
+        '--zone-header-layout':  { type: 'select', scope: 'header', group: 'Layout', label: 'Header layout', probe: 'justifyContent',
+                                   options: [ { value: 'flex-start', label: 'Left' }, { value: 'center', label: 'Centre' }, { value: 'space-between', label: 'Space between' } ] },
+        '--theme-header-bg':     { type: 'color', scope: 'header', group: 'Colours', label: 'Background', probe: 'color' },
+        '--theme-header-text':   { type: 'color', scope: 'header', group: 'Colours', label: 'Text', probe: 'color' },
+        '--theme-header-accent': { type: 'color', scope: 'header', group: 'Colours', label: 'Accent', probe: 'color' },
+        '--theme-header-border': { type: 'color', scope: 'header', group: 'Colours', label: 'Border line', probe: 'color' },
+        '--zone-header-border-width': { type: 'text', scope: 'header', group: 'Borders', label: 'Border width', probe: 'width' },
+        '--zone-header-radius':  { type: 'text', scope: 'header', group: 'Borders', label: 'Corner radius', probe: 'width' },
+
+        '--zone-main-align':     { type: 'select', scope: 'main', group: 'Layout', label: 'Content align', probe: 'justifyContent',
+                                   options: [ { value: 'flex-start', label: 'Top' }, { value: 'center', label: 'Middle' } ] },
+        '--zone-main-border-width': { type: 'text', scope: 'main', group: 'Borders', label: 'Border width', probe: 'width' },
+        '--zone-main-radius':    { type: 'text', scope: 'main', group: 'Borders', label: 'Corner radius', probe: 'width' },
+
+        '--zone-footer-layout':  { type: 'select', scope: 'footer', group: 'Layout', label: 'Footer layout', probe: 'justifyContent',
+                                   options: [ { value: 'flex-start', label: 'Left' }, { value: 'center', label: 'Centre' }, { value: 'space-between', label: 'Space between' } ] },
+        '--theme-footer-bg':     { type: 'color', scope: 'footer', group: 'Colours', label: 'Background', probe: 'color' },
+        '--theme-footer-text':   { type: 'color', scope: 'footer', group: 'Colours', label: 'Text', probe: 'color' },
+        '--theme-footer-accent': { type: 'color', scope: 'footer', group: 'Colours', label: 'Accent', probe: 'color' },
+        '--theme-footer-border': { type: 'color', scope: 'footer', group: 'Colours', label: 'Border line', probe: 'color' },
+        '--zone-footer-border-width': { type: 'text', scope: 'footer', group: 'Borders', label: 'Border width', probe: 'width' },
+        '--zone-footer-radius':  { type: 'text', scope: 'footer', group: 'Borders', label: 'Corner radius', probe: 'width' },
+    };
+
     function make_state_model( initial ) {
         var state = initial || {
             mode: 'idle',           // 'idle' | 'editing_open' | 'locked'
@@ -803,6 +860,7 @@
             make_zone_model: make_zone_model,
             make_editor_model: make_editor_model,
             make_session_model: make_session_model,
+            TOKENS: TOKENS,
         };
     } else {
         root.AgentshellConfiguratorState = {
@@ -810,6 +868,7 @@
             make_zone_model: make_zone_model,
             make_editor_model: make_editor_model,
             make_session_model: make_session_model,
+            TOKENS: TOKENS,
         };
     }
 })( typeof window !== 'undefined' ? window : globalThis );

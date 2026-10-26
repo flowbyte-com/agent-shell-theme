@@ -174,12 +174,13 @@ Agentshell_Test::run(
             array(
                 'agentshell-configurator',
                 'agentshell-configurator-api',
+                'agentshell-configurator-live-style',
                 'agentshell-configurator-picker',
                 'agentshell-configurator-state',
                 'agentshell-configurator-ui',
             ),
             $handles,
-            'the editor is five small modules, and every one is enqueued'
+            'the editor is six small modules, and every one is enqueued'
         );
         Agentshell_Test::assert_true(
             isset( $result['styles']['agentshell-configurator'] ),
