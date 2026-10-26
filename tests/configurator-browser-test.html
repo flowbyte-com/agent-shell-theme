@@ -218,10 +218,45 @@ async function run() {
   ok('discard restores the saved menu', qa('.as-cfg__nav-fields select')[0].value === 'utility',
      qa('.as-cfg__nav-fields select')[0].value);
 
+  // ── The zone's own appearance ───────────────────────────────────────
+  // It is a property of the zone, so it sits under the zone switcher
+  // behind a disclosure — and it is on screen at every width, rather
+  // than at the end of a scroll past the map, the components and the
+  // inspector.
+  var disclosure = q('.as-cfg__disclosure');
+  ok('the zone has an appearance disclosure', !!disclosure);
+  ok('the disclosure names the zone',
+     disclosure && q('.as-cfg__disclosure-title', disclosure).textContent.indexOf('Header') !== -1,
+     disclosure ? q('.as-cfg__disclosure-title', disclosure).textContent : 'none');
+  ok('the disclosure says what is inside',
+     disclosure && q('.as-cfg__disclosure-hint', disclosure).textContent.length > 0,
+     disclosure ? q('.as-cfg__disclosure-hint', disclosure).textContent : 'none');
+  ok('the disclosure starts closed', disclosure && !disclosure.hasAttribute('open'));
+  var canvas = q('.as-cfg__canvas');
+  var canvasRect = canvas.getBoundingClientRect();
+  var summaryRect = q('.as-cfg__disclosure-summary').getBoundingClientRect();
+  ok('the disclosure is on screen without scrolling',
+     summaryRect.top < canvasRect.bottom && summaryRect.bottom > canvasRect.top,
+     'summary at ' + Math.round(summaryRect.top) + ', canvas ends at ' + Math.round(canvasRect.bottom));
+
+  // Opening it reveals the zone's own tokens.
+  q('.as-cfg__disclosure-summary').click();
+  await wait(60);
+  ok('opening the disclosure reveals the zone tokens',
+     q('.as-cfg__disclosure').hasAttribute('open') &&
+     q('.as-cfg__disclosure .as-cfg__group') !== null);
+  ok('the zone tokens are the zone\'s own, not the site\'s',
+     q('.as-cfg__disclosure').textContent.indexOf('Background') !== -1);
+  q('.as-cfg__disclosure-summary').click();
+  await wait(60);
+
   // ── Appearance ──────────────────────────────────────────────────────
   q('.as-cfg__tab[data-context="appearance"]').click();
   await wait(60);
   ok('the appearance context shows the global tokens', qa('.as-cfg__group').length >= 3, String(qa('.as-cfg__group').length));
+  ok('the appearance context keeps its groups open',
+     qa('.as-cfg__group').length === qa('.as-cfg__disclosure .as-cfg__group').length + qa('.as-cfg__view > .as-cfg__groups > .as-cfg__group').length,
+     String(qa('.as-cfg__group').length));
   ok('a colour field offers a swatch and a hex value', !!q('.as-cfg__swatch') && !!q('.as-cfg__input--hex'));
   ok('the background token is the first colour', tokenInput('--theme-bg') !== null);
 

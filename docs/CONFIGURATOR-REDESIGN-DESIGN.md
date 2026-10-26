@@ -81,12 +81,13 @@ made it worse in exactly the same proportion.
 
 ## 4. The architecture that replaced it
 
-The old script is four modules, each with one job, in `configurator/`:
+The old script is five modules, each with one job, in `configurator/`:
 
 | Module | Responsibility | Depends on |
 |---|---|---|
 | `configurator-state.js` | The models: transaction state, zone/slot rules, and the editor model (what is selected, what is dirty, what a move does). No DOM, no fetch. | nothing |
 | `configurator-api.js` | The transport: the REST routes, the nonce, and the translation of a refusal into an error with a code and a message. No state. | nothing |
+| `configurator-picker.js` | The component picker: it presents the choices and reports the one that was made. It knows nothing about zones or drafts. | nothing |
 | `configurator-ui.js` | The view: it builds DOM from the editor model and reports what the operator did. It holds no state of its own. | the editor model, through the app |
 | `configurator-app.js` | The wiring: the requests, the save path, the dirty guard, the boot. | the other three |
 
@@ -110,9 +111,10 @@ The rules that follow from that split:
 
 The four contexts, at 1600 × 1000, against the site being edited:
 
-**Layout** — the zone switcher, the 3×3 map of the nine areas, the selected
-area's components, the component inspector, and the zone's own appearance
-tokens. The action bar is pinned to the bottom of the dock.
+**Layout** — the zone switcher, the zone's own appearance (behind a
+disclosure), the 3×3 map of the nine areas, the selected area's components
+and the component inspector. The action bar is pinned to the bottom of the
+dock.
 
 ![The Layout context](../images/configurator/editor-layout.png)
 
@@ -131,14 +133,68 @@ the design depends on, and the configuration as JSON.
 
 ![The Advanced context](../images/configurator/editor-advanced.png)
 
+**The component picker**, open on the Header's middle-centre area. It is a
+dialog inside the dock, and it says where the component will land before the
+choice is made.
+
+![The component picker](../images/configurator/editor-picker.png)
+
 **At 390 × 844** the rail becomes a horizontal strip of tabs, the dock takes
 the whole width, and the action bar stays pinned.
 
 ![The editor on a narrow viewport](../images/configurator/editor-mobile.png)
 
-These are captures of the real interface: the theme's stylesheet and its four
+The picker at 390 × 844. The dialog is bounded by the dock and the list
+scrolls.
+
+![The component picker on a narrow viewport](../images/configurator/editor-picker-mobile.png)
+
+These are captures of the real interface: the theme's stylesheet and its five
 modules, driven by the committed browser harness
 (`tests/configurator-browser-test.html`), with the REST responses stubbed.
+
+**They are not captures of a running WordPress.** The harness stubs the
+theme's own REST routes, so what these show is the editor's behaviour — its
+layout, its keyboard, its state — and not the server's. The server's half of
+the contract is covered by the PHP suites, not by these pictures.
+
+**How to reproduce them.** The harness is a page, not a script: open
+`tests/configurator-browser-test.html` in a browser and it runs the same
+assertions the CI step runs. To capture a picture, serve that page with the
+theme's `configurator/` directory beside it and drive the headless browser:
+
+```
+google-chrome --headless --disable-gpu --no-sandbox \
+    --hide-scrollbars --force-prefers-reduced-motion \
+    --virtual-time-budget=6000 --window-size=1440,900 \
+    --screenshot=editor-layout.png tests/configurator-browser-test.html
+```
+
+`--force-prefers-reduced-motion` is required: the panel slides in with a CSS
+transition, and a headless browser whose virtual clock does not advance
+animations would measure the panel while it is still off screen.
+
+### 4.0.1 The zone's appearance is a disclosure, not a scroll
+
+The zone's own design tokens were, in the first version of the redesign, at
+the *end* of the Layout context — below the area map, the component list and
+the whole component inspector. Measured in a browser rather than assumed:
+
+| Viewport | Scrolling to reach the zone's colours |
+|---|---|
+| 1920 × 1080 | 0 px |
+| 1440 × 900 | 68 px |
+| 820 × 1180 | 0 px |
+| 390 × 844 | 172 px |
+
+So on a laptop and on a phone, changing the header's background meant
+scrolling past the header's structure. The zone's appearance is now behind a
+disclosure that sits **directly under the zone switcher**, where it is on
+screen at every width, and where it belongs: it is a property of the zone
+that was just chosen. Opened, it expands in place.
+
+The Appearance context is unchanged — that context *is* the groups, so they
+stay open there.
 
 ### 4.1 The information architecture
 
@@ -219,6 +275,8 @@ it, and a width outside 320–1600 pixels is ignored rather than clamped.
 |---|---|---|
 | `tests/configurator-editor-test.js` | The editor model and the transport, in Node. | 78 assertions |
 | `tests/configurator-browser-test.html` | The editor in a headless browser, against the theme's real stylesheet, modules and markup. | 62 assertions |
+| `tests/configurator-picker-test.js` | The choices the server's configuration produces. | 36 assertions |
+| `tests/configurator-browser-test.html` | The editor in a headless browser, against the theme's real stylesheet, modules and markup. Four scenarios. | 126 assertions |
 | `tests/configurator-enqueue-test.php` | Who may open the editor, and what an ordinary visitor is sent. | 8 assertions |
 | `tests/configurator-state-test.js` | The pre-existing state-model suite, unchanged. | 44 assertions |
 
@@ -226,8 +284,11 @@ The browser suite drives the real interface through its public entry points
 and covers: the dock's structure, the nine-area map, selecting an area and a
 component, the navigation component's fields, editing a token, the history
 and advanced contexts, discarding, saving, previewing, a refused save, the
-keyboard navigation of the context rail, and the case where another actor
-holds the transaction.
+keyboard navigation of the context rail, the case where another actor holds
+the transaction, a refused save inside a transaction that was already open,
+and the component picker — opening it, choosing from it with the keyboard,
+cancelling it, filtering it, and using it while another actor holds the
+transaction.
 
 ### 7.1 The defects the browser suite found
 
@@ -246,6 +307,10 @@ Three defects were found this way, and each would have shipped otherwise:
 A fourth was found by reading the stylesheet rather than the interface: the
 map button and the component panel shared a class name, so a plain section
 inherited the button's border, its minimum height and its pointer cursor.
+
+A fifth was found by the review of the whole stack: a failed save rolled
+back a transaction it had not opened, so a refusal destroyed the operator's
+own staged work.
 
 ## 8. Risks and migration requirements
 
