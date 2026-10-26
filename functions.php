@@ -4169,15 +4169,26 @@ function agentshell_build_config_response( array $config ) {
 /**
  * Shape of GET /wp/v2/agentshell/transaction.
  *
- * The configurator needs three things from this read: whether a transaction is
- * live, whether it is this actor's, and — for its own transaction only — the
- * staged configuration in the same shape a normal GET returns, so a reloaded
- * editor can restore the draft it was previewing. A foreign transaction is
- * reported as existing, with `has_staged`; its contents are never included.
+ * The configurator needs four things from this read: whether a transaction is
+ * live, whether it is this actor's, whether it is *this browser session's*,
+ * and — for its own session only — the staged configuration in the same shape
+ * a normal GET returns, so a reloaded editor can restore the draft it was
+ * previewing.
  *
- * An expired row is not a transaction. It is reported as closed with
- * `stale: true`, because offering Save/Discard on it would promise an action
- * the manager will refuse.
+ * A WordPress account is not an editing operation. Two browser sessions logged
+ * in as the same administrator are the same actor, and treating that as
+ * ownership would let one tab read, overwrite, commit or roll back the other's
+ * staged work. The transaction row therefore carries an editor-session
+ * capability when it was opened by the configurator; the browser presents it
+ * on every request, and only a matching session receives the staged draft or
+ * is allowed to mutate the row. An agent-owned row has no such binding and is
+ * reported as existing but not editable from a browser — the editor can
+ * recover it explicitly, and nothing is changed by looking.
+ *
+ * A foreign actor is reported as existing, with `has_staged`; its contents are
+ * never included. An expired row is not a transaction. It is reported as
+ * closed with `stale: true`, because offering Save/Discard on it would promise
+ * an action the manager will refuse.
  *
  * @return array
  */
@@ -4188,38 +4199,150 @@ function agentshell_build_transaction_response() {
 
     if ( ! is_array( $tx ) || ! $active ) {
         return array(
-            'open'          => false,
-            'id'            => is_array( $tx ) ? ( $tx['id'] ?? null ) : null,
-            'actor'         => is_array( $tx ) ? ( $tx['actor'] ?? null ) : null,
-            'label'         => null,
-            'owned_by_us'   => false,
-            'started_at'    => null,
-            'has_staged'    => false,
-            'stale'         => is_array( $tx ),
-            'can_take_over' => true,
+            'open'            => false,
+            'id'              => is_array( $tx ) ? ( $tx['id'] ?? null ) : null,
+            'actor'           => is_array( $tx ) ? ( $tx['actor'] ?? null ) : null,
+            'label'           => null,
+            'owned_by_us'     => false,
+            'owned_by_session'=> false,
+            'editable_by_us'  => false,
+            'session_bound'   => is_array( $tx ) ? \AgentShell_MCP\Transaction_Manager::is_session_bound( $tx ) : false,
+            'started_at'      => null,
+            'has_staged'      => false,
+            'stale'           => is_array( $tx ),
+            'can_take_over'   => false,
+            'lock_reason'     => is_array( $tx ) ? 'stale' : 'none',
+            'expires_at'      => null,
+            'seconds_remaining' => 0,
         );
     }
 
-    $actor    = \AgentShell_MCP\Store::actor();
-    $staged   = $manager->staged_config();
-    $owned    = ( $tx['actor'] ?? null ) === $actor;
+    $actor       = \AgentShell_MCP\Store::actor();
+    $staged      = $manager->staged_config();
+    $actor_match = ( $tx['actor'] ?? null ) === $actor;
+    $bound       = \AgentShell_MCP\Transaction_Manager::is_session_bound( $tx );
+    $session     = $manager->session_matches( $tx );
+    $locked      = ! $session;
+
+    if ( $session ) {
+        $reason = '';
+    } elseif ( ! $actor_match ) {
+        $reason = 'other_actor';
+    } elseif ( $bound ) {
+        $reason = 'other_session';
+    } else {
+        $reason = 'unbound';
+    }
+
     $response = array(
-        'open'        => true,
-        'id'          => $tx['id']        ?? null,
-        'actor'       => $tx['actor']     ?? null,
-        'label'       => $tx['label']     ?? null,
-        'owned_by_us' => $owned,
-        'started_at'  => isset( $tx['timestamp'] ) ? (int) $tx['timestamp'] : null,
-        'has_staged'  => is_array( $staged ) && ! empty( $staged ),
-        'stale'       => false,
-        'can_take_over' => false,
+        'open'             => true,
+        'id'               => $tx['id']        ?? null,
+        'actor'            => $tx['actor']     ?? null,
+        'label'            => $tx['label']     ?? null,
+        'owned_by_us'      => $actor_match,
+        'owned_by_session' => $session,
+        'editable_by_us'   => $session,
+        'session_bound'    => $bound,
+        'started_at'       => isset( $tx['timestamp'] ) ? (int) $tx['timestamp'] : null,
+        'has_staged'       => is_array( $staged ) && ! empty( $staged ),
+        'stale'            => false,
+        'can_take_over'    => $locked && $manager->can_take_over( $tx ),
+        'lock_reason'      => $reason,
+        'expires_at'       => \AgentShell_MCP\Transaction_Manager::expires_at( $tx ),
+        'seconds_remaining'=> \AgentShell_MCP\Transaction_Manager::seconds_remaining( $tx ),
     );
 
-    if ( $owned && is_array( $staged ) && ! empty( $staged ) ) {
+    if ( $session && is_array( $staged ) && ! empty( $staged ) ) {
         $response['staged'] = agentshell_build_config_response( $staged );
     }
 
     return $response;
+}
+
+/**
+ * Shape of GET /wp/v2/agentshell/transaction/outcome.
+ *
+ * The save path must not report "Not saved" merely because a response was
+ * lost. A commit that reached the server deletes the transaction row, so the
+ * row's absence cannot distinguish "committed" from "rolled back" from
+ * "someone else reclaimed it". The audit log already records which of those
+ * happened, keyed by transaction id, and it is the authority this route reads.
+ *
+ * States:
+ *   open             the same transaction is still live; nothing was committed
+ *   committed        the audit log records this transaction's commit
+ *   rolled_back      the audit log records this transaction's rollback
+ *   reclaimed        the lease expired and the transaction was discarded
+ *   commit_refused   a commit was attempted and refused
+ *   unknown          no live row and no audit evidence we may read
+ *
+ * Only the opening actor may reconcile their own transaction; another actor's
+ * id returns `unknown` rather than disclosing that it exists.
+ *
+ * @param string $id
+ * @return array
+ */
+function agentshell_build_transaction_outcome_response( $id ) {
+    $id = is_string( $id ) ? trim( $id ) : '';
+    if ( '' === $id || ! preg_match( '/^[A-Za-z0-9_.:-]{1,128}$/', $id ) ) {
+        return array( 'id' => $id, 'state' => 'unknown', 'reason' => 'invalid_transaction_id' );
+    }
+
+    $manager = \AgentShell_MCP\Transaction_Manager::instance();
+    $tx      = $manager->payload();
+    if ( is_array( $tx ) && ( $tx['id'] ?? null ) === $id ) {
+        // Another account's live transaction is not disclosed by a guessed
+        // id; it is answered exactly like a nonexistent one.
+        if ( ( $tx['actor'] ?? null ) !== \AgentShell_MCP\Store::actor() ) {
+            return array( 'id' => $id, 'state' => 'unknown', 'reason' => 'no_evidence' );
+        }
+        return array(
+            'id'                => $id,
+            'state'             => $manager->is_active() ? 'open' : 'stale',
+            'has_staged'        => is_array( $tx['staged'] ?? null ),
+            'owned_by_us'       => ( $tx['actor'] ?? null ) === \AgentShell_MCP\Store::actor(),
+            'owned_by_session'  => $manager->session_matches( $tx ),
+            'expires_at'        => \AgentShell_MCP\Transaction_Manager::expires_at( $tx ),
+            'seconds_remaining' => \AgentShell_MCP\Transaction_Manager::seconds_remaining( $tx ),
+        );
+    }
+
+    $actor = \AgentShell_MCP\Store::actor();
+    foreach ( (array) \AgentShell_MCP\Store::audit_log() as $entry ) {
+        if ( ! is_array( $entry ) ) { continue; }
+        $changed = isset( $entry['changed'] ) && is_array( $entry['changed'] ) ? $entry['changed'] : array();
+        if ( ( $changed['transaction_id'] ?? null ) !== $id ) { continue; }
+        // The audit row names the transaction actor; a caller may only read
+        // the outcome of their own transaction. An entry written by a
+        // reclaimer records the owner in `owner`.
+        $owner = (string) ( $changed['owner'] ?? ( $entry['actor'] ?? '' ) );
+        if ( $owner !== $actor && ( $entry['actor'] ?? '' ) !== $actor ) {
+            continue;
+        }
+        $operation = (string) ( $entry['operation'] ?? '' );
+        $state     = null;
+        if ( 0 === strpos( $operation, 'transaction_committed' ) ) {
+            $state = 'committed';
+        } elseif ( 0 === strpos( $operation, 'transaction_rolled_back' ) ) {
+            $state = 'rolled_back';
+        } elseif ( 'transaction_reclaimed' === $operation ) {
+            $state = 'reclaimed';
+        } elseif ( 'transaction_commit_refused' === $operation ) {
+            $state = 'commit_refused';
+        }
+        if ( null === $state ) { continue; }
+        return array(
+            'id'        => $id,
+            'state'     => $state,
+            'operation' => $operation,
+            'timestamp' => (int) ( $entry['timestamp'] ?? 0 ),
+            'label'     => (string) ( $changed['label'] ?? '' ),
+            'actor'     => (string) ( $entry['actor'] ?? '' ),
+            'reason'    => (string) ( $changed['reason'] ?? '' ),
+        );
+    }
+
+    return array( 'id' => $id, 'state' => 'unknown', 'reason' => 'no_evidence' );
 }
 
 /**
@@ -4228,6 +4351,21 @@ function agentshell_build_transaction_response() {
  * PUT accepts flat key-value pairs, merges into nested config, persists.
  */
 add_action( 'rest_api_init', function() {
+    // Every AgentShell REST request may carry an editor-session capability.
+    // It is request-scoped state, never a global login: the manager consults
+    // it only when the transaction row itself is bound to a browser session.
+    add_filter( 'rest_pre_dispatch', function( $result, $server, $request ) {
+        if ( $request instanceof WP_REST_Request
+            && 0 === strpos( (string) $request->get_route(), '/wp/v2/agentshell/' ) ) {
+            if ( class_exists( '\AgentShell_MCP\Transaction_Manager' ) ) {
+                \AgentShell_MCP\Transaction_Manager::set_editor_session_token(
+                    $request->get_header( 'x-agentshell-editor-session' )
+                );
+            }
+        }
+        return $result;
+    }, 10, 3 );
+
     register_rest_route( 'wp/v2', '/agentshell/config', array(
         'methods'  => 'GET',
         'callback' => 'agentshell_build_config_get_response',
@@ -4240,6 +4378,25 @@ add_action( 'rest_api_init', function() {
             $flat = $request->get_json_params();
             if ( ! is_array( $flat ) ) {
                 return new WP_Error( 'invalid_config', 'Config must be a valid JSON object', array( 'status' => 400 ) );
+            }
+            // A configuration write may land in an open transaction. If that
+            // transaction belongs to an editor session, only that session may
+            // stage into it — a second tab, or an agent using the same account,
+            // must not overwrite uncommitted work it did not create. An
+            // unbound (agent-owned) transaction keeps its existing staging
+            // behaviour for the agent that opened it.
+            if ( class_exists( '\AgentShell_MCP\Transaction_Manager' ) ) {
+                $manager = \AgentShell_MCP\Transaction_Manager::instance();
+                $live    = $manager->payload();
+                if ( is_array( $live ) && $manager->is_active()
+                    && \AgentShell_MCP\Transaction_Manager::is_session_bound( $live )
+                    && ! $manager->session_matches( $live ) ) {
+                    return new WP_Error(
+                        'transaction_locked_by_session',
+                        'This configuration belongs to a transaction opened by a different editor session of this account. Its staged work cannot be overwritten from here.',
+                        array( 'status' => 409 )
+                    );
+                }
             }
             $existing = agentshell_get_config();
             $merged   = agentshell_unflatten_config( $flat, $existing );
@@ -4324,20 +4481,78 @@ add_action( 'rest_api_init', function() {
         'methods'             => 'POST',
         'callback'            => function( WP_REST_Request $request ) {
             $tx = \AgentShell_MCP\Transaction_Manager::instance();
-            // Refuse to take over a foreign transaction.
-            if ( $tx->is_active() && ( $tx->payload()['actor'] ?? null ) !== \AgentShell_MCP\Store::actor() ) {
+            $live = $tx->payload();
+            if ( is_array( $live ) && $tx->is_active() ) {
+                $actor = \AgentShell_MCP\Store::actor();
+                if ( ( $live['actor'] ?? null ) !== $actor ) {
+                    return new WP_Error(
+                        'transaction_locked_by_other',
+                        'Another actor owns the open transaction; the configurator cannot take it over.',
+                        array( 'status' => 409 )
+                    );
+                }
+                // Same account, but not this browser session. The editor must
+                // recover explicitly; POST must never be the implicit takeover
+                // that hands one tab another tab's staged work.
+                if ( \AgentShell_MCP\Transaction_Manager::is_session_bound( $live ) && ! $tx->session_matches( $live ) ) {
+                    return new WP_Error(
+                        'transaction_locked_by_session',
+                        'This account has a transaction open in another editor session. Reload that session, wait for it to finish, or recover the work explicitly.',
+                        array( 'status' => 409, 'can_take_over' => $tx->can_take_over( $live ) )
+                    );
+                }
+                if ( ! \AgentShell_MCP\Transaction_Manager::is_session_bound( $live ) ) {
+                    return new WP_Error(
+                        'transaction_requires_recovery',
+                        'The open transaction was started outside this editor session. Recover it explicitly to continue editing it here.',
+                        array( 'status' => 409, 'can_take_over' => $tx->can_take_over( $live ) )
+                    );
+                }
+            }
+            try {
+                $opened = $tx->begin_editor_session( (string) $request->get_param( 'label' ) );
+            } catch ( \Throwable $e ) {
+                return new WP_Error( 'transaction_begin_failed', $e->getMessage(), array( 'status' => 409 ) );
+            }
+            return array(
+                'id'             => $opened['transaction']['id'],
+                'label'          => $opened['transaction']['label'],
+                'editor_session' => $opened['token'],
+                'resumed'        => (bool) $opened['resumed'],
+            );
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
+
+    // Explicit recovery of an unbound or other-session transaction.
+    //
+    // This is the authorised mechanism the session rule names. It requires the
+    // caller to confirm, is restricted to the account that opened the row,
+    // refuses durable content work, and rotates the session capability. The
+    // previous session loses access immediately; the takeover is audited.
+    register_rest_route( 'wp/v2', '/agentshell/transaction/recover', array(
+        'methods'             => 'POST',
+        'callback'            => function( WP_REST_Request $request ) {
+            $confirm = $request->get_param( 'confirm' );
+            if ( true !== $confirm && 'true' !== $confirm && 1 !== $confirm ) {
                 return new WP_Error(
-                    'transaction_locked_by_other',
-                    'Another actor owns the open transaction; the configurator cannot take it over.',
-                    array( 'status' => 409 )
+                    'transaction_recovery_unconfirmed',
+                    'Recovering another editor session\'s transaction requires confirm: true.',
+                    array( 'status' => 400 )
                 );
             }
             try {
-                $opened = $tx->begin( (string) $request->get_param( 'label' ) );
+                $recovered = \AgentShell_MCP\Transaction_Manager::instance()
+                    ->takeover_editor_session( (string) $request->get_param( 'label' ) );
             } catch ( \Throwable $e ) {
-                return new WP_Error( 'transaction_begin_failed', $e->getMessage(), array( 'status' => 500 ) );
+                return new WP_Error( 'transaction_recovery_failed', $e->getMessage(), array( 'status' => 409 ) );
             }
-            return array( 'id' => $opened['id'], 'label' => $opened['label'] );
+            return array(
+                'id'             => $recovered['transaction']['id'],
+                'label'          => $recovered['transaction']['label'],
+                'editor_session' => $recovered['token'],
+                'recovered'      => true,
+            );
         },
         'permission_callback' => 'agentshell_rest_auth_callback',
     ) );
@@ -4348,6 +4563,8 @@ add_action( 'rest_api_init', function() {
             try {
                 \AgentShell_MCP\Transaction_Manager::instance()->rollback();
                 return array( 'rolled_back' => true );
+            } catch ( \InvalidArgumentException $e ) {
+                return new WP_Error( 'transaction_rollback_failed', $e->getMessage(), array( 'status' => 409 ) );
             } catch ( \Throwable $e ) {
                 return new WP_Error( 'transaction_rollback_failed', $e->getMessage(), array( 'status' => 500 ) );
             }
@@ -4380,14 +4597,31 @@ add_action( 'rest_api_init', function() {
                 );
             }
 
-            // Only the actor who owns the transaction may mint a credential
-            // for it. Somebody else's staged work is not this session's to
-            // look at, and the render gate would refuse the credential anyway.
+            // Only the browser session that owns the transaction may mint a
+            // credential for it. A matching account is not enough: the staged
+            // work belongs to one editing operation, and a second session of
+            // the same account has no claim on it. An unbound (agent) row is
+            // likewise not a browser session's to preview; it is recovered
+            // explicitly or left alone.
             $payload = $tx->payload();
             if ( ( $payload['actor'] ?? '' ) !== \AgentShell_MCP\Store::actor() ) {
                 return new WP_Error(
                     'transaction_locked_by_other',
                     'Another actor owns the open transaction; the staged work cannot be previewed from here.',
+                    array( 'status' => 409 )
+                );
+            }
+            if ( ! \AgentShell_MCP\Transaction_Manager::is_session_bound( $payload ) ) {
+                return new WP_Error(
+                    'transaction_requires_recovery',
+                    'The open transaction was started outside this editor session. Recover it explicitly to preview it here.',
+                    array( 'status' => 409 )
+                );
+            }
+            if ( ! $tx->session_matches( $payload ) ) {
+                return new WP_Error(
+                    'transaction_locked_by_session',
+                    'This transaction belongs to a different editor session of this account. Its staged work cannot be previewed from here.',
                     array( 'status' => 409 )
                 );
             }
@@ -4508,9 +4742,29 @@ add_action( 'rest_api_init', function() {
             try {
                 $result = \AgentShell_MCP\Transaction_Manager::instance()->commit();
                 return array( 'committed' => true, 'id' => $result['id'] ?? null );
+            } catch ( \InvalidArgumentException $e ) {
+                return new WP_Error( 'transaction_commit_failed', $e->getMessage(), array( 'status' => 409 ) );
             } catch ( \Throwable $e ) {
                 return new WP_Error( 'transaction_commit_failed', $e->getMessage(), array( 'status' => 500 ) );
             }
+        },
+        'permission_callback' => 'agentshell_rest_auth_callback',
+    ) );
+
+    // Reconcile a commit whose response the browser did not receive.
+    //
+    // A committed transaction has no row, so "the row is gone" is not evidence
+    // of anything. This route reads the audit log's transaction id, which is
+    // the durable record of what actually happened. A client uses it after a
+    // network failure before deciding whether to report Saved, Not saved, or
+    // an unverifiable outcome.
+    register_rest_route( 'wp/v2', '/agentshell/transaction/outcome', array(
+        'methods'             => 'GET',
+        'callback'            => function( WP_REST_Request $request ) {
+            if ( ! class_exists( '\AgentShell_MCP\Transaction_Manager' ) ) {
+                return new WP_Error( 'outcome_unavailable', 'The AgentShell MCP plugin is not active.', array( 'status' => 503 ) );
+            }
+            return agentshell_build_transaction_outcome_response( (string) $request->get_param( 'id' ) );
         },
         'permission_callback' => 'agentshell_rest_auth_callback',
     ) );

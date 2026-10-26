@@ -915,9 +915,19 @@
             }, [ app.message || '' ] );
 
             var actions = h( 'footer', { class: 'as-cfg__actions' }, [
+                // Recovery is offered only when the server says this account
+                // may recover the row and this session does not own it. It
+                // never happens without the confirmation inside take_over().
+                app.tx.get_state().canTakeOver ? h( 'button', {
+                    type: 'button', class: 'as-cfg__btn as-cfg__btn--quiet', 'data-focus-key': 'takeover',
+                    title: 'Recover the transaction this account opened in another session',
+                    disabled: app.busy ? 'disabled' : null,
+                    onclick: function () { app.take_over(); },
+                }, [ 'Recover…' ] ) : null,
                 h( 'button', {
                     type: 'button', class: 'as-cfg__btn', 'data-focus-key': 'preview',
-                    title: 'Open the staged site in a new tab',
+                    title: status.can_save ? 'Open the staged site in a new tab' : 'Another editor session owns the open transaction',
+                    disabled: ! status.can_save || app.busy ? 'disabled' : null,
                     onclick: function () { app.preview(); },
                 }, [ 'Preview' ] ),
                 h( 'button', {
@@ -931,7 +941,7 @@
                     // refused while another actor holds it: their staged
                     // work is not this session's to throw away.
                     disabled: ( app.busy || ! app.tx.can_discard() ) ? 'disabled' : null,
-                    title: app.tx.can_discard() ? '' : 'Another actor holds the open transaction',
+                    title: app.tx.can_discard() ? '' : 'Another editor session holds the open transaction',
                     onclick: function () { app.discard_changes(); },
                 }, [ 'Discard' ] ),
                 h( 'span', { class: 'as-cfg__actions-hint' }, [ app.hint || '' ] ),

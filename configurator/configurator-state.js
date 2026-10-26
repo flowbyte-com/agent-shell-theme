@@ -48,8 +48,13 @@
     function make_state_model( initial ) {
         var state = initial || {
             mode: 'idle',           // 'idle' | 'editing_open' | 'locked'
-            tx: null,               // { id, actor, label, has_staged }
-            ownedByUs: true,
+            tx: null,               // { id, actor, label, has_staged, session_bound }
+            ownedByUs: true,        // the WordPress account matches
+            ownedBySession: false,  // this browser session holds the capability
+            sessionBound: false,
+            canTakeOver: false,
+            lockReason: 'none',     // 'none' | 'other_actor' | 'other_session' | 'unbound' | 'stale'
+            stale: false,
         };
 
         function get_state() { return state; }
@@ -57,32 +62,40 @@
         function set_tx_snapshot( txPayload ) {
             // Called on init / refresh from GET /wp/v2/agentshell/transaction.
             if ( ! txPayload || ! txPayload.open ) {
-                state = { mode: 'idle', tx: null, ownedByUs: true };
+                state = {
+                    mode: 'idle',
+                    tx: null,
+                    ownedByUs: true,
+                    ownedBySession: false,
+                    sessionBound: false,
+                    canTakeOver: false,
+                    lockReason: txPayload && txPayload.stale ? 'stale' : 'none',
+                    stale: !!( txPayload && txPayload.stale ),
+                };
                 return state;
             }
-            if ( txPayload.owned_by_us ) {
-                state = {
-                    mode: 'editing_open',
-                    tx: {
-                        id: txPayload.id,
-                        actor: txPayload.actor,
-                        label: txPayload.label,
-                        has_staged: !!txPayload.has_staged,
-                    },
-                    ownedByUs: true,
-                };
-            } else {
-                state = {
-                    mode: 'locked',
-                    tx: {
-                        id: txPayload.id,
-                        actor: txPayload.actor,
-                        label: txPayload.label,
-                        has_staged: !!txPayload.has_staged,
-                    },
-                    ownedByUs: false,
-                };
-            }
+            // A transaction is editable only when this browser session proves
+            // it owns it. Being logged in as the same WordPress account is
+            // not enough: another tab, another browser, or an agent using the
+            // same account is a different editing operation.
+            var editable = !! txPayload.editable_by_us;
+            state = {
+                mode: editable ? 'editing_open' : 'locked',
+                tx: {
+                    id: txPayload.id,
+                    actor: txPayload.actor,
+                    label: txPayload.label,
+                    has_staged: !!txPayload.has_staged,
+                    session_bound: !!txPayload.session_bound,
+                    expires_at: txPayload.expires_at || null,
+                },
+                ownedByUs: !! txPayload.owned_by_us,
+                ownedBySession: editable,
+                sessionBound: !! txPayload.session_bound,
+                canTakeOver: !! txPayload.can_take_over,
+                lockReason: txPayload.lock_reason || ( editable ? 'none' : ( txPayload.owned_by_us ? 'other_session' : 'other_actor' ) ),
+                stale: false,
+            };
             return state;
         }
 
@@ -100,7 +113,7 @@
             return state;
         }
 
-        function begin( label ) {
+        function begin( label, result ) {
             // Caller must perform the network call and pass the result.
             // This just transitions the local state.
             if ( state.mode === 'locked' ) {
@@ -109,12 +122,18 @@
             state = {
                 mode: 'editing_open',
                 tx: {
-                    id: 'pending',
+                    id: ( result && result.id ) || 'pending',
                     actor: 'self',
                     label: label || '',
                     has_staged: false,
+                    session_bound: true,
                 },
                 ownedByUs: true,
+                ownedBySession: true,
+                sessionBound: true,
+                canTakeOver: false,
+                lockReason: 'none',
+                stale: false,
             };
             return { ok: true, state: state };
         }
@@ -123,7 +142,10 @@
             if ( state.mode !== 'editing_open' ) {
                 return { ok: false, reason: 'not_editing', state: state };
             }
-            state = { mode: 'idle', tx: null, ownedByUs: true };
+            state = {
+                mode: 'idle', tx: null, ownedByUs: true, ownedBySession: false,
+                sessionBound: false, canTakeOver: false, lockReason: 'none', stale: false,
+            };
             return { ok: true, committed: txId || null, state: state };
         }
 
@@ -132,7 +154,10 @@
                 // Foreign tx — cannot rollback from the configurator.
                 return { ok: false, reason: 'locked', state: state };
             }
-            state = { mode: 'idle', tx: null, ownedByUs: true };
+            state = {
+                mode: 'idle', tx: null, ownedByUs: true, ownedBySession: false,
+                sessionBound: false, canTakeOver: false, lockReason: 'none', stale: false,
+            };
             return { ok: true, state: state };
         }
 
@@ -171,6 +196,12 @@
                 return 'Editing' + staged;
             }
             if ( state.mode === 'locked' ) {
+                if ( state.lockReason === 'other_session' ) {
+                    return 'Locked — staged in another editor session';
+                }
+                if ( state.lockReason === 'unbound' ) {
+                    return 'Locked — opened outside this editor';
+                }
                 return 'Locked by ' + ( state.tx && state.tx.actor ? state.tx.actor : 'another actor' );
             }
             return '';
@@ -185,9 +216,63 @@
             rollback: rollback,
             can_save: can_save,
             can_discard: can_discard,
+            can_preview: can_save,
             is_active: is_active,
             status_label: status_label,
         };
+    }
+
+    /* ── The editor-session capability ──────────────────────────────────────
+     *
+     * A browser tab's transaction capability. It lives in sessionStorage: one
+     * tab, one editing operation, gone when the tab closes. It is deliberately
+     * not localStorage — that would be shared by every tab and every later
+     * visit, which is the account-level identity problem this capability
+     * exists to solve — and it is deliberately not a cookie, which every tab
+     * would send.
+     *
+     * If sessionStorage is unavailable (a hardened browser, a denied origin),
+     * the model keeps the token in memory for the life of the page. Reload
+     * recovery then degrades to the explicit recovery action; safety does not
+     * degrade at all.
+     */
+    var SESSION_STORAGE_KEY = 'agentshell.editor.session.v1';
+
+    function make_session_model( storage ) {
+        var memory = null;
+
+        function get() {
+            if ( memory ) { return memory; }
+            if ( ! storage ) { return null; }
+            try {
+                var value = storage.getItem( SESSION_STORAGE_KEY );
+                return value || null;
+            } catch ( e ) {
+                return null;
+            }
+        }
+
+        function set( token ) {
+            memory = token || null;
+            if ( ! storage ) { return memory; }
+            try {
+                if ( memory ) {
+                    storage.setItem( SESSION_STORAGE_KEY, memory );
+                } else {
+                    storage.removeItem( SESSION_STORAGE_KEY );
+                }
+            } catch ( e ) {
+                // Memory still holds it for this page; the server remains the
+                // authority either way.
+            }
+            return memory;
+        }
+
+        function clear() {
+            return set( null );
+        }
+
+        return { get: get, set: set, clear: clear, key: SESSION_STORAGE_KEY };
     }
 
     /**
@@ -417,6 +502,21 @@
             return state;
         }
 
+        /**
+         * The commit was confirmed, but the configuration could not be
+         * re-read. The draft is what was committed as far as this editor can
+         * know; accepting it as the saved baseline is honest only because the
+         * caller reports that the refresh failed. The next successful load
+         * replaces it with the server's canonical representation.
+         */
+        function accept_draft_as_saved() {
+            if ( state.draft ) {
+                state.saved = clone( state.draft );
+                state.staged = null;
+            }
+            return state;
+        }
+
         /** Throw the draft away and go back to what the server last reported. */
         function discard() {
             state.draft = clone( state.saved );
@@ -627,11 +727,13 @@
         function status( tx_model ) {
             var tx_state = tx_model ? tx_model.get_state() : { mode: 'idle' };
             if ( 'locked' === tx_state.mode ) {
-                return {
-                    key: 'locked',
-                    label: 'Locked by ' + ( tx_state.tx && tx_state.tx.actor ? tx_state.tx.actor : 'another actor' ),
-                    can_save: false,
-                };
+                var label = 'Locked by ' + ( tx_state.tx && tx_state.tx.actor ? tx_state.tx.actor : 'another actor' );
+                if ( tx_state.lockReason === 'other_session' ) {
+                    label = 'Locked — staged in another editor session';
+                } else if ( tx_state.lockReason === 'unbound' ) {
+                    label = 'Locked — opened outside this editor';
+                }
+                return { key: 'locked', label: label, can_save: false, can_preview: false };
             }
 
             var open = tx_state.mode === 'editing_open';
@@ -671,6 +773,7 @@
             set_block: set_block,
             load: load,
             accept_saved: accept_saved,
+            accept_draft_as_saved: accept_draft_as_saved,
             discard: discard,
             mark_staged: mark_staged,
             clear_staged: clear_staged,
@@ -699,12 +802,14 @@
             make_state_model: make_state_model,
             make_zone_model: make_zone_model,
             make_editor_model: make_editor_model,
+            make_session_model: make_session_model,
         };
     } else {
         root.AgentshellConfiguratorState = {
             make_state_model: make_state_model,
             make_zone_model: make_zone_model,
             make_editor_model: make_editor_model,
+            make_session_model: make_session_model,
         };
     }
 })( typeof window !== 'undefined' ? window : globalThis );
