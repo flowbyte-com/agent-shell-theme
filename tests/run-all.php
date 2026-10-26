@@ -473,6 +473,12 @@ $suites = array(
         'path'     => __DIR__ . '/run-configurator-picker.php',
         'requires' => 'unit',
     ),
+    // The secret a preview credential is signed with: one rule, in one
+    // place, and an empty secret is not a secret.
+    'preview-secret' => array(
+        'path'     => __DIR__ . '/preview-secret-test.php',
+        'requires' => 'unit',
+    ),
     'configurator-enqueue' => array(
         'path'     => __DIR__ . '/configurator-enqueue-test.php',
         'requires' => 'unit',

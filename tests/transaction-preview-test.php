@@ -669,11 +669,20 @@ Agentshell_Test::run(
         $GLOBALS['_agentshell_test_options']['agentshell_theme_profiles'] = array(
             'midnight' => array( 'design' => array( 'colors' => array( 'primary' => '#00ced1' ) ) ),
         );
-        // bootstrap.php defines AGENTSHELL_REST_TOKEN as '', and the existing
-        // block accepts the key derived from it — unchanged by this work.
+        // The key is signed with the site's preview secret. This suite
+        // defines AGENTSHELL_REST_TOKEN as an empty string on purpose, so
+        // that preview_secret() falls through to AUTH_SALT — which is the
+        // behaviour it needs to pin — and AUTH_SALT is therefore the
+        // secret the profile preview is signed with.
+        //
+        // It used to sign with the empty AGENTSHELL_REST_TOKEN, because
+        // the theme's profile-preview verifier asked only whether the
+        // constant was *defined*. A key signed with an empty secret is
+        // one anybody can compute, so that is no longer how it works:
+        // see tests/preview-secret-test.php.
         $_GET = array(
             'agentshell_preview'     => 'midnight',
-            'agentshell_preview_key' => hash_hmac( 'sha256', 'midnight', AGENTSHELL_REST_TOKEN ),
+            'agentshell_preview_key' => hash_hmac( 'sha256', 'midnight', AUTH_SALT ),
         );
         $css = txp_rendered_css();
         Agentshell_Test::assert_true( str_contains( $css, 'agentshell-preview-overrides' ) );
