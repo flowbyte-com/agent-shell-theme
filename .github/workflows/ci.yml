@@ -299,3 +299,26 @@ jobs:
       - name: Remove the generated profile and the log
         if: always()
         run: rm -f "${{ github.workspace }}/tests/config/test-bed-ci.json" "${{ runner.temp }}/integration-suite.log"
+
+  # ── the aggregate gate ──────────────────────────────────────────────────
+  #
+  # The branch ruleset for `main` requires a check named "Full test suite"
+  # before the branch can change. The three jobs above are the suite; this
+  # job is the single report the ruleset watches, and it fails when any part
+  # of the suite failed.
+  #
+  # It is a gate, not a fourth run: the work is not repeated, and the job
+  # reports the outcome of the work that was already done. `always()` is what
+  # makes it report a failure rather than being skipped when a dependency
+  # fails — a skipped gate would be a green gate.
+  full-test-suite:
+    name: Full test suite
+    runs-on: ubuntu-24.04
+    needs: [ static, unit, integration ]
+    if: always()
+    steps:
+      - name: Every part of the suite must have passed
+        run: |
+          test "${{ needs.static.result }}" = "success"
+          test "${{ needs.unit.result }}" = "success"
+          test "${{ needs.integration.result }}" = "success"

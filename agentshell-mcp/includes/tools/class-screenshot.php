@@ -282,13 +282,21 @@ class Screenshot extends Base_Tool {
             if ( null === \AgentShell_MCP\Store::get_profile( $profile ) ) {
                 throw new \InvalidArgumentException( "Theme profile not found: {$profile}. Use agentshell_list_theme_profiles." );
             }
-            if ( ! defined( 'AGENTSHELL_REST_TOKEN' ) ) {
-                throw new \InvalidArgumentException( 'AGENTSHELL_REST_TOKEN must be defined in wp-config.php to screenshot a profile preview (the preview key is derived from it).' );
+            // The secret is the one every other preview path uses, and the
+            // one the theme verifies the key with. It used to be
+            // AGENTSHELL_REST_TOKEN alone, and only when the constant was
+            // *defined* — so a site that defined it as an empty string
+            // minted a key signed with an empty secret, which anybody can
+            // compute, and a site configured with only AUTH_SALT could not
+            // take a profile preview at all.
+            $secret = \AgentShell_MCP\Transaction_Manager::preview_secret();
+            if ( '' === $secret ) {
+                throw new \InvalidArgumentException( 'A preview signing secret must be configured (AGENTSHELL_REST_TOKEN or AUTH_SALT) to screenshot a profile preview; the preview key is derived from it.' );
             }
             $url = add_query_arg(
                 array(
                     'agentshell_preview'     => $profile,
-                    'agentshell_preview_key' => hash_hmac( 'sha256', $profile, AGENTSHELL_REST_TOKEN ),
+                    'agentshell_preview_key' => hash_hmac( 'sha256', $profile, $secret ),
                 ),
                 $url
             );
