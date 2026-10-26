@@ -240,10 +240,62 @@ staged work is not this session's to throw away. The refusal is enforced
 twice: the button is disabled, and the app refuses again before it sends
 anything.
 
+### 5.1 The corrective pass: sessions, outcomes, and failed previews
+
+The first implementation identified ownership by `Store::actor()` — the
+WordPress username. Two browser sessions logged in as the same administrator
+therefore looked like one editing operation. The GET also returned the staged
+configuration to any matching actor, which is useful for reload recovery and
+wrong for a second tab: a reload is the same session continuing, but a second
+tab or a second browser is a different operation, and the server had no way to
+tell them apart. The same conflation made an agent using the administrator's
+account indistinguishable from the human editor.
+
+**The correction is a per-transaction session capability, not a second login.**
+When the configurator opens a transaction, the server mints a random token,
+returns it once, and stores only its SHA-256 in the transaction row. The token
+lives in `sessionStorage`: one tab, one editing operation, gone when the tab
+closes. Every configurator request presents it in
+`X-AgentShell-Editor-Session`. The account check remains the outer boundary;
+the capability decides whether *this session* may read the staged draft or
+mutate the row. An agent-opened row has no binding and keeps its historical
+actor-only semantics — which is exactly why a browser cannot silently stage
+into one.
+
+**Reload recovery still works, and recovery of a lost capability is explicit.**
+A reload in the same tab still holds the token. A lost token (a different tab,
+a cleared storage, a row opened by an agent or by the pre-capability editor)
+is not guessed and not handed over: the server reports whether the same
+account may recover it, the editor asks, and the recovery endpoint rotates the
+capability, audits the act with the staged state it inherited, and refuses any
+transaction holding durable content work. The previous session stops being able
+to act immediately.
+
+**Save is a state machine over six outcomes.** The first version committed and
+then re-read, and a failed read was reported as a failed save even when the
+commit had landed. A network failure during the commit had no answer at all.
+The correction records the phase (begin, stage, commit, refresh) and, when the
+commit's outcome is unknown, asks
+`GET /wp/v2/agentshell/transaction/outcome?id=…`. That route reads the audit
+log's transaction id — the durable record of a commit, rollback or reclaim —
+rather than comparing raw JSON that normalisation may have changed. A row that
+is gone is not evidence of a commit; the audit record is. The client never
+sends a second commit, never rolls back after a commit, and never says Saved
+before the commit is confirmed. A confirmed commit whose refresh fails is
+reported as saved-but-not-refreshed.
+
+**A failed Preview asks before it abandons anything.** Validation before the
+PUT rolls back only the empty transaction this Preview opened. A lost PUT
+response is reconciled; a staged draft whose URL request failed is kept for
+Save/Discard; a transaction that expired or changed ownership is not rolled
+back at all. The local draft is kept in every case, so the operator can correct
+and retry.
+
 **A refused save keeps the draft.** The server's message is shown, the
 operator's input is still there to correct, and the transaction that was
 opened for the save is rolled back rather than left behind for somebody else
-to find.
+to find — but only when it was opened by that save, holds nothing, and is
+still that session's.
 
 ## 6. The REST routes that were added
 
@@ -254,6 +306,8 @@ config endpoint:
 
 | Route | Method | Why the editor needs it |
 |---|---|---|
+| `/wp/v2/agentshell/transaction/recover` | POST | Explicitly recover an unbound or other-session transaction, rotating the capability. Requires `confirm: true`, the opening account, and no durable content work; audited. |
+| `/wp/v2/agentshell/transaction/outcome` | GET | Reconcile a commit or rollback whose response was lost, by the audit log's transaction id. |
 | `/wp/v2/agentshell/transaction/preview` | GET | A signed preview URL for the staged configuration. |
 | `/wp/v2/agentshell/snapshots` | GET | The list of snapshots, to restore from. |
 | `/wp/v2/agentshell/snapshots/restore` | POST | Restore a snapshot. It calls the same tool class the agent uses. |

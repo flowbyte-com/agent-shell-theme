@@ -47,6 +47,41 @@ class Transaction_Manager {
     const PREVIEW_TTL_SECONDS = 900;
 
     /**
+     * The editor-session capability.
+     *
+     * A WordPress username identifies an account, not an editing operation.
+     * Two browser sessions logged in as the same administrator are the same
+     * actor by that definition, which is exactly the wrong answer: they can be
+     * different tabs, different machines, or one tab recovering from a reload.
+     * The account-level actor is still the outer boundary (nobody else may
+     * touch the transaction at all), but a browser session that wants to
+     * *mutate* one must also present the capability minted when it began (or
+     * explicitly recovered) that transaction.
+     *
+     * The server stores only a SHA-256 of the token. The token itself is
+     * returned once, in the begin/takeover response, and kept by the browser
+     * in sessionStorage — per tab, gone when the tab closes, and never a value
+     * another tab inherits merely because it shares a login.
+     *
+     * This is deliberately absent from agent-owned transactions. An MCP agent
+     * calls the tools with no browser session; its ownership stays actor-based,
+     * exactly as it was, and a browser cannot silently stage into, commit or
+     * roll back that transaction.
+     */
+    const EDITOR_SESSION_HEADER = 'X-AgentShell-Editor-Session';
+    const EDITOR_SESSION_FIELD  = 'editor_session';
+    const EDITOR_SESSION_TOKEN_BYTES = 32;
+
+    /**
+     * The editor-session token presented on this request, if any.
+     *
+     * Request-scoped by design: it is set from the REST request (or directly by
+     * a test) and cleared with the request. A token cached across requests
+     * would be a capability that outlives the request that proved possession.
+     */
+    private static $editor_session_token = null;
+
+    /**
      * How long an open transaction survives without activity.
      *
      * A transaction lives in exactly one option row, and before this lease
@@ -164,6 +199,268 @@ class Transaction_Manager {
     public function is_active() {
         $tx = $this->payload();
         return is_array( $tx ) && ! self::is_expired( $tx );
+    }
+
+    // ------------------------------------------------ the editor session
+
+    /**
+     * Record the editor-session token this request presented.
+     *
+     * Null (or an empty string) means "no editor session was presented". That
+     * is the agent path, and it is not an error: it simply cannot mutate a
+     * transaction that was bound to an editor session.
+     *
+     * @param mixed $token
+     */
+    public static function set_editor_session_token( $token ) {
+        self::$editor_session_token = is_string( $token ) && '' !== $token ? $token : null;
+    }
+
+    public static function clear_editor_session_token() {
+        self::$editor_session_token = null;
+    }
+
+    public static function current_editor_session_token() {
+        return self::$editor_session_token;
+    }
+
+    /**
+     * Is this transaction bound to a browser editor session?
+     *
+     * A row written before this capability existed, or opened by an agent
+     * tool, has no binding. It is still owned by its actor; it is simply not
+     * any particular browser session's transaction.
+     */
+    public static function is_session_bound( $tx ) {
+        return is_array( $tx )
+            && isset( $tx[ self::EDITOR_SESSION_FIELD ] )
+            && is_string( $tx[ self::EDITOR_SESSION_FIELD ] )
+            && '' !== $tx[ self::EDITOR_SESSION_FIELD ];
+    }
+
+    /**
+     * Does the presented token prove possession of this transaction's session?
+     */
+    public function session_matches( $tx ) {
+        if ( ! self::is_session_bound( $tx ) ) {
+            return false;
+        }
+        $token = self::$editor_session_token;
+        if ( ! is_string( $token ) || '' === $token || strlen( $token ) > 256 ) {
+            return false;
+        }
+        return hash_equals( (string) $tx[ self::EDITOR_SESSION_FIELD ], self::hash_session_token( $token ) );
+    }
+
+    private static function hash_session_token( $token ) {
+        return hash( 'sha256', (string) $token );
+    }
+
+    private static function new_session_token() {
+        return bin2hex( random_bytes( self::EDITOR_SESSION_TOKEN_BYTES ) );
+    }
+
+    /**
+     * Refuse a mutation on a transaction this request cannot prove it owns.
+     *
+     * Three separate refusals, because they demand three different responses:
+     *
+     *   - another actor's transaction: nobody here may touch it;
+     *   - an editor-bound transaction whose session token is missing or wrong:
+     *     this is another browser session of the same account, and it must
+     *     recover explicitly rather than be handed the work;
+     *   - an unbound row (agent or pre-upgrade): the actor matches, but no
+     *     browser session can prove it holds it, so the mutation is refused
+     *     with the takeover route named.
+     */
+    private function assert_editor_session( array $tx ) {
+        $actor = Store::actor();
+        if ( ( $tx['actor'] ?? null ) !== $actor ) {
+            throw new \InvalidArgumentException(
+                'Transaction ' . $tx['id'] . ' was opened by ' . $tx['actor'] . '; you are ' . $actor
+                . '. Commit/rollback is locked to the opening actor — wait for them to finish, or coordinate directly.'
+            );
+        }
+        if ( self::is_session_bound( $tx ) && ! $this->session_matches( $tx ) ) {
+            throw new \InvalidArgumentException(
+                'Transaction ' . $tx['id'] . ' belongs to a different editor session of this account. '
+                . 'This session did not create it and cannot read, overwrite, commit or roll back its staged work. '
+                . 'Recover it explicitly (the editor offers this), or wait for it to be saved, discarded or expired.'
+            );
+        }
+        if ( ! self::is_session_bound( $tx ) ) {
+            throw new \InvalidArgumentException(
+                'Transaction ' . $tx['id'] . ' was opened outside this editor session (by an agent or an older '
+                . 'editor). A browser session cannot silently take it over; recover it explicitly first.'
+            );
+        }
+    }
+
+    /**
+     * Begin a transaction owned by this browser editor session.
+     *
+     * Re-beginning the same session's transaction is idempotent and returns
+     * the live row, but it cannot return the token again: the server stores
+     * only the hash. The client that lost its token must use takeover(), which
+     * rotates the capability and audits the act.
+     *
+     * @return array { transaction: array, token: string|null, resumed: bool }
+     */
+    public function begin_editor_session( $label = '' ) {
+        $existing = $this->settle( true );
+        if ( is_array( $existing ) ) {
+            $this->assert_editor_session( $existing );
+            $this->renew( $existing );
+            return array(
+                'transaction' => $this->payload(),
+                'token'       => null,
+                'resumed'     => true,
+            );
+        }
+        if ( is_array( $this->orphaned ) ) {
+            throw new \InvalidArgumentException(
+                'Transaction ' . $this->orphaned['id'] . ' expired but still holds unrecovered work, so it was not '
+                . 'discarded and cannot be replaced. Recover or commit it before opening another.'
+            );
+        }
+
+        $token = self::new_session_token();
+        $tx    = $this->open_row( $label, self::hash_session_token( $token ) );
+        return array(
+            'transaction' => $tx,
+            'token'       => $token,
+            'resumed'     => false,
+        );
+    }
+
+    /**
+     * Explicitly recover an unbound or other-session transaction.
+     *
+     * This is the authorised mechanism the session rule names. It is bounded
+     * to the opening actor's own account, requires an explicit confirmation,
+     * refuses any transaction holding durable content work, and rotates the
+     * session capability so the previous session stops being able to act. The
+     * act is audited with the staged state it inherited, because a takeover
+     * that silently dropped another session's preview would be indistinguishable
+     * from one that never happened.
+     *
+     * @return array { transaction: array, token: string }
+     */
+    public function takeover_editor_session( $label = '' ) {
+        $live = $this->settle( true );
+        if ( ! is_array( $live ) ) {
+            $live = $this->require_live( true );
+        }
+        if ( ( $live['actor'] ?? null ) !== Store::actor() ) {
+            throw new \InvalidArgumentException(
+                'Transaction ' . $live['id'] . ' was opened by ' . $live['actor'] . '; only that account may recover it.'
+            );
+        }
+        if ( self::has_durable_work( $live ) ) {
+            throw new \InvalidArgumentException(
+                'Transaction ' . $live['id'] . ' holds unrecovered content work, so it cannot be taken over by an '
+                . 'editor session. Use agentshell_recover_transaction under its own authority rules.'
+            );
+        }
+        if ( $this->session_matches( $live ) ) {
+            // Already ours; there is nothing to rotate. Keep the caller honest
+            // rather than minting a second capability for the same row.
+            throw new \InvalidArgumentException(
+                'Transaction ' . $live['id'] . ' already belongs to this editor session; no recovery is needed.'
+            );
+        }
+
+        $token = self::new_session_token();
+        $next  = $live;
+        $next[ self::EDITOR_SESSION_FIELD ]         = self::hash_session_token( $token );
+        $next['editor_session_recovered_at']        = self::now();
+        $next['editor_session_recovered_label']     = sanitize_text_field( $label );
+        $next                                       = self::stamp_lease( $next, self::now() );
+        if ( ! self::cas( $live, $next ) ) {
+            throw new \InvalidArgumentException(
+                'Transaction ' . $live['id'] . ' changed while it was being recovered, so nothing was taken over. '
+                . 'Read agentshell_get_transaction and retry.'
+            );
+        }
+        Store::record_event(
+            Store::actor(),
+            'transaction_editor_session_recovered',
+            array(
+                'transaction_id'     => (string) $live['id'],
+                'label'              => (string) ( $live['label'] ?? '' ),
+                'had_staged_changes' => is_array( $live['staged'] ?? null ),
+                'previous_session'   => self::is_session_bound( $live ) ? 'another editor session' : 'unbound (agent or older editor)',
+                'recovered_by'       => Store::actor(),
+            )
+        );
+
+        return array( 'transaction' => $this->payload(), 'token' => $token );
+    }
+
+    /**
+     * May the caller's account explicitly recover this transaction?
+     *
+     * Deliberately narrower than "is it mine": it requires the same account,
+     * a transaction that is not already this session's, and no durable content
+     * work. The UI uses this to decide whether to offer recovery at all; the
+     * server re-checks it in takeover_editor_session(), because a client-side
+     * button is not an authorisation boundary.
+     */
+    public function can_take_over( $tx ) {
+        if ( ! is_array( $tx ) || self::is_expired( $tx ) ) {
+            return false;
+        }
+        if ( ( $tx['actor'] ?? null ) !== Store::actor() ) {
+            return false;
+        }
+        if ( $this->session_matches( $tx ) ) {
+            return false;
+        }
+        return ! self::has_durable_work( $tx );
+    }
+
+    /**
+     * Create the option row, preserving the add_option INSERT race guard.
+     *
+     * @param string      $label
+     * @param string|null $session_hash
+     * @return array
+     */
+    private function open_row( $label, $session_hash = null ) {
+        $row = array(
+            // Uniquely, not merely 'tx_' . time(). Two transactions opened
+            // in the same wall-clock second used to share an id, and the
+            // preview credential is bound to that id — so a URL minted for
+            // a transaction that has since been committed could have
+            // matched a *different* transaction opened by the same actor in
+            // the same second. The lease makes that window reachable, since
+            // it is now normal for one transaction to be reclaimed and
+            // another opened in its place moments later.
+            'id'        => 'tx_' . self::now() . '_' . bin2hex( random_bytes( 4 ) ),
+            'label'     => sanitize_text_field( $label ),
+            'actor'     => Store::actor(),
+            'timestamp' => self::now(),
+            'before'    => get_option( Store::CONFIG_KEY, array() ),
+            'staged'    => null,
+        );
+        if ( null !== $session_hash ) {
+            $row[ self::EDITOR_SESSION_FIELD ] = $session_hash;
+        }
+        $tx = self::stamp_lease( $row, self::now() );
+        // add_option(), not update_option(): this is an INSERT against a UNIQUE
+        // key on option_name, so exactly one of two actors racing to open a
+        // transaction creates it. update_option would let both "succeed" and
+        // leave whichever wrote last holding a transaction the other actor
+        // believes it owns.
+        if ( ! add_option( self::KEY, $tx, '', false ) ) {
+            $other        = $this->settle( true );
+            throw new \InvalidArgumentException(
+                'A transaction was opened by another actor while this call was in flight'
+                . ( is_array( $other ) && isset( $other['id'] ) ? ' (' . $other['id'] . ', ' . $other['actor'] . ')' : '' )
+                . '. Read agentshell_get_transaction and coordinate directly.'
+            );
+        }
+        return $tx;
     }
 
     // ----------------------------------------------------------- the lease
@@ -618,6 +915,7 @@ class Transaction_Manager {
             'expired'           => self::is_expired( $tx ),
             'durable_work'      => self::has_durable_work( $tx ),
             'lease_ttl_seconds' => self::LEASE_TTL_SECONDS,
+            'editor_session_bound' => self::is_session_bound( $tx ),
         );
     }
 
@@ -675,6 +973,18 @@ class Transaction_Manager {
                     . 'or coordinate directly.'
                 );
             }
+            // An editor-bound transaction is not an agent's to re-begin or
+            // mutate, even when the WordPress account matches. The browser
+            // session that opened it is the owner, and its capability is the
+            // proof. Agent tools keep their existing actor-only semantics for
+            // transactions they opened themselves.
+            if ( self::is_session_bound( $existing ) && ! $this->session_matches( $existing ) ) {
+                throw new \InvalidArgumentException(
+                    'Transaction ' . $existing['id'] . ' belongs to an interactive editor session of this account. '
+                    . 'This caller is not that session and cannot take it over implicitly; wait for the editor to '
+                    . 'finish, or ask it to recover explicitly.'
+                );
+            }
             // Same actor re-begins: idempotent, and the re-assertion counts as
             // activity — an agent that keeps declaring its transaction is
             // declaring it alive.
@@ -687,39 +997,7 @@ class Transaction_Manager {
                 . 'discarded and cannot be replaced. Recover or commit it before opening another.'
             );
         }
-        $tx = self::stamp_lease(
-            array(
-                // Uniquely, not merely 'tx_' . time(). Two transactions opened
-                // in the same wall-clock second used to share an id, and the
-                // preview credential is bound to that id — so a URL minted for
-                // a transaction that has since been committed could have
-                // matched a *different* transaction opened by the same actor in
-                // the same second. The lease makes that window reachable, since
-                // it is now normal for one transaction to be reclaimed and
-                // another opened in its place moments later.
-                'id'        => 'tx_' . self::now() . '_' . bin2hex( random_bytes( 4 ) ),
-                'label'     => sanitize_text_field( $label ),
-                'actor'     => Store::actor(),
-                'timestamp' => self::now(),
-                'before'    => get_option( Store::CONFIG_KEY, array() ),
-                'staged'    => null,
-            ),
-            self::now()
-        );
-        // add_option(), not update_option(): this is an INSERT against a UNIQUE
-        // key on option_name, so exactly one of two actors racing to open a
-        // transaction creates it. update_option would let both "succeed" and
-        // leave whichever wrote last holding a transaction the other actor
-        // believes it owns.
-        if ( ! add_option( self::KEY, $tx, '', false ) ) {
-            $other        = $this->settle( true );
-            throw new \InvalidArgumentException(
-                'A transaction was opened by another actor while this call was in flight'
-                . ( is_array( $other ) && isset( $other['id'] ) ? ' (' . $other['id'] . ', ' . $other['actor'] . ')' : '' )
-                . '. Read agentshell_get_transaction and coordinate directly.'
-            );
-        }
-        return $tx;
+        return $this->open_row( $label );
     }
 
     /**
@@ -737,6 +1015,18 @@ class Transaction_Manager {
             throw new \InvalidArgumentException(
                 'Transaction ' . $tx['id'] . ' was opened by ' . $tx['actor'] . '; you are ' . $actor
                 . '. Commit/rollback is locked to the opening actor — wait for them to finish, or coordinate directly.'
+            );
+        }
+        // A transaction bound to an interactive editor session is owned by
+        // that session, not merely by the account. Presenting the same
+        // username is not proof of being the same editing operation. An
+        // unbound row keeps the historical actor-only rule so agent tooling is
+        // not disrupted.
+        if ( self::is_session_bound( $tx ) && ! $this->session_matches( $tx ) ) {
+            throw new \InvalidArgumentException(
+                'Transaction ' . $tx['id'] . ' belongs to a different editor session of this account. '
+                . 'Its staged work cannot be read, overwritten, committed or rolled back from this session. '
+                . 'Recover it explicitly first (only the same account may do so).'
             );
         }
     }

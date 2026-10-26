@@ -66,10 +66,56 @@ console.log( 'configurator state-model tests' );
         actor: 'self',
         label: 'human edit',
         owned_by_us: true,
+        owned_by_session: true,
+        editable_by_us: true,
+        session_bound: true,
+        lock_reason: 'none',
         has_staged: false,
     } );
     eq( s.get_state().mode, 'editing_open', 'own tx → editing_open' );
     eq( s.can_save(), true, 'own tx can save (continuing edit)' );
+})();
+
+// 4b. The same account in another browser session is locked, not ours.
+(function () {
+    var s = make();
+    s.set_tx_snapshot( {
+        open: true,
+        id: 'tx_same_account',
+        actor: 'self',
+        label: 'another tab',
+        owned_by_us: true,
+        owned_by_session: false,
+        editable_by_us: false,
+        session_bound: true,
+        can_take_over: true,
+        lock_reason: 'other_session',
+        has_staged: true,
+    } );
+    eq( s.get_state().mode, 'locked', 'another session of the same account → locked' );
+    eq( s.status_label(), 'Locked — staged in another editor session', 'the lock names the other session' );
+    eq( s.get_state().canTakeOver, true, 'explicit recovery is offered' );
+    eq( s.can_save(), false, 'another session cannot save' );
+    eq( s.can_discard(), false, 'another session cannot discard' );
+})();
+
+// 4c. An agent-owned (unbound) transaction is locked for a browser.
+(function () {
+    var s = make();
+    s.set_tx_snapshot( {
+        open: true,
+        id: 'tx_agent',
+        actor: 'self',
+        owned_by_us: true,
+        owned_by_session: false,
+        editable_by_us: false,
+        session_bound: false,
+        can_take_over: true,
+        lock_reason: 'unbound',
+        has_staged: true,
+    } );
+    eq( s.get_state().mode, 'locked', 'an unbound transaction is not this session\'s' );
+    eq( s.status_label(), 'Locked — opened outside this editor', 'the lock says it was opened elsewhere' );
 })();
 
 // 5. set_tx_snapshot with no open tx returns to idle from locked.
@@ -136,6 +182,9 @@ console.log( 'configurator state-model tests' );
         actor: 'self',
         label: 'human edit',
         owned_by_us: true,
+        owned_by_session: true,
+        editable_by_us: true,
+        session_bound: true,
         has_staged: true,
     } );
     eq( s.status_label(), 'Editing (staged)', 'status reflects staged changes' );

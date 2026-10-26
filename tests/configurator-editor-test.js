@@ -282,14 +282,14 @@ var PAYLOAD = {
     eq( s.key, 'saved', 'a clean draft with no transaction is "saved"' );
     eq( s.can_save, true, 'saving is offered' );
 
-    tx.set_tx_snapshot( { open: true, id: 'tx1', actor: 'agent', owned_by_us: false, has_staged: true } );
+    tx.set_tx_snapshot( { open: true, id: 'tx1', actor: 'agent', owned_by_us: false, owned_by_session: false, editable_by_us: false, session_bound: false, lock_reason: 'other_actor', can_take_over: false, has_staged: true } );
     s = e.status( tx );
     eq( s.key, 'locked', 'a transaction owned by another actor is "locked"' );
     eq( s.can_save, false, 'saving is not offered while another actor holds the transaction' );
     ok( s.label.indexOf( 'agent' ) !== -1, 'the status names the actor that holds the transaction' );
 
     var tx2 = state.make_state_model();
-    tx2.set_tx_snapshot( { open: true, id: 'tx2', actor: 'me', owned_by_us: true, has_staged: true } );
+    tx2.set_tx_snapshot( { open: true, id: 'tx2', actor: 'me', owned_by_us: true, owned_by_session: true, editable_by_us: true, session_bound: true, lock_reason: 'none', has_staged: true } );
     eq( e.status( tx2 ).key, 'staged_foreign_session',
         'staged work this session never saw is not described as this draft' );
 
@@ -299,7 +299,7 @@ var PAYLOAD = {
     e.load( PAYLOAD );
     e.set_token( '--theme-bg', '#ffffff' );
     e.mark_staged();
-    tx2.set_tx_snapshot( { open: true, id: 'tx2', actor: 'me', owned_by_us: true, has_staged: true } );
+    tx2.set_tx_snapshot( { open: true, id: 'tx2', actor: 'me', owned_by_us: true, owned_by_session: true, editable_by_us: true, session_bound: true, lock_reason: 'none', has_staged: true } );
     eq( e.status( tx2 ).key, 'staged', 'a staged draft is "staged for preview"' );
     eq( e.status( tx2 ).label, 'Staged for preview', 'the label never says Saved' );
     ok( e.is_dirty(), 'a staged draft is still different from the committed state' );

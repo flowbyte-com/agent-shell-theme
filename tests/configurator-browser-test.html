@@ -128,34 +128,80 @@ var SERVER = {
   staged: null,
   tx: null,
   previews: 0,
-  fail_next_put: false,
+  outcomes: {},
+  next_session: 0,
 };
 
+// Fixtures that model the conditions the client must survive.
 if (SCENARIO === 'locked') {
-  SERVER.tx = { id: 'tx-agent', actor: 'agent', label: 'agent work' };
+  // A different account: unrecoverable from here.
+  SERVER.tx = { id: 'tx-agent', actor: 'agent', label: 'agent work', session: null };
 }
 if (SCENARIO === 'refusal') {
-  SERVER.tx = { id: 'tx-mine', actor: 'me', label: 'earlier work' };
+  // This tab's own earlier preview (its token is seeded into sessionStorage).
+  SERVER.tx = { id: 'tx-mine', actor: 'me', label: 'earlier work', session: 'tab-token-0' };
+  SERVER.staged = payload_from_response(SERVER.committed);
+}
+if (SCENARIO === 'session') {
+  // The same account, another browser session. This tab has no capability.
+  SERVER.tx = { id: 'tx-other-tab', actor: 'me', label: 'other tab preview', session: 'other-tab-token' };
+  SERVER.staged = payload_from_response(SERVER.committed);
+}
+if (SCENARIO === 'unbound') {
+  // An agent (or an older editor) opened it; no browser session owns it.
+  SERVER.tx = { id: 'tx-unbound', actor: 'me', label: 'agent work', session: null };
   SERVER.staged = payload_from_response(SERVER.committed);
 }
 
-function transaction_response() {
+function header_session(opts) {
+  var headers = (opts && opts.headers) || {};
+  return headers['X-AgentShell-Editor-Session'] || null;
+}
+
+function owns_tx(opts) {
+  return !!(SERVER.tx && SERVER.tx.session && SERVER.tx.session === header_session(opts));
+}
+
+function apply_commit() {
+  if (SERVER.staged) {
+    SERVER.committed = response_from_payload(SERVER.staged);
+  }
+  if (SERVER.tx) {
+    SERVER.outcomes[SERVER.tx.id] = 'committed';
+  }
+  SERVER.tx = null;
+  SERVER.staged = null;
+}
+
+function transaction_response(opts) {
   if (!SERVER.tx) {
     return { open: false, id: null, actor: null, label: null, owned_by_us: false,
-             started_at: null, has_staged: false, stale: false, can_take_over: true };
+             owned_by_session: false, editable_by_us: false, session_bound: false,
+             started_at: null, has_staged: false, stale: false, can_take_over: false,
+             lock_reason: 'none' };
   }
+  var actor_match = SERVER.tx.actor === 'me';
+  var bound = !!SERVER.tx.session;
+  var mine = actor_match && bound && owns_tx(opts);
+  var reason = mine ? '' : (!actor_match ? 'other_actor' : (bound ? 'other_session' : 'unbound'));
   var response = {
     open: true,
     id: SERVER.tx.id,
     actor: SERVER.tx.actor,
     label: SERVER.tx.label || '',
-    owned_by_us: SERVER.tx.actor === 'me',
+    owned_by_us: actor_match,
+    owned_by_session: mine,
+    editable_by_us: mine,
+    session_bound: bound,
     started_at: 1,
     has_staged: !!SERVER.staged,
     stale: false,
-    can_take_over: false,
+    can_take_over: !mine && actor_match,
+    lock_reason: reason,
+    expires_at: 9999999999,
+    seconds_remaining: 3600,
   };
-  if (response.owned_by_us && SERVER.staged) {
+  if (mine && SERVER.staged) {
     response.staged = response_from_payload(SERVER.staged);
   }
   return response;
@@ -167,66 +213,157 @@ window.fetch = function (url, opts) {
   var body = opts && opts.body ? JSON.parse(opts.body) : null;
   window.__requests.push(method + ' ' + path);
 
-  if (path.indexOf('/transaction/preview') !== -1) {
+  // ── transaction outcome ─────────────────────────────────────────────
+  if (path.indexOf('/transaction/outcome') !== -1) {
+    var id = decodeURIComponent(path.split('id=')[1] || '');
+    if (SERVER.tx && SERVER.tx.id === id) {
+      return Promise.resolve(respond({
+        id: id,
+        state: 'open',
+        has_staged: !!SERVER.staged,
+        owned_by_us: SERVER.tx.actor === 'me',
+        owned_by_session: owns_tx(opts),
+      }));
+    }
+    if (SERVER.outcomes[id]) {
+      return Promise.resolve(respond({ id: id, state: SERVER.outcomes[id] }));
+    }
+    return Promise.resolve(respond({ id: id, state: 'unknown', reason: 'no_evidence' }));
+  }
+
+  // ── transaction recovery ────────────────────────────────────────────
+  if (path.indexOf('/transaction/recover') !== -1) {
     if (!SERVER.tx) {
-      return Promise.resolve(respond({ code: 'no_transaction', message: 'No transaction is open. Save the changes in the editor first.' }, false, 409));
+      return Promise.resolve(respond({ code: 'transaction_recovery_failed', message: 'No transaction is open.' }, false, 409));
+    }
+    if (SERVER.tx.actor !== 'me') {
+      return Promise.resolve(respond({ code: 'transaction_recovery_failed', message: 'Only the opening account may recover it.' }, false, 409));
+    }
+    if (body && body.confirm !== true) {
+      return Promise.resolve(respond({ code: 'transaction_recovery_unconfirmed', message: 'confirm is required.' }, false, 400));
+    }
+    SERVER.next_session += 1;
+    SERVER.tx.session = 'tab-token-' + SERVER.next_session;
+    return Promise.resolve(respond({ id: SERVER.tx.id, label: SERVER.tx.label, editor_session: SERVER.tx.session, recovered: true }));
+  }
+
+  // ── preview credential ──────────────────────────────────────────────
+  if (path.indexOf('/transaction/preview') !== -1) {
+    if (!SERVER.tx || !owns_tx(opts)) {
+      return Promise.resolve(respond({ code: 'transaction_locked_by_session', message: 'The staged work belongs to another editor session.' }, false, 409));
+    }
+    if (window.__fail_preview_url) {
+      window.__fail_preview_url = false;
+      return Promise.reject(new TypeError('Failed to fetch'));
     }
     SERVER.previews += 1;
     return Promise.resolve(respond({ url: 'https://example.test/?agentshell_tx=' + SERVER.tx.id + '&n=' + SERVER.previews,
                                      diff: {}, summary: { added: 0, removed: 0, changed: 1 } }));
   }
+
+  // ── commit ──────────────────────────────────────────────────────────
   if (path.indexOf('/transaction/commit') !== -1) {
-    if (!SERVER.tx || SERVER.tx.actor !== 'me') {
-      return Promise.resolve(respond({ code: 'transaction_commit_failed', message: 'Transaction was opened by another actor.' }, false, 500));
+    if (!SERVER.tx) {
+      return Promise.resolve(respond({ code: 'transaction_commit_failed', message: 'No transaction is open.' }, false, 409));
     }
-    if (SERVER.staged) {
-      SERVER.committed = response_from_payload(SERVER.staged);
+    if (!owns_tx(opts)) {
+      return Promise.resolve(respond({ code: 'transaction_locked_by_session', message: 'This transaction belongs to another editor session.' }, false, 409));
     }
-    SERVER.tx = null;
-    SERVER.staged = null;
+    if (window.__commit_fail_confirmed) {
+      return Promise.resolve(respond({ code: 'transaction_commit_failed', message: 'Commit blocked by validation errors.' }, false, 409));
+    }
+    if (window.__commit_then_fail || window.__commit_then_fail_refresh) {
+      var lose_response = window.__commit_then_fail_refresh;
+      window.__commit_then_fail = false;
+      window.__commit_then_fail_refresh = false;
+      apply_commit();
+      if (lose_response) { window.__fail_get_config_once = true; }
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }
+    apply_commit();
+    if (window.__refreshaftercommit) {
+      window.__refreshaftercommit = false;
+      window.__fail_get_config_once = true;
+    }
     return Promise.resolve(respond({ committed: true }));
   }
+
+  // ── begin / rollback / read ─────────────────────────────────────────
   if (path.indexOf('/transaction') !== -1 && method === 'POST') {
     if (SERVER.tx && SERVER.tx.actor !== 'me') {
       return Promise.resolve(respond({ code: 'transaction_locked_by_other', message: 'Another actor owns the open transaction.' }, false, 409));
     }
-    if (!SERVER.tx) {
-      SERVER.tx = { id: 'tx-workflow', actor: 'me', label: body && body.label };
+    if (SERVER.tx && !owns_tx(opts)) {
+      return Promise.resolve(respond({ code: SERVER.tx.session ? 'transaction_locked_by_session' : 'transaction_requires_recovery',
+        message: 'The open transaction belongs to another editor session.', can_take_over: true }, false, 409));
     }
-    return Promise.resolve(respond({ id: SERVER.tx.id, label: SERVER.tx.label }));
+    if (!SERVER.tx) {
+      SERVER.next_session += 1;
+      SERVER.tx = { id: 'tx-workflow-' + SERVER.next_session, actor: 'me', label: body && body.label,
+                    session: 'tab-token-' + SERVER.next_session };
+      return Promise.resolve(respond({ id: SERVER.tx.id, label: SERVER.tx.label,
+                                       editor_session: SERVER.tx.session, resumed: false }));
+    }
+    return Promise.resolve(respond({ id: SERVER.tx.id, label: SERVER.tx.label, editor_session: null, resumed: true }));
   }
   if (path.indexOf('/transaction') !== -1 && method === 'DELETE') {
-    if (!SERVER.tx || SERVER.tx.actor !== 'me') {
-      return Promise.resolve(respond({ code: 'transaction_rollback_failed', message: 'Transaction was opened by another actor.' }, false, 500));
+    if (!SERVER.tx) {
+      return Promise.resolve(respond({ rolled_back: true }));
     }
+    if (!owns_tx(opts)) {
+      return Promise.resolve(respond({ code: 'transaction_rollback_failed', message: 'This transaction belongs to another editor session.' }, false, 409));
+    }
+    var rolled_id = SERVER.tx.id;
+    if (window.__rollback_then_fail) {
+      window.__rollback_then_fail = false;
+      SERVER.outcomes[rolled_id] = 'rolled_back';
+      SERVER.tx = null;
+      SERVER.staged = null;
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }
+    SERVER.outcomes[rolled_id] = 'rolled_back';
     SERVER.tx = null;
     SERVER.staged = null;
     return Promise.resolve(respond({ rolled_back: true }));
   }
   if (path.indexOf('/transaction') !== -1) {
-    return Promise.resolve(respond(transaction_response()));
+    return Promise.resolve(respond(transaction_response(opts)));
   }
+
+  // ── configuration ───────────────────────────────────────────────────
   if (path.indexOf('/config') !== -1 && method === 'PUT') {
-    if (!SERVER.tx) {
-      return Promise.resolve(respond({ code: 'config_write_failed', message: 'No transaction is open.' }, false, 409));
-    }
-    if (SERVER.tx.actor !== 'me') {
-      return Promise.resolve(respond({ code: 'transaction_locked_by_other', message: 'Another actor owns the open transaction.' }, false, 409));
-    }
     if (window.__fail_next_put) {
       window.__fail_next_put = false;
       return Promise.reject(new TypeError('Failed to fetch'));
     }
+    if (!SERVER.tx) {
+      return Promise.resolve(respond({ code: 'config_write_failed', message: 'No transaction is open.' }, false, 409));
+    }
+    if (!owns_tx(opts)) {
+      return Promise.resolve(respond({ code: 'transaction_locked_by_session', message: 'This configuration belongs to another editor session.' }, false, 409));
+    }
     // #bad is a valid three-digit hex colour, so it is not a refusal. The
     // fixture uses a value the server's own regex refuses.
     if (body && body['--theme-bg'] === '#zzzzzz') {
-      return Promise.resolve(respond({ code: 'invalid_color_value', message: 'Invalid color value for background: #zzzzzz' }, false, 400));
+      // WordPress maps a WP_Error without an explicit status onto HTTP 500,
+      // which is how the canonical validator actually answers a bad colour.
+      // The editor must still call this a validation refusal, not a lost
+      // connection.
+      return Promise.resolve(respond({ code: 'invalid_color_value', message: 'Invalid color value for background: #zzzzzz' }, false, 500));
     }
     window.__puts.push(body);
     SERVER.staged = body;
+    if (window.__fail_put_after_stage) {
+      window.__fail_put_after_stage = false;
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }
     return Promise.resolve(respond(body));
   }
   if (path.indexOf('/config') !== -1) {
+    if (window.__fail_get_config_once) {
+      window.__fail_get_config_once = false;
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }
     return Promise.resolve(respond(SERVER.committed));
   }
   if (path.indexOf('/snapshots') !== -1 && method === 'POST') {
@@ -258,6 +395,12 @@ function areaButtons() { return qa('button.as-cfg__area'); }
 function tokenInput(token) { return q('.as-cfg__input[data-token="' + token + '"]'); }
 
 async function run() {
+  // A tab that already owns a transaction carries its capability in
+  // sessionStorage, exactly as the real editor does after a reload.
+  if (SCENARIO === 'refusal') {
+    try { sessionStorage.setItem('agentshell.editor.session.v1', 'tab-token-0'); } catch (e) {}
+  }
+
   // The theme boots the editor from an inline script after the modules load.
   window.AgentshellConfiguratorApp.boot({ restUrl: '/', nonce: 'x' });
   document.getElementById('agentshell-config-trigger').click();
@@ -281,6 +424,38 @@ async function run() {
   }
   if (SCENARIO === 'blocked') {
     await run_blocked();
+    return;
+  }
+  if (SCENARIO === 'session' || SCENARIO === 'unbound') {
+    await run_session();
+    return;
+  }
+  if (SCENARIO === 'commitlost') {
+    await run_commitlost(false);
+    return;
+  }
+  if (SCENARIO === 'commitlostrefresh') {
+    await run_commitlost(true);
+    return;
+  }
+  if (SCENARIO === 'refreshaftercommit') {
+    await run_refreshaftercommit();
+    return;
+  }
+  if (SCENARIO === 'commitfail') {
+    await run_commitfail();
+    return;
+  }
+  if (SCENARIO === 'previewstagefail') {
+    await run_previewstagefail();
+    return;
+  }
+  if (SCENARIO === 'previewnetwork') {
+    await run_previewnetwork();
+    return;
+  }
+  if (SCENARIO === 'previewurlnetwork') {
+    await run_previewurlnetwork();
     return;
   }
 
@@ -755,6 +930,268 @@ async function run_blocked() {
      SERVER.tx ? SERVER.tx.id : 'none');
   ok('a blocked tab leaves the public configuration unchanged',
      SERVER.committed.config['--theme-bg'] === '#fafaf9', SERVER.committed.config['--theme-bg']);
+  report();
+}
+
+
+/**
+ * Same account, another browser session — and an unbound (agent-owned)
+ * transaction. Neither is this tab's to read, overwrite, commit or roll back
+ * without an explicit, confirmed recovery.
+ */
+async function run_session() {
+  var expected = SCENARIO === 'session'
+    ? 'Locked — staged in another editor session'
+    : 'Locked — opened outside this editor';
+
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(80);
+
+  ok('the editor opens while another session holds the transaction', !!q('.as-cfg__rail'));
+  ok('the status names the other session', chip() === expected, chip());
+  ok('the panel is marked locked', q('#agentshell-config-panel').getAttribute('data-state') === 'locked',
+     q('#agentshell-config-panel').getAttribute('data-state'));
+  ok('the other session\'s staged draft is not shown',
+     tokenInput('--theme-bg') && tokenInput('--theme-bg').value === '#fafaf9',
+     tokenInput('--theme-bg') ? tokenInput('--theme-bg').value : 'none');
+  ok('saving is not offered', q('.as-cfg__actions [data-focus-key="save"]').hasAttribute('disabled'));
+  ok('discarding is not offered', q('.as-cfg__actions [data-focus-key="discard"]').hasAttribute('disabled'));
+  ok('previewing is not offered', q('.as-cfg__actions [data-focus-key="preview"]').hasAttribute('disabled'));
+  ok('recovery is offered', !!q('.as-cfg__actions [data-focus-key="takeover"]'));
+
+  var requests_before = window.__requests.length;
+  var puts_before = window.__puts.length;
+  window.__opened.length = 0;
+
+  // The guard behind the buttons, not the disabled attribute.
+  window.AgentshellConfigurator.save();
+  await wait(250);
+  ok('a save attempt writes nothing', window.__puts.length === puts_before, String(window.__puts.length - puts_before));
+  ok('a save attempt does not commit',
+     window.__requests.slice(requests_before).join(' ').indexOf('/transaction/commit') === -1);
+  var refusal_phrase = SCENARIO === 'session' ? 'Another editor session' : 'started outside this editor session';
+  ok('a save attempt says why', !!q('.as-cfg__alert') &&
+     q('.as-cfg__alert').textContent.indexOf(refusal_phrase) !== -1,
+     q('.as-cfg__alert') ? q('.as-cfg__alert').textContent : 'no alert');
+
+  window.AgentshellConfigurator.discard_changes();
+  await wait(250);
+  ok('a discard attempt rolls nothing back',
+     window.__requests.slice(requests_before).join(' ').indexOf('DELETE') === -1,
+     window.__requests.slice(requests_before).join(' '));
+  ok('the other session\'s transaction is still open',
+     !!SERVER.tx && (SERVER.tx.id === 'tx-other-tab' || SERVER.tx.id === 'tx-unbound'),
+     SERVER.tx ? SERVER.tx.id : 'none');
+
+  window.AgentshellConfigurator.preview();
+  await wait(250);
+  ok('a preview attempt stages nothing', window.__puts.length === puts_before);
+  ok('a preview attempt mints no credential',
+     window.__requests.slice(requests_before).join(' ').indexOf('/transaction/preview') === -1);
+  ok('a preview attempt opens no tab', window.__opened.length === 0, String(window.__opened.length));
+
+  // Explicit recovery: asked, confirmed, audited server-side, capability
+  // rotated. After it, the preserved staged draft is this tab's.
+  var asked = 0;
+  window.confirm = function () { asked += 1; return true; };
+  q('.as-cfg__actions [data-focus-key="takeover"]').click();
+  await wait(600);
+  ok('recovery asks first', asked === 1, String(asked));
+  ok('recovery is sent to the server',
+     window.__requests.join(' ').indexOf('/transaction/recover') !== -1, window.__requests.join(' '));
+  ok('recovery restores the staged draft', tokenInput('--theme-bg').value === '#fafaf9' || chip() === 'Staged for preview',
+     chip());
+  ok('recovery leaves the transaction staged', SERVER.staged && chip() === 'Staged for preview', chip());
+  ok('recovery replaces the old capability',
+     sessionStorage.getItem('agentshell.editor.session.v1') === SERVER.tx.session,
+     String(sessionStorage.getItem('agentshell.editor.session.v1')));
+  ok('recovery removes the recovery button', !q('.as-cfg__actions [data-focus-key="takeover"]'));
+
+  // Now discard is this session's to perform, and it does.
+  q('.as-cfg__actions [data-focus-key="discard"]').click();
+  await wait(600);
+  ok('the recovered transaction can be discarded', !SERVER.tx, SERVER.tx ? SERVER.tx.id : 'none');
+  ok('discarding a recovered transaction does not commit',
+     window.__requests.join(' ').indexOf('/transaction/commit') === -1);
+  ok('the committed configuration survived', SERVER.committed.config['--theme-bg'] === '#fafaf9',
+     SERVER.committed.config['--theme-bg']);
+  report();
+}
+
+/** A commit whose response was lost, reconciled through the audit log. */
+async function run_commitlost(lose_refresh) {
+  if (lose_refresh) {
+    window.__commit_then_fail_refresh = true;
+  } else {
+    window.__commit_then_fail = true;
+  }
+
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(80);
+  var input = tokenInput('--theme-bg');
+  input.value = '#123456';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+
+  q('.as-cfg__actions [data-focus-key="save"]').click();
+  await wait(900);
+
+  var commits = window.__requests.filter(function (r) { return r === 'POST /wp/v2/agentshell/transaction/commit'; }).length;
+  ok('the lost commit response is reconciled', window.__requests.join(' ').indexOf('/transaction/outcome') !== -1,
+     window.__requests.join(' '));
+  ok('the commit is not sent twice', commits === 1, String(commits));
+  ok('the lost commit did not roll anything back',
+     window.__requests.join(' ').indexOf('DELETE /wp/v2/agentshell/transaction') === -1);
+  ok('the committed configuration is what the editor staged',
+     SERVER.committed.config['--theme-bg'] === '#123456', SERVER.committed.config['--theme-bg']);
+  ok('the transaction is closed', !SERVER.tx, SERVER.tx ? SERVER.tx.id : 'none');
+  ok('the status says saved', chip() === 'Saved', chip());
+  if (lose_refresh) {
+    ok('a failed refresh after a confirmed commit is reported honestly',
+       q('.as-cfg__alert').textContent.indexOf('Saved, but the editor could not refresh') !== -1,
+       q('.as-cfg__alert').textContent);
+    ok('a failed refresh is not reported as "Not saved"',
+       q('.as-cfg__alert').textContent.indexOf('Not saved') === -1, q('.as-cfg__alert').textContent);
+  } else {
+    ok('the saved refresh shows the stored value', tokenInput('--theme-bg').value === '#123456',
+       tokenInput('--theme-bg').value);
+  }
+  report();
+}
+
+/** A successful commit followed by a failed configuration read. */
+async function run_refreshaftercommit() {
+  window.__refreshaftercommit = true;
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(80);
+  var input = tokenInput('--theme-bg');
+  input.value = '#abcdef';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+  q('.as-cfg__actions [data-focus-key="save"]').click();
+  await wait(800);
+
+  ok('the commit succeeded', SERVER.committed.config['--theme-bg'] === '#abcdef', SERVER.committed.config['--theme-bg']);
+  ok('the status is not "Not saved"', chip().indexOf('Not saved') === -1, chip());
+  ok('the operator is told the editor could not refresh',
+     q('.as-cfg__alert').textContent.indexOf('Saved, but the editor could not refresh') !== -1,
+     q('.as-cfg__alert').textContent);
+  ok('no second commit is sent',
+     window.__requests.filter(function (r) { return r === 'POST /wp/v2/agentshell/transaction/commit'; }).length === 1);
+  ok('no rollback follows a committed save',
+     window.__requests.join(' ').indexOf('DELETE /wp/v2/agentshell/transaction') === -1);
+  report();
+}
+
+/** A confirmed commit refusal: staged, not saved, and never silently dropped. */
+async function run_commitfail() {
+  window.__commit_fail_confirmed = true;
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(80);
+  var input = tokenInput('--theme-bg');
+  input.value = '#445566';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+  q('.as-cfg__actions [data-focus-key="save"]').click();
+  await wait(800);
+
+  ok('a confirmed commit refusal is not reported as saved', chip() !== 'Saved', chip());
+  ok('the refusal says the changes are staged, not committed',
+     q('.as-cfg__alert').textContent.indexOf('Changes staged but not committed') !== -1,
+     q('.as-cfg__alert').textContent);
+  ok('the transaction is left open for a retry', !!SERVER.tx, SERVER.tx ? SERVER.tx.id : 'none');
+  ok('the staged work is the draft', SERVER.staged && SERVER.staged['--theme-bg'] === '#445566',
+     SERVER.staged ? SERVER.staged['--theme-bg'] : 'none');
+  ok('the draft is kept', tokenInput('--theme-bg').value === '#445566', tokenInput('--theme-bg').value);
+  ok('the refusal does not roll the staged work back',
+     window.__requests.join(' ').indexOf('DELETE /wp/v2/agentshell/transaction') === -1,
+     window.__requests.join(' '));
+  ok('the committed configuration is unchanged', SERVER.committed.config['--theme-bg'] === '#fafaf9',
+     SERVER.committed.config['--theme-bg']);
+
+  // Clean up through the interface, not the fixture.
+  q('.as-cfg__actions [data-focus-key="discard"]').click();
+  await wait(500);
+  ok('discarding cleans up the refused transaction', !SERVER.tx, SERVER.tx ? SERVER.tx.id : 'none');
+  report();
+}
+
+/** A preview whose staging PUT is refused: the empty lock is closed. */
+async function run_previewstagefail() {
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(80);
+  var input = tokenInput('--theme-bg');
+  input.value = '#zzzzzz';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+  q('.as-cfg__actions [data-focus-key="preview"]').click();
+  await wait(800);
+
+  ok('a refused preview is labelled as a validation failure',
+     chip() === 'Not saved — validation error', chip());
+  ok('a refused preview says changes remain editable',
+     q('.as-cfg__alert').textContent.indexOf('Validation failed; changes remain editable') !== -1,
+     q('.as-cfg__alert').textContent);
+  ok('a refused preview keeps the draft', tokenInput('--theme-bg').value === '#zzzzzz',
+     tokenInput('--theme-bg').value);
+  ok('a refused preview does not commit',
+     window.__requests.join(' ').indexOf('/transaction/commit') === -1);
+  ok('a refused preview does not leave an unexplained lock', !SERVER.tx,
+     SERVER.tx ? SERVER.tx.id : 'none');
+  ok('the committed configuration is unchanged', SERVER.committed.config['--theme-bg'] === '#fafaf9',
+     SERVER.committed.config['--theme-bg']);
+  report();
+}
+
+/** A preview PUT that lands but loses its response. */
+async function run_previewnetwork() {
+  window.__fail_put_after_stage = true;
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(80);
+  var input = tokenInput('--theme-bg');
+  input.value = '#556677';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+  q('.as-cfg__actions [data-focus-key="preview"]').click();
+  await wait(800);
+
+  ok('a staged-but-unconfirmed preview is not reported as failed to save',
+     q('.as-cfg__alert').textContent.indexOf('staged') !== -1,
+     q('.as-cfg__alert').textContent);
+  ok('the staged preview transaction remains open', !!SERVER.tx, SERVER.tx ? SERVER.tx.id : 'none');
+  ok('the staged work is the draft', SERVER.staged && SERVER.staged['--theme-bg'] === '#556677',
+     SERVER.staged ? SERVER.staged['--theme-bg'] : 'none');
+  ok('a staged preview does not commit', window.__requests.join(' ').indexOf('/transaction/commit') === -1);
+  ok('a staged preview does not roll back', window.__requests.join(' ').indexOf('DELETE') === -1);
+  ok('the status is staged', chip() === 'Staged for preview', chip());
+  ok('the draft is kept', tokenInput('--theme-bg').value === '#556677', tokenInput('--theme-bg').value);
+
+  q('.as-cfg__actions [data-focus-key="discard"]').click();
+  await wait(500);
+  ok('discarding cleans up the staged preview', !SERVER.tx, SERVER.tx ? SERVER.tx.id : 'none');
+  report();
+}
+
+/** The preview URL request fails after the draft was staged. */
+async function run_previewurlnetwork() {
+  window.__fail_preview_url = true;
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(80);
+  var input = tokenInput('--theme-bg');
+  input.value = '#667788';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+  q('.as-cfg__actions [data-focus-key="preview"]').click();
+  await wait(800);
+
+  ok('the failed URL request is reported', q('.as-cfg__alert').textContent.indexOf('preview tab could not be opened') !== -1,
+     q('.as-cfg__alert').textContent);
+  ok('the staged draft is kept', !!SERVER.staged && SERVER.staged['--theme-bg'] === '#667788',
+     SERVER.staged ? SERVER.staged['--theme-bg'] : 'none');
+  ok('the transaction is not rolled back', !!SERVER.tx, SERVER.tx ? SERVER.tx.id : 'none');
+  ok('the status is staged, not saved', chip() === 'Staged for preview', chip());
+  ok('the draft survives', tokenInput('--theme-bg').value === '#667788', tokenInput('--theme-bg').value);
+  ok('nothing was committed', window.__requests.join(' ').indexOf('/transaction/commit') === -1);
   report();
 }
 

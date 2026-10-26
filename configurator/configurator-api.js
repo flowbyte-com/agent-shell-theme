@@ -35,6 +35,7 @@
         var restUrl   = options.restUrl || '/';
         var nonce     = options.nonce || '';
         var fetchImpl = options.fetch || ( typeof root !== 'undefined' ? root.fetch : null );
+        var session   = options.session || null;
 
         function url( path ) {
             return restUrl.replace( /\/$/, '' ) + '/wp/v2/agentshell/' + path;
@@ -48,6 +49,16 @@
             var headers = { 'X-WP-Nonce': nonce };
             if ( opts.body ) {
                 headers['Content-Type'] = 'application/json';
+            }
+            // The editor-session capability, when this tab has one. It is a
+            // proof of possession, not a username: the server stores only its
+            // hash and refuses mutations from another session of the same
+            // account. It is attached here so every route gets it, including
+            // the ones that stage configuration rather than mutate a
+            // transaction directly.
+            var token = session && typeof session.get === 'function' ? session.get() : null;
+            if ( token ) {
+                headers['X-AgentShell-Editor-Session'] = token;
             }
             return fetchImpl( url( path ), {
                 method: opts.method || 'GET',
@@ -94,6 +105,12 @@
             },
             begin_transaction: function ( label ) {
                 return request( 'transaction', { method: 'POST', body: { label: label || 'configurator edit' } } );
+            },
+            recover_transaction: function ( label ) {
+                return request( 'transaction/recover', { method: 'POST', body: { confirm: true, label: label || 'configurator recovery' } } );
+            },
+            transaction_outcome: function ( id ) {
+                return request( 'transaction/outcome?id=' + encodeURIComponent( id ) );
             },
             commit_transaction: function () {
                 return request( 'transaction/commit', { method: 'POST' } );

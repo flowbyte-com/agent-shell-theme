@@ -140,15 +140,22 @@ function main() {
         var picker = run_scenario( browser, harness, profile, 'picker' );
         var workflow = run_scenario( browser, harness, profile, 'workflow' );
         var blocked = run_scenario( browser, harness, profile, 'blocked' );
+        // Same-account session isolation and the honest failure paths.
+        var session = run_scenario( browser, harness, profile, 'session' );
+        var unbound = run_scenario( browser, harness, profile, 'unbound' );
+        var commitlost = run_scenario( browser, harness, profile, 'commitlost' );
+        var commitlostrefresh = run_scenario( browser, harness, profile, 'commitlostrefresh' );
+        var refreshaftercommit = run_scenario( browser, harness, profile, 'refreshaftercommit' );
+        var commitfail = run_scenario( browser, harness, profile, 'commitfail' );
+        var previewstagefail = run_scenario( browser, harness, profile, 'previewstagefail' );
+        var previewnetwork = run_scenario( browser, harness, profile, 'previewnetwork' );
+        var previewurlnetwork = run_scenario( browser, harness, profile, 'previewurlnetwork' );
+        var scenarios = [ plain, locked, refusal, picker, workflow, blocked, session, unbound,
+            commitlost, commitlostrefresh, refreshaftercommit, commitfail,
+            previewstagefail, previewnetwork, previewurlnetwork ];
         report = {
-            total: ( plain.total || 0 ) + ( locked.total || 0 ) + ( refusal.total || 0 ) + ( picker.total || 0 )
-                + ( workflow.total || 0 ) + ( blocked.total || 0 ),
-            failures: ( plain.failures || [] )
-                .concat( locked.failures || [] )
-                .concat( refusal.failures || [] )
-                .concat( picker.failures || [] )
-                .concat( workflow.failures || [] )
-                .concat( blocked.failures || [] ),
+            total: scenarios.reduce( function ( sum, r ) { return sum + ( r.total || 0 ); }, 0 ),
+            failures: scenarios.reduce( function ( all, r ) { return all.concat( r.failures || [] ); }, [] ),
         };
     } finally {
         try { fs.rmSync( profile, { recursive: true, force: true } ); } catch ( e2 ) {}
