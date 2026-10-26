@@ -66,13 +66,101 @@ const ZONE_RESPONSE = {
 };
 
 window.AgentShellConfig = { restUrl: '/', nonce: 'x', adminUrl: '/admin-ajax.php' };
-window.open = function (url) { window.__opened.push(url); return null; };
+
+// A small stateful server, so the browser test exercises the real workflow:
+// a PUT inside a transaction stages, a commit promotes, a rollback discards.
+window.__opened = [];
+window.__openCalls = [];
+window.open = function (url) {
+  window.__openCalls.push({ url: url, at: window.__requests.length });
+  if (SCENARIO === 'blocked') { return null; }
+  var win = {
+    closed: false,
+    opener: null,
+    url: '',
+    close: function () { win.closed = true; },
+    location: {
+      replace: function (next) { win.url = next; window.__opened.push(next); },
+    },
+  };
+  if (url && url !== 'about:blank') {
+    win.url = url;
+    window.__opened.push(url);
+  }
+  return win;
+};
 window.confirm = function () { return true; };
 
 function respond(data, ok, status) {
   return { ok: ok !== false, status: status || 200,
            text: function () { return Promise.resolve(JSON.stringify(data)); } };
 }
+
+function clone(value) { return JSON.parse(JSON.stringify(value)); }
+
+function payload_from_response(response) {
+  var payload = {};
+  Object.keys(response.config || {}).forEach(function (key) {
+    if (key.indexOf('--') === 0) { payload[key] = response.config[key]; }
+  });
+  payload.custom_css = response.custom_css || '';
+  payload.custom_js = response.custom_js || '';
+  payload.zones = clone(response.zones || []);
+  return payload;
+}
+
+function response_from_payload(payload) {
+  var response = clone(ZONE_RESPONSE);
+  response.config = {};
+  Object.keys(payload || {}).forEach(function (key) {
+    if (key.indexOf('--') === 0 && typeof payload[key] === 'string') {
+      response.config[key] = payload[key];
+    }
+  });
+  response.custom_css = payload.custom_css || '';
+  response.custom_js = payload.custom_js || '';
+  response.zones = clone(payload.zones || []);
+  return response;
+}
+
+var SERVER = {
+  committed: clone(ZONE_RESPONSE),
+  staged: null,
+  tx: null,
+  previews: 0,
+  fail_next_put: false,
+};
+
+if (SCENARIO === 'locked') {
+  SERVER.tx = { id: 'tx-agent', actor: 'agent', label: 'agent work' };
+}
+if (SCENARIO === 'refusal') {
+  SERVER.tx = { id: 'tx-mine', actor: 'me', label: 'earlier work' };
+  SERVER.staged = payload_from_response(SERVER.committed);
+}
+
+function transaction_response() {
+  if (!SERVER.tx) {
+    return { open: false, id: null, actor: null, label: null, owned_by_us: false,
+             started_at: null, has_staged: false, stale: false, can_take_over: true };
+  }
+  var response = {
+    open: true,
+    id: SERVER.tx.id,
+    actor: SERVER.tx.actor,
+    label: SERVER.tx.label || '',
+    owned_by_us: SERVER.tx.actor === 'me',
+    started_at: 1,
+    has_staged: !!SERVER.staged,
+    stale: false,
+    can_take_over: false,
+  };
+  if (response.owned_by_us && SERVER.staged) {
+    response.staged = response_from_payload(SERVER.staged);
+  }
+  return response;
+}
+
 window.fetch = function (url, opts) {
   var path = String(url);
   var method = (opts && opts.method) || 'GET';
@@ -80,40 +168,66 @@ window.fetch = function (url, opts) {
   window.__requests.push(method + ' ' + path);
 
   if (path.indexOf('/transaction/preview') !== -1) {
-    return Promise.resolve(respond({ url: 'https://example.test/?agentshell_tx=1', diff: {}, summary: {added:0,removed:0,changed:1} }));
+    if (!SERVER.tx) {
+      return Promise.resolve(respond({ code: 'no_transaction', message: 'No transaction is open. Save the changes in the editor first.' }, false, 409));
+    }
+    SERVER.previews += 1;
+    return Promise.resolve(respond({ url: 'https://example.test/?agentshell_tx=' + SERVER.tx.id + '&n=' + SERVER.previews,
+                                     diff: {}, summary: { added: 0, removed: 0, changed: 1 } }));
   }
   if (path.indexOf('/transaction/commit') !== -1) {
+    if (!SERVER.tx || SERVER.tx.actor !== 'me') {
+      return Promise.resolve(respond({ code: 'transaction_commit_failed', message: 'Transaction was opened by another actor.' }, false, 500));
+    }
+    if (SERVER.staged) {
+      SERVER.committed = response_from_payload(SERVER.staged);
+    }
+    SERVER.tx = null;
+    SERVER.staged = null;
     return Promise.resolve(respond({ committed: true }));
   }
   if (path.indexOf('/transaction') !== -1 && method === 'POST') {
-    return Promise.resolve(respond({ id: 'tx-1', label: 'configurator save' }));
+    if (SERVER.tx && SERVER.tx.actor !== 'me') {
+      return Promise.resolve(respond({ code: 'transaction_locked_by_other', message: 'Another actor owns the open transaction.' }, false, 409));
+    }
+    if (!SERVER.tx) {
+      SERVER.tx = { id: 'tx-workflow', actor: 'me', label: body && body.label };
+    }
+    return Promise.resolve(respond({ id: SERVER.tx.id, label: SERVER.tx.label }));
   }
   if (path.indexOf('/transaction') !== -1 && method === 'DELETE') {
+    if (!SERVER.tx || SERVER.tx.actor !== 'me') {
+      return Promise.resolve(respond({ code: 'transaction_rollback_failed', message: 'Transaction was opened by another actor.' }, false, 500));
+    }
+    SERVER.tx = null;
+    SERVER.staged = null;
     return Promise.resolve(respond({ rolled_back: true }));
   }
   if (path.indexOf('/transaction') !== -1) {
-    if (SCENARIO === 'refusal') {
-      // A transaction is already open — with our own work staged in it.
-      return Promise.resolve(respond({ open: true, id: 'tx-mine', actor: 'me', label: 'earlier work', owned_by_us: true, has_staged: true }));
-    }
-    if (SCENARIO === 'locked') {
-      // An agent is holding the transaction: its staged work is not this
-      // session's to overwrite.
-      return Promise.resolve(respond({ open: true, id: 'tx-agent', actor: 'agent', label: 'agent work', owned_by_us: false, has_staged: true }));
-    }
-    return Promise.resolve(respond({ open: false, owned_by_us: true }));
+    return Promise.resolve(respond(transaction_response()));
   }
   if (path.indexOf('/config') !== -1 && method === 'PUT') {
+    if (!SERVER.tx) {
+      return Promise.resolve(respond({ code: 'config_write_failed', message: 'No transaction is open.' }, false, 409));
+    }
+    if (SERVER.tx.actor !== 'me') {
+      return Promise.resolve(respond({ code: 'transaction_locked_by_other', message: 'Another actor owns the open transaction.' }, false, 409));
+    }
+    if (window.__fail_next_put) {
+      window.__fail_next_put = false;
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }
     // #bad is a valid three-digit hex colour, so it is not a refusal. The
     // fixture uses a value the server's own regex refuses.
     if (body && body['--theme-bg'] === '#zzzzzz') {
       return Promise.resolve(respond({ code: 'invalid_color_value', message: 'Invalid color value for background: #zzzzzz' }, false, 400));
     }
     window.__puts.push(body);
-    return Promise.resolve(respond({}));
+    SERVER.staged = body;
+    return Promise.resolve(respond(body));
   }
   if (path.indexOf('/config') !== -1) {
-    return Promise.resolve(respond(ZONE_RESPONSE));
+    return Promise.resolve(respond(SERVER.committed));
   }
   if (path.indexOf('/snapshots') !== -1 && method === 'POST') {
     return Promise.resolve(respond({ name: body.name }));
@@ -159,6 +273,14 @@ async function run() {
   }
   if (SCENARIO === 'picker') {
     await run_picker();
+    return;
+  }
+  if (SCENARIO === 'workflow') {
+    await run_workflow();
+    return;
+  }
+  if (SCENARIO === 'blocked') {
+    await run_blocked();
     return;
   }
 
@@ -355,6 +477,10 @@ async function run() {
      window.__requests.join(' ').indexOf('/transaction/preview') !== -1);
   ok('preview opens the staged site', window.__opened.length === 1 && String(window.__opened[0]).indexOf('agentshell_tx') !== -1,
      String(window.__opened[0]));
+  ok('preview is described as staged, not saved', chip() === 'Staged for preview', chip());
+  ok('preview did not write the committed configuration',
+     SERVER.committed.config['--theme-bg'] === '#fafaf9',
+     SERVER.committed.config['--theme-bg']);
 
   // ── Save ────────────────────────────────────────────────────────────
   q('.as-cfg__actions [data-focus-key="save"]').click();
@@ -367,6 +493,11 @@ async function run() {
      window.__requests.join(' ').indexOf('POST /wp/v2/agentshell/transaction') !== -1 &&
      window.__requests.join(' ').indexOf('/transaction/commit') !== -1);
   ok('the state chip returns to saved after a save', chip() === 'Saved', chip());
+  ok('saving committed the staged draft', SERVER.committed.config['--theme-bg'] === '#123456',
+     SERVER.committed.config['--theme-bg']);
+  ok('saving reused the preview transaction instead of beginning a second one',
+     window.__requests.filter(function (r) { return r === 'POST /wp/v2/agentshell/transaction'; }).length === 1,
+     window.__requests.join(' '));
 
   // ── Keyboard: the rail is arrow-navigable ───────────────────────────
   var tabs = qa('.as-cfg__tab');
@@ -391,7 +522,9 @@ async function run() {
      !!q('.as-cfg__alert') && !q('.as-cfg__alert').hasAttribute('hidden') &&
      q('.as-cfg__alert').textContent.indexOf('Invalid color') !== -1,
      q('.as-cfg__alert') ? q('.as-cfg__alert').textContent : 'no alert');
-  ok('a refused save keeps the draft', chip() === 'Unsaved changes', chip());
+  ok('a refused save keeps the draft', hex2.value === '#zzzzzz' &&
+     tokenInput('--theme-bg').value === '#zzzzzz', tokenInput('--theme-bg').value);
+  ok('a refused save is labelled as a validation failure', chip() === 'Not saved — validation error', chip());
   ok('a refused save does not commit', window.__puts.length === 1, String(window.__puts.length));
   ok('a refused save rolls the transaction back',
      window.__requests.join(' ').indexOf('DELETE /wp/v2/agentshell/transaction') !== -1);
@@ -419,6 +552,212 @@ async function run() {
   report();
 }
 
+/**
+ * The operator workflow, end to end.
+ *
+ * Edit → Preview stages into a transaction and leaves it open; the public
+ * configuration does not move. A later edit is restaged by the next
+ * Preview. Discard rolls the staged work back. Save commits the transaction
+ * the preview opened. Failures keep the draft, and a successful operation
+ * clears the old error.
+ */
+async function run_workflow() {
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(80);
+
+  function set_bg(value) {
+    var input = tokenInput('--theme-bg');
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  function bg() { return tokenInput('--theme-bg').value; }
+
+  // ── 1. Edit: dirty, nothing written ─────────────────────────────────
+  set_bg('#123456');
+  await wait(60);
+  ok('an edit is dirty', chip() === 'Unsaved changes', chip());
+  ok('an edit writes nothing', window.__puts.length === 0, String(window.__puts.length));
+
+  // ── 2. Preview: opens the tab synchronously, then stages ────────────
+  window.__requests.length = 0;
+  window.__opened.length = 0;
+  window.__openCalls.length = 0;
+  q('.as-cfg__actions [data-focus-key="preview"]').click();
+  await wait(500);
+
+  var post_index = window.__requests.indexOf('POST /wp/v2/agentshell/transaction');
+  ok('preview opens a transaction', post_index !== -1, window.__requests.join(' '));
+  ok('preview stages the draft through the config endpoint',
+     window.__puts.length === 1 && window.__puts[0]['--theme-bg'] === '#123456',
+     JSON.stringify(window.__puts));
+  ok('preview asks for the signed preview URL',
+     window.__requests.join(' ').indexOf('/transaction/preview') !== -1, window.__requests.join(' '));
+  ok('the preview tab is opened before the first request',
+     window.__openCalls.length === 1 && window.__openCalls[0].url === 'about:blank' &&
+     window.__openCalls[0].at === 0 && post_index > 0,
+     JSON.stringify(window.__openCalls) + ' / POST at ' + post_index);
+  ok('the placeholder is navigated to the signed URL',
+     window.__opened.length === 1 && window.__opened[0].indexOf('agentshell_tx') !== -1,
+     JSON.stringify(window.__opened));
+  ok('preview leaves the transaction open', !!SERVER.tx && SERVER.tx.actor === 'me',
+     SERVER.tx ? JSON.stringify(SERVER.tx) : 'none');
+  ok('preview stages exactly the draft', SERVER.staged && SERVER.staged['--theme-bg'] === '#123456',
+     SERVER.staged ? SERVER.staged['--theme-bg'] : 'none');
+  ok('the public configuration has not changed',
+     SERVER.committed.config['--theme-bg'] === '#fafaf9', SERVER.committed.config['--theme-bg']);
+  ok('the status says staged for preview, not saved', chip() === 'Staged for preview', chip());
+
+  // ── 5. Another edit is restaged by the next preview ─────────────────
+  set_bg('#654321');
+  await wait(60);
+  ok('an edit after a preview is "changes since preview"', chip() === 'Changes since preview', chip());
+  var puts_before = window.__puts.length;
+  q('.as-cfg__actions [data-focus-key="preview"]').click();
+  await wait(500);
+  ok('a second preview restages the latest draft',
+     window.__puts.length === puts_before + 1 && SERVER.staged['--theme-bg'] === '#654321',
+     JSON.stringify(SERVER.staged && SERVER.staged['--theme-bg']));
+  ok('the second preview still does not commit',
+     SERVER.committed.config['--theme-bg'] === '#fafaf9', SERVER.committed.config['--theme-bg']);
+  ok('the status returns to staged', chip() === 'Staged for preview', chip());
+
+  // A reload of the editor while the preview transaction exists restores the
+  // staged draft from the server, not from a local memory of what was sent.
+  await window.AgentshellConfigurator.load();
+  await wait(200);
+  ok('a reload restores the staged draft', bg() === '#654321', bg());
+  ok('a reload still reports the committed configuration as unsaved-stage',
+     SERVER.committed.config['--theme-bg'] === '#fafaf9', SERVER.committed.config['--theme-bg']);
+  ok('a reload reports staged for preview', chip() === 'Staged for preview', chip());
+
+  // ── 6. Discard: committed state unchanged, draft reverted ───────────
+  var commits_before = window.__requests.filter(function (r) { return r === 'POST /wp/v2/agentshell/transaction/commit'; }).length;
+  q('.as-cfg__actions [data-focus-key="discard"]').click();
+  await wait(500);
+  ok('discard rolls the staged transaction back',
+     window.__requests.join(' ').indexOf('DELETE /wp/v2/agentshell/transaction') !== -1, window.__requests.join(' '));
+  ok('discard removes the transaction', !SERVER.tx, SERVER.tx ? SERVER.tx.id : 'none');
+  ok('discard leaves the committed configuration alone',
+     SERVER.committed.config['--theme-bg'] === '#fafaf9', SERVER.committed.config['--theme-bg']);
+  ok('discard reverts the draft', bg() === '#fafaf9', bg());
+  ok('discard is Saved again', chip() === 'Saved', chip());
+  ok('discard did not commit',
+     window.__requests.filter(function (r) { return r === 'POST /wp/v2/agentshell/transaction/commit'; }).length === commits_before,
+     window.__requests.join(' '));
+
+  // ── 7. Edit → Preview → Save, then reload ───────────────────────────
+  set_bg('#abcdef');
+  await wait(60);
+  q('.as-cfg__actions [data-focus-key="preview"]').click();
+  await wait(500);
+  ok('the third preview stages the new draft', SERVER.staged['--theme-bg'] === '#abcdef', SERVER.staged['--theme-bg']);
+  var begins_before_save = window.__requests.filter(function (r) { return r === 'POST /wp/v2/agentshell/transaction'; }).length;
+  q('.as-cfg__actions [data-focus-key="save"]').click();
+  await wait(600);
+  ok('save commits the preview transaction',
+     window.__requests.join(' ').indexOf('/transaction/commit') !== -1, window.__requests.join(' '));
+  ok('save did not begin a second transaction',
+     window.__requests.filter(function (r) { return r === 'POST /wp/v2/agentshell/transaction'; }).length === begins_before_save,
+     window.__requests.join(' '));
+  ok('save stores the staged draft', SERVER.committed.config['--theme-bg'] === '#abcdef', SERVER.committed.config['--theme-bg']);
+  ok('save reports Saved', chip() === 'Saved', chip());
+  ok('save closes the transaction', !SERVER.tx, SERVER.tx ? SERVER.tx.id : 'none');
+
+  await window.AgentshellConfigurator.load();
+  await wait(150);
+  ok('a reload reads the committed value back', bg() === '#abcdef', bg());
+  ok('a reload is Saved', chip() === 'Saved', chip());
+
+  // ── 8. An old error disappears after a successful operation ─────────
+  set_bg('#zzzzzz');
+  await wait(60);
+  q('.as-cfg__actions [data-focus-key="save"]').click();
+  await wait(500);
+  ok('a validation failure is reported', !!q('.as-cfg__alert') &&
+     q('.as-cfg__alert').textContent.indexOf('Invalid color') !== -1,
+     q('.as-cfg__alert') ? q('.as-cfg__alert').textContent : 'no alert');
+  ok('a validation failure is labelled', chip() === 'Not saved — validation error', chip());
+  ok('a validation failure keeps the draft', bg() === '#zzzzzz', bg());
+  set_bg('#112233');
+  await wait(60);
+  ok('editing clears the old error', q('.as-cfg__alert').hasAttribute('hidden'),
+     q('.as-cfg__alert').textContent);
+  q('.as-cfg__actions [data-focus-key="preview"]').click();
+  await wait(500);
+  ok('a successful preview after a failure clears the error', q('.as-cfg__alert').hasAttribute('hidden'),
+     q('.as-cfg__alert').textContent);
+  ok('the successful preview is staged', chip() === 'Staged for preview', chip());
+  q('.as-cfg__actions [data-focus-key="discard"]').click();
+  await wait(500);
+
+  // ── 9. A network failure keeps the draft ───────────────────────────
+  set_bg('#334455');
+  await wait(60);
+  window.__fail_next_put = true;
+  q('.as-cfg__actions [data-focus-key="preview"]').click();
+  await wait(500);
+  ok('a network failure is reported', !!q('.as-cfg__alert') &&
+     q('.as-cfg__alert').textContent.indexOf('preview could not be opened') !== -1,
+     q('.as-cfg__alert') ? q('.as-cfg__alert').textContent : 'no alert');
+  ok('a network failure keeps the draft', bg() === '#334455', bg());
+  ok('a network failure is labelled as a connection error', chip() === 'Not saved — connection error', chip());
+  q('.as-cfg__actions [data-focus-key="discard"]').click();
+  await wait(500);
+  ok('a transaction with nothing staged can still be discarded', !SERVER.tx,
+     SERVER.tx ? SERVER.tx.id : 'none');
+
+  // ── 11. Closing while a preview transaction exists ──────────────────
+  set_bg('#778899');
+  await wait(60);
+  q('.as-cfg__actions [data-focus-key="preview"]').click();
+  await wait(500);
+  ok('a transaction is staged before closing', !!SERVER.tx && !!SERVER.staged, SERVER.tx ? SERVER.tx.id : 'none');
+  var asked = 0;
+  window.confirm = function () { asked += 1; return false; };
+  q('.as-cfg__close').click();
+  await wait(400);
+  ok('closing a staged preview asks first', asked === 1, String(asked));
+  ok('declining keeps the editor open', !!q('.as-cfg__rail') && q('#agentshell-config-panel').classList.contains('is-open'));
+  ok('declining keeps the staged transaction', !!SERVER.tx, SERVER.tx ? SERVER.tx.id : 'none');
+  window.confirm = function () { return true; };
+  q('.as-cfg__close').click();
+  await wait(600);
+  ok('accepting discards the staged transaction', !SERVER.tx, SERVER.tx ? SERVER.tx.id : 'none');
+  ok('accepting closes the editor', !q('#agentshell-config-panel').classList.contains('is-open'));
+  ok('the committed configuration survived the staged close',
+     SERVER.committed.config['--theme-bg'] === '#abcdef', SERVER.committed.config['--theme-bg']);
+
+  report();
+}
+
+/**
+ * A blocked pop-up must not masquerade as a failed save.
+ *
+ * The staging PUT succeeded, so the draft is staged and can be saved or
+ * discarded; only the tab was blocked. The operator is told that, and the
+ * status stays "Staged for preview".
+ */
+async function run_blocked() {
+  q('.as-cfg__tab[data-context="appearance"]').click();
+  await wait(80);
+  var input = tokenInput('--theme-bg');
+  input.value = '#123456';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(60);
+  q('.as-cfg__actions [data-focus-key="preview"]').click();
+  await wait(500);
+  ok('a blocked tab is reported', !!q('.as-cfg__alert') &&
+     q('.as-cfg__alert').textContent.indexOf('blocked the new tab') !== -1,
+     q('.as-cfg__alert') ? q('.as-cfg__alert').textContent : 'no alert');
+  ok('a blocked tab does not pretend the draft was not staged',
+     chip() === 'Staged for preview', chip());
+  ok('a blocked tab leaves the transaction staged', !!SERVER.tx && SERVER.staged['--theme-bg'] === '#123456',
+     SERVER.tx ? SERVER.tx.id : 'none');
+  ok('a blocked tab leaves the public configuration unchanged',
+     SERVER.committed.config['--theme-bg'] === '#fafaf9', SERVER.committed.config['--theme-bg']);
+  report();
+}
+
 function report() {
   var failed = window.__results.filter(function (r) { return !r.pass; });
   document.title = JSON.stringify({ total: window.__results.length, failed: failed.length, failures: failed });
@@ -434,7 +773,7 @@ function report() {
  */
 async function run_refusal() {
   ok('the editor opens with an open transaction', !!q('.as-cfg__rail'));
-  ok('the state is staged, not dirty', chip() === 'Staged', chip());
+  ok('the state is staged, not saved', chip() === 'Staged for preview', chip());
 
   q('.as-cfg__tab[data-context="appearance"]').click();
   await wait(60);
@@ -442,18 +781,21 @@ async function run_refusal() {
   hex.value = '#zzzzzz';
   hex.dispatchEvent(new Event('input', { bubbles: true }));
   await wait(60);
-  ok('the draft is dirty before the refused save', chip() === 'Unsaved changes', chip());
+  ok('the draft is dirty before the refused save', chip() === 'Changes since preview', chip());
 
   q('.as-cfg__actions [data-focus-key="save"]').click();
   await wait(400);
 
   ok('the refusal is reported', !!q('.as-cfg__alert') && q('.as-cfg__alert').textContent.indexOf('Invalid color') !== -1,
      q('.as-cfg__alert') ? q('.as-cfg__alert').textContent : 'no alert');
-  ok('the draft is kept', chip() === 'Unsaved changes', chip());
+  ok('the draft is kept', tokenInput('--theme-bg').value === '#zzzzzz', tokenInput('--theme-bg').value);
+  ok('the failure is labelled as a validation failure', chip() === 'Not saved — validation error', chip());
   ok('the transaction that was already open is not rolled back',
      window.__requests.join(' ').indexOf('DELETE') === -1,
      window.__requests.join(' '));
   ok('the save was not committed', window.__requests.join(' ').indexOf('/transaction/commit') === -1);
+  ok('the pre-existing staged transaction is intact', !!SERVER.tx && SERVER.tx.id === 'tx-mine',
+     SERVER.tx ? SERVER.tx.id : 'none');
 
   report();
 }
@@ -644,6 +986,19 @@ async function run_locked() {
   await wait(200);
   ok('a save attempt while locked writes nothing', window.__puts.length === 0, String(window.__puts.length));
   ok('a save attempt while locked says why',
+     !!q('.as-cfg__alert') && q('.as-cfg__alert').textContent.indexOf('Another actor') !== -1,
+     q('.as-cfg__alert') ? q('.as-cfg__alert').textContent : 'no alert');
+
+  window.__requests.length = 0;
+  window.__opened.length = 0;
+  window.AgentshellConfigurator.preview();
+  await wait(200);
+  ok('a preview attempt while locked writes nothing', window.__puts.length === 0, String(window.__puts.length));
+  ok('a preview attempt while locked does not mint a credential',
+     window.__requests.join( ' ' ).indexOf( '/transaction/preview' ) === -1,
+     window.__requests.join( ' ' ));
+  ok('a preview attempt while locked opens no tab', window.__opened.length === 0, String(window.__opened.length));
+  ok('a preview attempt while locked says why',
      !!q('.as-cfg__alert') && q('.as-cfg__alert').textContent.indexOf('Another actor') !== -1,
      q('.as-cfg__alert') ? q('.as-cfg__alert').textContent : 'no alert');
 

@@ -360,6 +360,13 @@ $suites = array(
         'path'     => __DIR__ . '/config-legacy-layout-test.php',
         'requires' => 'unit',
     ),
+    // The transaction read the configurator reloads through: the owner's
+    // staged draft in GET shape, a foreign transaction's existence without
+    // its contents, and an expired lease reported as stale.
+    'configurator-transaction-read' => array(
+        'path'     => __DIR__ . '/configurator-transaction-read-test.php',
+        'requires' => 'unit',
+    ),
     // Loads the real Store, Doctor and Transaction_Manager and drives the
     // lease with a frozen clock, so it belongs after the suites that have
     // already put those in memory.

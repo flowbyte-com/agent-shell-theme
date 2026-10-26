@@ -63,16 +63,22 @@
         function load() {
             return Promise.all( [ api.get_config(), api.get_transaction() ] )
                 .then( function ( results ) {
+                    var payload = results[ 1 ] || {};
+                    var staged = ( payload.open && payload.owned_by_us && payload.has_staged && payload.staged )
+                        ? payload.staged
+                        : null;
                     app.config = results[ 0 ];
-                    editor.load( results[ 0 ] );
-                    tx.set_tx_snapshot( results[ 1 ] );
+                    editor.load( results[ 0 ], staged );
+                    tx.set_tx_snapshot( payload );
+                    app.clear_error();
                     return load_history();
                 } )
                 .then( function () {
                     app.ui.render();
                 } )
                 .catch( function ( error ) {
-                    say( 'The configuration could not be loaded: ' + error.message, 'error' );
+                    app.ui.render();
+                    fail( error, 'The configuration could not be loaded: ' );
                 } );
         }
 
@@ -92,8 +98,16 @@
             // A live change (typing in a field) updates the status without
             // re-rendering the whole canvas, so the caret stays where the
             // operator left it.
+            app.clear_error();
             if ( options2 && options2.live ) {
                 update_status();
+                // A live edit does not re-render the canvas (the caret must
+                // stay where it is), so the obsolete alert is hidden here.
+                var alert = document.querySelector( '#agentshell-config-panel .as-cfg__alert' );
+                if ( alert ) {
+                    alert.hidden = true;
+                    alert.textContent = '';
+                }
                 return;
             }
             clear_message();
@@ -101,7 +115,7 @@
         }
 
         function update_status() {
-            var status = editor.status( tx );
+            var status = app.status();
             var chip = document.querySelector( '#agentshell-config-panel .as-cfg__status' );
             if ( chip ) {
                 chip.textContent = status.label;
@@ -114,18 +128,137 @@
         function set_context( context ) {
             editor.set_context( context );
             clear_message();
+            app.clear_error();
             app.ui.render();
+        }
+
+        /* ── failure state ────────────────────────────────────────────── */
+
+        /**
+         * Record a failed operation without losing the draft.
+         *
+         * `validation` is the server refusing a configuration with a code;
+         * `network` is the request never getting an answer. Both leave the
+         * draft exactly as the operator typed it, and both are cleared by the
+         * next successful operation or the next edit.
+         */
+        function fail( error, prefix ) {
+            app.error = {
+                kind: ( error && ( error.status || error.code ) ) ? 'validation' : 'network',
+                message: error && error.message ? error.message : 'The request did not complete.',
+            };
+            app.message = ( prefix || '' ) + app.error.message;
+            app.hint = '';
+            if ( app.ui ) {
+                app.ui.render();
+            }
+        }
+
+        function clear_error() {
+            app.error = null;
+            app.message = '';
+        }
+
+        function status_now() {
+            var status = editor.status( tx );
+            if ( app.error && status.key !== 'locked' ) {
+                return {
+                    key: 'error',
+                    label: 'Not saved — ' + ( app.error.kind === 'network' ? 'connection error' : 'validation error' ),
+                    can_save: status.can_save,
+                };
+            }
+            return status;
+        }
+
+        /**
+         * The server's current transaction, mirrored into the local model.
+         *
+         * Ownership is re-read rather than remembered. A reload, an expired
+         * lease or a second session can all change the answer, and a local
+         * flag that disagrees with the server is how a browser decides it may
+         * close somebody else's work.
+         */
+        function refresh_transaction() {
+            return api.get_transaction().then( function ( payload ) {
+                tx.set_tx_snapshot( payload );
+                return payload;
+            } );
+        }
+
+        function is_locked() {
+            return tx.get_state().mode === 'locked';
+        }
+
+        /**
+         * Staged work this session has not seen belongs to another editor
+         * session of the same account. It is never overwritten, committed or
+         * rolled back from here.
+         */
+        function has_foreign_session_staging( payload ) {
+            return !!(
+                payload &&
+                payload.open &&
+                payload.owned_by_us &&
+                payload.has_staged &&
+                ! editor.has_staged()
+            );
+        }
+
+        function open_preview_window() {
+            if ( typeof window === 'undefined' || typeof window.open !== 'function' ) {
+                return null;
+            }
+            // Opened synchronously, inside the click. A tab opened after the
+            // network calls is a pop-up the browser is entitled to block.
+            try {
+                var win = window.open( 'about:blank', '_blank' );
+                if ( win ) {
+                    try { win.opener = null; } catch ( e ) {}
+                }
+                return win || null;
+            } catch ( e ) {
+                return null;
+            }
+        }
+
+        function close_preview_window( win ) {
+            if ( ! win ) { return; }
+            try { win.close(); } catch ( e ) {}
+        }
+
+        function show_preview( win, url ) {
+            if ( win && ! win.closed ) {
+                try {
+                    win.location.replace( url );
+                    return true;
+                } catch ( e ) {}
+            }
+            // The placeholder was blocked or lost. Try once more; if the
+            // browser blocks this too, the operator is told plainly rather
+            // than shown a credential in the page.
+            try {
+                var fallback = window.open( url, '_blank' );
+                if ( fallback ) {
+                    try { fallback.opener = null; } catch ( e ) {}
+                    return true;
+                }
+            } catch ( e ) {}
+            return false;
         }
 
         /* ── saving ───────────────────────────────────────────────────── */
 
         function save() {
             if ( app.busy ) { return Promise.resolve(); }
-            if ( ! tx.can_save() ) {
+            if ( is_locked() ) {
                 say( 'Another actor owns the open transaction. Its staged work cannot be overwritten from here.', 'error' );
                 return Promise.resolve();
             }
-            if ( ! editor.is_dirty() ) {
+
+            var tx_state = tx.get_state();
+            var open_owned = tx_state.mode === 'editing_open';
+            if ( ! editor.is_dirty() && ! open_owned ) {
                 app.hint = 'There is nothing to save.';
                 app.ui.render();
                 return Promise.resolve();
@@ -133,35 +266,57 @@
 
             app.busy = true;
             app.hint = 'Saving…';
+            app.clear_error();
             app.ui.render();
 
-            var opened = null;
-            var tx_state = tx.get_state();
-
-            // Whether *this* save opened the transaction. A transaction that
-            // was already open is the operator's own staged work, and a
-            // failed save must not throw it away: only the transaction this
-            // save opened is rolled back when the save fails.
             var opened_here = false;
+            var current = null;
+            var already_staged = false;
 
-            var begin = ( tx_state.mode === 'editing_open' )
-                ? Promise.resolve( null )
-                : api.begin_transaction( 'configurator save' ).then( function ( result ) {
-                    tx.begin( 'configurator save' );
-                    opened_here = true;
-                    return result;
-                } );
+            return refresh_transaction()
+                .then( function ( payload ) {
+                    if ( payload.open && ! payload.owned_by_us ) {
+                        throw new Error( 'Another actor owns the open transaction. Its staged work cannot be overwritten from here.' );
+                    }
+                    if ( has_foreign_session_staging( payload ) ) {
+                        var refusal = new Error( 'This account has changes staged in another editor session. Reload the editor to review them before saving.' );
+                        refusal.code = 'foreign_session_staged';
+                        throw refusal;
+                    }
 
-            return begin
-                .then( function ( result ) {
-                    opened = result;
-                    return api.put_config( editor.to_payload() );
+                    current = payload;
+                    if ( payload.open ) {
+                        // The server, not the local mirror, says whether this
+                        // transaction already holds exactly this draft.
+                        already_staged = editor.has_staged() && ! editor.is_modified_since_staged();
+                        return null;
+                    }
+                    return api.begin_transaction( 'configurator save' ).then( function ( result ) {
+                        tx.begin( 'configurator save' );
+                        opened_here = true;
+                        already_staged = false;
+                        current = { open: true, id: result && result.id, owned_by_us: true, has_staged: false };
+                        return result;
+                    } );
+                } )
+                .then( function () {
+                    // A preview already staged this draft. Saving it must
+                    // commit that transaction rather than begin a second
+                    // one; only a draft that moved since it was staged is
+                    // written again.
+                    if ( already_staged ) {
+                        return null;
+                    }
+                    return api.put_config( editor.to_payload() ).then( function () {
+                        editor.mark_staged();
+                        tx.mark_staged();
+                    } );
                 } )
                 .then( function () {
                     return api.commit_transaction();
                 } )
                 .then( function () {
-                    tx.commit( opened && opened.id );
+                    tx.commit( current && current.id );
                     return api.get_config();
                 } )
                 .then( function ( config ) {
@@ -169,6 +324,7 @@
                     editor.accept_saved( config );
                     app.busy = false;
                     app.hint = 'Saved.';
+                    app.clear_error();
                     return load_history();
                 } )
                 .then( function () {
@@ -177,84 +333,175 @@
                 .catch( function ( error ) {
                     app.busy = false;
                     if ( ! opened_here ) {
-                        // The transaction was not ours to close. Say what
-                        // happened and leave it as it was.
+                        // The transaction was not opened by this save. It may
+                        // hold a preview the operator still wants; leave it.
                         app.ui.render();
-                        say( 'Not saved: ' + error.message, 'error' );
+                        fail( error, 'Not saved: ' );
                         return;
                     }
-                    // The transaction was opened for this save; leave nothing
-                    // behind for the operator to find later.
-                    var rollback = api.rollback_transaction().catch( function () { return null; } );
-                    return rollback.then( function () {
+                    // This save opened the transaction; leave nothing behind.
+                    return api.rollback_transaction().catch( function () { return null; } ).then( function () {
                         tx.rollback();
+                        editor.clear_staged();
                         app.ui.render();
-                        say( 'Not saved: ' + error.message, 'error' );
+                        fail( error, 'Not saved: ' );
                     } );
                 } );
         }
 
         function discard_changes() {
             if ( app.busy ) { return Promise.resolve(); }
-            // Defence in depth behind the disabled button: a transaction
-            // somebody else holds is not this session's to roll back.
-            if ( ! tx.can_discard() ) {
+            if ( is_locked() ) {
                 say( 'Another actor owns the open transaction. Its staged work cannot be discarded from here.', 'error' );
                 return Promise.resolve();
             }
-            var tx_state = tx.get_state();
-            if ( tx_state.mode === 'editing_open' ) {
-                app.busy = true;
-                app.ui.render();
-                return api.rollback_transaction()
-                    .then( function () {
-                        tx.rollback();
-                        return api.get_config();
-                    } )
-                    .then( function ( config ) {
-                        app.config = config;
-                        editor.accept_saved( config );
-                        app.busy = false;
-                        app.hint = 'Discarded.';
-                        app.ui.render();
-                    } )
-                    .catch( function ( error ) {
-                        app.busy = false;
-                        say( 'The changes could not be discarded: ' + error.message, 'error' );
-                    } );
-            }
-            editor.discard();
-            app.hint = 'Discarded.';
-            clear_message();
+
+            app.busy = true;
+            app.clear_error();
             app.ui.render();
-            return Promise.resolve();
+
+            var rolled_back = false;
+
+            return refresh_transaction()
+                .then( function ( payload ) {
+                    if ( payload.open && ! payload.owned_by_us ) {
+                        throw new Error( 'Another actor owns the open transaction. Its staged work cannot be discarded from here.' );
+                    }
+                    if ( has_foreign_session_staging( payload ) ) {
+                        var refusal = new Error( 'This account has changes staged in another editor session. Reload the editor to review them before discarding.' );
+                        refusal.code = 'foreign_session_staged';
+                        throw refusal;
+                    }
+                    if ( ! payload.open ) {
+                        return null;
+                    }
+                    return api.rollback_transaction().then( function () {
+                        rolled_back = true;
+                        tx.rollback();
+                        editor.clear_staged();
+                    } );
+                } )
+                .then( function () {
+                    return api.get_config();
+                } )
+                .then( function ( config ) {
+                    app.config = config;
+                    editor.accept_saved( config );
+                    app.busy = false;
+                    app.hint = 'Discarded.';
+                    app.clear_error();
+                    app.ui.render();
+                } )
+                .catch( function ( error ) {
+                    app.busy = false;
+                    if ( rolled_back ) {
+                        // The rollback itself succeeded; only the refresh
+                        // failed. The draft must not keep describing a
+                        // transaction that no longer exists.
+                        tx.rollback();
+                        editor.discard();
+                    }
+                    app.ui.render();
+                    fail( error, 'The changes could not be discarded: ' );
+                } );
         }
 
         /* ── preview ──────────────────────────────────────────────────── */
 
         function preview() {
             if ( app.busy ) { return Promise.resolve(); }
-            if ( ! editor.is_dirty() ) {
+            if ( is_locked() ) {
+                say( 'Another actor owns the open transaction. Its staged work cannot be previewed from here.', 'error' );
+                return Promise.resolve();
+            }
+
+            var tx_state = tx.get_state();
+            var has_work = editor.is_dirty() ||
+                ( tx_state.mode === 'editing_open' && editor.has_staged() && editor.is_modified_since_staged() ) ||
+                ( tx_state.mode === 'editing_open' && tx_state.tx && tx_state.tx.has_staged && ! editor.has_staged() );
+
+            if ( ! has_work ) {
                 app.hint = 'There is nothing staged to preview.';
                 app.ui.render();
                 return Promise.resolve();
             }
+
+            // The tab is opened before any request. This is the only moment
+            // the browser still attributes the window to the operator's
+            // click; everything after it is asynchronous.
+            var preview_window = open_preview_window();
+
             app.busy = true;
+            app.hint = 'Staging…';
+            app.clear_error();
             app.ui.render();
-            return api.preview_transaction()
+
+            var staged_here = false;
+
+            return refresh_transaction()
+                .then( function ( payload ) {
+                    if ( payload.open && ! payload.owned_by_us ) {
+                        throw new Error( 'Another actor owns the open transaction. Its staged work cannot be previewed from here.' );
+                    }
+                    if ( has_foreign_session_staging( payload ) ) {
+                        var refusal = new Error( 'This account has changes staged in another editor session. Reload the editor to review them before previewing.' );
+                        refusal.code = 'foreign_session_staged';
+                        throw refusal;
+                    }
+                    if ( payload.open ) {
+                        return null;
+                    }
+                    return api.begin_transaction( 'configurator preview' ).then( function () {
+                        tx.begin( 'configurator preview' );
+                    } );
+                } )
+                .then( function () {
+                    // Every preview stages the draft as it is now. A second
+                    // edit after a preview is therefore previewed as a second
+                    // PUT, not served from the first one.
+                    return api.put_config( editor.to_payload() ).then( function () {
+                        staged_here = true;
+                        editor.mark_staged();
+                        tx.mark_staged();
+                    } );
+                } )
+                .then( function () {
+                    return api.preview_transaction();
+                } )
                 .then( function ( result ) {
                     app.busy = false;
-                    if ( result && result.url ) {
-                        window.open( result.url, '_blank', 'noopener' );
-                        app.hint = 'Preview opened in a new tab.';
-                    } else {
+                    if ( ! result || ! result.url ) {
+                        close_preview_window( preview_window );
                         app.hint = 'There is no preview to open.';
+                        app.ui.render();
+                        return;
+                    }
+                    var opened = show_preview( preview_window, result.url );
+                    app.clear_error();
+                    if ( opened ) {
+                        app.hint = 'Preview opened in a new tab. Nothing has been saved.';
+                    } else {
+                        // The draft is staged; only the tab was blocked.
+                        // Calling it a failure to save would be false.
+                        app.message = 'The preview was staged, but the browser blocked the new tab. Allow pop-ups for this site and press Preview again.';
+                        app.hint = '';
                     }
                     app.ui.render();
                 } )
                 .catch( function ( error ) {
                     app.busy = false;
-                    say( 'The preview could not be opened: ' + error.message, 'error' );
+                    close_preview_window( preview_window );
+                    if ( ! staged_here ) {
+                        editor.clear_staged();
+                        fail( error, 'The preview could not be opened: ' );
+                    } else {
+                        // The PUT landed, so the work is staged and can be
+                        // saved or discarded. The credential request failed;
+                        // that is shown without mislabelling the draft.
+                        app.message = 'The preview could not be opened: ' + ( error && error.message ? error.message : 'the request did not complete.' );
+                        app.hint = '';
+                    }
+                    app.ui.render();
                 } );
         }
 
@@ -397,10 +644,7 @@
 
         /* ── closing ──────────────────────────────────────────────────── */
 
-        function close() {
-            if ( editor.is_dirty() && ! window.confirm( 'There are unsaved changes. Close the editor and lose them?' ) ) {
-                return;
-            }
+        function close_panel() {
             var panel = document.getElementById( 'agentshell-config-panel' );
             if ( panel ) {
                 panel.classList.remove( 'is-open' );
@@ -409,8 +653,51 @@
             document.body.classList.remove( 'config-panel-open' );
         }
 
+        function close() {
+            if ( app.busy ) { return; }
+
+            var tx_state = tx.get_state();
+            var open_owned = tx_state.mode === 'editing_open';
+            var staged_here = open_owned && editor.has_staged();
+            var staged_elsewhere = open_owned && tx_state.tx && tx_state.tx.has_staged && ! editor.has_staged();
+
+            if ( staged_elsewhere ) {
+                if ( ! window.confirm( 'This account has changes staged by another editor session. Close without discarding them?' ) ) {
+                    return;
+                }
+                close_panel();
+                return;
+            }
+
+            if ( staged_here || open_owned ) {
+                var prompt = staged_here
+                    ? 'Changes are staged for preview but not saved. Close and discard them? Choose Cancel to keep editing.'
+                    : 'A transaction is open. Close it and discard it? Choose Cancel to keep editing.';
+                if ( ! window.confirm( prompt ) ) {
+                    return;
+                }
+                // Discard rolls back only the transaction this session has
+                // staged into, then refreshes from the server. If that fails
+                // the editor stays open with the reason on screen.
+                discard_changes().then( function () {
+                    if ( ! app.message ) {
+                        close_panel();
+                    }
+                } );
+                return;
+            }
+
+            if ( editor.is_dirty() && ! window.confirm( 'There are unsaved changes. Close the editor and lose them?' ) ) {
+                return;
+            }
+            close_panel();
+        }
+
         app.on_change = on_change;
         app.set_context = set_context;
+        app.status = status_now;
+        app.clear_error = clear_error;
+        app.refresh_transaction = refresh_transaction;
         app.save = save;
         app.discard_changes = discard_changes;
         app.preview = preview;
@@ -479,7 +766,10 @@
         } );
 
         window.addEventListener( 'beforeunload', function ( event ) {
-            if ( ! editor.is_dirty() ) {
+            var tx_state = tx.get_state();
+            var staged = tx_state.mode === 'editing_open' &&
+                ( editor.has_staged() || ( tx_state.tx && tx_state.tx.has_staged ) );
+            if ( ! editor.is_dirty() && ! staged ) {
                 return undefined;
             }
             event.preventDefault();

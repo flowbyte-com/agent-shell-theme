@@ -3977,8 +3977,23 @@ function agentshell_custom_css_size_error( $css ) {
  * back (e.g. to verify a tool call landed before re-emitting CSS).
  */
 function agentshell_build_config_get_response() {
-    $config = agentshell_get_config();
-    $flat   = agentshell_flatten_config( $config );
+    return agentshell_build_config_response( agentshell_get_config() );
+}
+
+/**
+ * Build the configuration response for a given configuration array.
+ *
+ * The configurator's transaction read uses this to hand the owner their own
+ * staged configuration in exactly the shape a normal GET returns, so a
+ * reloaded editor can restore the draft it was previewing without inventing
+ * a second representation or a second store. The caller is responsible for
+ * only passing a configuration the caller may see.
+ *
+ * @param array $config
+ * @return array
+ */
+function agentshell_build_config_response( array $config ) {
+    $flat = agentshell_flatten_config( $config );
 
     // Pull widgets from the merged bilateral registry, not the
     // legacy agentshell_widgets option. This means the configurator
@@ -4152,6 +4167,62 @@ function agentshell_build_config_get_response() {
 }
 
 /**
+ * Shape of GET /wp/v2/agentshell/transaction.
+ *
+ * The configurator needs three things from this read: whether a transaction is
+ * live, whether it is this actor's, and — for its own transaction only — the
+ * staged configuration in the same shape a normal GET returns, so a reloaded
+ * editor can restore the draft it was previewing. A foreign transaction is
+ * reported as existing, with `has_staged`; its contents are never included.
+ *
+ * An expired row is not a transaction. It is reported as closed with
+ * `stale: true`, because offering Save/Discard on it would promise an action
+ * the manager will refuse.
+ *
+ * @return array
+ */
+function agentshell_build_transaction_response() {
+    $manager = \AgentShell_MCP\Transaction_Manager::instance();
+    $tx      = $manager->payload();
+    $active  = $manager->is_active();
+
+    if ( ! is_array( $tx ) || ! $active ) {
+        return array(
+            'open'          => false,
+            'id'            => is_array( $tx ) ? ( $tx['id'] ?? null ) : null,
+            'actor'         => is_array( $tx ) ? ( $tx['actor'] ?? null ) : null,
+            'label'         => null,
+            'owned_by_us'   => false,
+            'started_at'    => null,
+            'has_staged'    => false,
+            'stale'         => is_array( $tx ),
+            'can_take_over' => true,
+        );
+    }
+
+    $actor    = \AgentShell_MCP\Store::actor();
+    $staged   = $manager->staged_config();
+    $owned    = ( $tx['actor'] ?? null ) === $actor;
+    $response = array(
+        'open'        => true,
+        'id'          => $tx['id']        ?? null,
+        'actor'       => $tx['actor']     ?? null,
+        'label'       => $tx['label']     ?? null,
+        'owned_by_us' => $owned,
+        'started_at'  => isset( $tx['timestamp'] ) ? (int) $tx['timestamp'] : null,
+        'has_staged'  => is_array( $staged ) && ! empty( $staged ),
+        'stale'       => false,
+        'can_take_over' => false,
+    );
+
+    if ( $owned && is_array( $staged ) && ! empty( $staged ) ) {
+        $response['staged'] = agentshell_build_config_response( $staged );
+    }
+
+    return $response;
+}
+
+/**
  * REST API: GET/PUT /wp/v2/agentshell/config
  * GET returns schema metadata + defaults + config for agent introspection.
  * PUT accepts flat key-value pairs, merges into nested config, persists.
@@ -4245,33 +4316,7 @@ add_action( 'rest_api_init', function() {
     // configurator never takes over a foreign transaction.
     register_rest_route( 'wp/v2', '/agentshell/transaction', array(
         'methods'             => 'GET',
-        'callback'            => function() {
-            $tx = \AgentShell_MCP\Transaction_Manager::instance()->payload();
-            if ( ! is_array( $tx ) ) {
-                return array(
-                    'open'          => false,
-                    'id'            => null,
-                    'actor'         => null,
-                    'label'         => null,
-                    'owned_by_us'   => false,
-                    'started_at'    => null,
-                    'has_staged'    => false,
-                    'can_take_over' => true,
-                );
-            }
-            $actor    = \AgentShell_MCP\Store::actor();
-            $staged   = \AgentShell_MCP\Transaction_Manager::instance()->staged_config();
-            return array(
-                'open'        => true,
-                'id'          => $tx['id']        ?? null,
-                'actor'       => $tx['actor']     ?? null,
-                'label'       => $tx['label']     ?? null,
-                'owned_by_us' => ( $tx['actor'] ?? null ) === $actor,
-                'started_at'  => isset( $tx['timestamp'] ) ? (int) $tx['timestamp'] : null,
-                'has_staged'  => is_array( $staged ) && ! empty( $staged ),
-                'can_take_over' => false,
-            );
-        },
+        'callback'            => 'agentshell_build_transaction_response',
         'permission_callback' => 'agentshell_rest_auth_callback',
     ) );
 

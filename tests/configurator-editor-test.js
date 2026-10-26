@@ -290,9 +290,34 @@ var PAYLOAD = {
 
     var tx2 = state.make_state_model();
     tx2.set_tx_snapshot( { open: true, id: 'tx2', actor: 'me', owned_by_us: true, has_staged: true } );
-    eq( e.status( tx2 ).key, 'staged', 'our own open transaction with a clean draft is "staged"' );
+    eq( e.status( tx2 ).key, 'staged_foreign_session',
+        'staged work this session never saw is not described as this draft' );
+
+    // The normal preview flow: the draft is staged, so it is "Staged for
+    // preview" — never "Saved", because the committed state is still the
+    // older one.
+    e.load( PAYLOAD );
     e.set_token( '--theme-bg', '#ffffff' );
-    eq( e.status( tx2 ).key, 'dirty', 'a changed draft is "unsaved changes"' );
+    e.mark_staged();
+    tx2.set_tx_snapshot( { open: true, id: 'tx2', actor: 'me', owned_by_us: true, has_staged: true } );
+    eq( e.status( tx2 ).key, 'staged', 'a staged draft is "staged for preview"' );
+    eq( e.status( tx2 ).label, 'Staged for preview', 'the label never says Saved' );
+    ok( e.is_dirty(), 'a staged draft is still different from the committed state' );
+
+    e.set_token( '--theme-bg', '#eeeeee' );
+    eq( e.status( tx2 ).key, 'staged_dirty', 'a later edit is "changes since preview"' );
+
+    // A reload restores the staged draft and keeps the committed state.
+    var reloaded = make_editor();
+    reloaded.load( PAYLOAD, { config: { '--theme-bg': '#ffffff' }, custom_css: '', custom_js: '', zones: PAYLOAD.zones } );
+    eq( reloaded.get_state().draft.vars[ '--theme-bg' ], '#ffffff', 'the staged draft is restored' );
+    eq( reloaded.get_state().saved.vars[ '--theme-bg' ], '#fafaf9', 'the committed state is still the saved one' );
+    eq( reloaded.status( tx2 ).key, 'staged', 'a reloaded staged transaction is described as staged' );
+
+    // Committing replaces both.
+    reloaded.accept_saved( { config: { '--theme-bg': '#ffffff' }, custom_css: '', custom_js: '', zones: PAYLOAD.zones } );
+    eq( reloaded.status( state.make_state_model() ).key, 'saved', 'an accepted save is saved' );
+    eq( reloaded.has_staged(), false, 'an accepted save clears the staged snapshot' );
 } )();
 
 // ── 15. The transport turns a refusal into something showable ─────────────

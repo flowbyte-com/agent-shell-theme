@@ -131,18 +131,24 @@ function main() {
     var profile = fs.mkdtempSync( path.join( os.tmpdir(), 'agentshell-cfg-browser-' ) );
     var report;
     try {
-        // Two scenarios: the editor on its own, and the editor while another
-        // actor holds the transaction.
+        // The editor on its own; a foreign actor's transaction; an existing
+        // editor transaction that refuses a save; the picker; the full
+        // Edit → Preview → Save/Discard workflow; and a blocked pop-up.
         var plain = run_scenario( browser, harness, profile, 'default' );
         var locked = run_scenario( browser, harness, profile, 'locked' );
         var refusal = run_scenario( browser, harness, profile, 'refusal' );
         var picker = run_scenario( browser, harness, profile, 'picker' );
+        var workflow = run_scenario( browser, harness, profile, 'workflow' );
+        var blocked = run_scenario( browser, harness, profile, 'blocked' );
         report = {
-            total: ( plain.total || 0 ) + ( locked.total || 0 ) + ( refusal.total || 0 ) + ( picker.total || 0 ),
+            total: ( plain.total || 0 ) + ( locked.total || 0 ) + ( refusal.total || 0 ) + ( picker.total || 0 )
+                + ( workflow.total || 0 ) + ( blocked.total || 0 ),
             failures: ( plain.failures || [] )
                 .concat( locked.failures || [] )
                 .concat( refusal.failures || [] )
-                .concat( picker.failures || [] ),
+                .concat( picker.failures || [] )
+                .concat( workflow.failures || [] )
+                .concat( blocked.failures || [] ),
         };
     } finally {
         try { fs.rmSync( profile, { recursive: true, force: true } ); } catch ( e2 ) {}
