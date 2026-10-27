@@ -25,6 +25,16 @@
  * while intending only to tidy up after the plugin, and that is exactly the kind
  * of quiet destruction the design's data-retention rule exists to prevent.
  *
+ * The two are **nested, not independent**: removing content requires the
+ * bookkeeping decision as well. That asymmetry is deliberate and it fails
+ * closed. An operator who sets only the second constant is asking to delete the
+ * forms while keeping the tables, the audit log and the stored schema revision
+ * that describe them — a state with no useful purpose, and one in which the
+ * options left behind would refer to data that is gone. So the second constant
+ * alone removes **nothing**: the conservative reading of an under-specified
+ * destructive request. (Both constants set removes both; neither set removes
+ * neither.)
+ *
  * ## What is never touched, whatever the constants say
  *
  *   - users and their capabilities;
@@ -48,6 +58,9 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 $agentshell_forms_remove_data = defined( 'AGENTSHELL_FORMS_REMOVE_DATA_ON_UNINSTALL' )
 	&& AGENTSHELL_FORMS_REMOVE_DATA_ON_UNINSTALL;
 
+// Fails closed. `AGENTSHELL_FORMS_REMOVE_FORMS_ON_UNINSTALL` on its own is an
+// under-specified destructive request, and the conservative reading of one is
+// to do nothing — see the nesting rule in the file docblock.
 if ( ! $agentshell_forms_remove_data ) {
 	return;
 }

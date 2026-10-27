@@ -180,6 +180,22 @@ switch ( $mode ) {
         $out['after']  = site_state();
         break;
 
+    case 'uninstall_forms_only':
+        // Fail-closed: the content decision without the bookkeeping decision
+        // is an under-specified destructive request, and it must remove
+        // nothing at all.
+        $before = site_state();
+        if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
+            define( 'WP_UNINSTALL_PLUGIN', 'agentshell-forms/agentshell-forms.php' );
+        }
+        if ( ! defined( 'AGENTSHELL_FORMS_REMOVE_FORMS_ON_UNINSTALL' ) ) {
+            define( 'AGENTSHELL_FORMS_REMOVE_FORMS_ON_UNINSTALL', true );
+        }
+        include dirname( __DIR__ ) . '/agentshell-forms/uninstall.php';
+        $out['before'] = $before;
+        $out['after']  = site_state();
+        break;
+
     case 'uninstall_all':
         // Bookkeeping AND content: the explicitly destructive decision.
         $before = site_state();

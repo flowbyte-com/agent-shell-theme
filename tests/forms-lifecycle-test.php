@@ -180,6 +180,33 @@ Agentshell_Test::run(
 );
 
 /* ---------------------------------------------------------------------------
+ * An under-specified destructive request
+ * ------------------------------------------------------------------------ */
+
+$forms_only = flo_step( $config, $child, 'uninstall_forms_only', $token );
+
+Agentshell_Test::run(
+    'forms lifecycle: the content decision without the bookkeeping decision removes nothing',
+    function () use ( $forms_only ) {
+        $before = flo_state( $forms_only, 'before' );
+        $after  = flo_state( $forms_only, 'after' );
+
+        Agentshell_Test::assert_false( isset( $forms_only['error'] ), 'the forms-only uninstall must report: ' . wp_json_encode( $forms_only ) );
+
+        // Fail closed. Deleting the forms while keeping the tables, the audit
+        // log and the stored schema revision that describe them is a state with
+        // no useful purpose, so an under-specified destructive request does
+        // nothing rather than doing most of it.
+        Agentshell_Test::assert_true( true === ( $after['tables_exist'] ?? false ), 'the tables must survive an under-specified uninstall' );
+        Agentshell_Test::assert_equals( '1', $after['db_version_option'] ?? null, 'the storage revision must survive' );
+        Agentshell_Test::assert_true( true === ( $after['audit_option'] ?? false ), 'the audit log must survive' );
+        Agentshell_Test::assert_equals( $before['posts'] ?? null, $after['posts'] ?? 'x', 'no form or submission may be removed' );
+        Agentshell_Test::assert_equals( $before['probe_posts'] ?? null, $after['probe_posts'] ?? 'x', 'the probe content must be exactly where it was' );
+        Agentshell_Test::assert_equals( $before['probe_meta_rows'] ?? null, $after['probe_meta_rows'] ?? 'x', 'the metadata must be intact' );
+    }
+);
+
+/* ---------------------------------------------------------------------------
  * Uninstall of the plugin's bookkeeping only
  * ------------------------------------------------------------------------ */
 
