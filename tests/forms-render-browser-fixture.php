@@ -5,10 +5,17 @@
  *   php tests/forms-render-browser-fixture.php /path/to/out.html
  *
  * The page is the real thing: the plugin's real stylesheet, the plugin's real
- * provisioning script, and markup produced by the real renderer. The only
- * fabrication is `window.fetch`, which the harness replaces with an immediate
- * resolver — a `file://` document cannot reach the REST route, and the server
- * side of token issuance is proved against a real WordPress in
+ * provisioning script, and markup produced by the real renderer. Both assets are
+ * **inlined** rather than linked, which changes nothing about what runs or what
+ * the browser computes but removes every subresource request: a headless
+ * browser driven with a virtual time budget can pause that budget while a
+ * subresource is pending, and a suite that hangs is a suite that reports
+ * nothing. The bytes are read from the real files, so the page tests the
+ * shipped stylesheet and the shipped script.
+ *
+ * The only fabrication is `window.fetch`, which the harness replaces with an
+ * immediate resolver — a `file://` document cannot reach the REST route, and the
+ * server side of token issuance is proved against a real WordPress in
  * `tests/forms-render-live-test.php` instead.
  *
  * The stub counts its calls and returns a different token per call, so the page
@@ -75,8 +82,22 @@ $forms = array(
 	'form A, hostile'    => $evil_html,
 );
 
-$css = 'file://' . $assets . 'forms.css';
-$js  = 'file://' . $assets . 'forms.js';
+$css = (string) file_get_contents( $assets . 'forms.css' );
+$js  = (string) file_get_contents( $assets . 'forms.js' );
+
+if ( '' === $css || '' === $js ) {
+	fwrite( STDERR, "could not read the plugin's assets from {$assets}\n" );
+	exit( 1 );
+}
+
+// The plugin's script is not HTML-embedded in production (it is a file served
+// with a JavaScript content type), so a literal `</script` cannot appear in it.
+// Refusing to generate a page that would be truncated is better than shipping a
+// fixture whose script silently ends early.
+if ( false !== stripos( $js, '</script' ) || false !== stripos( $css, '</style' ) ) {
+	fwrite( STDERR, "an asset contains a closing tag that would end its inline element\n" );
+	exit( 1 );
+}
 
 $page = <<<'HTML'
 <!doctype html>
@@ -84,7 +105,9 @@ $page = <<<'HTML'
 <head>
 <meta charset="utf-8">
 <title>pending</title>
-<link rel="stylesheet" href="__CSS__">
+<style>
+__CSS__
+</style>
 <script>
 /*
  * The harness's fetch stub.
@@ -112,11 +135,17 @@ $page = <<<'HTML'
 
         state.counter += 1;
 
+        // The token is captured *now*, not when the response is read. A stub
+        // that read the last call's token at resolution time would hand every
+        // waiting caller the most recent one — which is the bug the page is
+        // meant to detect, so the stub must not have it too.
+        var token = 'test-token-' + state.counter + '-a1b2c3d4';
+
         state.calls.push( {
             url: String( url ),
             method: options && options.method,
             body: body,
-            token: 'test-token-' + state.counter + '-a1b2c3d4'
+            token: token
         } );
 
         if ( state.fail ) {
@@ -128,7 +157,7 @@ $page = <<<'HTML'
             status: 200,
             json: function () {
                 return Promise.resolve( {
-                    challenge: state.calls[ state.calls.length - 1 ].token,
+                    challenge: token,
                     form_version: 3,
                     expires_in: 7200
                 } );
@@ -137,7 +166,9 @@ $page = <<<'HTML'
     };
 }());
 </script>
-<script src="__JS__"></script>
+<script>
+__JS__
+</script>
 </head>
 <body>
 <main id="content">
@@ -206,7 +237,22 @@ __FORMS__
         return { r: 255, g: 255, b: 255, a: 1 };
     }
 
+    // The watchdog. If the assertions never finish — a thrown error, a promise
+    // that never settles, a selector that changed shape — the page still
+    // reports, because a browser that is killed by a timeout tells the runner
+    // nothing at all. `report()` cancels it.
+    var watchdog = window.setTimeout( function () {
+        document.title = JSON.stringify( {
+            harness_error: 'the assertions did not finish',
+            total: results.length,
+            failures: failures,
+            errors: harness.pageErrors
+        } );
+    }, 15000 );
+
     function report() {
+        window.clearTimeout( watchdog );
+
         document.title = JSON.stringify( {
             total: results.length,
             failures: failures,
@@ -294,16 +340,18 @@ __FORMS__
         }
 
         // ── groups ──────────────────────────────────────────────────────────
+        // Three instances of the ten-field form, each with a radio group and a
+        // checkbox group; the two shorter forms have none.
         var fieldsets = all( 'fieldset' );
-        check( 'radio and checkbox groups are fieldsets', fieldsets.length >= 10, fieldsets.length );
+        check( 'radio and checkbox groups are fieldsets', fieldsets.length === 6, fieldsets.length );
         check( 'every fieldset has a legend', fieldsets.every( function ( fs ) {
             return fs.querySelector( 'legend' ) !== null;
         } ) );
 
         var radios = all( 'input[type=radio]' );
-        check( 'radios in one group share a name', radios.length >= 8 && radios.every( function ( radio ) {
+        check( 'radios in one group share a name', radios.length === 6 && radios.every( function ( radio ) {
             return radio.name === 'fields[contact_method]';
-        } ) );
+        } ), radios.length );
         check( 'at most one radio in a group is checked', (function () {
             var perForm = {};
             radios.forEach( function ( radio ) {
@@ -321,7 +369,17 @@ __FORMS__
             return el.type !== 'hidden';
         } );
         check( 'required controls carry the required attribute', requiredControls.length >= 4, requiredControls.length );
-        check( 'the required marker is text', all( '.agentshell-forms__required' ).length >= requiredControls.length );
+
+        // One marker per required *field*, not per control: a radio group is
+        // two required radios behind one legend, so counting controls and
+        // markers against each other would be wrong by design.
+        var requiredFields = all( '.agentshell-forms__field' ).filter( function ( field ) {
+            return field.querySelector( '[required]' ) !== null;
+        } );
+
+        check( 'every required field is marked in words', requiredFields.length >= 4 && requiredFields.every( function ( field ) {
+            return field.querySelector( '.agentshell-forms__required' ) !== null;
+        } ), requiredFields.length );
 
         var emptyRequired = document.querySelector( '.agentshell-forms__field--text input[required]' );
         if ( emptyRequired ) {
@@ -392,9 +450,15 @@ __FORMS__
         // ── escaping ────────────────────────────────────────────────────────
         var hostile = document.querySelector( 'form[data-form-instance="5"]' );
         check( 'a hostile label did not become an element', hostile !== null && hostile.querySelector( 'script, img' ) === null );
+        // The expected text is assembled rather than written literally: a
+        // literal closing script tag inside an inline script would end the
+        // element early, and the rest of this file would be parsed as markup.
+        var expectedLabelText = '<scr' + 'ipt>alert(1)</scr' + 'ipt>';
+        var expectedImageText = '<img src=x onerror="alert(2)">';
+
         check( 'a hostile label is visible as text', hostile !== null &&
-            hostile.textContent.indexOf( '<script>alert(1)</script>' ) !== -1 &&
-            hostile.textContent.indexOf( '<img src=x onerror="alert(2)">' ) !== -1 );
+            hostile.textContent.indexOf( expectedLabelText ) !== -1 &&
+            hostile.textContent.indexOf( expectedImageText ) !== -1 );
         check( 'the page had no JavaScript errors', harness.pageErrors.length === 0, harness.pageErrors.join( '; ' ) );
 
         // ── theme independence and contrast ─────────────────────────────────
@@ -464,10 +528,21 @@ __FORMS__
 
         function waitSettled() {
             attempts += 1;
+
             if ( settled() || attempts > 240 ) {
-                run();
+                try {
+                    run();
+                } catch ( e ) {
+                    document.title = JSON.stringify( {
+                        harness_error: 'an assertion threw: ' + ( e && e.message ? e.message : String( e ) ),
+                        stack: e && e.stack ? String( e.stack ).slice( 0, 800 ) : null,
+                        total: results.length,
+                        failures: failures
+                    } );
+                }
                 return;
             }
+
             window.setTimeout( waitSettled, 10 );
         }
 
@@ -492,6 +567,23 @@ foreach ( $forms as $label => $html ) {
 }
 
 $page = str_replace( array( '__CSS__', '__JS__', '__FORMS__' ), array( $css, $js, $body ), $page );
+
+// The page has exactly three inline scripts (the fetch stub, the plugin's own
+// script, and the assertions) and one inline style. A `</script>` that appears
+// anywhere else has ended an element early — which would leave the rest of that
+// script parsed as markup, and a stray `alert()` in a headless browser blocks
+// the page forever. Refusing to generate such a page is the difference between
+// a failing assertion and a job that times out saying nothing.
+$script_closes = substr_count( $page, '</script>' );
+if ( 3 !== $script_closes ) {
+	fwrite( STDERR, "the generated page has {$script_closes} '</script>' sequences; expected 3\n" );
+	exit( 1 );
+}
+
+if ( 1 !== substr_count( $page, '</style>' ) ) {
+	fwrite( STDERR, 'the generated page has a stray </style>' . "\n" );
+	exit( 1 );
+}
 
 if ( false === file_put_contents( $out, $page ) ) {
 	fwrite( STDERR, "could not write {$out}\n" );

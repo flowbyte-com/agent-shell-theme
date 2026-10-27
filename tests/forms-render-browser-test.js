@@ -78,6 +78,8 @@ function run_scenario( browser, page, profile, scenario ) {
         '--disable-gpu',
         '--no-sandbox',
         '--disable-dev-shm-usage',
+        '--no-first-run',
+        '--no-default-browser-check',
         '--force-prefers-reduced-motion',
         '--user-data-dir=' + profile,
         '--virtual-time-budget=20000',
@@ -148,7 +150,6 @@ function main() {
 
     var work = fs.mkdtempSync( path.join( os.tmpdir(), 'agentshell-forms-browser-' ) );
     var page = path.join( work, 'fixture.html' );
-    var profile = path.join( work, 'profile' );
 
     var scenarios = [];
     var failures = [];
@@ -161,13 +162,16 @@ function main() {
             process.exit( 1 );
         }
 
-        fs.mkdirSync( profile, { recursive: true } );
-
         // The happy path, then the failure path: a form that could not be
-        // prepared must say so rather than sit there looking ready.
+        // prepared must say so rather than sit there looking ready. Each
+        // scenario gets its own browser profile, so a profile a previous
+        // browser has not quite released cannot make the next one wait.
         [ [ 'ok', '' ], [ 'fail', 'fail' ] ].forEach( function ( pair ) {
             var name = pair[ 0 ];
             var scenario = pair[ 1 ];
+            var profile = path.join( work, 'profile-' + name );
+
+            fs.mkdirSync( profile, { recursive: true } );
 
             var report;
             try {
@@ -198,7 +202,7 @@ function main() {
         console.log( '  FAIL ' + failure.name + ( failure.detail === null || failure.detail === undefined ? '' : ' (' + failure.detail + ')' ) );
     } );
 
-    var passed = total - failures.length;
+    var passed = Math.max( 0, total - failures.length );
 
     console.log( '  the page ran ' + total + ' browser assertions against the real renderer, stylesheet and script' );
     console.log( '\n' + passed + ' passed, ' + failures.length + ' failed' );

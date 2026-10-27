@@ -1183,6 +1183,8 @@ Agentshell_Test::run(
             'agentshell_forms_validate',
             'agentshell_forms_get_working',
             'agentshell_forms_get_published',
+            // Phase 2's renderer, per §4.3 of the design.
+            'agentshell_forms_render',
         );
 
         foreach ( $files as $file ) {
@@ -1199,18 +1201,34 @@ Agentshell_Test::run(
             }
         }
 
-        // The Phase 1 plugin registers no MCP tool, and nothing that would be
-        // rendered for a visitor.
+        // The plugin registers no MCP tool and sends no mail. It does now render
+        // for a visitor — that is Phase 2 — and the rendering half is allowed
+        // exactly one shortcode, registered from one file. A second
+        // registration, or a shortcode defined somewhere else, would be a
+        // second public surface an operator could paste into a page.
+        $shortcode_files = array();
+
         foreach ( $files as $file ) {
             $source = (string) file_get_contents( $file );
-            Agentshell_Test::assert_false(
-                false !== strpos( $source, 'add_shortcode(' ),
-                basename( $file ) . ' must not register a shortcode (that is Phase 2)'
-            );
+
+            if ( false !== strpos( $source, 'add_shortcode(' ) ) {
+                $shortcode_files[] = basename( $file );
+            }
+
             Agentshell_Test::assert_false(
                 false !== strpos( $source, 'wp_mail(' ),
                 basename( $file ) . ' must not send mail (that is Phase 3)'
             );
+            Agentshell_Test::assert_false(
+                false !== strpos( $source, 'register_rest_route(' ) && 'class-form-challenge-endpoint.php' !== basename( $file ),
+                basename( $file ) . ' must not register a REST route outside the challenge endpoint'
+            );
         }
+
+        Agentshell_Test::assert_equals(
+            array( 'class-form-shortcode.php' ),
+            $shortcode_files,
+            'exactly one file registers the shortcode'
+        );
     }
 );
