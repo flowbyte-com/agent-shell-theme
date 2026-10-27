@@ -404,6 +404,7 @@ switch ( $mode ) {
         $form_id  = (string) ( $args[0] ?? '' );
         $revision = (int) ( $args[1] ?? 0 );
         $marker   = (string) ( $args[2] ?? '' );
+        $started  = time();
 
         if ( ! wait_for_go() ) {
             done( array( 'barrier' => 'timeout' ) );
@@ -428,6 +429,8 @@ switch ( $mode ) {
                 'code'       => is_wp_error( $result ) ? $result->get_error_code() : '',
                 'revision'   => is_wp_error( $result ) ? -1 : (int) $result['revision'],
                 'working_name' => is_wp_error( $result ) ? '' : (string) ( $result['working']['name'] ?? '' ),
+                'started_at' => $started,
+                'finished_at' => time(),
             )
         );
 

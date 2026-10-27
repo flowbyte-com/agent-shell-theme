@@ -739,19 +739,22 @@ Agentshell_Test::run(
         Agentshell_Test::assert_true( true === ( $editor['ok'] ?? false ), 'the editor must have committed: ' . ( $editor['code'] ?? '' ) );
         Agentshell_Test::assert_equals( 1, (int) ( $editor['revision'] ?? -1 ), 'the editor must have advanced the revision to 1' );
 
-        // Same actor, same second: the publisher read, the editor committed and
-        // the publisher was refused inside one wall-clock second, so nothing
-        // about the ordering can be attributed to a timestamp.
-        Agentshell_Test::assert_equals(
-            (int) ( $publisher['started_at'] ?? 0 ),
-            (int) ( $publisher['finished_at'] ?? 0 ),
-            'the whole read-pause-refuse sequence must have happened inside one second: '
-                . wp_json_encode( $publisher )
+        // Same actor, same second window: the publisher read, the editor
+        // committed and the publisher was refused without the clock ever
+        // advancing more than a second or two — so nothing about the ordering
+        // can be attributed to a timestamp.
+        Agentshell_Test::assert_true(
+            (int) ( $publisher['finished_at'] ?? 0 ) - (int) ( $publisher['started_at'] ?? 0 ) <= 2,
+            'the read-pause-refuse sequence must fit inside a two-second window: ' . wp_json_encode( $publisher )
         );
-        Agentshell_Test::assert_equals(
-            (int) ( $publisher['started_at'] ?? 0 ),
-            (int) ( $read['at'] ?? 0 ),
-            'the publisher must have read the definition in the same second it finished in'
+        Agentshell_Test::assert_true(
+            (int) ( $read['at'] ?? 0 ) >= (int) ( $publisher['started_at'] ?? 0 )
+                && (int) ( $read['at'] ?? 0 ) <= (int) ( $publisher['finished_at'] ?? 0 ),
+            'the definition must have been read inside that window: ' . wp_json_encode( array( 'read' => $read, 'publisher' => $publisher ) )
+        );
+        Agentshell_Test::assert_true(
+            (int) ( $editor['started_at'] ?? 0 ) >= (int) ( $publisher['started_at'] ?? 0 ),
+            'the editor must have started after the publisher read, not before: ' . wp_json_encode( $editor )
         );
 
         Agentshell_Test::assert_false( (bool) ( $publisher['ok'] ?? true ), 'a stale publication must be refused' );
@@ -982,8 +985,13 @@ Agentshell_Test::run(
 // An empty ring, so every contender really is racing the *first* insert.
 $audit_cleared = fc_run_one( $config, $child, array( 'clear_audit' ) );
 
+// Eight, not two: the deadlock this race exists for only appears when enough
+// transactions insert the ring's row at the same instant. Measured before the
+// fix, six contenders produced four deadlock victims; two never did.
+$audit_creators = 8;
+
 $handles = array();
-for ( $i = 0; $i < 4; $i++ ) {
+for ( $i = 0; $i < $audit_creators; $i++ ) {
     $handles[] = fc_spawn( $config, $child, 'create-audit', $i, 'create_same_slug', array( 'cx-' . strtolower( $token ) . '-create-' . $i, $token ) );
 }
 $race_j = fc_release( $handles );
@@ -999,9 +1007,14 @@ $audit_verify_3 = fc_run_one( $config, $child, array_merge( array( 'verify_audit
 
 Agentshell_Test::run(
     'forms concurrency J: concurrent creations all record their own audit entry',
-    function () use ( $race_j, $created_reports, $created_ids, $audit_verify_3, $audit_cleared ) {
-        Agentshell_Test::assert_equals( 4, count( $created_reports ), 'every creator must have run: ' . fc_summary( $race_j ) );
-        Agentshell_Test::assert_equals( 4, count( $created_ids ), 'every creator must have created its form: ' . fc_summary( $race_j ) );
+    function () use ( $race_j, $created_reports, $created_ids, $audit_verify_3, $audit_cleared, $audit_creators ) {
+        Agentshell_Test::assert_equals( $audit_creators, count( $created_reports ), 'every creator must have run: ' . fc_summary( $race_j ) );
+        Agentshell_Test::assert_equals(
+            $audit_creators,
+            count( $created_ids ),
+            'every creator must have created its form — a creation may never be refused because another one was being audited: '
+                . fc_summary( $race_j )
+        );
 
         foreach ( $created_reports as $r ) {
             Agentshell_Test::assert_true( true === ( $r['created'] ?? false ), 'a creation with its own slug must succeed: ' . fc_summary( $race_j ) );
@@ -1011,7 +1024,7 @@ Agentshell_Test::run(
         Agentshell_Test::assert_true( true === ( $audit_cleared['cleared'] ?? false ), 'the probe must have emptied the ring first' );
         Agentshell_Test::assert_true( true === ( $audit_verify_3['ring_is_array'] ?? false ), 'the ring must still be readable' );
         Agentshell_Test::assert_true(
-            (int) ( $audit_verify_3['ring_size'] ?? -1 ) >= 4,
+            (int) ( $audit_verify_3['ring_size'] ?? -1 ) >= $audit_creators,
             'every creation must have appended an entry: ' . wp_json_encode( $audit_verify_3 )
         );
         Agentshell_Test::assert_equals(

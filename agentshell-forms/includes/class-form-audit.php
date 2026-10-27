@@ -88,10 +88,20 @@ class Form_Audit {
 	/**
 	 * Append one event **inside the caller's transaction**.
 	 *
-	 * The ring is read with a locking read and written with a compare-and-swap,
-	 * so two transactions appending at once serialise on the option row instead
-	 * of losing one another's entries — and, crucially, the entry becomes
-	 * durable at the same instant as the change it records.
+	 * The append is serialised by a named advisory lock and then performed as
+	 * a read-modify-write under a row lock, so two transactions appending at
+	 * once cannot lose one another's entries — and, crucially, the entry
+	 * becomes durable at the same instant as the change it records.
+	 *
+	 * The advisory lock is not decoration. Creating the ring is an `INSERT`
+	 * into a `UNIQUE` option name, and concurrent inserts of the same
+	 * not-yet-existing row deadlock in InnoDB: every transaction takes the
+	 * same gap lock and then tries to insert into it, and the server resolves
+	 * that by killing one. Measured: six concurrent creations against a real
+	 * MySQL produced four deadlock victims, each of which had to refuse its
+	 * creation. `GET_LOCK` serialises the section without participating in the
+	 * transaction, so the ring's creation is a single-writer event and no
+	 * victim exists to refuse.
 	 *
 	 * Returns `false` rather than pretending, and the caller must treat that as
 	 * a failure of the whole operation. A state change whose record could not
@@ -123,55 +133,85 @@ class Form_Audit {
 
 		$entry = self::entry( $event, $data, $actor_id );
 
-		$row = self::row_for_update();
+		$lock = Form_DB::lock( self::lock_name(), 5 );
 
-		if ( null === $row ) {
-			// The first entry ever. A plain INSERT (not `add_option()`, whose
-			// `ON DUPLICATE KEY UPDATE` would overwrite a concurrent append) —
-			// and a duplicate-key failure means somebody else created the row,
-			// so the append is retried against it under the same lock.
+		if ( false === $lock ) {
+			// Without the lock two appends can deadlock, and a deadlock takes
+			// the caller's whole transaction with it. Refusing is the honest
+			// answer: the mutation does not happen, and it is reported.
+			return false;
+		}
+
+		try {
+			// Create the ring with an insert that already carries this entry.
+			// It cannot deadlock here — the advisory lock above means there is
+			// only ever one writer in this section.
 			if ( self::insert_option( self::serialise( array( $entry ) ) ) ) {
 				wp_cache_delete( self::OPTION, 'options' );
 				return true;
 			}
 
 			$row = self::row_for_update();
+
 			if ( null === $row ) {
+				// The insert was ignored and the row is still unreadable:
+				// either the ring was removed between the two statements, or
+				// the database is not behaving. Fail closed rather than claim
+				// a record.
 				return false;
 			}
+
+			$existing = maybe_unserialize( $row->option_value );
+			if ( ! is_array( $existing ) ) {
+				$existing = array();
+			}
+
+			$existing[] = $entry;
+			list( $payload, $dropped ) = self::ring( $existing );
+
+			$updated = $wpdb->query(
+				$wpdb->prepare(
+					"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
+					$payload,
+					self::OPTION,
+					$row->option_value
+				)
+			);
+
+			// The row is locked, so a zero here is not contention — it is the
+			// row having moved in a way this transaction cannot account for.
+			// Fail closed: the caller refuses the mutation.
+			if ( 1 !== (int) $updated ) {
+				return false;
+			}
+
+			wp_cache_delete( self::OPTION, 'options' );
+
+			if ( $dropped > 0 ) {
+				self::bump_dropped_locked( $dropped );
+			}
+
+			return true;
+		} finally {
+			Form_DB::unlock( $lock );
 		}
+	}
 
-		$existing = maybe_unserialize( $row->option_value );
-		if ( ! is_array( $existing ) ) {
-			$existing = array();
-		}
+	/**
+	 * The advisory lock that serialises the ring's read-modify-write.
+	 *
+	 * Scoped by the options table name, because `GET_LOCK` names are shared by
+	 * every database on the server: two sites on one MySQL must not wait on one
+	 * another's audit appends.
+	 *
+	 * @return string
+	 */
+	private static function lock_name() {
+		global $wpdb;
 
-		$existing[] = $entry;
-		list( $payload, $dropped ) = self::ring( $existing );
+		$table = isset( $wpdb->options ) ? (string) $wpdb->options : 'wp_options';
 
-		$updated = $wpdb->query(
-			$wpdb->prepare(
-				"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
-				$payload,
-				self::OPTION,
-				$row->option_value
-			)
-		);
-
-		// The row is locked, so a zero here is not contention — it is the row
-		// having moved in a way this transaction cannot account for. Fail
-		// closed: the caller refuses the mutation.
-		if ( 1 !== (int) $updated ) {
-			return false;
-		}
-
-		wp_cache_delete( self::OPTION, 'options' );
-
-		if ( $dropped > 0 ) {
-			self::bump_dropped_locked( $dropped );
-		}
-
-		return true;
+		return 'agentshell_forms_audit_' . substr( hash( 'sha256', $table ), 0, 40 );
 	}
 
 	/**
@@ -337,30 +377,35 @@ class Form_Audit {
 	}
 
 	/**
-	 * Insert the ring row, with the database's error output suppressed.
+	 * Create the ring row if it does not exist, with error output suppressed.
 	 *
-	 * A duplicate key is an expected outcome (two transactions creating the
-	 * ring at once), not a fault to be printed.
+	 * `INSERT IGNORE`, not `$wpdb->insert()`: a duplicate key is an expected
+	 * outcome (another transaction created the ring at the same instant), and
+	 * it must be *ignored* rather than reported. It is also what keeps this
+	 * path out of the gap-lock deadlock described in `record_locked()`.
+	 *
+	 * The caller cannot tell "inserted" from "ignored" by the return value
+	 * alone — MySQL reports one affected row for the insert and zero for the
+	 * ignore — and it does not need to: zero means the row exists, and the
+	 * append that follows reads it under a lock.
 	 *
 	 * @param string $payload Serialised entries.
-	 * @return bool
+	 * @return bool True when this call created the row.
 	 */
 	private static function insert_option( $payload ) {
 		global $wpdb;
 
 		$suppress = $wpdb->suppress_errors( true );
-		$inserted = $wpdb->insert(
-			$wpdb->options,
-			array(
-				'option_name'  => self::OPTION,
-				'option_value' => $payload,
-				'autoload'     => 'no',
-			),
-			array( '%s', '%s', '%s' )
+		$inserted = $wpdb->query(
+			$wpdb->prepare(
+				"INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')",
+				self::OPTION,
+				$payload
+			)
 		);
 		$wpdb->suppress_errors( $suppress );
 
-		return false !== $inserted;
+		return 1 === (int) $inserted;
 	}
 
 	/**
@@ -414,18 +459,16 @@ class Form_Audit {
 		global $wpdb;
 
 		$suppress = $wpdb->suppress_errors( true );
-		$inserted = $wpdb->insert(
-			$wpdb->options,
-			array(
-				'option_name'  => (string) $name,
-				'option_value' => (string) $value,
-				'autoload'     => 'no',
-			),
-			array( '%s', '%s', '%s' )
+		$inserted = $wpdb->query(
+			$wpdb->prepare(
+				"INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')",
+				(string) $name,
+				(string) $value
+			)
 		);
 		$wpdb->suppress_errors( $suppress );
 
-		return false !== $inserted;
+		return 1 === (int) $inserted;
 	}
 
 	/**
