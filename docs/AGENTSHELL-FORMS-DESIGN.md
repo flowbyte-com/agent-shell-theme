@@ -27,8 +27,10 @@ works on plain WordPress with any theme. It integrates with AgentShell through
 one new zone block type — and through the existing
 `agentshell_mcp_register_tools` filter for the agent surface. Form definitions
 are stored as a **custom post type** (`agentshell_form`) whose definition
-lives in **post meta**, which gives native WordPress revisions, native
-capabilities, native trash and a native REST surface for free. Submissions are
+lives in **post meta**, which gives native WordPress capabilities, native
+trash and a native history mechanism — with the revision support registered
+explicitly, because WordPress does **not** version arbitrary custom post meta
+by itself (§5.8). Submissions are
 stored as a **second, separate custom post type** (`agentshell_entry`),
 which keeps personal data out of the definition store and out of AgentShell's
 existing content tools. The plugin owns **two** small tables for ephemeral
@@ -49,6 +51,10 @@ published. Every submission is validated on the server against the *published*
 definition, stored with the version it was validated against, and delivered
 once — a failed email does not produce a second submission.
 
+**An agent is not among the readers.** Submission contents are not reachable
+through the agent surface under the default policy, and the capability that
+would allow it is not granted to the administrator role as a whole (§8.3).
+
 ### 1.3 The shape of the work
 
 Six independently reviewable PRs. Phase 1 is the only hard blocker; after it,
@@ -56,10 +62,10 @@ four phases can proceed largely in parallel.
 
 | Phase | Deliverable | Depends on |
 |---|---|---|
-| 1 | The form model, the schema, the validator, the store | — |
+| 1 | The plugin foundation, the schema, the validator, the storage invariants | — |
 | 2 | Rendering, the shortcode, the widget, accessible markup | 1 |
 | 3 | The submission pipeline, notifications, Turnstile, the submissions screen | 1, 2 |
-| 4 | The visual builder | 1 |
+| 4 | The visual builder | 1, 2 |
 | 5 | The MCP tool surface | 1 |
 | 6 | The AgentShell zone-block integration and release packaging | 2 |
 
@@ -83,7 +89,9 @@ four phases can proceed largely in parallel.
    agent that can create a form does not thereby gain the right to read what
    people wrote into it — and the boundary is enforced by a **capability the
    agent's principal may not hold**, not by a flag the agent supplies for
-   itself (§8.3).
+   itself (§8.3). Submission-content access through the agent surface is
+   **off by default**, and no agent principal receives automatic access to
+   personal submission data (§8.2a).
 
 **What a focused review changed.** A review of this document corrected eight
 details without changing the architecture: the submission post type's name
@@ -94,6 +102,16 @@ the rate limiter give, what an explicit authorisation flag can and cannot
 enforce, the difference between a notification being *accepted* and being
 *delivered*, and two documentation claims that overstated what the design
 does. §16 records each one, with its revised decision.
+
+**What the owner's decisions changed.** Four policy decisions have since been
+made, and they are recorded in §17: the personal-data boundary is a WordPress
+capability with submission-content access **off by default** (Q11); the
+submissions capability is **not** granted to the administrator role and is
+assigned **per user**, with a permission-checked setup procedure that needs
+no second account (Q12); the notification claim TTL is **fifteen minutes**
+with a transport timeout **strictly shorter** than it (Q13); and a form's
+slug is **frozen after its first publication**, with the immutable internal
+identifier as the long-lived reference (Q14).
 
 ### 1.5 What this document deliberately does not do
 
@@ -350,7 +368,7 @@ those two requirements false.
 | Option | What it means | For | Against |
 |---|---|---|---|
 | **A. In `agentshell_config`** | Forms become part of the configuration | Free staging, preview, revisions, snapshots, the doctor, the diff — all of it | The configuration is the *theme's* configuration; forms must survive the theme being swapped; the revision ring (25) and snapshot bounds (20) would be shared with unrelated changes; a form's definition would be published by a configuration commit, which is the wrong granularity |
-| **B. A custom post type with the definition in post meta** | `agentshell_form` posts; `_agentshell_form_definition` meta | Native revisions (F5); native capabilities; native trash; native search; multiple forms for free; a stable identity that survives import/export; the definition is a document, which is what a post is | A new architectural element (F4); post meta is not unique, so concurrency needs a value-guarded update; revisions are per-post, not a shared ring |
+| **B. A custom post type with the definition in post meta** | `agentshell_form` posts; `_agentshell_form_definition` meta | Native capabilities; native trash; native search; multiple forms for free; a stable identity that survives import/export; the definition is a document, which is what a post is; and **revision support that the plugin registers explicitly** — WordPress does not version arbitrary custom post meta on its own (F5, §5.8) | A new architectural element (F4); post meta is not unique, so concurrency needs a `meta_id`-scoped, value-guarded update (F14); native revisions are per-post and bounded, so they are a secondary record rather than the authoritative history (§5.8) |
 | **C. A custom post type with the definition in `post_content`** | The definition is the post body | The body is natively versioned and diffed | The body is HTML by convention; a JSON document in it is a misuse; editing it through the block editor is possible and would corrupt it |
 | **D. A dedicated table** | `agentshell_forms` with a JSON column | Full control over shape and indexes | Re-implements capabilities, revisions, trash and search that WordPress already provides; adds a migration obligation for a document-shaped record |
 
@@ -472,8 +490,9 @@ agentshell-forms/
     class-form-schema.php       the authoritative schema, the validator, the error codes
     class-form-field-types.php  the field-type registry
     class-form-definition.php   read/write of working and published definitions; the CAS
+    class-form-capabilities.php the two capabilities, and the per-user grant and revocation
     class-form-renderer.php     server-side rendering of a form
-    class-form-shortcode.php    `[agentshell_form id="…"]`
+    class-form-shortcode.php    `[agentshell_form slug="…"]`
     class-form-widget.php       the `WP_Widget` subclass
     class-form-challenges.php   the single-use challenge store
     class-form-rate-limits.php the rate-limit counter store
@@ -482,7 +501,7 @@ agentshell-forms/
     class-form-notifier.php      `wp_mail()` notifications and their retry
     class-turnstile.php          the verification client
     class-form-privacy.php       the WordPress personal-data exporter and eraser
-    class-form-admin.php         the admin screens (list, builder, submissions)
+    class-form-admin.php         the admin screens (list, builder, submissions, access)
     class-form-rest.php          the admin REST controller
     class-form-tools.php         the MCP tool classes
   admin/
@@ -492,6 +511,13 @@ agentshell-forms/
     js/forms-app.js              the application layer
     css/forms-admin.css
 ```
+
+**`class-form-capabilities.php` is the module that holds the personal-data
+boundary**, and it is deliberately separate from the tools. It registers the
+two capabilities, performs the per-user grant and revocation of §8.3a, and
+exposes the single question every consumer asks — *may this principal reach
+submission contents?* — in one place, so the MCP tools, the administrative
+screen and the REST controller cannot drift apart in what they answer.
 
 ### 4.3 The public API surface
 
@@ -579,11 +605,26 @@ matches `^[a-f0-9]{32}$`** — so a value that looks like an internal
 identifier is always an internal identifier, and the resolution rule in §7.3
 is total.
 
-A slug may be changed while the form is a draft. **Once the form has been
-published, the slug is frozen**, because a published form's shortcode is
-already embedded in pages, and a silent rename would break them. Renaming a
-published form means creating a new form, or editing the pages that embed
-it — which is the operator's decision to make deliberately.
+A slug may be changed **only while the form has never been published**.
+**The slug is frozen after the form's first publication**, and it stays
+frozen for the rest of the form's life — including if the form is later
+unpublished, because the shortcode may still be embedded in pages and the
+shortcode is what a slug is for. The freeze is triggered by the **first**
+publication, not the current one, so the rule does not depend on the form's
+present state.
+
+The reason is that a published form's shortcode is already embedded in
+pages, and a silent rename would break them. Renaming a published form
+means creating a new form, or editing the pages that embed it — which is
+the operator's decision to make deliberately.
+
+**The internal identifier is the long-lived reference.** Anything that must
+keep pointing at the same form across renames, re-publications and
+long-lived integrations uses the internal identifier: the API path segment,
+the MCP tools, a submission's `form_id`, a notification's `Message-ID`, and
+any external system that stores a reference. The slug is the *human*
+handle and is the thing that is frozen; the identifier is the thing that
+never changes, and that is why the two are not interchangeable.
 
 ```json
 {
@@ -769,7 +810,7 @@ and the publish path.
 | `form_id` matches `^[a-f0-9]{32}$` — 32 lowercase hexadecimal characters, exactly | `form_id_invalid` |
 | `slug` matches `^[a-z0-9][a-z0-9-]{0,63}$`, and does **not** match `^[a-f0-9]{32}$` | `form_slug_invalid` |
 | `slug` is unique across forms | `form_slug_duplicate` |
-| `slug` is unchanged once the form has been published | `form_slug_frozen` |
+| `slug` is unchanged after the form's **first** publication, permanently | `form_slug_frozen` |
 | `name` is non-empty, at most 200 characters | `form_name_invalid` |
 | `fields` is a list of at least one and at most 200 entries | `form_fields_count_invalid` |
 | every field has a unique key matching `^[a-z][a-z0-9_]{0,39}$` | `form_field_key_invalid`, `form_field_key_duplicate` |
@@ -1326,7 +1367,7 @@ capability except where noted:
 
 | Method and path | Purpose |
 |---|---|
-| `GET /forms` | List forms: id, name, status, version, field count, submission count. No field values |
+| `GET /forms` | List forms: internal identifier, slug, name, status, version, field count, entry count. No field values |
 | `GET /forms/<id>` | One form: working definition, published definition, validation result, metadata |
 | `POST /forms` | Create a form (a draft) |
 | `PUT /forms/<id>` | Replace the working definition, with an expected revision for the compare-and-swap |
@@ -1336,12 +1377,25 @@ capability except where noted:
 | `POST /forms/<id>/discard` | Discard the working definition, reverting to published |
 | `DELETE /forms/<id>` | Trash a form. `confirm: true` required |
 | `GET /forms/<id>/submissions` | List submissions — **metadata only** (§8.4) |
-| `GET /submissions/<id>` | Read one submission's contents. Requires `authorize_personal_data: true` |
-| `DELETE /submissions/<id>` | Trash a submission. `confirm: true` |
-| `POST /submissions/<id>/restore` | Restore a trashed submission |
-| `DELETE /submissions/<id>?permanent=1` | Hard delete (erasure). `confirm: true` |
-| `GET /submissions/export?form=<id>&format=csv` | Export. Requires `authorize_personal_data: true` |
+| `GET /submissions/<id>` | Read one submission's contents. Requires `manage_agentshell_forms_submissions` and the `authorize_personal_data` acknowledgement |
+| `DELETE /submissions/<id>` | Trash a submission. Requires `manage_agentshell_forms_submissions`. `confirm: true` |
+| `POST /submissions/<id>/restore` | Restore a trashed submission. Requires `manage_agentshell_forms_submissions` |
+| `DELETE /submissions/<id>?permanent=1` | Hard delete (erasure). Requires `manage_agentshell_forms_submissions`. `confirm: true` |
+| `GET /submissions/export?form=<id>&format=csv` | Export. Requires `manage_agentshell_forms_submissions` and the `authorize_personal_data` acknowledgement |
 | `GET /field-types` | The field-type registry, for the builder |
+
+**The per-user grant is deliberately absent from this list.** There is no REST
+route that grants or revokes `manage_agentshell_forms_submissions`. The
+grant is an `admin_post` handler in the plugin's own administrative screen,
+guarded by `manage_agentshell_forms`, a cookie-authenticated session and a
+nonce (§8.3a). A capability grant on a REST route would be reachable by any
+administrator principal — including the MCP one, whose application password
+satisfies a capability check just as a cookie does — and an agent that could
+grant itself the capability could widen its own authority.
+
+**`authorize_personal_data` is an acknowledgement on these routes too.** It
+is required on the routes that return submitted values, and it is recorded in
+the audit log. It is not what authorises the call: the capability is.
 
 **Cookie authentication and nonces.** WordPress's own REST cookie
 authentication already refuses a request from a logged-in browser that lacks a
@@ -1447,11 +1501,11 @@ first** — the authoritative list of the existing tool surface is in
 | Check a form | `agentshell_validate_form` | Validate a definition and return the errors and warnings, without writing | Transport + `manage_agentshell_forms` |
 | Publish a form | `agentshell_publish_form` | Promote the working definition to published, increment the version | Transport + `manage_agentshell_forms` |
 | Discard a form's changes | `agentshell_discard_form_changes` | Revert the working definition to the published one | Transport + `manage_agentshell_forms` |
-| List the submissions | `agentshell_list_submissions` | **Metadata only**: id, form, received-at, spam status, notification status. No field values | Transport + the personal-data policy (§8.3) |
-| Read one submission | `agentshell_get_submission` | The submitted values | Transport + the personal-data policy (§8.3) |
-| Export the submissions | `agentshell_export_submissions` | CSV or JSON for one form | Transport + the personal-data policy (§8.3) |
-| Remove a submission | `agentshell_trash_submission` | Move a submission to the trash | Transport + per-post `delete_post` |
-| Erase a submission | `agentshell_delete_submission` | Hard delete — the erasure path | Transport + per-post `delete_post` + `confirm` |
+| List the submissions | `agentshell_list_submissions` | **Metadata only**: entry id, form's internal identifier, received-at, spam status, notification status. No field values | Transport + `manage_agentshell_forms` — **form** authority, not personal-data authority |
+| Read one submission | `agentshell_get_submission` | The submitted values | Transport + `manage_agentshell_forms_submissions` + the policy (§8.3) |
+| Export the submissions | `agentshell_export_submissions` | CSV or JSON for one form | Transport + `manage_agentshell_forms_submissions` + the policy (§8.3) |
+| Remove a submission | `agentshell_trash_submission` | Move a submission to the trash | Transport + `manage_agentshell_forms_submissions` + the policy (§8.3) |
+| Erase a submission | `agentshell_delete_submission` | Hard delete — the erasure path | Transport + `manage_agentshell_forms_submissions` + the policy (§8.3) + `confirm` |
 
 Twelve verbs. Each is a distinct act with a distinct authority, and none of
 them can be merged into another without either losing an authority check or
@@ -1461,6 +1515,59 @@ Two tools are proposed for a later phase rather than the MVP:
 `agentshell_delete_form` (trashing a form must also decide what happens to
 its submissions, which is a decision worth making deliberately) and
 `agentshell_restore_submission`.
+
+### 8.2a The MVP surface, and what refuses by default
+
+The owner's decision on Q11 is that **MCP submission-content access is
+disabled by default** and that **no agent principal receives automatic access
+to personal submission data**. The table above is therefore not one flat
+surface. It is three groups with three different postures.
+
+| Group | Tools | MVP posture |
+|---|---|---|
+| **Form tools** | The seven `*_form*` tools | **Ship working.** They carry no personal data — a definition is operator-authored configuration |
+| **The metadata listing** | `agentshell_list_submissions` | **Ships working.** It returns identifiers, timestamps and statuses. It never returns a submitted value, so it carries no personal data and no personal-data authority is needed for it |
+| **The entry-content tools** | `agentshell_get_submission`, `agentshell_export_submissions`, `agentshell_trash_submission`, `agentshell_delete_submission` | **Ship registered, and refuse.** Under the default policy (`off`, §8.3) every one of them is refused with a named error, and the refusal is audited |
+
+**Why the destructive tools refuse too.** All four entry tools act on a
+personal-data record: three expose or transform its content, and one
+destroys it. Leaving `agentshell_delete_submission` reachable while
+`agentshell_get_submission` is refused would produce a half-trust — an agent
+that may destroy a record it may not read, and may therefore delete data it
+has never seen and cannot audit. The erasure path therefore stays a **human
+operation in the administrative screen** for the MVP, which is where a
+subject-access erasure ought to be driven anyway, and the tool becomes
+available with the rest of the group when the operator turns the policy on.
+
+**What "refuse" means concretely.** The tool is registered, so it appears in
+the registry and in `agentshell_get_capabilities`; a call reaches it and is
+answered with a refusal that names the policy and the reason:
+
+```json
+{
+  "ok": false,
+  "code": "forms_personal_data_disabled",
+  "message": "Submission contents are not available through the agent surface. The site's personal-data policy is 'off'.",
+  "policy": "off"
+}
+```
+
+The refusal writes an audit row (§8.5). A refusal is not an error condition
+and not a failure of the transport — it is a **decision**, recorded.
+
+**`authorize_personal_data` is an acknowledgement, not a grant.** The
+parameter remains on the four entry tools, and it is **required** when the
+policy is `capability` — but passing it grants nothing. It states the actor's
+intent, and it is what the audit row records. The authority comes from the
+capability (§8.3). A tool that accepted this flag as authority would be
+granting permission to itself.
+
+**The tools are registered in Phase 5, not Phase 1.** The owner has fixed
+Phase 1's scope as the plugin foundation, the schema, the post types, the
+storage invariants, the validation and the concurrency controls, and has
+explicitly excluded MCP tool additions. The tool surface is therefore still a
+**proposal** in this document, and the tool count in `AGENTS.md` §2 is
+unchanged.
 
 ### 8.3 The two permission domains, and what actually enforces them
 
@@ -1474,75 +1581,172 @@ The plugin therefore defines two capabilities:
 - `manage_agentshell_forms_submissions` — read, export and delete
   submissions.
 
-**What an explicit authorisation flag is, and what it is not.** A tool that
-reads submission *contents* may require the caller to pass
-`authorize_personal_data: true`. That flag is **supplied by the caller**, and
-a caller who is already permitted to read submissions can simply supply it.
-It is therefore a **deliberation and audit mechanism, not a permission
-boundary**: it forces the moment to be stated, it puts the actor and the
-stated reason in the audit log, and it makes a careless read visible. It does
-**not** stop a caller who has the underlying permission. Saying otherwise
-would be a claim the mechanism cannot support.
+**WordPress custom capabilities are the primary authorisation mechanism.**
+That is the owner's decision on Q11, and it is the whole of the MVP's
+authorisation model. No second credential system and no human-approval
+workflow is built. The capability check happens at the moment the tool runs,
+which is the only place a check actually binds.
+
+**What an explicit acknowledgement flag is, and what it is not.** A tool
+that acts on submission *contents* may require the caller to pass
+`authorize_personal_data: true`. That flag is **supplied by the caller**,
+and a caller who is already permitted can simply supply it. It is therefore
+a **deliberation and audit mechanism, not a permission boundary**: it forces
+the moment to be stated, it puts the actor and the stated reason in the audit
+log, and it makes a careless read visible. It does **not** stop a caller who
+has the underlying permission. Saying otherwise would be a claim the
+mechanism cannot support, and the owner's decision is explicit that it is an
+acknowledgement and not a grant.
 
 **The separation therefore has to be enforced somewhere the agent cannot
-supply.** Three mechanisms are available, and they differ in strength.
+supply**, and WordPress's capability system is that place.
 
-| Mechanism | What it is | Enforced by | Strength |
+| Mechanism | What it is | Enforced by | In the MVP? |
 |---|---|---|---|
-| **(A) A capability the principal does not hold** | The submission tools check `manage_agentshell_forms_submissions` and **do not** accept `manage_options` as a substitute. If the operator runs the agent under a principal that lacks the capability, the agent cannot read submissions, and it cannot grant itself the capability | WordPress's capability system, at the moment of the call | **Strong**, and it is the recommended default. The agent cannot widen its own authority |
-| **(B) A separate credential** | A second, dedicated secret for the personal-data tools, presented as its own header and mapped to its own principal. The agent's ordinary credential carries no personal-data authority at all | The transport, before the tool runs | **Strong**, and it creates a second trust domain. It costs a second secret to provision and rotate |
-| **(C) An out-of-band human approval** | A short-lived, single-use approval recorded by a person in the admin UI. The agent cannot create one | The plugin's own approval record | Moderate: it is time-boxed and human-gated, but it is still a gate the agent can ask a human to open |
+| **(A) A capability the principal does not hold** | The entry tools check `manage_agentshell_forms_submissions` and **do not** accept `manage_options` as a substitute. An agent whose principal lacks the capability cannot read submissions, and it cannot grant itself the capability | WordPress's capability system, at the moment of the call | **Yes — this is the MVP's mechanism** |
+| **(B) A separate credential** | A second, dedicated secret for the personal-data tools, presented as its own header and mapped to its own principal | The transport, before the tool runs | **No.** Deferred. It remains a supported extension point (§8.3b) |
+| **(C) An out-of-band human approval** | A short-lived, single-use approval recorded by a person in the admin UI | The plugin's own approval record | **No.** Deferred, and it needs an approval UI the MVP does not have |
 
-**The recommendation is (A), with (B) available as a second trust domain.**
-
-Concretely, for (A) to bite, the plugin's activation must **not** grant
-`manage_agentshell_forms_submissions` to the administrator role, because the
-MCP transport requires `manage_options` and therefore every MCP agent is an
-administrator. The deployment that separates the two domains is:
-
-1. the operator creates a role — say **Forms data steward** — holding
-   `manage_agentshell_forms_submissions` and `read`, and grants it to the
-   people who are allowed to see what people wrote;
-2. the administrator role does **not** hold it;
-3. the agent, running under the administrator account, therefore **cannot**
-   read submissions, because the tool checks the specific capability and
-   `manage_options` does not imply it.
-
-This is enforceable by WordPress, it costs nothing to implement beyond
-checking the right capability, and it is the only one of the three that does
-not depend on a new credential or a new UI.
+**Why (A) bites, and what it costs.** The MCP transport requires
+`manage_options` for every call, so **every MCP agent is an administrator**.
+The separation therefore depends on `manage_agentshell_forms_submissions`
+being a capability the administrator role does **not** hold — which is the
+owner's decision on Q12, and which the plugin's activation must not undo.
+§8.3a is the procedure that lets a site owner hold it anyway, without a
+second account and without granting it to everybody.
 
 **The site-wide policy switch** makes the posture explicit and adjustable
-without a code change:
+without a code change. The **default is `off`**, because the owner's decision
+is that MCP submission-content access is disabled by default and that no
+agent principal receives automatic access to personal submission data.
 
 | `agentshell_forms_personal_data_policy` | Behaviour |
 |---|---|
-| `off` | Submission **contents** are never readable through the agent surface, whatever else is true. The metadata-only listing remains available |
-| `capability` | **The default.** Readable only by a principal holding `manage_agentshell_forms_submissions`, and only with the explicit `authorize_personal_data` flag |
-| `credential` | Readable only with the dedicated data credential (B), and only with the explicit flag |
+| `off` | **The default.** Submission contents are not reachable through the agent surface at all. The four entry tools refuse (§8.2a). The metadata-only listing remains available |
+| `capability` | Reachable only by a principal holding `manage_agentshell_forms_submissions`, **and** only with the explicit `authorize_personal_data` acknowledgement |
+| `credential` | Reachable only with the dedicated data credential (B), and only with the explicit acknowledgement. Deferred — see §8.3b |
 
 In every policy, the **metadata-only listing stays available**, and **every
-read and every refusal is audited**.
+read and every refusal is audited**. Turning the policy on is an explicit,
+audited operator action; it is not a side effect of activating the plugin.
 
-**The audit trail.** Following the content journal's pattern:
+### 8.3a Giving one person access to submissions
 
-- a tool that reads submission contents writes an audit row naming the
-  actor, the form, the entry, the authorisation that was presented, and the
-  policy in force;
-- a **refusal** writes an audit row too, so a refusal is distinguishable from
-  a call that never happened;
-- the capability is re-checked **at the moment** it is exercised, not only
-  when the transport authenticated — so a principal whose role changed since
-  the session began cannot read;
-- the audit row never carries a submitted value. It carries identifiers and
-  counts.
+The owner's decision on Q12 requires two things that are in tension: the
+submissions capability must **not** be granted to the administrator role as
+a whole, and the site owner must still be able to use the submissions
+interface **without creating a second WordPress account**.
 
-This is the same two-part shape as `authorize_inspection` /
-`authorize_recovery` in the content journal: **read authority and
-destructive authority are separate, and both are re-checked at the moment
-they are exercised.** The difference is that here the read authority is a
-*capability the principal may not hold*, rather than a flag the caller
-supplies.
+Both are satisfied by granting the capability **per user** rather than per
+role. WordPress stores a user's own capabilities separately from their role's
+(`WP_User::add_cap()` writes the user's own `caps` user meta, and a role's
+capabilities are a different set), so a capability granted to one person does
+**not** propagate to any other administrator.
+
+**The mechanism.**
+
+```php
+$user = get_user_by( 'id', $user_id );
+$user->add_cap( 'manage_agentshell_forms_submissions', true );
+$user->get_role_caps();          // refresh the in-memory capability set
+```
+
+and, to revoke:
+
+```php
+$user->remove_cap( 'manage_agentshell_forms_submissions' );
+```
+
+The plugin uses the `WP_User` object's methods rather than a procedural
+wrapper, because the procedural `add_user_cap()` / `remove_user_cap()` are
+not present in current WordPress core — the object API is the supported
+route.
+
+**The setup procedure**, as the operator will meet it:
+
+1. Open **Appearance → AgentShell Forms → Submissions**. The screen requires
+   `manage_agentshell_forms` to be reached at all, so an administrator gets
+   to it — but the values are not shown without the submissions capability.
+2. The screen says that submission access is limited, and offers a single
+   button: **"Grant me access to form submissions"**.
+3. Pressing it performs the per-user grant above, for **the account the
+   operator is signed in as**, and the screen reloads with the submissions
+   list.
+4. **Appearance → AgentShell Forms → Access** lists every user who holds the
+   capability, with the date it was granted, and offers **"Revoke"** beside
+   each. Revoking is the same operation in reverse, and it is audited too.
+
+There is no role to create, no user to invite, and no second account.
+
+**The grant action is permission-checked, and it is not reachable by the
+agent.** Three conditions, all of them necessary:
+
+| Condition | Why it is there |
+|---|---|
+| The actor holds `manage_agentshell_forms` | The action is part of administering forms, and that capability is the one the administrator role does hold |
+| The request carries a **cookie-authenticated session** — checked with `wp_validate_auth_cookie( '', 'logged_in' )` | An MCP transport call is authenticated by an application password or a static token, **not** by a cookie. The MCP principal is therefore refused by construction, not by policy |
+| The request carries a valid `_wpnonce` for the grant action | The nonce is minted by the cookie-authenticated administrative screen, which the MCP principal cannot render, so it cannot obtain one |
+
+**The grant action is not exposed on any `wp/v2/agentshell-forms` REST
+route.** It is an `admin_post` handler in the plugin's own administrative
+screen. This is deliberate: a REST route guarded by a capability check alone
+would be reachable by any administrator principal, including the MCP one,
+because the MCP transport's application password satisfies a capability check
+just as a cookie does. The nonce and the cookie-session requirement are what
+close that, and the route's absence removes the question.
+
+**Two limitations, stated plainly, because the mechanism does not reach
+them.**
+
+**Limitation 1 — a shared principal shares its capabilities.** An agent and
+a human who use **the same WordPress account** share **that account's**
+capabilities. If the site owner grants the submissions capability to their
+own account and then runs the agent under that same account, the agent
+inherits the capability, and the separation of §8.3 is gone — not because the
+mechanism failed, but because there was only one principal to separate.
+**Principal-level isolation requires separate WordPress accounts.** An
+operator who wants an agent that cannot read submissions must run it under an
+account that does not hold the capability, and that account must not be the
+one the human uses.
+
+**Limitation 2 — the policy switch is not a site-wide data control.** The
+`agentshell_forms_personal_data_policy` switch governs **the plugin's own
+agent tool surface, and nothing else.** It does **not** govern, and must
+never be described as governing:
+
+- the plugin's **administrative screen**, where access is governed by the
+  capability alone;
+- the **WordPress personal-data exporter and eraser**, which run under
+  WordPress's own authority;
+- any **other plugin or theme** that queries `agentshell_entry` posts
+  directly, or a REST consumer of them;
+- the **WordPress REST API** for the post type itself, which is kept
+  unreachable by registering the type as non-public and excluding it from
+  search (§6.2).
+
+A reader who believes the switch protects the data everywhere would be
+mistaken, and the switch's own name invites that belief. It is a switch over
+one tool surface, and §8.3a's grant action is a switch over one capability.
+
+### 8.3b The extension points, and what they would need
+
+The MVP is a capability model, and it is deliberately not a dead end. Two
+extensions are anticipated, and neither is built now.
+
+**A separately authorised agent principal.** The capability model already
+supports one. A dedicated WordPress user holding *only*
+`manage_agentshell_forms_submissions` — and, if the operator wants the
+metadata listing too, `manage_agentshell_forms` — is a principal whose
+authority is exactly what the operator chose to give it. Nothing in the
+design needs to change to support it; the operator needs the account, and the
+account must be **separate from the one the human uses** (Limitation 1).
+
+**The `credential` mode.** A second trust domain, with its own secret,
+presented on its own header and mapped to its own principal. It would need a
+second secret to provision and rotate, a transport change, and a decision
+about which capabilities the credential carries. It is named in the policy
+switch so that the switch is not reshaped when it arrives, and it is not
+built.
 
 ### 8.4 Read-only defaults for submissions
 
@@ -1558,10 +1762,20 @@ supplies.
 The `notification_status` values are the ones §11.6 defines. Note
 `accepted`, not `sent` and not `delivered`.
 
-Field values appear only in `agentshell_get_submission`, and only with the
-explicit authorisation. This is the same discipline the codebase already uses
-for the custom stylesheet: a routine read does not carry the body, because a
-body in a transcript is a body in a log.
+**The listing is available in every policy, including the default `off`.**
+It carries no submitted value, so it carries no personal data, and no
+personal-data authority is required for it. This is deliberate: an operator
+must be able to see that a form is receiving submissions, and that its
+notifications are being accepted, without any of that being a route to
+somebody's message.
+
+Field values appear only in `agentshell_get_submission`, and only when the
+policy permits the agent surface to reach them at all (§8.3) **and** the
+caller has supplied the `authorize_personal_data` acknowledgement. Under the
+default `off` policy they appear in no tool's result. This is the same
+discipline the codebase already uses for the custom stylesheet: a routine
+read does not carry the body, because a body in a transcript is a body in a
+log.
 
 ### 8.5 Audit rows
 
@@ -1575,12 +1789,21 @@ vocabulary, with new event names in the existing shape:
 | `form_published` | The working definition is promoted; the payload names the version and the change |
 | `form_discarded` | The working definition is reverted |
 | `form_trashed` / `form_deleted` | A form is trashed or hard-deleted, with the submission count |
-| `form_submission_inspected` | A submission's contents are read; the payload names the form and the authorisation used |
+| `form_submission_inspected` | A submission's contents are read; the payload names the form, the acknowledgement that was presented, and the policy in force |
 | `form_submission_trashed` / `form_submission_deleted` | A submission is trashed or erased |
 | `form_submission_exported` | A submission set is exported; the payload names the form and the row count |
+| `form_submission_access_refused` | An entry tool refused — under the `off` policy, or for want of the capability. The payload names the actor, the tool and the reason |
+| `form_submission_access_granted` / `form_submission_access_revoked` | The per-user submissions capability was granted or revoked (§8.3a); the payload names the actor and the subject user |
 
 An audit row never carries a submitted value. It carries identifiers and
 counts.
+
+**A refusal is an event, not an absence.** The content journal's rule applies
+here: a refusal is written to the audit log so that a refusal is
+distinguishable from a call that never happened. Under the default `off`
+policy, every attempt at an entry tool produces a
+`form_submission_access_refused` row — which means the audit log is also the
+record of an agent that keeps trying.
 
 ### 8.6 Confirmation requirements
 
@@ -1600,6 +1823,14 @@ into it" are two separate, separately-named decisions.
   metadata only, by construction.
 - **No tool edits a submission.** A submission is immutable; the only
   operations are read, export, trash and erase.
+- **No tool grants a capability.** The per-user submissions grant of §8.3a is
+  an administrative action in the plugin's own screen, guarded by a
+  cookie-authenticated session and a nonce. It is not an MCP tool, and it is
+  not on any REST route the agent transport can reach — so an agent cannot
+  widen its own authority.
+- **No tool changes the personal-data policy.** Turning the policy on is an
+  operator action, audited as one. An agent that could flip the policy would
+  be an agent that could grant itself everything the policy withholds.
 - **No tool sends a notification on demand** in the MVP. It is a plausible
   addition and it is an abuse vector (an agent could mail a person repeatedly),
   so it would need its own quota and confirmation.
@@ -1856,8 +2087,11 @@ other out of the whole site.
 | **Arbitrary recipient routing** | A definition names an attacker as a recipient | Recipients are drawn from an allowlist: the site administrator's address, plus addresses on the site's own domain. A recipient outside the allowlist is refused by name | `Form_Notifier` |
 | **Arbitrary outbound requests** | A definition names a URL to fetch | The plugin makes exactly one outbound request, to a **hard-coded** verification endpoint. There is no configuration path to a URL | `Turnstile` |
 | **Secret key disclosure** | The secret appears in a tool result, a log, a page, an export | The secret is read from a constant or a protected option and is never returned by any tool, never rendered, never exported. The transport's argument redaction covers it too | Everywhere |
-| **Unauthorised submission access** | An agent, an editor or a subscriber reads submissions | The post type is non-public and excluded from search; the generic content tools are hard-limited to `post` and `page` (F6), so submissions are outside their reach; the plugin's own routes check `manage_agentshell_forms_submissions` and do **not** accept `manage_options` as a substitute, so a principal without that capability is refused (§8.3) | `Form_REST`, the tools |
-| **An agent self-authorising for personal data** | An agent passes `authorize_personal_data: true` to unlock a read | The flag is a deliberation and audit mechanism, **not** a permission boundary (§8.3). The boundary is the capability the principal may not hold, or a separate credential. In the `off` policy the contents are not readable at all | The tools |
+| **Unauthorised submission access** | An agent, an editor or a subscriber reads submissions | The post type is non-public and excluded from search; the generic content tools are hard-limited to `post` and `page` (F6), so submissions are outside their reach; the plugin's own routes check `manage_agentshell_forms_submissions` and do **not** accept `manage_options` as a substitute, so a principal without that capability is refused (§8.3). The administrative screen is guarded by the same capability | `Form_REST`, the tools |
+| **An agent self-authorising for personal data** | An agent passes `authorize_personal_data: true` to unlock a read | The flag is an acknowledgement and an audit mechanism, **not** a permission boundary (§8.3). The boundary is the capability the principal may not hold. Under the default `off` policy the contents are not reachable at all (§8.2a) | The tools |
+| **An agent granting itself the capability** | An agent reaches the per-user grant and grants itself access | The grant action requires `manage_agentshell_forms` **and** a cookie-authenticated session **and** a nonce minted by the administrative screen, and it is not exposed on any REST route the agent transport can reach (§8.3a). The agent is refused by construction, not by policy | The grant handler |
+| **The operator's own agent inheriting the grant** | The site owner grants themselves the capability and runs the agent under the same account | A shared WordPress principal shares its capabilities, so the agent inherits the grant. This is a **deployment** property, not a defect, and it is stated plainly: principal-level isolation requires separate accounts (§8.3a, Limitation 1) | Documentation, §8.3a |
+| **The policy switch read as a site-wide control** | An operator believes `off` protects the data everywhere | The switch governs the plugin's agent tool surface only. It does not govern the administrative screen, the WordPress privacy exporter and eraser, another plugin's direct queries, or the post type's REST surface (§8.3a, Limitation 2). The limitation is stated in the document rather than left to be discovered | Documentation, §8.3a |
 | **Cross-form data leakage** | A request posts field values belonging to another form | Only the fields declared in *that* form's published definition are read, and only those are stored. A value for an undeclared key is discarded | `Submission_Handler` |
 | **Stored personal information** | Submissions accumulate indefinitely | Data minimisation (§6.4); per-form retention; a daily purge; the source address is an HMAC, not an address | `Submission_Store` |
 | **Agent-initiated destruction** | An agent deletes a form and its submissions | `confirm: true`; a separate, separately-named `delete_submissions` flag; the per-post `delete_post` capability re-checked at the moment of destruction; an audit row for the refusal as well as the act | The tools |
@@ -1893,11 +2127,14 @@ the purge is a hard delete.
 **Subject access.** Three paths: the WordPress personal-data exporter hook
 (§6.6), the CSV/JSON export tool and route, and the administrative reading
 of a submission. All three are capability-checked; the agent paths require
-the explicit personal-data authorisation.
+the `manage_agentshell_forms_submissions` capability, and are refused
+outright under the default `off` policy (§8.2a).
 
 **Erasure.** The hard-delete tool, plus the WordPress eraser hook, plus the
 retention purge. The per-post capability is re-checked at the moment of
-deletion.
+deletion. Under the default `off` policy the erasure tool is refused, so an
+erasure is a human operation in the administrative screen for the MVP
+(§8.2a).
 
 **Privacy notices.** A form names a privacy notice URL. The `consent` field
 renders a link to it. The notice is the operator's document; the plugin's job
@@ -2306,9 +2543,70 @@ notification in a state nobody can interpret:
   message was accepted.
 
 The reconciler — the same cron job — treats a `claimed` record whose
-`claimed_at` is older than the **claim TTL** (fifteen minutes) as
-`uncertain`, and an `uncertain` record is retried at the next attempt time.
-That is the only way an uncertain notification can make progress.
+`claimed_at` is older than the **claim TTL** as `uncertain`, and an
+`uncertain` record is retried at the next attempt time. That is the only way
+an uncertain notification can make progress.
+
+### 11.6a The claim lifetime and the transport timeout
+
+Two clocks, and the invariant between them is the thing to get right.
+
+| Clock | Value | What it bounds |
+|---|---|---|
+| **Claim TTL** | **900 seconds** (fifteen minutes) | How long a notification may sit in `claimed` before the reconciler may treat it as `uncertain` and retry it |
+| **Attempt budget** | **60 seconds** by default, configurable | How long one send attempt may take before the plugin stops trusting the attempt's outcome |
+| **Transport timeout** | The attempt budget, applied to the mail transport | How long the transport itself waits for the remote server |
+
+**The invariant: the transport timeout is strictly shorter than the claim
+TTL.** The claim TTL is the period after which a *second* worker may take the
+notification over. If a transport could still be running when that happens,
+two workers could send the same notification — which is precisely the
+concurrency the claim exists to prevent. The margin is therefore not a
+matter of taste: **900 > 60**, and the plugin **refuses a configuration in
+which the transport timeout is not strictly less than the claim TTL**, by
+name, at the point the configuration is saved.
+
+**How the transport timeout is set.** `wp_mail()` builds a PHPMailer instance
+and fires the `phpmailer_init` action with that instance **by reference**,
+immediately before `send()`. That is the supported hook for configuring the
+transport, and the plugin uses it to set PHPMailer's `Timeout` property to
+the attempt budget.
+
+Two things this gets right that "just call `wp_mail()`" does not:
+
+- **The guarantee does not depend on a default.** PHPMailer's own default
+  `Timeout` is 300 seconds, which already satisfies the invariant — but a
+  default is not a guarantee, and an SMTP plugin may set its own. The plugin
+  sets the value explicitly, so the bound holds whatever else is installed.
+- **The bound holds for the transport the operator configured.** Setting
+  `Timeout` on the PHPMailer instance covers the SMTP path as well as the
+  local `mail()` path, because the timeout is a property of the client that
+  performs the network operation.
+
+**How an over-budget attempt is classified.** `wp_mail()` is synchronous and
+PHP cannot interrupt it, so the plugin cannot stop a slow transport — it can
+only **measure** it. The plugin records the wall-clock time around the call
+and classifies the outcome by what the call returned *and* how long it took:
+
+| `wp_mail()` returned | Elapsed | Recorded status |
+|---|---|---|
+| `true` | within the budget | `accepted` — the message was accepted by the sending mechanism |
+| `true` | **over the budget** | `uncertain` — the send exceeded its budget; acceptance is probable but the attempt is not trusted as settled, and the reconciler may retry it |
+| `false` | any | `failed` — the message was not accepted, with the transport's error message |
+
+The middle row is the reason the budget is measured at all. A send that
+returns `true` after running past its budget has already cost more than the
+operator's configuration allows, and treating it as settled would hide the
+fact that the transport is misbehaving. Recording it as `uncertain` puts it
+back in front of the reconciler, which is where an ambiguous outcome belongs.
+
+**What this does not do.** It does not make delivery exactly-once, and it
+does not shorten the at-least-once window. A transport that accepts the
+message and loses the acknowledgement still produces a possible duplicate on
+retry; the bounded timeout narrows how long that ambiguity lasts, it does
+not remove it. The five-attempt limit, the backoff and the atomic claim
+remain the guarantees that are actually held, and the claim TTL of fifteen
+minutes is the owner's accepted value for the MVP.
 
 **The delivery guarantee is at-least-once, and the plugin does not claim
 otherwise.** If the transport accepted a message and the response was lost,
@@ -2328,9 +2626,10 @@ detectable:
 success response. The operator sees a failed notification on the submission
 and can re-send it from the administrative screen.
 
-**A delivery that hangs** is bounded by the transport's own timeout, and the
-attempt is recorded as `uncertain` with the timeout as the reason — not as
-`failed`, because the plugin genuinely does not know.
+**A delivery that hangs** is bounded by the transport timeout the plugin sets,
+which is strictly shorter than the claim TTL (§11.6a). An attempt that
+exceeded its budget is recorded as `uncertain` with the timeout as the
+reason — not as `failed`, because the plugin genuinely does not know.
 
 ### 11.7 Preventing email abuse
 
@@ -2371,13 +2670,19 @@ registered with `add_menu_page()`, and it requires the
 the WordPress admin's own styles and conventions rather than trying to look
 like the AgentShell configurator.
 
-Three screens:
+Three screens, plus one that is about access rather than about forms:
 
 | Screen | Purpose |
 |---|---|
 | The list | Every form: name, slug, status, version, field count, entry count, last change. Actions: edit, duplicate, publish, discard, trash |
 | The builder | The field list and the field inspector, plus the settings tabs (notification, spam, storage, privacy) and the preview |
 | The submissions | One form's submissions: metadata by default, the values on demand, export, trash, erase |
+| The access | Every user who holds `manage_agentshell_forms_submissions`, when it was granted, and a **Revoke** button beside each. Reached from the submissions screen, which offers **"Grant me access to form submissions"** when the signed-in user does not hold it (§8.3a) |
+
+The access screen is deliberately **not** a role editor. It grants a
+capability to one user and takes it away again; it does not create roles, it
+does not modify the administrator role, and it is not reachable by the agent
+(§8.3a).
 
 ### 12.2 The module split
 
@@ -2479,7 +2784,7 @@ The configurator does **not** become the builder. It offers a route into it.
 
 | Phase | Title | Size | Depends on |
 |---|---|---|---|
-| 1 | The form model, the schema, the store and the protocol state | Large | — |
+| 1 | The plugin foundation, the schema, the storage invariants | Large | — |
 | 2 | Rendering and insertion | Medium | 1 |
 | 3 | The submission pipeline, notifications and Turnstile | Large | 1 (2 for the end-to-end path) |
 | 4 | The visual builder | Large | 1, 2 |
@@ -2487,6 +2792,13 @@ The configurator does **not** become the builder. It offers a route into it.
 | 6 | The AgentShell integration and release packaging | Small | 2 |
 
 Six PRs. Phase 1 is the only hard blocker.
+
+**Phase 1's scope is fixed by the owner**: the plugin foundation, the
+authoritative schema, the post types, the storage invariants, the validation
+and the concurrency controls. **No visual builder, no submission
+notifications, and no MCP tool additions.** Phase 1 therefore establishes
+the floor everything else stands on, and nothing that can be deferred is
+built in it.
 
 **No phase depends on a later phase.** The dependencies above are the whole
 graph, and each is a *build* dependency, not a convenience:
@@ -2506,47 +2818,73 @@ graph, and each is a *build* dependency, not a convenience:
   the entry count on the list screen is the only thing it takes from Phase 3,
   which it shows as "—" when that phase has not landed.
 - **Phase 5** splits: the seven **form** tools need only Phase 1. The five
-  **submission** tools need Phase 3's store. If the phases are cut short, the
-  submission tools are the part that waits — the form tools do not.
+  **submission** tools — the metadata listing and the four entry tools —
+  need Phase 3's store. If the phases are cut short, the submission tools are
+  the part that waits — the form tools do not.
 - **Phase 6** needs the renderer (Phase 2).
 
 ### 13.2 The phases in detail
 
-#### Phase 1 — The form model, the schema and the store
+#### Phase 1 — The plugin foundation, the schema and the storage invariants
 
-**Scope.** The plugin skeleton; the two post types; the authoritative schema
-and its validator; the field-type registry with the ten MVP types; the
-definition store with the working/published split, the authoritative-row
-creation, the duplicate detection and the compare-and-swap; the **protocol
-state** — the challenge table and the rate-limit table, their claim and
-reserve primitives, and their pruning.
+**Scope — fixed by the owner.** Phase 1 establishes the floor: the **plugin
+foundation**, the **authoritative schema**, the **post types**, the
+**storage invariants**, the **validation** and the **concurrency
+controls**. Concretely:
+
+- the plugin skeleton — its directory layout, its bootstrap, its activation
+  and uninstall handlers, its autoloading and its version;
+- the two post types — `agentshell_form` and `agentshell_entry` — and the
+  capability type they use (§8.3);
+- the authoritative schema and its validator, and the field-type registry
+  with the ten MVP types;
+- the storage invariants — the working/published split, the authoritative-row
+  creation, the duplicate detection, the `meta_id`-scoped compare-and-swap,
+  and the publication transaction;
+- the validation — the rule set of §5.5, every error code by name, and the
+  rejection of unknown keys;
+- the concurrency controls — the named advisory lock, the row count, the
+  guarded writes, and the **protocol state** primitives: the challenge
+  table and the rate-limit table with their claim and reserve primitives and
+  their pruning.
+
+**Explicitly not in Phase 1.** No **visual builder** (Phase 4). No
+**submission notifications** — no notifier, no `wp_mail()` call, no
+notification record, no retry logic (Phase 3). No **MCP tool additions** —
+no tool is registered, and the tool count in `AGENTS.md` §2 is unchanged
+(Phase 5). No renderer (Phase 2), no public endpoint (Phase 3), and no
+AgentShell integration (Phase 6).
 
 **Reused.** Nothing — this is the bottom of the stack. It reuses *WordPress*:
 the post type, post meta, the revision machinery, `dbDelta`, the cron API.
 
 **New modules.** `class-form-post-types.php`, `class-form-schema.php`,
 `class-form-field-types.php`, `class-form-definition.php`,
-`class-form-challenges.php`, `class-form-rate-limits.php`.
+`class-form-capabilities.php`, `class-form-challenges.php`,
+`class-form-rate-limits.php`.
 
 **Data model.** The `agentshell_form` and `agentshell_entry` post types; the
 `_agentshell_form_working`, `_agentshell_form_published`,
 `_agentshell_form_published_previous`, `_agentshell_form_revision`,
 `_agentshell_form_id`, `_agentshell_form_slug`, `_agentshell_form_version`
-and `_agentshell_form_meta` meta keys, the latter three registered with
-`revisions_enabled => true` where §5.8 says so; the
+and `_agentshell_form_meta` meta keys, the three definition keys registered
+with `revisions_enabled => true` where §5.8 says so; the
 `agentshell_form_challenges` and `agentshell_form_rate_limits` tables.
 
-**MCP.** None yet.
+**MCP.** None. No tool is added in this phase.
 
 **WordPress integration.** The post type registration, the `register_post_meta`
-calls, the activation hook that creates the tables and grants the
-capabilities, the uninstall handler that removes the tables and the options.
+calls, the activation hook that creates the tables and **registers** the two
+capabilities — granting `manage_agentshell_forms` to the administrator role
+and **not** granting `manage_agentshell_forms_submissions` to any role
+(§8.3) — and the uninstall handler that removes the tables and the options.
 
 **Security.** The validator is the boundary; unknown keys are refused by
 name; every length is bounded; the field-type registry is documented as a
-trust boundary; the capability split is set up so that
-`manage_agentshell_forms_submissions` is **not** granted to administrators
-by default (§8.3).
+trust boundary. The capability split is **established** here — the
+`manage_agentshell_forms_submissions` capability is registered, it is
+**not** granted to the administrator role, and the per-user grant mechanism
+of §8.3a is implemented — but the screens that use it are Phase 3's.
 
 **Migration.** None — this is the first version. The schema carries a
 `schema_version` so that a later version can be recognised and migrated.
@@ -2555,16 +2893,22 @@ by default (§8.3).
 field-type registry, the settings schema walk); `tests/forms-definition-test.php`
 (create, read, write, publish, discard, the compare-and-swap refusal, the
 version increment, the authoritative-row creation, the duplicate detection);
-`tests/forms-challenge-test.php` (the claim, the expiry, the retry
-replay); `tests/forms-rate-limit-test.php` (the reserve, the cap, the
-concurrency property).
+`tests/forms-concurrency-test.php` (the four named races of §9.6, each driven
+from a separate process); `tests/forms-challenge-test.php` (the claim, the
+expiry, the retry replay); `tests/forms-rate-limit-test.php` (the reserve, the
+cap, the concurrency property); `tests/forms-capabilities-test.php` (the
+capability is registered, it is not granted to the administrator role, and
+the per-user grant and revocation work).
 
 **Acceptance.** A form can be created, edited, published and discarded
 programmatically. An invalid definition is refused with a named error. A
 second writer with a stale revision is refused, and the working definition is
 unchanged. Two simultaneous initial writes produce exactly one authoritative
 row. The challenge is claimed exactly once. A rate-limit bucket never admits
-more than its limit.
+more than its limit. The administrator role does not hold
+`manage_agentshell_forms_submissions`, and a single user can be granted it
+without any role change. **No tool has been registered, and the documented
+tool count is unchanged.**
 
 #### Phase 2 — Rendering and insertion
 
@@ -2691,7 +3035,10 @@ other editor named. The status chip never says *Saved* for unsaved work.
 #### Phase 5 — The agent tool surface
 
 **Scope.** The twelve tools; the authorisation model; the audit rows; the
-count test extension; the documented count.
+count test extension; the documented count. The tool surface ships in the
+three groups of §8.2a: the seven form tools work, the metadata-only listing
+works, and the four entry tools are registered and refuse under the default
+`off` policy.
 
 **Reused.** The base tool class, the `agentshell_mcp_register_tools` filter,
 `Store::record_event()`, the two-part authority pattern, the transport's
@@ -2708,10 +3055,13 @@ argument redaction.
 **Security.** Read authority and destructive authority separated. The
 read authority is the **capability the principal may not hold**
 (`manage_agentshell_forms_submissions`), and `manage_options` is **not**
-accepted as a substitute; the explicit `authorize_personal_data` flag is
+accepted as a substitute; the `authorize_personal_data` acknowledgement is
 required in addition, as a deliberation and audit mechanism rather than as
-the boundary (§8.3). `confirm` on destruction; the per-post `delete_post`
-re-check at the moment of deletion; the secret never returned.
+the boundary (§8.3). The policy switch defaults to `off`, so the four entry
+tools refuse until the operator turns it on (§8.2a). `confirm` on
+destruction; the per-post `delete_post` re-check at the moment of deletion;
+the secret never returned. **No tool grants a capability and no tool changes
+the policy** (§8.7), so an agent cannot widen its own authority.
 
 **Migration.** The tool-count test is extended to three plugin files, and the
 documented count is updated in the two places the documentation gate checks.
@@ -2720,13 +3070,16 @@ documented count is updated in the two places the documentation gate checks.
 its result shape, its authorisation behaviour, its audit rows);
 `tests/forms-personal-data-test.php` (a principal **without**
 `manage_agentshell_forms_submissions` is refused, `manage_options` alone is
-not accepted as a substitute, the `off` policy refuses everything, the
-metadata-only listing never contains a field value, and a refusal is audited).
+not accepted as a substitute, the `off` policy refuses the four entry tools,
+the metadata-only listing never contains a field value, and a refusal is
+audited).
 
 **Acceptance.** Every tool is reachable by name and returns a documented
-shape. A listing never contains a field value. An agent whose principal
-lacks the submissions capability is refused, and the refusal is audited. The
-documented count equals the registry's.
+shape. A listing never contains a field value. Under the default policy an
+agent is **refused** when it tries to read a submission's contents, and the
+refusal is audited; with the policy changed to `capability`, an agent whose
+principal lacks the submissions capability is still refused. The documented
+count equals the registry's.
 
 #### Phase 6 — The AgentShell integration and release packaging
 
@@ -2857,7 +3210,11 @@ stubs has not been tested.
 | The privacy exporter and eraser hooks | `tests/forms-privacy-test.php` | live |
 | Permission enforcement on every route | `tests/forms-permissions-test.php` | unit |
 | MCP access boundaries, and the personal-data capability | `tests/forms-tools-test.php` | unit |
+| An entry tool is refused under the default `off` policy | `tests/forms-personal-data-test.php` | unit |
 | A principal without the submissions capability is refused | `tests/forms-personal-data-test.php` | unit |
+| The per-user grant and revocation, and that the role is not granted | `tests/forms-capabilities-test.php` | unit |
+| The grant action is refused for a non-cookie-authenticated principal | `tests/forms-capabilities-test.php` | unit |
+| The transport timeout is set, and it is shorter than the claim TTL | `tests/forms-notification-test.php` | unit |
 | Form versioning | `tests/forms-definition-test.php` | unit |
 | Native revision registration and the revision trigger | `tests/forms-revisions-test.php` | unit |
 | The builder's models | `tests/forms-builder-test.js` | node |
@@ -2938,11 +3295,13 @@ demonstration rather than an assertion:
 11. An editor who changes the form without publishing sees no change on the
     site, and the status chip says the work is unsaved.
 12. An agent lists the forms, reads one, changes it, and publishes it — and an
-    agent whose principal **lacks** `manage_agentshell_forms_submissions` is
-    **refused** when it tries to read a submission's contents, with the
-    refusal audited (§8.3). `manage_options` alone is not accepted as a
-    substitute, and the explicit `authorize_personal_data` flag is required
-    in addition.
+    agent that tries to read a submission's contents is **refused by
+    default**, because the site's personal-data policy is `off` and the
+    refusal is audited (§8.2a, §8.3). With the policy changed to
+    `capability`, the same agent is **still refused**, because its principal
+    does not hold `manage_agentshell_forms_submissions`; and `manage_options`
+    alone is not accepted as a substitute. The metadata-only listing remains
+    available throughout and never contains a field value.
 13. The release archive contains the plugin, and the checker refuses an
     archive that does not.
 14. The whole suite is green, on the disposable environment, with no leaked
@@ -2961,7 +3320,7 @@ demonstration rather than an assertion:
 | The post-type choice conflicts with a future WordPress direction | Low | A migration | The definition is a JSON document in meta, which is portable to a table or to a plugin's own storage without changing the schema |
 | Turnstile becomes a single point of failure for a site's forms | Medium | Submissions stop during a Cloudflare outage | The policy is per form and explicit; `optional` is available; the failure is recorded so the operator can see the cause; the builder states the trade-off in the panel where the choice is made |
 | The submission pipeline accumulates a monolith | Medium | It becomes hard to reason about and hard to test | The pipeline is a sequence of small, separately testable stages, each with one responsibility, and the stages are the subject of the unit suites |
-| An agent with `manage_options` reads personal data it should not | Medium | A privacy incident | The binding control is the **capability the principal may not hold** (§8.3): `manage_agentshell_forms_submissions` is not granted to administrators, `manage_options` is not accepted as a substitute, and the explicit flag is required in addition. Listings are metadata-only by construction, and every read and every refusal is audited. The residual risk is the deployment: if the operator grants the capability to the administrator role, the separation collapses back to the flag — which is why Q12 asks the owner to confirm the deployment |
+| An agent with `manage_options` reads personal data it should not | Medium | A privacy incident | The binding controls are, in order: the policy switch is **`off` by default**, so the entry tools refuse whatever the principal holds (§8.2a); the underlying control is the **capability the principal may not hold** (§8.3) — `manage_agentshell_forms_submissions` is not granted to the administrator role, and `manage_options` is not accepted as a substitute; the `authorize_personal_data` acknowledgement is required in addition. Listings are metadata-only by construction, and every read and every refusal is audited. The residual risk is the **deployment**: if the operator grants the capability to their own administrator account *and* runs the agent under that same account, the agent inherits it — principal-level isolation needs separate accounts (§8.3a, Limitation 1) |
 | The notification guarantee is stronger than the transport can give | Medium | A duplicate email reaches an administrator | The design says **at-least-once**, never exactly-once (§11.6); the attempt count is small with a long backoff; every message carries the submission's identifier in the body and in a `Message-ID`; and the attempt history is on the submission so a duplicate is recognisable |
 | A duplicate definition row appears through a path the plugin does not control | Low | An ambiguous definition | The authoritative-row creation is serialised by a named advisory lock, and **every read counts the rows**: a count above one is refused and audited rather than silently resolved (§9.6) |
 | The count test is not extended and the documented count goes stale | **High if forgotten** | The agent-facing documentation lies about the tool surface | The count test is a *build failure*, not a note; the phase that adds the tools is the phase that extends the test, and the extension is in the same PR |
@@ -2974,10 +3333,14 @@ demonstration rather than an assertion:
 These are genuinely open. Each is listed with the decision that has to be
 made, who should make it, and when.
 
+**Q11 to Q14 are no longer open.** The owner has decided them, and the
+decisions are recorded in §17 and implemented in §8.2, §8.3, §8.3a, §11.6a
+and §5.1. They are listed here only so that the numbering stays stable.
+
 | # | Question | Why it is open | Proposed default | Decided by |
 |---|---|---|---|---|
 | Q1 | Should the site key and secret be site-level or form-level? | A site with several forms may want different Turnstile configurations | **Site-level** configuration, with the *policy* (`disabled`/`optional`/`required`) per form. One secret, one verification path, many policies | Before Phase 3 |
-| Q2 | Should a submission be visible to an editor who can edit pages? | The capability split is proposed, but the default mapping to roles is a site decision | **Not by default.** The capability is *not* granted to administrators, so it is granted only to a role the operator creates — the deployment §8.3 describes. Administrators who also need it can have it granted explicitly | Before Phase 3 |
+| Q2 | Should a submission be visible to an editor who can edit pages? | The capability split is proposed, but the default mapping to roles is a site decision | **Not by default.** The capability is *not* granted to the administrator role; it is granted **per user** through the procedure in §8.3a, so one person can hold it without a role change and without a second account | Before Phase 3 |
 | Q3 | What is the site-wide default retention period? | It is a policy decision with a legal dimension | 90 days, with the operator able to change it | Before Phase 3 |
 | Q4 | Should the notification body be plain text, HTML, or both? | HTML is friendlier; plain text is safer and always readable | **Plain text only**, and this is now settled on technical grounds rather than preference: `wp_mail()` sends one message and cannot emit `multipart/alternative`, so "both" would mean hand-rolling MIME inside the plugin (§11.5). If HTML is wanted later, the supported route is a mail plugin that adds the HTML part to `wp_mail()`, not a MIME builder here | Before Phase 3 |
 | Q5 | Should the Turnstile `action` be per form or per site? | Per form is stricter; per site is simpler | Per form, and the action is verified on the response | Before Phase 3 |
@@ -2986,10 +3349,10 @@ made, who should make it, and when.
 | Q8 | Should the builder support a form template gallery? | A convenience that could pull in a definition from an untrusted source | No gallery. Templates are defined in the plugin's own code, where they are reviewable | Before Phase 4 |
 | Q9 | Should the post type's `capability_type` be a single capability or a set? | WordPress's model is per-type capabilities | A set — `edit_agentshell_form`, `read_agentshell_form`, `delete_agentshell_form` for the definition type, and the parallel set for `agentshell_entry` — mapped to the plugin's own capabilities (§8.3) | Before Phase 1 |
 | Q10 | Should the submission's source address be a salted HMAC or a plain hash? | Both are irreversible in practice; an HMAC is stronger | HMAC with a per-site salt, truncated. A plain hash of an IPv4 address is trivially reversible by enumeration | Before Phase 1 |
-| Q11 | **Should the personal-data boundary be (A) a capability, (B) a separate credential, or (C) a human approval?** | §8.3 proposes all three and recommends (A). They are not mutually exclusive, and the operating cost differs: (B) needs a second secret to provision and rotate; (C) needs an approval UI | **(A) as the default**, with (B) available for an operator who wants a hard second trust domain, and (C) deferred. The owner should confirm whether (B) is wanted in the first release | Before Phase 5 |
-| Q12 | **Should `manage_agentshell_forms_submissions` be granted to administrators after all?** | This is the deployment decision that makes (A) bite. If it is granted to administrators, every MCP agent holds it, because the transport requires `manage_options` — and the separation collapses back to the flag | **No**, by default. The operator grants it to a dedicated role if the site has a data steward. The owner should confirm that this is acceptable for their own workflow, because it means a form-editing agent cannot read submissions **at all** | Before Phase 3 |
-| Q13 | **What is the claim TTL for an in-flight notification?** | A claim older than the TTL is reclaimed and retried. Too short and a slow send is duplicated; too long and a crashed worker's notification stalls | 15 minutes, with the backoff of §11.6. The owner should confirm it against the slowest realistic mail transport | Before Phase 3 |
-| Q14 | **Should a form's slug be frozen at publication, or stay mutable with a warning?** | Freezing breaks a shortcode when the operator renames; staying mutable breaks it silently | **Frozen at publication** (§5.1). The alternative — mutable with a warning and an "update the pages that use it" report — is more work and more failure modes | Before Phase 2 |
+
+**Nothing in Q1–Q10 blocks Phase 1.** Each of them is a policy decision that
+the code can carry a default for and that the operator can change later.
+Phase 1 is ready to be built on the defaults above.
 
 ### 15.3 Alternatives rejected
 
@@ -3073,11 +3436,11 @@ was accepted and is unchanged; these are corrections to its details.
 | # | The issue raised | The revised decision | Where |
 |---|---|---|---|
 | **1** | `agentshell_submission` is 21 characters and exceeds WordPress's 20-character post type key limit | The submission post type is **`agentshell_entry`** (16 characters). `register_post_type()` returns `WP_Error( 'post_type_length_invalid' )` above 20, and `wp_posts.post_type` is `varchar(20)`, so the original name would also have been truncated in the database. The form type is `agentshell_form` (15). The capability type follows the same name | §3.3, §6.2, F13 |
-| **2** | The examples used `f_` + 32 hex, the validator required 32 hex, the schema column was `varchar(32)` and the shortcode used `contact` | **One immutable internal identifier**: exactly 32 lowercase hexadecimal characters, no prefix, stored in a `char(32)` column. **One optional human-readable slug**, `^[a-z0-9][a-z0-9-]{0,63}$`, frozen once the form is published, and refused by the validator if it looks like an internal identifier so the two namespaces cannot collide. The shortcode takes exactly one of `id` or `slug`; the API and the MCP tools use the identifier; the schema column matches | §5.1, §5.5, §6.2, §7.1, §7.3 |
+| **2** | The examples used `f_` + 32 hex, the validator required 32 hex, the schema column was `varchar(32)` and the shortcode used `contact` | **One immutable internal identifier**: exactly 32 lowercase hexadecimal characters, no prefix, stored in a `char(32)` column. **One optional human-readable slug**, `^[a-z0-9][a-z0-9-]{0,63}$`, frozen after the form's first publication, and refused by the validator if it looks like an internal identifier so the two namespaces cannot collide. The shortcode takes exactly one of `id` or `slug`; the API and the MCP tools use the identifier; the schema column matches | §5.1, §5.5, §6.2, §7.1, §7.3 |
 | **3** | WordPress does not automatically version every custom post-meta field | **§5.8 now documents the whole arrangement**: `register_post_meta()` with `revisions_enabled => true` for the three definition keys (the default is `false`), the post type declaring `revisions` support, and the explicit `wp_save_post_revision()` call — with the `wp_save_post_revision_post_has_changed` filter — because `_wp_post_revision_fields()` is only `post_title`/`post_content`/`post_excerpt` and a meta-only change triggers nothing. Native revisions are named as a **secondary, browsable** record, and the five artefacts (version, working, published, previous publication, working-revision counter) are told apart in one table | §5.6, §5.8, F5 |
 | **4** | The compare-and-swap relied on an unstated uniqueness guarantee for `wp_postmeta` | `wp_postmeta` has **no** unique key on `(post_id, meta_key)`; `add_post_meta()` is a `SELECT COUNT` then an `INSERT`, and `update_post_meta()` updates *every* matching row. The design now rests on **`meta_id`**, which is a primary key: a named advisory lock for authoritative-row creation, a row-count check that **refuses** a duplicate rather than picking one, `meta_id`-scoped value-guarded updates, and a publication transaction covering the three rows together. Four named concurrency tests are specified | §9.6, F14 |
 | **5** | An unbound public challenge does not provide complete CSRF protection | §7.1 now separates **replay prevention** (yes), **duplicate suppression** (yes), **cross-origin browser abuse** (partly — the same-origin policy, not a secret) and **server-side automated abuse** (no). The challenge is a protocol-correctness control, not a spam control. The rate limiter gained an exact algorithm: a fixed window per (scope, subject, form), a reserve statement with the limit baked into the `IF`, and the proof that **admissions never exceed the limit** while under-admission is possible. A separate table replaces the mixed one; the **retry replay** is specified (a consumed challenge whose submission exists replays the success response); challenge expiry, denial-of-service and the genuine-retry policy are covered | §6.3, §6.3a, §6.3b, §6.3c, §7.1, F16 |
-| **6** | An agent with `manage_options` can supply `authorize_personal_data: true` itself | §8.3 now says plainly that an explicit flag is **a deliberation and audit mechanism, not a permission boundary**, and proposes three enforceable mechanisms: a **capability the principal may not hold** (recommended; requires that `manage_agentshell_forms_submissions` is *not* granted to administrators, with the deployment spelled out), a **separate credential**, and an **out-of-band human approval**. A site policy switch (`off` / `capability` / `credential`) makes the posture explicit. Metadata-only listings and audit rows survive every mode. §8.2 is now explicitly marked **not committed**, with provisional names and an unchanged tool count | §8.2, §8.3, §10.2 |
+| **6** | An agent with `manage_options` can supply `authorize_personal_data: true` itself | §8.3 now says plainly that the flag is a **deliberation and audit mechanism, not a permission boundary**, and names the capability the principal may not hold as the MVP's mechanism; the separate credential and the human approval are deferred extension points (§8.3b). A site policy switch (`off` / `capability` / `credential`) makes the posture explicit, with **`off` as the default** and the four entry tools refusing under it (§8.2a). §8.3a supplies the per-user grant and the setup procedure, and states both limitations the mechanism does not reach. Metadata-only listings and audit rows survive every mode. §8.2 is explicitly marked **not committed**, with provisional names and an unchanged tool count | §8.2, §8.2a, §8.3, §8.3a, §10.2 |
 | **7** | Reusing a submission row does not guarantee exactly-once email delivery | §11.6 now specifies the **notification record** (`pending` / `claimed` / `accepted` / `failed` / `uncertain` / `exhausted`), an **atomic claim** by a guarded update so two workers cannot send concurrently, **five attempts** with a stated backoff, and a **reconciliation** that reclaims a claim older than the TTL. The guarantee is named honestly: **at-least-once, not exactly-once**, with the mitigations listed. `wp_mail()` returning `true` is now defined as **accepted by the sending mechanism** — never *delivered* — and the vocabulary follows. **Plain text is the MVP default and the only MVP format**, on the technical ground that `wp_mail()` cannot emit `multipart/alternative` | §11.5, §11.6, F15 |
 | **8a** | Turnstile failures were said to be recorded on submissions that are intentionally refused before storage | The two paths are now separated: a `required` form's refusal produces **no submission row** and is recorded in a new bounded **rejection log** (no personal data, with the volume recorded exactly by the counters); an `optional` form's failure **is** stored and carries `unverified` or `spam` on the submission | §11.2, §11.2a, §10.2 |
 | **8b** | A form definition alone was called a complete UK GDPR Article 30 record | The definition is now described as **useful processing metadata** and as **input to** a record of processing, not one. The section names what a record of processing covers that the definition does not, and states plainly that compliance is the controller's judgement and is unaffected by the plugin | §6.4, §10.3 |
@@ -3089,6 +3452,117 @@ the verification strategy are all as accepted. The corrections are to
 identifiers, to the mechanisms inside the storage and notification paths, to
 the permission model's enforcement, and to the documentation's accuracy about
 what it can claim.
+
+---
+
+## 17. The owner's final decisions
+
+The design was accepted subject to four policy decisions. They are recorded
+here in the owner's own terms, with the place in this document where each one
+lives, because a design record that records a decision must also record
+where it was implemented.
+
+### Q11 — The personal-data boundary
+
+**Decided.** WordPress custom capabilities are the primary authorisation
+mechanism. No second credential system and no human-approval workflow is
+built for the MVP. MCP submission-content access is **disabled by default**,
+and no agent principal receives automatic access to personal submission
+data. The architecture stays extensible for separately authorised agent
+principals later. `authorize_personal_data: true` remains an **audit
+acknowledgement**, not a permission grant.
+
+**Where it lives.** §8.3 now names the capability model as the MVP's
+mechanism and marks the separate credential and the human approval as
+deferred extension points (§8.3b), not as alternatives the operator chooses
+between. The policy switch's default is `off` (§8.3), the four entry tools
+refuse under it (§8.2a), and the `authorize_personal_data` flag is described
+as an acknowledgement throughout (§8.2a, §8.3). The separately authorised
+principal is §8.3b's first paragraph.
+
+**What it changed from the reviewed draft.** The draft recommended (A) with
+(B) "available as a second trust domain", and made `capability` the policy
+default. Both are reversed: the default is now `off`, and (B) is deferred
+rather than offered.
+
+### Q12 — Administrator access
+
+**Decided.** `manage_agentshell_forms_submissions` is **not** automatically
+granted to the administrator role. Explicit **per-user** assignment is
+supported, so the site owner can reach the submissions interface without a
+second WordPress account. A simple, permission-checked setup procedure is
+provided. An agent and a human sharing a WordPress principal share that
+principal's capabilities, and separate accounts are necessary for
+principal-level isolation. The MCP policy switch is **not** claimed to
+protect data accessed through unrelated authenticated WordPress interfaces.
+
+**Where it lives.** §8.3a is the procedure: the per-user grant through
+`WP_User::add_cap()`, the "Grant me access to form submissions" action, the
+access list with revocation, and the three conditions that make the grant
+action unreachable by the agent — the capability check, the cookie-session
+requirement, and the nonce. **Limitation 1** (§8.3a) states the shared-
+principal consequence and the need for separate accounts.
+**Limitation 2** (§8.3a) states exactly what the policy switch does not
+govern.
+
+**What it changed from the reviewed draft.** The draft proposed creating a
+dedicated "Forms data steward" **role** and granting the capability to it.
+Per-user assignment replaces that: it satisfies both halves of the decision —
+the role is untouched, and the site owner needs no second account — without
+asking the operator to design a role.
+
+### Q13 — Notification claims
+
+**Decided.** The **15-minute claim TTL** is accepted for the MVP. Transport
+timeouts are bounded and **shorter than the claim lifetime**. The atomic
+claim, the five-attempt limit, the backoff and the uncertain-outcome
+reconciliation are preserved.
+
+**Where it lives.** §11.6a is the new section: the claim TTL at 900 seconds,
+the attempt budget at 60 seconds by default, the invariant that the
+transport timeout is **strictly** shorter than the claim TTL (and the plugin
+refuses a configuration that breaks it, by name), the `phpmailer_init` hook
+as the supported way to set the transport's `Timeout`, and the elapsed-time
+classification that records an over-budget send as `uncertain` rather than
+`accepted`. The atomic claim, the five attempts, the backoff and the
+reconciler are unchanged in §11.6.
+
+**What it changed from the reviewed draft.** The draft named a fifteen-minute
+TTL and left the transport timeout to the transport. The timeout is now the
+plugin's own bounded value, set explicitly rather than inherited from a
+default, and the relationship between the two clocks is an enforced
+invariant rather than an aspiration.
+
+### Q14 — Slugs
+
+**Decided.** Slugs are frozen after the **first** publication. Immutable
+internal form identifiers are used for long-lived references.
+
+**Where it lives.** §5.1 states the freeze and the fact that it is triggered
+by the *first* publication and is permanent; the validator rule is
+`form_slug_frozen` (§5.5); and §5.1 names the internal identifier as the
+long-lived reference — the API path segment, the MCP tools, a submission's
+`form_id`, a notification's `Message-ID`, and any external system that stores
+a reference.
+
+### The next step: Phase 1
+
+**Decided.** Once the design is approved and integrated, Phase 1 begins as a
+**separately reviewable implementation PR from the new `main`**. It
+establishes the plugin foundation, the authoritative schema, the post types,
+the storage invariants, the validation and the concurrency controls. **No
+visual builder, no submission notifications, no MCP tool additions.**
+
+**Where it lives.** §13.1 states the phase scope and the three exclusions;
+§13.2's Phase 1 entry is the detailed contract, with its own acceptance
+criteria — including that **no tool is registered and the documented tool
+count is unchanged**. §15.4's six existing-code changes are unaffected: all
+six are Phase 5 or Phase 6 work, except the `AGENTS.md` §8 pointer row,
+which this PR carries.
+
+**Nothing in this document is implementation.** This PR remains
+documentation-only. No table, no endpoint, no capability and no tool exists
+because this document says so.
 
 ---
 
