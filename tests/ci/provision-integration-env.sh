@@ -242,7 +242,20 @@ ln -sfn "$CI_REPO" "$CI_WP_DIR/wp-content/themes/agent-shell-theme"
 ln -sfn "$CI_REPO/agentshell-mcp"   "$CI_WP_DIR/wp-content/plugins/agentshell-mcp"
 ln -sfn "$CI_REPO/agentshell-blocks" "$CI_WP_DIR/wp-content/plugins/agentshell-blocks"
 
-wp_cli plugin activate agentshell-mcp agentshell-blocks --path="$CI_WP_DIR" --allow-root >/dev/null
+# The forms plugin is standalone: it depends on nothing in AgentShell and must
+# work on plain WordPress. It is linked *and* activated so the forms suites run
+# against a normally-installed plugin (a plugin loaded late, after `init`, would
+# register its post types too late to be representative).
+#
+# Activation is safe for every other suite in the run: it creates two empty
+# tables and two post types, grants one capability to the administrator role,
+# and creates no content. No suite in the run enumerates post types, tables or
+# active plugins — the suite that owns that surface is
+# `tests/forms-lifecycle-test.php`, which activates, deactivates and uninstalls
+# the plugin itself and restores the bed when it is done.
+ln -sfn "$CI_REPO/agentshell-forms" "$CI_WP_DIR/wp-content/plugins/agentshell-forms"
+
+wp_cli plugin activate agentshell-mcp agentshell-blocks agentshell-forms --path="$CI_WP_DIR" --allow-root >/dev/null
 wp_cli theme activate agent-shell-theme --path="$CI_WP_DIR" --allow-root >/dev/null
 
 # Pretty permalinks are not cosmetic here: the harness's HTTP identity

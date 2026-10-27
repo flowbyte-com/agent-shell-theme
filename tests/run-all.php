@@ -1061,6 +1061,55 @@ $suites = array(
         'path'     => __DIR__ . '/run-mobile-zone-visibility.php',
         'requires' => 'unit',
     ),
+
+    // ── AgentShell Forms, Phase 1 ───────────────────────────────────────────
+    //
+    // The standalone forms plugin (agentshell-forms). It depends on nothing in
+    // AgentShell and works on plain WordPress, so these suites deliberately run
+    // against the same disposable bed the other destructive suites use rather
+    // than against the theme.
+
+    // The authoritative schema: every §5.5 refusal by name, the field-type
+    // registry, and the settings walk that stops the validator, the builder and
+    // the renderer drifting apart. Pure functions, no database.
+    'forms-schema' => array(
+        'path'     => __DIR__ . '/forms-schema-test.php',
+        'requires' => 'unit',
+    ),
+    // The storage invariants against real rows: one authoritative row per key
+    // under an advisory lock, duplicate-meta detection, the `meta_id`-scoped
+    // compare-and-swap, the publication transaction, and native revisions.
+    // Destructive: it writes to the test site.
+    'forms-storage' => array(
+        'path'     => __DIR__ . '/forms-storage-test.php',
+        'requires' => 'destructive',
+    ),
+    // Six races, each contender a separate process with its own MySQL
+    // connection, released together by a file barrier. Destructive.
+    'forms-concurrency' => array(
+        'path'     => __DIR__ . '/forms-concurrency-test.php',
+        'requires' => 'destructive',
+    ),
+    // The challenge and rate-limit stores: hashing, consume-once, expiry, the
+    // counter ceiling, window rollover and pruning. The concurrent halves live
+    // in `forms-concurrency`. Destructive.
+    'forms-protocol' => array(
+        'path'     => __DIR__ . '/forms-protocol-test.php',
+        'requires' => 'destructive',
+    ),
+    // Two permission domains, the per-user grant that keeps them separate, and
+    // the `admin_post` gate an application password cannot pass. Destructive:
+    // it creates and deletes users, and it runs the real handlers.
+    'forms-capabilities' => array(
+        'path'     => __DIR__ . '/forms-capabilities-test.php',
+        'requires' => 'destructive',
+    ),
+    // Activation, deactivation and the two-constant uninstall. Destructive: it
+    // drops and recreates the plugin's tables.
+    'forms-lifecycle' => array(
+        'path'     => __DIR__ . '/forms-lifecycle-test.php',
+        'requires' => 'destructive',
+    ),
 );
 
 // ── the environment, resolved once ───────────────────────────────────────────
