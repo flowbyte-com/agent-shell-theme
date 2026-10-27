@@ -1935,6 +1935,18 @@ grant — are the exception, because they describe a refusal rather than a state
 change; they retry outside the transaction and report whether the record
 landed.
 
+**The ring's append is serialised before it touches the row.** The ring is one
+option row, and creating it is an `INSERT` into a `UNIQUE` name: concurrent
+inserts of the same *not-yet-existing* row deadlock in InnoDB, because each
+transaction takes the same gap lock and then tries to insert into it. Measured
+on a real MySQL, six concurrent creations produced four deadlock victims, and
+each victim had to refuse its creation — a state change refused because
+somebody else was being audited at the same moment. A named advisory lock
+scoped to the options table name serialises the section, which makes the
+ring's creation a single-writer event; the append inside it is a locking read
+and one compare-and-swap. Losing an entry and corrupting the ring are both
+raced in `forms-concurrency` (I, I2, J), not merely reasoned about.
+
 **A published definition is never silently overwritten.** The previous
 published definition is kept in `_agentshell_form_published_previous`, so a
 publish can be undone by a human in one step. Native WordPress revisions
