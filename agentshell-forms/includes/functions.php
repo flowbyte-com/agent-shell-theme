@@ -2,11 +2,10 @@
 /**
  * The plugin's documented PHP API.
  *
- * §4.3 of the design names a small, stable surface so that other code can read
- * and validate forms without touching the store's internals. Four of the five
- * functions belong to Phase 1; `agentshell_forms_render()` is Phase 2 and is
- * deliberately absent, because a renderer that does not exist cannot be
- * half-implemented.
+ * §4.3 of the design names a small, stable surface so that other code can read,
+ * validate and render forms without touching the store's internals.
+ * `agentshell_forms_render()` is the Phase 2 addition; the rest are the Phase 1
+ * readers. There are no other global functions in this plugin.
  *
  * These are **global** functions on purpose, and they are the only part of the
  * plugin that is global. Everything else lives under the `AgentShell_Forms`
@@ -96,4 +95,46 @@ function agentshell_forms_get_published( $form_id ) {
 	}
 
 	return is_array( $state['published'] ) ? $state['published'] : null;
+}
+
+/**
+ * Render a form.
+ *
+ * This is the one rendering entry point other code should use. The shortcode,
+ * the widget and this function all call `Form_Renderer::render()`, so a caller
+ * that renders a form gets exactly what a visitor sees — the **published**
+ * definition, never the working one.
+ *
+ * `$form_id` may be the internal identifier (32 lowercase hexadecimal
+ * characters), a post id, or — as a convenience for parity with the shortcode —
+ * the form's slug.
+ *
+ * Returns the form's HTML, or an empty string when the form is unknown,
+ * unpublished, trashed or invalid. An actor who can manage forms receives a
+ * short diagnostic in place of the form, and that request is marked
+ * uncacheable; a visitor receives nothing, so a missing form is not an
+ * information leak and not a visible error page.
+ *
+ * The returned markup is already escaped and is safe to echo. Callers must not
+ * escape it again, and must not treat it as untrusted text.
+ *
+ * Recognised `$args`:
+ *
+ * | Key | Default | Meaning |
+ * |---|---|---|
+ * | `title` | `'show'` | `show`/`hide`: render the form's name as a heading |
+ * | `heading_level` | `2` | `2`–`6` |
+ * | `class` | `''` | Extra classes on the `<form>` |
+ * | `values` | `array()` | Values to re-populate (Phase 3's rejected submissions) |
+ * | `errors` | `array()` | `field key => message`, rendered as a summary and per field |
+ * | `status` | `''` | Text for the status region |
+ *
+ * @param string|int $form_id Internal identifier, slug or post id.
+ * @param array      $args    Rendering arguments.
+ * @return string
+ */
+function agentshell_forms_render( $form_id, array $args = array() ) {
+	$args['context'] = isset( $args['context'] ) ? (string) $args['context'] : 'api';
+
+	return \AgentShell_Forms\Form_Renderer::render( $form_id, $args );
 }

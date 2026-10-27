@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: AgentShell Forms
- * Description: Native WordPress forms — definitions, storage invariants and protocol state. Theme-independent and agent-transport-independent.
+ * Description: Native WordPress forms — definitions, storage, protocol state and the accessible front-end renderer. Theme-independent and agent-transport-independent.
  * Version: 0.1.0
  * Requires at least: 6.0
  * Requires PHP: 7.4
@@ -11,10 +11,13 @@
  *
  * ## What this plugin is, and what it is not
  *
- * This is **Phase 1** of the forms system described in
- * `docs/AGENTSHELL-FORMS-DESIGN.md` (§13.2): the plugin foundation, the
- * authoritative schema, the two post types, the storage invariants, the
- * validation and the concurrency controls.
+ * This is **Phase 1 and Phase 2** of the forms system described in
+ * `docs/AGENTSHELL-FORMS-DESIGN.md` (§13.2). Phase 1 is the plugin
+ * foundation: the authoritative schema, the two post types, the storage
+ * invariants, the validation and the concurrency controls. Phase 2 is
+ * rendering and insertion: the server-side renderer, the `[agentshell_form]`
+ * shortcode, the widget, the accessible markup and the cache-safe challenge
+ * provisioning that lets a published form live on a cached page.
  *
  * It deliberately does **not** contain:
  *
@@ -23,6 +26,10 @@
  *   - email notifications or Turnstile verification (Phase 3);
  *   - any MCP tool (Phase 5) — the documented tool count is unchanged;
  *   - any AgentShell zone integration (Phase 6).
+ *
+ * A rendered form has no submission handler yet: the markup is complete and
+ * the challenge is provisioned, but there is deliberately no `action`
+ * attribute pointing at a route that does not exist. Phase 3 adds both.
  *
  * ## The one dependency direction
  *
@@ -78,6 +85,19 @@ require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-definition.php';
 require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-challenges.php';
 require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-rate-limits.php';
 
+/*
+ * Phase 2 — rendering and insertion.
+ *
+ * The renderer is required before the two front doors that delegate to it, and
+ * the challenge endpoint before the renderer needs its route constants. Order
+ * matters only for readability here: PHP resolves class references at call
+ * time, not at include time.
+ */
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-renderer.php';
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-shortcode.php';
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-widget.php';
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-challenge-endpoint.php';
+
 // The documented PHP API (§4.3). Loaded last, because it is the only global
 // surface and it delegates to the classes above.
 require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/functions.php';
@@ -131,3 +151,27 @@ add_action( 'agentshell_forms_prune', array( 'AgentShell_Forms\\Form_Rate_Limits
  */
 add_action( 'admin_post_agentshell_forms_grant_submissions', array( 'AgentShell_Forms\\Form_Capabilities', 'handle_grant' ) );
 add_action( 'admin_post_agentshell_forms_revoke_submissions', array( 'AgentShell_Forms\\Form_Capabilities', 'handle_revoke' ) );
+
+/*
+ * The three insertion seams (Phase 2).
+ *
+ * Each is registered here, in the bootstrap, and each delegates to
+ * `Form_Renderer::render()`. There is no second renderer and no second set of
+ * rules.
+ *
+ * The shortcode is registered on `init` because that is when WordPress expects
+ * it and when every plugin's post types exist, so a shortcode that resolves a
+ * form by slug is not racing the registration of the post type it queries.
+ */
+add_action( 'init', array( 'AgentShell_Forms\\Form_Shortcode', 'register' ), 10 );
+add_action( 'widgets_init', 'AgentShell_Forms\\agentshell_forms_register_widget' );
+
+/*
+ * The challenge route.
+ *
+ * A separate, public route, not a submission route: it mints a token per
+ * visitor for a page that may have been served from a cache, and it does nothing
+ * else (§"Cache-safe challenge design"). Phase 3 adds the submission route next
+ * to it.
+ */
+add_action( 'rest_api_init', array( 'AgentShell_Forms\\Form_Challenge_Endpoint', 'register' ) );

@@ -1119,6 +1119,30 @@ $suites = array(
         'path'     => __DIR__ . '/forms-lifecycle-test.php',
         'requires' => 'destructive',
     ),
+
+    // ── AgentShell Forms, Phase 2 ───────────────────────────────────────────
+
+    // The renderer's markup, escaping and accessibility contract for all ten
+    // field types, plus the published-only selection rule. Pure functions: no
+    // database, no WordPress.
+    'forms-render' => array(
+        'path'     => __DIR__ . '/forms-render-test.php',
+        'requires' => 'unit',
+    ),
+    // The same markup in a real browser: contrast, focus, per-instance
+    // challenge provisioning and the bfcache refresh. Node and a browser are
+    // required; either one missing is a skip here and a failure in CI.
+    'forms-render-browser' => array(
+        'path'     => __DIR__ . '/run-forms-render-browser.php',
+        'requires' => 'unit',
+    ),
+    // The shortcode, the widget, the documented API and the public challenge
+    // route against a real WordPress: publish, edit without publishing, render,
+    // mint, rate-limit, clean up. Destructive.
+    'forms-render-live' => array(
+        'path'     => __DIR__ . '/forms-render-live-test.php',
+        'requires' => 'destructive',
+    ),
 );
 
 // ── the environment, resolved once ───────────────────────────────────────────

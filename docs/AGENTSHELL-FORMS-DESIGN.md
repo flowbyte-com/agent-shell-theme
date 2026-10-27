@@ -1303,12 +1303,115 @@ The body:
 (§5.1). The slug is not accepted here: the request body names the form
 unambiguously, and the form's own HTML already carries the identifier.
 
-**The challenge token.** When a form is rendered, the plugin creates a random
-32-byte token, stores its SHA-256 in the challenge table with the form's
-internal identifier, the published version, the hashed source address and an
-expiry (two hours by default), and renders the token into a hidden input. On
-submit, the row is **claimed** by the guarded update in §6.3a; the
-affected-row count decides whether this is the first use.
+**The challenge token.** The plugin creates a random 32-byte token, stores its
+SHA-256 in the challenge table with the form's internal identifier, the
+published version, the hashed source address and an expiry (two hours by
+default), and puts the token into a hidden input **in the browser, after the
+page has been delivered** — never into the page's HTML. On submit, the row is
+**claimed** by the guarded update in §6.3a; the affected-row count decides
+whether this is the first use.
+
+> **Changed in Phase 2, and why.** The original wording said the token is
+> rendered into the hidden input with the form. That is incompatible with page
+> caching and with a CDN, which is to say with most real sites: the first
+> visitor served a cached page would spend the token, and every visitor after
+> them would present a token that was already claimed. The mechanism was
+> therefore moved out of the HTML and into a public mint route, and the design
+> record for that decision is §7.1a. The rest of this section — the claim, the
+> replay rules, the retry behaviour — is unchanged and is what Phase 3 builds.
+
+### 7.1a Cache-safe challenge provisioning (Phase 2, implemented)
+
+A challenge is single-use and a page is not, so the two cannot live in the same
+place. This subsection records the investigation, the mechanism that was
+chosen, and what it costs.
+
+**The problem, stated as a failure.** If the token is written into the HTML:
+
+| Situation | What happens |
+|---|---|
+| A page cache (plugin, host, or `Cache-Control` at the edge) holds the form page | Every visitor receives the same token. The first to submit spends it; every later visitor's submission is either a replayed success or a refusal — and neither is their message |
+| A CDN in front of the site | The same failure, one hop further out, and *not* fixable by the application: a server that "does not cache" can still be cached by something that never asks it |
+| A page with the same form twice | Two hidden inputs, and no way for the server to know which instance a submission came from |
+| A visitor presses Back | The browser may restore the page — token included — from the bfcache, where it has already been spent |
+
+Making the page uncacheable is the other way out, and it is not acceptable: a
+contact page is a page, and a site whose contact page cannot be cached has
+bought a protocol detail with a tax on every visitor.
+
+**What was rejected, and why.**
+
+- **A nonce in the page, exempted from caching.** A WordPress nonce for a
+  logged-out visitor derives from user 0 and is therefore identical for
+  everybody (F16); it was never a usable secret, and marking the page
+  uncacheable is the cost above.
+- **A token minted at the edge (an edge worker, or a CDN function).** It puts
+  the challenge secret in a second place, makes the protocol depend on which
+  CDN a site uses, and cannot be tested here.
+- **A cookie set by a small uncached request, read back into the form.** It
+  works, but it makes the protocol depend on cookie policy (consent banners,
+  ITP), and the value still has to be put into the form by script — at which
+  point the script may as well fetch the token it needs.
+- **One token per page, reused by every instance on it.** Two instances of the
+  same form would share a challenge, so submitting the first would make the
+  second unusable. That is a real page (a footer form and an inline form), and
+  the property under test is exactly that they do not share.
+
+**What was chosen, and what it guarantees.**
+
+1. `Form_Renderer` emits **no per-visitor value at all** — no nonce, no
+   timestamp, no token. Two renders of the same published version are
+   byte-identical, so a page cache and a CDN may serve the page freely. The
+   challenge input is rendered **empty**.
+2. The browser provisions **one token per form instance** from
+   `POST /wp/v2/agentshell-forms/v1/challenge`, after the page has been
+   delivered. Two instances of one form make two requests and receive two
+   tokens; two visitors receive two different tokens from the same cached bytes.
+3. The route **mints and nothing else**. It has no submission path, reads no
+   field values, writes nothing but a challenge row and a rate-limit counter,
+   and sends no mail. Submission processing remains Phase 3's.
+4. It **ignores any client-supplied version** and mints for the current
+   published version, so a client cannot ask for a challenge against a
+   definition the visitor was never shown. It accepts the **internal
+   identifier only** — 128 bits of randomness, not enumerable the way a slug
+   would be.
+5. It answers **404 for both "no such form" and "no published version"**, so it
+   does not disclose a draft, and it is **rate-limited per source and per form**
+   (30 mints per 5 minutes), keyed on an HMAC of the source address — never the
+   address itself (§9.1). A refusal is `429` with `Retry-After`.
+6. Every response, including every refusal, is **`no-store`** — a cached
+   refusal would be served to the next visitor, who might well be entitled to a
+   challenge.
+7. A page restored from the **bfcache** clears every instance's token and
+   provisions again, because the token it carried may already be spent.
+
+**What it costs.** The form needs JavaScript to be submittable. Without it the
+page renders, the fields are labelled and the browser validates them, but no
+challenge can be issued — so Phase 3 will refuse the submission, and the form
+says so rather than looking ready. That is the honest trade: the alternative is
+a form that only works for one visitor per cache entry, or a site whose contact
+page cannot be cached. The provisioning script announces a failure in the
+form's existing `role="status"` region, so a visitor is told that the form
+could not be prepared instead of discovering it when the submit button appears
+to do nothing.
+
+**Evidence.** `tests/forms-render-live-test.php` against a real WordPress
+proves the rendered page is byte-identical across renders and carries no token;
+that two mints from two sources produce two distinct, unconsumed rows whose
+`token_hash` is the SHA-256 of the returned token and whose version is the
+published one; that an unpublished form, a malformed identifier and a `GET`
+are all refused; and that the 31st mint from one source is a `429`. The
+per-instance behaviour in a real browser — two instances, two tokens, two
+requests, and the bfcache refresh — is
+`tests/forms-render-browser-test.js`.
+
+**Compatibility with Phase 3.** The submission body already names the form and
+carries `challenge` (§7.1); nothing about that changes. Phase 3's endpoint
+claims the row the mint created, and the claim's subject hash comes from the
+same HMAC. The mint route is deliberately separate from the submit route so
+that the public surface which *issues* state and the public surface which
+*accepts* a submission can be reasoned about, rate-limited and audited
+independently.
 
 **What the challenge does, and what it does not.** This is worth being
 precise about, because it is easy to over-claim.
@@ -1317,7 +1420,7 @@ precise about, because it is easy to over-claim.
 |---|---|---|
 | **Replay prevention** | **Yes** | The token is claimed exactly once. A captured token cannot be used twice, so it cannot be replayed against the endpoint |
 | **Duplicate suppression** | **Yes** | A double-clicked submit, or a client that retries after a network failure, carries the same token; the second attempt is recognised and does not create a second entry (§6.3a) |
-| **Cross-origin browser abuse** | **Partly** | A page on another origin cannot *read* the form's HTML, so it cannot obtain a token to embed in a cross-site post. This is the same-origin policy doing the work, not the token being a secret. It holds only while the form's page is served without a CORS policy that lets another origin read it |
+| **Cross-origin browser abuse** | **Partly** | A script on another origin cannot *read* the mint response: the route sends no CORS headers, so a cross-site `fetch` cannot see the token it asks for. This is the same-origin policy doing the work, not the token being a secret, and it holds only while the site does not add a CORS policy that lets another origin read its REST responses |
 | **Server-side automated abuse** | **No** | An attacker running their own HTTP client can fetch the form, read the token out of the HTML, and post with it. The token is **not** a secret from a non-browser client, and it is not an anti-bot control |
 
 So the challenge is a **protocol correctness control** — it makes the
@@ -2966,7 +3069,16 @@ accessible markup, the error summary, the honeypot markup.
 like the site; the `WP_Widget` API; WordPress escaping.
 
 **New modules.** `class-form-renderer.php`, `class-form-shortcode.php`,
-`class-form-widget.php`, and the plugin's stylesheet.
+`class-form-widget.php`, `class-form-challenge-endpoint.php`, the plugin's
+stylesheet (`assets/forms.css`) and its provisioning script
+(`assets/forms.js`).
+
+**Added during Phase 2, and why.** The challenge endpoint and the provisioning
+script were not in the original phase list: they exist because a single-use
+token cannot be rendered into a cacheable page, and the fix is a public route
+that mints one token per form instance per visitor (§7.1a). The renderer's
+published-only rule, the escaping and the accessibility contract are as planned;
+the token simply moved out of the HTML and into the browser.
 
 **Data model.** None.
 
@@ -2989,6 +3101,13 @@ against a real WordPress).
 theme. A form with unpublished changes renders the published version. A
 label containing `<script>` renders as text. A radio group is a fieldset with
 a legend.
+
+**Accepted, with the evidence.** `tests/forms-render-test.php` (26 assertions,
+no database), `tests/forms-render-live-test.php` (17 assertions against a real
+WordPress: shortcode, widget, API, REST mints, rate limit, cleanup) and
+`tests/forms-render-browser-test.js` (the page in a real Chrome: markup,
+contrast, focus, per-instance provisioning and the bfcache refresh). Verified on
+2026-10-27 against WordPress 6.8.2 and PHP 8.5.
 
 #### Phase 3 — The submission pipeline, notifications and Turnstile
 
