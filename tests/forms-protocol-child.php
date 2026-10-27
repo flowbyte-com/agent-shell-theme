@@ -99,13 +99,77 @@ probe(
         'first_form_version' => (int) ( $first_claim['form_version'] ?? 0 ),
         'second_status'     => (string) ( $second_claim['status'] ?? '' ),
         'second_submission' => (int) ( $second_claim['submission_id'] ?? -1 ),
-        'linked'            => (bool) $linked,
+        'linked'            => true === ( $linked['linked'] ?? false ),
+        'linked_status'     => (string) ( $linked['status'] ?? '' ),
+        'linked_changed'    => true === ( $linked['changed'] ?? false ),
+        'linked_submission' => (int) ( $linked['submission_id'] ?? -1 ),
         'after_link_status' => (string) ( $after_link['status'] ?? '' ),
         'after_link_submission' => (int) ( $after_link['submission_id'] ?? -1 ),
         'consumed_at_set'   => null !== $row_after && null !== $row_after['consumed_at'],
         'submission_stored' => null !== $row_after ? (int) $row_after['submission_id'] : 0,
     )
 );
+
+/* ---------------------------------------------------------------------------
+ * C2b — the linking rules
+ *
+ * Linking is what turns a consumed token into a recognisable retry, so the
+ * first link is the only one that may ever happen. Each refusal below is a
+ * different reason for not writing, and none of them may write anyway.
+ * ------------------------------------------------------------------------ */
+
+$link_probe = array();
+
+// (1) An unclaimed challenge has no attempt to record a submission for.
+$unclaimed_token = Form_Challenges::mint( $form_id, 1, '', 3600 );
+$unclaimed_link  = Form_Challenges::link( (string) $unclaimed_token, 111 );
+$link_probe['unclaimed_status'] = (string) ( $unclaimed_link['status'] ?? '' );
+$link_probe['unclaimed_linked'] = true === ( $unclaimed_link['linked'] ?? true );
+$link_probe['unclaimed_changed'] = true === ( $unclaimed_link['changed'] ?? true );
+$link_probe['unclaimed_submission'] = (int) ( ( challenge_row( (string) $unclaimed_token )['submission_id'] ?? -1 ) );
+
+// (2) An expired challenge is not a valid one, even if it was claimed.
+$rotten_token = Form_Challenges::mint( $form_id, 1, '', 3600 );
+Form_Challenges::claim( (string) $rotten_token );
+$wpdb->update(
+    Form_Challenges::table(),
+    array( 'expires_at' => gmdate( 'Y-m-d H:i:s', time() - 60 ) ),
+    array( 'token_hash' => hash( 'sha256', (string) $rotten_token ) ),
+    array( '%s' ),
+    array( '%s' )
+);
+$rotten_link = Form_Challenges::link( (string) $rotten_token, 222 );
+$link_probe['expired_status'] = (string) ( $rotten_link['status'] ?? '' );
+$link_probe['expired_linked'] = true === ( $rotten_link['linked'] ?? true );
+$link_probe['expired_submission'] = (int) ( ( challenge_row( (string) $rotten_token )['submission_id'] ?? -1 ) );
+
+// (3) A live, claimed challenge links once — and only once to one submission.
+$once_token = Form_Challenges::mint( $form_id, 1, '', 3600 );
+Form_Challenges::claim( (string) $once_token );
+$first_link  = Form_Challenges::link( (string) $once_token, 333 );
+$second_link = Form_Challenges::link( (string) $once_token, 444 );
+$third_link  = Form_Challenges::link( (string) $once_token, 333 );
+$once_row    = challenge_row( (string) $once_token );
+
+$link_probe['first_status']      = (string) ( $first_link['status'] ?? '' );
+$link_probe['first_changed']     = true === ( $first_link['changed'] ?? false );
+$link_probe['conflict_status']   = (string) ( $second_link['status'] ?? '' );
+$link_probe['conflict_linked']   = true === ( $second_link['linked'] ?? true );
+$link_probe['conflict_changed']  = true === ( $second_link['changed'] ?? true );
+$link_probe['conflict_reports_existing'] = (int) ( $second_link['submission_id'] ?? -1 );
+$link_probe['idempotent_status'] = (string) ( $third_link['status'] ?? '' );
+$link_probe['idempotent_linked'] = true === ( $third_link['linked'] ?? false );
+$link_probe['idempotent_changed'] = true === ( $third_link['changed'] ?? true );
+$link_probe['stored_submission'] = null !== $once_row ? (int) $once_row['submission_id'] : -1;
+
+// (4) Inputs that cannot ever be a link.
+$link_probe['invalid_token_status'] = (string) ( Form_Challenges::link( 'not-a-token', 555 )['status'] ?? '' );
+$link_probe['short_token_status']   = (string) ( Form_Challenges::link( 'abc', 555 )['status'] ?? '' );
+$link_probe['absent_status']        = (string) ( Form_Challenges::link( bin2hex( random_bytes( 32 ) ), 555 )['status'] ?? '' );
+$link_probe['zero_submission_status'] = (string) ( Form_Challenges::link( (string) $once_token, 0 )['status'] ?? '' );
+$link_probe['stored_after_invalid'] = (int) ( ( challenge_row( (string) $once_token )['submission_id'] ?? -1 ) );
+
+probe( 'c2b_link_rules', $link_probe );
 
 probe(
     'c3_absent',

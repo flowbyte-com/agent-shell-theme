@@ -416,13 +416,177 @@ Agentshell_Test::run(
 );
 
 /* ---------------------------------------------------------------------------
+ * Slug consistency
+ * ------------------------------------------------------------------------ */
+
+Agentshell_Test::run(
+    'forms storage: changing a slug writes both representations, and a stale editor cannot undo it',
+    function () {
+        $p = fst( 'p17_slug_consistency' );
+
+        Agentshell_Test::assert_true( true === ( $p['create_ok'] ?? false ), 'the probe must have created its form: ' . ( $p['code'] ?? '' ) );
+        Agentshell_Test::assert_true( true === ( $p['consistent_at_create'] ?? false ), 'a created form must report a consistent slug' );
+        Agentshell_Test::assert_true( true === ( $p['change_ok'] ?? false ), 'the slug change must succeed: ' . ( $p['change_code'] ?? '' ) );
+        Agentshell_Test::assert_true(
+            true === ( $p['both_changed'] ?? false ),
+            'the dedicated row and the embedded definition slug must both carry the new slug'
+        );
+        Agentshell_Test::assert_true( true === ( $p['revision_bumped'] ?? false ), 'a slug change must advance the revision' );
+        Agentshell_Test::assert_true( true === ( $p['consistent_flag'] ?? false ), 'the read state must report the slug as consistent' );
+        Agentshell_Test::assert_true( true === ( $p['no_old_slug'] ?? false ), 'the old slug must not survive anywhere in the working definition' );
+
+        Agentshell_Test::assert_true( true === ( $p['stale_editor_refused'] ?? false ), 'an editor holding the pre-change revision must be refused' );
+        Agentshell_Test::assert_equals(
+            'form_revision_mismatch',
+            $p['stale_editor_code'] ?? null,
+            'the stale editor must be refused by name'
+        );
+        Agentshell_Test::assert_true(
+            true === ( $p['stale_slug_not_written'] ?? false ),
+            'a refused editor must not reinstate the slug it read'
+        );
+
+        Agentshell_Test::assert_true( true === ( $p['publish_ok'] ?? false ), 'the form must publish after the slug change: ' . ( $p['publish_code'] ?? '' ) );
+        Agentshell_Test::assert_true( true === ( $p['published_slug_is_new'] ?? false ), 'the published definition must carry the new slug' );
+        Agentshell_Test::assert_true( true === ( $p['published_matches_row'] ?? false ), 'the published slug must equal the dedicated row' );
+        Agentshell_Test::assert_true( true === ( $p['status_synced'] ?? false ), 'the post status must be reported as synced' );
+        Agentshell_Test::assert_true( (int) ( $p['revision_id'] ?? 0 ) > 0, 'publication must create a native revision' );
+        Agentshell_Test::assert_equals( 'publish', $p['post_status'] ?? null, 'a published form must be a published post' );
+        Agentshell_Test::assert_true( true === ( $p['slug_consistent_after_publish'] ?? false ), 'the post-publication state must still report a consistent slug' );
+    }
+);
+
+Agentshell_Test::run(
+    'forms storage: the slug row is the authority when the embedded copy has drifted',
+    function () {
+        $p = fst( 'p17b_slug_drift' );
+
+        Agentshell_Test::assert_true( true === ( $p['create_ok'] ?? false ), 'the probe must have created its form' );
+        Agentshell_Test::assert_true( true === ( $p['inconsistent_before'] ?? false ), 'the probe must have created the divergence it tests' );
+        Agentshell_Test::assert_true( true === ( $p['publish_ok'] ?? false ), 'a drifted definition must still be publishable: ' . ( $p['code'] ?? '' ) );
+        Agentshell_Test::assert_true(
+            true === ( $p['row_is_authority'] ?? false ),
+            'the published slug must come from the dedicated row, not from the document: published='
+                . ( $p['published_slug'] ?? '' ) . ' row=' . ( $p['row_slug'] ?? '' )
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'forms storage: a failed publication after a slug change leaves the two representations consistent',
+    function () {
+        $p = fst( 'p17c_slug_publication_failure' );
+
+        Agentshell_Test::assert_true( true === ( $p['create_ok'] ?? false ), 'the probe must have created its form' );
+        Agentshell_Test::assert_true( true === ( $p['change_ok'] ?? false ), 'the slug change must have succeeded before the failure' );
+        Agentshell_Test::assert_true( true === ( $p['publish_refused'] ?? false ), 'the injected failure must refuse the publication' );
+        Agentshell_Test::assert_true( true === ( $p['pair_consistent'] ?? false ), 'the slug row and the definition must still agree after the failure' );
+        Agentshell_Test::assert_true( true === ( $p['published_absent'] ?? false ), 'no published definition may survive the failure' );
+        Agentshell_Test::assert_true( true === ( $p['version_zero'] ?? false ), 'the version must be untouched by the failure' );
+    }
+);
+
+/* ---------------------------------------------------------------------------
+ * Audit integrity
+ * ------------------------------------------------------------------------ */
+
+Agentshell_Test::run(
+    'forms storage: every definition mutation records exactly one audit entry, in order',
+    function () {
+        $p = fst( 'p18_audit_per_mutation' );
+
+        Agentshell_Test::assert_true( true === ( $p['create_ok'] ?? false ), 'the probe must have created its form' );
+        Agentshell_Test::assert_true(
+            true === ( $p['ops_ok'] ?? false ),
+            'every mutation must have succeeded: ' . wp_json_encode( $p['op_codes'] ?? array() )
+        );
+        Agentshell_Test::assert_equals(
+            $p['expected'] ?? array(),
+            $p['events'] ?? null,
+            'the audit log must record one entry per mutation, in the order the mutations happened'
+        );
+        Agentshell_Test::assert_equals(
+            count( (array) ( $p['events'] ?? array() ) ),
+            (int) ( $p['well_formed'] ?? -1 ),
+            'every entry must carry an event, a timestamp and an actor'
+        );
+        Agentshell_Test::assert_true( true === ( $p['actors_zero'] ?? false ), 'a system-actor mutation must be recorded as actor 0' );
+    }
+);
+
+Agentshell_Test::run(
+    'forms storage: a mutation whose audit entry cannot be written is refused and rolled back',
+    function () {
+        $p = fst( 'p19_audit_veto' );
+
+        Agentshell_Test::assert_true( true === ( $p['create_ok'] ?? false ), 'the probe must have created its form' );
+
+        Agentshell_Test::assert_true( true === ( $p['create_refused'] ?? false ), 'a creation that cannot be recorded must be refused: ' . ( $p['create_code'] ?? '' ) );
+        Agentshell_Test::assert_equals( 'form_audit_failed', $p['create_code'] ?? null, 'the refusal must name the audit log' );
+        Agentshell_Test::assert_true( true === ( $p['no_form_left'] ?? false ), 'a refused creation must leave no form post behind' );
+
+        Agentshell_Test::assert_true( true === ( $p['update_refused'] ?? false ), 'an update that cannot be recorded must be refused: ' . ( $p['update_code'] ?? '' ) );
+        Agentshell_Test::assert_equals( 'form_audit_failed', $p['update_code'] ?? null, 'the refusal must name the audit log' );
+        Agentshell_Test::assert_true( true === ( $p['update_unchanged'] ?? false ), 'a refused update must leave the working definition byte-identical' );
+
+        Agentshell_Test::assert_true( true === ( $p['slug_refused'] ?? false ), 'a slug change that cannot be recorded must be refused: ' . ( $p['slug_code'] ?? '' ) );
+        Agentshell_Test::assert_equals( 'form_audit_failed', $p['slug_code'] ?? null, 'the refusal must name the audit log' );
+        Agentshell_Test::assert_true( true === ( $p['slug_unchanged'] ?? false ), 'a refused slug change must leave the slug exactly as it was' );
+
+        Agentshell_Test::assert_true( true === ( $p['publish_refused'] ?? false ), 'a publication that cannot be recorded must be refused: ' . ( $p['publish_code'] ?? '' ) );
+        Agentshell_Test::assert_equals( 'form_audit_failed', $p['publish_code'] ?? null, 'the refusal must name the audit log' );
+        Agentshell_Test::assert_true(
+            true === ( $p['publish_nothing_written'] ?? false ),
+            'a refused publication must roll back the published row, the previous row and the version bump'
+        );
+        Agentshell_Test::assert_true( true === ( $p['publish_left_draft'] ?? false ), 'a refused first publication must leave the post a draft' );
+
+        Agentshell_Test::assert_true( true === ( $p['discard_refused'] ?? false ), 'a discard that cannot be recorded must be refused: ' . ( $p['discard_code'] ?? '' ) );
+        Agentshell_Test::assert_equals( 'form_audit_failed', $p['discard_code'] ?? null, 'the refusal must name the audit log' );
+        Agentshell_Test::assert_true( true === ( $p['discard_unchanged'] ?? false ), 'a refused discard must leave the working definition untouched' );
+
+        Agentshell_Test::assert_true( true === ( $p['real_publish_ok'] ?? false ), 'the probe must publish for real once the veto is lifted' );
+        Agentshell_Test::assert_true( true === ( $p['edit_ok'] ?? false ), 'the probe must stage an edit for the discard' );
+        Agentshell_Test::assert_true(
+            true === ( $p['retry_ok'] ?? false ),
+            'with the veto removed the very same publication must succeed: ' . ( $p['retry_code'] ?? '' )
+        );
+    }
+);
+
+/* ---------------------------------------------------------------------------
+ * Engine capability
+ * ------------------------------------------------------------------------ */
+
+Agentshell_Test::run(
+    'forms storage: a table set that cannot roll back refuses a required transaction',
+    function () {
+        $p = fst( 'p20_engine' );
+
+        Agentshell_Test::assert_true( true === ( $p['myisam_created'] ?? false ), 'the probe must have created a MyISAM table to test against' );
+        Agentshell_Test::assert_equals( '', $p['myisam_engine'] ?? null, 'a MyISAM table must not be reported as transactional' );
+        Agentshell_Test::assert_equals( 'InnoDB', $p['definition_engine'] ?? null, 'the definition tables must be transactional on this site' );
+        Agentshell_Test::assert_true( true === ( $p['options_included'] ?? false ), 'the audit ring lives in the options table, so it must be part of the definition table set' );
+
+        Agentshell_Test::assert_true( true === ( $p['required_is_error'] ?? false ), 'a required transaction must be refused on a non-transactional table' );
+        Agentshell_Test::assert_equals( 'form_transaction_unavailable', $p['required_code'] ?? null, 'the refusal must be named' );
+        Agentshell_Test::assert_equals( 'non_transactional_engine', $p['required_reason'] ?? null, 'the refusal must name the engine' );
+        Agentshell_Test::assert_false( (bool) ( $p['required_ran'] ?? true ), 'the callback must NOT run when the transaction cannot be opened' );
+
+        Agentshell_Test::assert_true( true === ( $p['optional_ran'] ?? false ), 'an optional write must still run' );
+        Agentshell_Test::assert_equals( 'written', $p['optional_result'] ?? null, 'an optional write must return its result' );
+        Agentshell_Test::assert_true( true === ( $p['table_dropped'] ?? false ), 'the probe table must be gone' );
+    }
+);
+
+/* ---------------------------------------------------------------------------
  * The site is left as it was found
  * ------------------------------------------------------------------------ */
 
 Agentshell_Test::run(
     'forms storage: the site is left exactly as it was found',
     function () {
-        $p = fst( 'p16_cleanup' );
+        $p = fst( 'p21_cleanup' );
 
         Agentshell_Test::assert_equals( array(), $p['leftovers'] ?? null, 'every disposable form must be gone' );
         Agentshell_Test::assert_equals( 0, (int) ( $p['stray_meta'] ?? -1 ), 'no orphaned definition metadata may remain' );

@@ -91,56 +91,121 @@ class Form_DB {
 	private static $last_was_transactional = false;
 
 	/**
+	 * The last transaction-control failure, if any.
+	 *
+	 * `run()` returns a `WP_Error` for every failure it can report through its
+	 * return value. The exception path cannot: a thrown exception is re-thrown,
+	 * so a failed rollback during unwinding has nowhere to go. It is recorded
+	 * here instead, so a caller that catches the exception can still ask
+	 * whether the failed write was actually rolled back.
+	 *
+	 * @var \WP_Error|null
+	 */
+	private static $last_error = null;
+
+	/**
+	 * Whether a real SQL transaction is open on this connection.
+	 *
+	 * @var bool
+	 */
+	private static $tx_open = false;
+
+	/**
+	 * A transaction is mandatory.
+	 *
+	 * The callback does not run at all when the tables cannot roll back, when
+	 * the connection cannot start a transaction, or when the database handle is
+	 * unusable. This is the default, and it is the right default: an operation
+	 * that needs atomicity and silently does not get it is a write that can be
+	 * left half-applied with nobody told.
+	 */
+	const TRANSACTION_REQUIRED = 'required';
+
+	/**
+	 * A transaction may be skipped when one cannot be opened.
+	 *
+	 * Every operation that passes this must be safe as a single statement. Only
+	 * an operation that says so, in its own call, gets the old behaviour — the
+	 * fallback is never chosen on the caller's behalf.
+	 */
+	const TRANSACTION_OPTIONAL = 'optional';
+
+	/**
 	 * Run a callback inside one bounded SQL transaction over the named tables.
 	 *
 	 * The callback returns a value. A `WP_Error`, `false`, `null` or a numeric
 	 * zero is treated as failure and the transaction is rolled back; anything
 	 * else commits. A thrown exception is rolled back and re-thrown.
 	 *
-	 * When the tables are not backed by a transactional engine, or the
-	 * database refuses to open a transaction, the callback runs **unguarded**
-	 * rather than not at all — refusing to store a form would be a worse
-	 * failure than an unprotected store — and `last_was_transactional()`
-	 * reports the truth.
+	 * ## Fail closed
 	 *
-	 * @param array    $tables Table names the write touches.
-	 * @param callable $write  The write to perform.
-	 * @return mixed Whatever the callback returned.
+	 * Under `TRANSACTION_REQUIRED` the callback **does not run** unless a real
+	 * transaction was opened. The three ways that can fail — no database
+	 * handle, a non-transactional engine, a refused `START TRANSACTION` — all
+	 * return a named `WP_Error`, and none of them runs the write. A caller that
+	 * genuinely does not need atomicity asks for `TRANSACTION_OPTIONAL`
+	 * explicitly; nothing gets it by accident.
+	 *
+	 * ## The commit is checked
+	 *
+	 * `COMMIT` is a statement that can fail, and its return value is the only
+	 * evidence that the writes are durable. A failed commit leaves the outcome
+	 * **unknown** — the server may have committed before the client lost the
+	 * answer — so this method never reports success for it. It returns
+	 * `form_commit_uncertain`, whose data says the outcome is unknown, and the
+	 * caller reconciles by re-reading what it wrote (`reconcile_writes()`).
+	 *
+	 * ## Nested calls join, they never nest
+	 *
+	 * MySQL has no nested transactions and `START TRANSACTION` inside an open
+	 * one implicitly commits it. A nested call therefore runs as part of the
+	 * transaction already open and opens nothing of its own — it can neither
+	 * commit the outer write early nor pretend to have its own boundary.
+	 *
+	 * @param array    $tables      Table names the write touches.
+	 * @param callable $write       The write to perform.
+	 * @param string   $transaction `TRANSACTION_REQUIRED` (default) or
+	 *                              `TRANSACTION_OPTIONAL`.
+	 * @return mixed Whatever the callback returned, or a `WP_Error`.
 	 * @throws \Throwable Whatever the callback threw, after rolling back.
 	 */
-	public static function run( array $tables, callable $write ) {
+	public static function run( array $tables, callable $write, $transaction = self::TRANSACTION_REQUIRED ) {
 		global $wpdb;
 
-		$engine = self::engine_for( $tables );
+		self::$last_error = null;
 
-		if ( self::$depth > 0 || '' === $engine ) {
-			self::$depth++;
-			try {
-				return $write();
-			} finally {
-				self::$depth--;
-			}
+		$required = ( self::TRANSACTION_OPTIONAL !== $transaction );
+
+		// A nested call joins the open transaction. It must not open its own:
+		// MySQL would implicitly commit the outer one, and the outer caller
+		// would then be told "rolled back" about a write that is already
+		// durable.
+		if ( self::$depth > 0 ) {
+			return self::run_unprotected( $write );
 		}
 
-		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'query' ) ) {
-			self::$depth++;
-			try {
-				return $write();
-			} finally {
-				self::$depth--;
+		$available = isset( $wpdb ) && is_object( $wpdb ) && method_exists( $wpdb, 'query' );
+		$engine    = $available ? (string) self::engine_for( $tables ) : '';
+
+		if ( '' === $engine ) {
+			if ( $required ) {
+				return self::transaction_unavailable(
+					$available ? 'non_transactional_engine' : 'no_database_handle',
+					$tables
+				);
 			}
+			return self::run_unprotected( $write );
 		}
 
-		$started = ( false !== @$wpdb->query( 'START TRANSACTION' ) );
+		$started = ( false !== $wpdb->query( 'START TRANSACTION' ) );
 		self::$last_was_transactional = $started;
+		self::$tx_open                = $started;
 
 		if ( ! $started ) {
-			self::$depth++;
-			try {
-				return $write();
-			} finally {
-				self::$depth--;
+			if ( $required ) {
+				return self::transaction_unavailable( 'begin_failed', $tables );
 			}
+			return self::run_unprotected( $write );
 		}
 
 		self::$depth++;
@@ -148,19 +213,55 @@ class Form_DB {
 			$result = $write();
 		} catch ( \Throwable $e ) {
 			self::$depth--;
-			$wpdb->query( 'ROLLBACK' );
-			self::discard_caches();
+			self::roll_back( 'exception', $tables );
+			self::$tx_open = false;
 			throw $e;
 		}
 		self::$depth--;
 
 		if ( self::is_failure( $result ) ) {
-			$wpdb->query( 'ROLLBACK' );
-			self::discard_caches();
+			$rolled_back = self::roll_back( 'failure', $tables );
+			// Whether or not the rollback was confirmed, the transaction this
+			// process opened is no longer one it can rely on.
+			self::$tx_open = false;
+
+			// The write failed, but the rollback did not confirm. Both facts
+			// matter, and neither may be reported as the other: the caller is
+			// told the outcome is unknown and the original failure is attached.
+			if ( ! $rolled_back && self::$last_error instanceof \WP_Error ) {
+				$data = self::$last_error->get_error_data();
+				$data = is_array( $data ) ? $data : array();
+				$data['cause'] = $result;
+				self::$last_error->add_data( $data );
+				return self::$last_error;
+			}
+
 			return $result;
 		}
 
-		$wpdb->query( 'COMMIT' );
+		if ( false === $wpdb->query( 'COMMIT' ) ) {
+			// Unknown, not failed. The server may have committed and the
+			// answer been lost; guessing either way would be a lie. Cached
+			// copies are dropped so the reconciliation reads the database, and
+			// the transaction is treated as finished — an append must never be
+			// recorded as "inside" a transaction whose state is unknown.
+			self::$tx_open = false;
+			self::discard_caches();
+			self::$last_error = new \WP_Error(
+				'form_commit_uncertain',
+				__( 'The database did not confirm the commit. Whether the change was applied is unknown, so it is reported as unknown rather than as a success or a failure.', 'agentshell-forms' ),
+				array(
+					'reason'              => 'commit_uncertain',
+					'transaction_outcome' => 'unknown',
+					'tables'              => array_values( $tables ),
+				)
+			);
+
+			return self::$last_error;
+		}
+
+		self::$tx_open = false;
+
 		return $result;
 	}
 
@@ -171,6 +272,106 @@ class Form_DB {
 	 */
 	public static function last_was_transactional() {
 		return self::$last_was_transactional;
+	}
+
+	/**
+	 * Whether a real SQL transaction is open on this connection.
+	 *
+	 * Deliberately **not** `depth > 0`: a callback run under
+	 * `TRANSACTION_OPTIONAL` when no transaction could be opened is still
+	 * inside `run()`, and an audit append that treated that as transactional
+	 * would be a separate write the caller's rollback could never undo. The
+	 * flag is set only when `START TRANSACTION` actually succeeded and cleared
+	 * when the transaction ends, whichever way it ends.
+	 *
+	 * @return bool
+	 */
+	public static function in_transaction() {
+		return self::$tx_open;
+	}
+
+	/**
+	 * The last transaction-control failure, or null.
+	 *
+	 * @return \WP_Error|null
+	 */
+	public static function last_error() {
+		return self::$last_error;
+	}
+
+	/**
+	 * Run a callback with no transaction, as an explicit choice.
+	 *
+	 * Only reached from `TRANSACTION_OPTIONAL` or from a nested call that is
+	 * already inside its caller's transaction.
+	 *
+	 * @param callable $write The write.
+	 * @return mixed
+	 */
+	private static function run_unprotected( callable $write ) {
+		self::$depth++;
+		try {
+			return $write();
+		} finally {
+			self::$depth--;
+		}
+	}
+
+	/**
+	 * The error returned when a required transaction could not be opened.
+	 *
+	 * @param string $reason Why.
+	 * @param array  $tables The table set.
+	 * @return \WP_Error
+	 */
+	private static function transaction_unavailable( $reason, array $tables ) {
+		$messages = array(
+			'no_database_handle'       => __( 'The database is unavailable, so the change was not attempted.', 'agentshell-forms' ),
+			'non_transactional_engine' => __( 'The affected tables cannot roll back, so the change was not attempted rather than applied without protection.', 'agentshell-forms' ),
+			'begin_failed'             => __( 'The database did not start a transaction, so the change was not attempted.', 'agentshell-forms' ),
+		);
+
+		self::$last_error = new \WP_Error(
+			'form_transaction_unavailable',
+			isset( $messages[ $reason ] ) ? $messages[ $reason ] : $messages['begin_failed'],
+			array(
+				'reason'              => (string) $reason,
+				'transaction_outcome' => 'not_attempted',
+				'tables'              => array_values( $tables ),
+			)
+		);
+
+		return self::$last_error;
+	}
+
+	/**
+	 * Roll back and report whether the rollback was confirmed.
+	 *
+	 * @param string $context What was being rolled back (`failure`, `exception`).
+	 * @param array  $tables  The table set.
+	 * @return bool True when the rollback was confirmed.
+	 */
+	private static function roll_back( $context, array $tables ) {
+		global $wpdb;
+
+		self::discard_caches();
+
+		$confirmed = ( false !== $wpdb->query( 'ROLLBACK' ) );
+
+		if ( ! $confirmed ) {
+			self::$last_error = new \WP_Error(
+				'form_rollback_failed',
+				__( 'The change failed and the rollback could not be confirmed. Whether any part of it was applied is unknown.', 'agentshell-forms' ),
+				array(
+					'reason'              => 'rollback_failed',
+					'transaction_outcome' => 'unknown',
+					'rollback_context'    => (string) $context,
+					'tables'              => array_values( $tables ),
+				)
+			);
+		}
+
+		return $confirmed;
 	}
 
 	/**
@@ -270,11 +471,18 @@ class Form_DB {
 	/**
 	 * The tables a definition write touches.
 	 *
+	 * The options table is included because every definition mutation now
+	 * writes its audit row **inside the same transaction** (§9.3 step 5), and a
+	 * guarantee that spans two tables is only a guarantee if both of them can
+	 * roll back. A site whose options table is not transactional therefore
+	 * refuses the mutation rather than committing a change whose record could
+	 * be lost — see `run()`'s fail-closed contract.
+	 *
 	 * @return array
 	 */
 	public static function definition_tables() {
 		global $wpdb;
-		return array( $wpdb->posts, $wpdb->postmeta );
+		return array( $wpdb->posts, $wpdb->postmeta, $wpdb->options );
 	}
 
 	/* ---------------------------------------------------------------------
@@ -328,7 +536,63 @@ class Form_DB {
 	 *         `status` is `absent`, `one` or `duplicate`.
 	 */
 	public static function read_one( $post_id, $meta_key ) {
-		$rows  = self::rows( $post_id, $meta_key );
+		return self::classify( $post_id, $meta_key, self::rows( $post_id, $meta_key ) );
+	}
+
+	/**
+	 * Read one row for a key with a **locking** read.
+	 *
+	 * `SELECT … FOR UPDATE` is a current read: it sees the latest committed
+	 * row, not the snapshot this transaction may have established earlier, and
+	 * it holds an exclusive lock on the row until the transaction ends. That is
+	 * what makes "verify the state the caller observed" a check of reality
+	 * rather than of a stale snapshot — and it is the reason a publisher cannot
+	 * be fooled by an editor who committed after the publisher's first read.
+	 *
+	 * Must be called inside a transaction; outside one the lock would last only
+	 * for the statement and the result would be no better than `read_one()`.
+	 *
+	 * @param int    $post_id  Post id.
+	 * @param string $meta_key Meta key.
+	 * @return array Same shape as `read_one()`.
+	 */
+	public static function read_one_locked( $post_id, $meta_key ) {
+		global $wpdb;
+
+		$out = array();
+
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
+			return self::classify( $post_id, $meta_key, $out );
+		}
+
+		$sql = $wpdb->prepare(
+			"SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s ORDER BY meta_id ASC FOR UPDATE",
+			(int) $post_id,
+			(string) $meta_key
+		);
+
+		$rows = $wpdb->get_results( $sql, ARRAY_A );
+		if ( is_array( $rows ) ) {
+			foreach ( $rows as $row ) {
+				$out[] = array(
+					'meta_id'    => (int) $row['meta_id'],
+					'meta_value' => (string) $row['meta_value'],
+				);
+			}
+		}
+
+		return self::classify( $post_id, $meta_key, $out );
+	}
+
+	/**
+	 * Turn the rows for one key into absence, a single row, or corruption.
+	 *
+	 * @param int    $post_id  Post id.
+	 * @param string $meta_key Meta key.
+	 * @param array  $rows     Rows, each `{ meta_id, meta_value }`.
+	 * @return array{status:string,value:?string,meta_id:?int,count:int,error:?\WP_Error}
+	 */
+	private static function classify( $post_id, $meta_key, array $rows ) {
 		$count = count( $rows );
 
 		if ( 0 === $count ) {
@@ -480,6 +744,106 @@ class Form_DB {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Decide what an unconfirmed commit actually did, by reading the rows back.
+	 *
+	 * A failed `COMMIT` is not a failed write: the server may have committed
+	 * and the answer been lost on the way back. The only evidence available is
+	 * the data itself, so this compares what each row holds now against the
+	 * value the caller intended and the value the caller observed before:
+	 *
+	 *   - every row holds the **intended** value ⇒ the transaction committed;
+	 *   - every row holds the **observed** value ⇒ it did not;
+	 *   - anything else ⇒ the outcome cannot be established, and the caller is
+	 *     told so rather than given a guess.
+	 *
+	 * A row whose intended value equals its observed value cannot discriminate
+	 * (a no-op write leaves the same bytes either way) and is not counted.
+	 * When *no* row can discriminate, the answer is `uncertain` — "everything
+	 * looks unchanged" is not evidence when nothing was going to change.
+	 *
+	 * @param int   $post_id Post id.
+	 * @param array $writes  Each `{ key, value }`, as passed to the transaction.
+	 * @param array $state   The state the caller observed (from `read_state()`).
+	 * @return array{outcome:string,rows:array<string,array>} `outcome` is
+	 *         `applied`, `not_applied` or `uncertain`.
+	 */
+	public static function reconcile_writes( $post_id, array $writes, array $state ) {
+		$raw = isset( $state['raw'] ) && is_array( $state['raw'] ) ? $state['raw'] : array();
+
+		$discriminating = 0;
+		$matched_new    = 0;
+		$matched_old    = 0;
+		$rows           = array();
+
+		foreach ( $writes as $write ) {
+			$key      = (string) $write['key'];
+			$intended = (string) $write['value'];
+			$observed = isset( $raw[ $key ] ) && is_array( $raw[ $key ] ) && 'one' === ( $raw[ $key ]['status'] ?? '' )
+				? (string) $raw[ $key ]['value']
+				: null;
+
+			$current = self::read_one( (int) $post_id, $key );
+			$value   = 'one' === $current['status'] ? (string) $current['value'] : null;
+
+			$rows[ $key ] = array(
+				'intended' => $intended,
+				'observed' => $observed,
+				'current'  => $value,
+			);
+
+			if ( $intended === $observed ) {
+				continue; // cannot discriminate
+			}
+
+			$discriminating++;
+
+			if ( $value === $intended ) {
+				$matched_new++;
+			} elseif ( $value === $observed ) {
+				$matched_old++;
+			}
+		}
+
+		if ( 0 === $discriminating ) {
+			return array( 'outcome' => 'uncertain', 'rows' => $rows );
+		}
+
+		if ( $matched_new === $discriminating ) {
+			return array( 'outcome' => 'applied', 'rows' => $rows );
+		}
+
+		if ( $matched_old === $discriminating ) {
+			return array( 'outcome' => 'not_applied', 'rows' => $rows );
+		}
+
+		return array( 'outcome' => 'uncertain', 'rows' => $rows );
+	}
+
+	/**
+	 * Decide what an unconfirmed **creation** actually did.
+	 *
+	 * A creation has no previous row to compare against, so it is reconciled
+	 * by the one fact the creation was for: does a form now claim this internal
+	 * identifier?
+	 *
+	 * @param string $form_id The internal identifier the creation was writing.
+	 * @return array{outcome:string,post_ids:array<int,int>}
+	 */
+	public static function reconcile_creation( $form_id ) {
+		$ids = Form_Definition::find_post_ids_by_meta( Form_Post_Types::META_FORM_ID, (string) $form_id );
+
+		if ( 1 === count( $ids ) ) {
+			return array( 'outcome' => 'applied', 'post_ids' => $ids );
+		}
+
+		if ( 0 === count( $ids ) ) {
+			return array( 'outcome' => 'not_applied', 'post_ids' => array() );
+		}
+
+		return array( 'outcome' => 'uncertain', 'post_ids' => $ids );
 	}
 
 	/* ---------------------------------------------------------------------

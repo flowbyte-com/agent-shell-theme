@@ -777,7 +777,496 @@ probe(
 );
 
 /* ---------------------------------------------------------------------------
- * P16 — cleanup: every disposable record is gone
+ * P17 — the slug has two representations, and they are changed together
+ *
+ * The dedicated meta row is what the shortcode resolver reads; the definition
+ * carries a copy because the document describes itself. A change that wrote
+ * only one of them would leave the form saying two different things — and the
+ * next editor to save would silently reinstate whichever copy it read.
+ * ------------------------------------------------------------------------ */
+
+$slug_made = Form_Definition::create(
+    array(
+        'name'   => 'Slug consistency ' . $token,
+        'slug'   => 'slug-one-' . strtolower( $token ),
+        'fields' => fields(),
+    ),
+    0
+);
+
+$slug_probe = array(
+    'create_ok' => ! is_wp_error( $slug_made ),
+    'code'      => is_wp_error( $slug_made ) ? $slug_made->get_error_code() : '',
+);
+
+if ( ! is_wp_error( $slug_made ) ) {
+    $slug_post = track( (int) $slug_made['post_id'] );
+    $slug_form = (string) $slug_made['form_id'];
+    $slug_old  = (string) $slug_made['slug'];
+    $slug_new  = 'slug-two-' . strtolower( $token );
+
+    $slug_probe['consistent_at_create'] = true === ( $slug_made['slug_consistent'] ?? null );
+
+    // The change itself.
+    $slug_change = Form_Definition::set_slug( $slug_form, $slug_new, 0 );
+
+    $slug_row_after   = (string) ( raw_rows( $slug_post, Form_Post_Types::META_SLUG )[0]['meta_value'] ?? '' );
+    $working_after    = json_decode( (string) ( raw_rows( $slug_post, Form_Post_Types::META_WORKING )[0]['meta_value'] ?? '' ), true );
+    $revision_after   = (string) ( raw_rows( $slug_post, Form_Post_Types::META_REVISION )[0]['meta_value'] ?? '' );
+    $slug_state_after = Form_Definition::get( $slug_form );
+
+    $slug_probe['change_ok']        = ! is_wp_error( $slug_change );
+    $slug_probe['change_code']      = is_wp_error( $slug_change ) ? $slug_change->get_error_code() : '';
+    $slug_probe['slug_row']         = $slug_row_after;
+    $slug_probe['working_slug']     = is_array( $working_after ) ? (string) ( $working_after['slug'] ?? '' ) : '';
+    $slug_probe['both_changed']     = $slug_row_after === $slug_new
+        && is_array( $working_after )
+        && (string) ( $working_after['slug'] ?? '' ) === $slug_new;
+    $slug_probe['revision_bumped']  = '1' === $revision_after;
+    $slug_probe['consistent_flag']  = ! is_wp_error( $slug_state_after ) && true === ( $slug_state_after['slug_consistent'] ?? null );
+    $slug_probe['reported_slug']    = is_wp_error( $slug_change ) ? '' : (string) $slug_change['slug'];
+    $slug_probe['no_old_slug']      = false === strpos( (string) json_encode( $working_after ), (string) '"slug":"' . $slug_old . '"' );
+
+    // A stale editor — one that read the form before the slug change — must be
+    // refused, and must not reinstate the old slug on its way to being
+    // refused. Its write carries the old slug because that is what it read.
+    $stale_doc = array(
+        'schema_version' => AGENTSHELL_FORMS_SCHEMA_VERSION,
+        'name'           => 'Stale editor ' . $token,
+        'slug'           => $slug_old,
+        'fields'         => fields( ' (stale)' ),
+        'settings'       => Form_Schema::settings_defaults(),
+    );
+
+    $stale_editor   = Form_Definition::update_working( $slug_form, $stale_doc, 0, 0 );
+    $working_stale  = json_decode( (string) ( raw_rows( $slug_post, Form_Post_Types::META_WORKING )[0]['meta_value'] ?? '' ), true );
+
+    $slug_probe['stale_editor_refused'] = is_wp_error( $stale_editor );
+    $slug_probe['stale_editor_code']    = is_wp_error( $stale_editor ) ? $stale_editor->get_error_code() : '';
+    $slug_probe['stale_slug_not_written'] = is_array( $working_stale )
+        && (string) ( $working_stale['slug'] ?? '' ) === $slug_new;
+
+    // Publishing after the change: the published document must carry the new
+    // slug, and the row must still agree with it.
+    $slug_state   = Form_Definition::get( $slug_form );
+    $slug_publish = Form_Definition::publish( $slug_form, is_wp_error( $slug_state ) ? 0 : (int) $slug_state['revision'], 0 );
+
+    $published_doc = is_wp_error( $slug_publish ) || ! is_array( $slug_publish['published'] )
+        ? null
+        : $slug_publish['published'];
+
+    $slug_probe['publish_ok']          = ! is_wp_error( $slug_publish );
+    $slug_probe['publish_code']        = is_wp_error( $slug_publish ) ? $slug_publish->get_error_code() : '';
+    $slug_probe['published_slug']      = is_array( $published_doc ) ? (string) ( $published_doc['slug'] ?? '' ) : '';
+    $slug_probe['published_slug_is_new'] = is_array( $published_doc ) && (string) ( $published_doc['slug'] ?? '' ) === $slug_new;
+    $slug_probe['published_matches_row'] = is_array( $published_doc )
+        && (string) ( $published_doc['slug'] ?? '' ) === (string) ( raw_rows( $slug_post, Form_Post_Types::META_SLUG )[0]['meta_value'] ?? '' );
+    $slug_probe['status_synced']       = ! is_wp_error( $slug_publish ) && true === ( $slug_publish['status_synced'] ?? null );
+    $slug_probe['revision_id']         = is_wp_error( $slug_publish ) ? -1 : (int) ( $slug_publish['revision_id'] ?? 0 );
+    $slug_probe['post_status']         = (string) get_post_status( $slug_post );
+    $slug_probe['slug_consistent_after_publish'] = ! is_wp_error( $slug_publish ) && true === ( $slug_publish['slug_consistent'] ?? null );
+}
+
+probe( 'p17_slug_consistency', $slug_probe );
+
+/* ---------------------------------------------------------------------------
+ * P17b — a drifted definition cannot be published under the wrong slug
+ *
+ * The embedded slug can be stale in a document written by an older build, or
+ * by anything that bypassed this store. The published document must take the
+ * dedicated row's value, because that row is what the resolver actually reads.
+ * ------------------------------------------------------------------------ */
+
+$drift_made = Form_Definition::create(
+    array(
+        'name'   => 'Drifted slug ' . $token,
+        'slug'   => 'drift-' . strtolower( $token ),
+        'fields' => fields(),
+    ),
+    0
+);
+
+$drift_probe = array( 'create_ok' => ! is_wp_error( $drift_made ) );
+
+if ( ! is_wp_error( $drift_made ) ) {
+    $drift_post = track( (int) $drift_made['post_id'] );
+    $drift_form = (string) $drift_made['form_id'];
+    $drift_row  = (string) $drift_made['slug'];
+
+    // Corrupt only the embedded copy, the way a bypassing writer would.
+    $drift_doc                = json_decode( (string) raw_rows( $drift_post, Form_Post_Types::META_WORKING )[0]['meta_value'], true );
+    $drift_doc['slug']        = 'somebody-elses-slug';
+    $drift_working_rows       = raw_rows( $drift_post, Form_Post_Types::META_WORKING );
+    Form_DB::cas_update( (int) $drift_working_rows[0]['meta_id'], (string) wp_json_encode( $drift_doc ), (string) $drift_working_rows[0]['meta_value'], $drift_post );
+
+    $drift_state_before = Form_Definition::get( $drift_form );
+    $drift_probe['inconsistent_before'] = ! is_wp_error( $drift_state_before ) && false === ( $drift_state_before['slug_consistent'] ?? null );
+
+    $drift_publish = Form_Definition::publish( $drift_form, is_wp_error( $drift_state_before ) ? 0 : (int) $drift_state_before['revision'], 0 );
+
+    $drift_published = is_wp_error( $drift_publish ) || ! is_array( $drift_publish['published'] )
+        ? null
+        : $drift_publish['published'];
+
+    $drift_probe['publish_ok']        = ! is_wp_error( $drift_publish );
+    $drift_probe['code']              = is_wp_error( $drift_publish ) ? $drift_publish->get_error_code() : '';
+    $drift_probe['row_slug']          = $drift_row;
+    $drift_probe['published_slug']    = is_array( $drift_published ) ? (string) ( $drift_published['slug'] ?? '' ) : '';
+    $drift_probe['row_is_authority']  = is_array( $drift_published ) && (string) ( $drift_published['slug'] ?? '' ) === $drift_row;
+}
+
+probe( 'p17b_slug_drift', $drift_probe );
+
+/* ---------------------------------------------------------------------------
+ * P17c — a failed publication after a slug change leaves the pair consistent
+ * ------------------------------------------------------------------------ */
+
+$slugfault_made = Form_Definition::create(
+    array(
+        'name'   => 'Slug fault ' . $token,
+        'slug'   => 'slugfault-one-' . strtolower( $token ),
+        'fields' => fields(),
+    ),
+    0
+);
+
+$slugfault_probe = array( 'create_ok' => ! is_wp_error( $slugfault_made ) );
+
+if ( ! is_wp_error( $slugfault_made ) ) {
+    $slugfault_post = track( (int) $slugfault_made['post_id'] );
+    $slugfault_form = (string) $slugfault_made['form_id'];
+    $slugfault_new  = 'slugfault-two-' . strtolower( $token );
+
+    $slugfault_change = Form_Definition::set_slug( $slugfault_form, $slugfault_new, 0 );
+
+    $slugfault_handler = function ( $post_id, $key ) use ( $slugfault_post ) {
+        if ( (int) $post_id !== (int) $slugfault_post || Form_Post_Types::META_VERSION !== $key ) {
+            return;
+        }
+        global $wpdb;
+        $wpdb->delete( $wpdb->postmeta, array( 'post_id' => (int) $slugfault_post, 'meta_key' => Form_Post_Types::META_VERSION ), array( '%d', '%s' ) );
+        wp_cache_delete( (int) $slugfault_post, 'post_meta' );
+    };
+
+    add_action( 'agentshell_forms_before_definition_write', $slugfault_handler, 10, 2 );
+
+    $slugfault_state   = Form_Definition::get( $slugfault_form );
+    $slugfault_publish = Form_Definition::publish( $slugfault_form, is_wp_error( $slugfault_state ) ? 0 : (int) $slugfault_state['revision'], 0 );
+
+    remove_action( 'agentshell_forms_before_definition_write', $slugfault_handler, 10 );
+
+    $slugfault_working = json_decode( (string) ( raw_rows( $slugfault_post, Form_Post_Types::META_WORKING )[0]['meta_value'] ?? '' ), true );
+
+    $slugfault_probe['change_ok']       = ! is_wp_error( $slugfault_change );
+    $slugfault_probe['publish_refused'] = is_wp_error( $slugfault_publish );
+    $slugfault_probe['code']            = is_wp_error( $slugfault_publish ) ? $slugfault_publish->get_error_code() : '';
+    $slugfault_probe['slug_row']        = (string) ( raw_rows( $slugfault_post, Form_Post_Types::META_SLUG )[0]['meta_value'] ?? '' );
+    $slugfault_probe['working_slug']    = is_array( $slugfault_working ) ? (string) ( $slugfault_working['slug'] ?? '' ) : '';
+    $slugfault_probe['pair_consistent'] = $slugfault_probe['slug_row'] === $slugfault_new
+        && $slugfault_probe['working_slug'] === $slugfault_new;
+    $slugfault_probe['published_absent'] = 0 === count( raw_rows( $slugfault_post, Form_Post_Types::META_PUBLISHED ) );
+    $slugfault_probe['version_zero']     = '0' === (string) ( raw_rows( $slugfault_post, Form_Post_Types::META_VERSION )[0]['meta_value'] ?? 'x' );
+}
+
+probe( 'p17c_slug_publication_failure', $slugfault_probe );
+
+/* ---------------------------------------------------------------------------
+ * P18 — every definition mutation records exactly one audit entry
+ *
+ * The record is written inside the same transaction as the change, so the
+ * order of the entries is the order of the changes, and there is exactly one
+ * of each. A missing entry is as important as a duplicated one.
+ * ------------------------------------------------------------------------ */
+
+$audit_made = Form_Definition::create(
+    array(
+        'name'   => 'Audit trail ' . $token,
+        'slug'   => 'audit-' . strtolower( $token ),
+        'fields' => fields(),
+    ),
+    0
+);
+
+$audit_probe = array( 'create_ok' => ! is_wp_error( $audit_made ) );
+
+if ( ! is_wp_error( $audit_made ) ) {
+    $audit_post = track( (int) $audit_made['post_id'] );
+    $audit_form = (string) $audit_made['form_id'];
+
+    $audit_slug = Form_Definition::set_slug( $audit_form, 'audit-renamed-' . strtolower( $token ), 0 );
+
+    $audit_state = Form_Definition::get( $audit_form );
+    $audit_update = Form_Definition::update_working(
+        $audit_form,
+        array(
+            'schema_version' => AGENTSHELL_FORMS_SCHEMA_VERSION,
+            'name'           => 'Audit trail edited ' . $token,
+            'fields'         => fields( ' (audited)' ),
+            'settings'       => Form_Schema::settings_defaults(),
+        ),
+        is_wp_error( $audit_state ) ? 0 : (int) $audit_state['revision'],
+        0
+    );
+
+    $audit_state2  = Form_Definition::get( $audit_form );
+    $audit_publish = Form_Definition::publish( $audit_form, is_wp_error( $audit_state2 ) ? 0 : (int) $audit_state2['revision'], 0 );
+    $audit_discard = Form_Definition::discard( $audit_form, 0 );
+
+    $events = array();
+    $well_formed = 0;
+    foreach ( Form_Audit::entries() as $entry ) {
+        if ( ! is_array( $entry ) || ! isset( $entry['data'] ) || ! is_array( $entry['data'] ) ) {
+            continue;
+        }
+        if ( (string) ( $entry['data']['form_id'] ?? '' ) !== $audit_form ) {
+            continue;
+        }
+        if ( isset( $entry['event'], $entry['at'], $entry['actor'] ) ) {
+            $well_formed++;
+        }
+        $events[] = (string) ( $entry['event'] ?? '' );
+    }
+
+    $audit_probe['ops_ok']         = ! is_wp_error( $audit_slug ) && ! is_wp_error( $audit_update ) && ! is_wp_error( $audit_publish ) && ! is_wp_error( $audit_discard );
+    $audit_probe['op_codes']       = array(
+        is_wp_error( $audit_slug ) ? $audit_slug->get_error_code() : 'ok',
+        is_wp_error( $audit_update ) ? $audit_update->get_error_code() : 'ok',
+        is_wp_error( $audit_publish ) ? $audit_publish->get_error_code() : 'ok',
+        is_wp_error( $audit_discard ) ? $audit_discard->get_error_code() : 'ok',
+    );
+    $audit_probe['events']        = $events;
+    $audit_probe['expected']      = array( 'form_created', 'form_slug_changed', 'form_updated', 'form_published', 'form_discarded' );
+    $audit_probe['exact_sequence'] = $events === $audit_probe['expected'];
+    $audit_probe['well_formed']    = $well_formed;
+    $audit_probe['all_well_formed'] = count( $events ) === $well_formed;
+    $audit_probe['actors_zero']     = ( function () use ( $audit_form ) {
+        foreach ( Form_Audit::entries() as $entry ) {
+            if ( ! is_array( $entry ) || ! isset( $entry['data'] ) || ! is_array( $entry['data'] ) ) {
+                continue;
+            }
+            if ( (string) ( $entry['data']['form_id'] ?? '' ) === $audit_form && 0 !== (int) ( $entry['actor'] ?? -1 ) ) {
+                return false;
+            }
+        }
+        return true;
+    } )();
+}
+
+probe( 'p18_audit_per_mutation', $audit_probe );
+
+/* ---------------------------------------------------------------------------
+ * P19 — a mutation whose audit row cannot be written is refused, whole
+ *
+ * This is the difference between "the audit log usually records changes" and
+ * "a change that cannot be recorded does not happen". The veto filter is the
+ * only way to make the append fail without breaking the database, and it fails
+ * *inside* the transaction — so the rows the mutation already wrote must be
+ * rolled back with it.
+ * ------------------------------------------------------------------------ */
+
+/**
+ * A veto handler that refuses one event.
+ *
+ * @param string $event Event to refuse.
+ * @return callable
+ */
+function audit_veto( $event ) {
+    return function ( $allow, $name ) use ( $event ) {
+        return $name === $event ? false : $allow;
+    };
+}
+
+$veto_made = Form_Definition::create(
+    array(
+        'name'   => 'Veto probe ' . $token,
+        'slug'   => 'veto-' . strtolower( $token ),
+        'fields' => fields(),
+    ),
+    0
+);
+
+$veto_probe = array( 'create_ok' => ! is_wp_error( $veto_made ) );
+
+if ( ! is_wp_error( $veto_made ) ) {
+    $veto_post = track( (int) $veto_made['post_id'] );
+    $veto_form = (string) $veto_made['form_id'];
+
+    // --- create: the refusal must leave no form behind at all -------------
+    $forms_before = (int) $wpdb->get_var(
+        $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_type = %s", Form_Post_Types::FORM )
+    );
+
+    $veto_form_created = audit_veto( 'form_created' );
+    add_filter( Form_Audit::VETO_FILTER, $veto_form_created, 10, 2 );
+    $veto_create = Form_Definition::create(
+        array( 'name' => 'Vetoed create ' . $token, 'slug' => 'veto-create-' . strtolower( $token ), 'fields' => fields() ),
+        0
+    );
+    remove_filter( Form_Audit::VETO_FILTER, $veto_form_created, 10 );
+
+    $forms_after = (int) $wpdb->get_var(
+        $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_type = %s", Form_Post_Types::FORM )
+    );
+
+    // --- update ----------------------------------------------------------
+    $veto_state       = Form_Definition::get( $veto_form );
+    $veto_working_row = raw_rows( $veto_post, Form_Post_Types::META_WORKING );
+
+    $veto_form_updated = audit_veto( 'form_updated' );
+    add_filter( Form_Audit::VETO_FILTER, $veto_form_updated, 10, 2 );
+    $veto_update = Form_Definition::update_working(
+        $veto_form,
+        array(
+            'schema_version' => AGENTSHELL_FORMS_SCHEMA_VERSION,
+            'name'           => 'Vetoed update ' . $token,
+            'fields'         => fields( ' (vetoed)' ),
+            'settings'       => Form_Schema::settings_defaults(),
+        ),
+        is_wp_error( $veto_state ) ? 0 : (int) $veto_state['revision'],
+        0
+    );
+    remove_filter( Form_Audit::VETO_FILTER, $veto_form_updated, 10 );
+
+    $veto_working_after = raw_rows( $veto_post, Form_Post_Types::META_WORKING );
+
+    // --- slug ------------------------------------------------------------
+    $veto_form_slug_changed = audit_veto( 'form_slug_changed' );
+    add_filter( Form_Audit::VETO_FILTER, $veto_form_slug_changed, 10, 2 );
+    $veto_slug = Form_Definition::set_slug( $veto_form, 'veto-renamed-' . strtolower( $token ), 0 );
+    remove_filter( Form_Audit::VETO_FILTER, $veto_form_slug_changed, 10 );
+
+    // --- publish ---------------------------------------------------------
+    $veto_state2 = Form_Definition::get( $veto_form );
+
+    $veto_form_published = audit_veto( 'form_published' );
+    add_filter( Form_Audit::VETO_FILTER, $veto_form_published, 10, 2 );
+    $veto_publish = Form_Definition::publish( $veto_form, is_wp_error( $veto_state2 ) ? 0 : (int) $veto_state2['revision'], 0 );
+    remove_filter( Form_Audit::VETO_FILTER, $veto_form_published, 10 );
+
+    // Captured here, while the refused publication is the latest thing that
+    // happened — the real publication below is what the retry proves.
+    $veto_after_refusal = array(
+        'published' => count( raw_rows( $veto_post, Form_Post_Types::META_PUBLISHED ) ),
+        'previous'  => count( raw_rows( $veto_post, Form_Post_Types::META_PUBLISHED_PREVIOUS ) ),
+        'version'   => (string) ( raw_rows( $veto_post, Form_Post_Types::META_VERSION )[0]['meta_value'] ?? 'x' ),
+        'status'    => (string) get_post_status( $veto_post ),
+    );
+
+    // --- discard ---------------------------------------------------------
+    // A discard needs something to discard to, so publish for real first.
+    $veto_state3   = Form_Definition::get( $veto_form );
+    $veto_real_pub = Form_Definition::publish( $veto_form, is_wp_error( $veto_state3 ) ? 0 : (int) $veto_state3['revision'], 0 );
+
+    $veto_state4      = Form_Definition::get( $veto_form );
+    $veto_edit        = Form_Definition::update_working(
+        $veto_form,
+        array(
+            'schema_version' => AGENTSHELL_FORMS_SCHEMA_VERSION,
+            'name'           => 'Vetoed discard ' . $token,
+            'fields'         => fields( ' (to discard)' ),
+            'settings'       => Form_Schema::settings_defaults(),
+        ),
+        is_wp_error( $veto_state4 ) ? 0 : (int) $veto_state4['revision'],
+        0
+    );
+    $veto_before_discard = raw_rows( $veto_post, Form_Post_Types::META_WORKING );
+
+    $veto_form_discarded = audit_veto( 'form_discarded' );
+    add_filter( Form_Audit::VETO_FILTER, $veto_form_discarded, 10, 2 );
+    $veto_discard = Form_Definition::discard( $veto_form, 0 );
+    remove_filter( Form_Audit::VETO_FILTER, $veto_form_discarded, 10 );
+
+    $veto_after_discard = raw_rows( $veto_post, Form_Post_Types::META_WORKING );
+
+    // --- and, with the veto removed, the same publication succeeds --------
+    $veto_state5  = Form_Definition::get( $veto_form );
+    $veto_retried = Form_Definition::publish( $veto_form, is_wp_error( $veto_state5 ) ? 0 : (int) $veto_state5['revision'], 0 );
+
+    $veto_probe['create_refused']   = is_wp_error( $veto_create ) && 'form_audit_failed' === $veto_create->get_error_code();
+    $veto_probe['create_code']      = is_wp_error( $veto_create ) ? $veto_create->get_error_code() : '';
+    $veto_probe['no_form_left']     = $forms_before === $forms_after;
+    $veto_probe['update_refused']   = is_wp_error( $veto_update ) && 'form_audit_failed' === $veto_update->get_error_code();
+    $veto_probe['update_code']      = is_wp_error( $veto_update ) ? $veto_update->get_error_code() : '';
+    $veto_probe['update_unchanged'] = $veto_working_row && $veto_working_after
+        && $veto_working_row[0]['meta_value'] === $veto_working_after[0]['meta_value'];
+    $veto_probe['slug_refused']     = is_wp_error( $veto_slug ) && 'form_audit_failed' === $veto_slug->get_error_code();
+    $veto_probe['slug_code']        = is_wp_error( $veto_slug ) ? $veto_slug->get_error_code() : '';
+    $veto_probe['slug_unchanged']   = (string) ( raw_rows( $veto_post, Form_Post_Types::META_SLUG )[0]['meta_value'] ?? '' ) === (string) $veto_made['slug'];
+    $veto_probe['publish_refused']  = is_wp_error( $veto_publish ) && 'form_audit_failed' === $veto_publish->get_error_code();
+    $veto_probe['publish_code']     = is_wp_error( $veto_publish ) ? $veto_publish->get_error_code() : '';
+    $veto_probe['publish_nothing_written'] = 0 === $veto_after_refusal['published']
+        && 0 === $veto_after_refusal['previous']
+        && '0' === $veto_after_refusal['version'];
+    $veto_probe['publish_left_draft'] = 'draft' === $veto_after_refusal['status'];
+    $veto_probe['discard_refused']  = is_wp_error( $veto_discard ) && 'form_audit_failed' === $veto_discard->get_error_code();
+    $veto_probe['discard_code']     = is_wp_error( $veto_discard ) ? $veto_discard->get_error_code() : '';
+    $veto_probe['discard_unchanged'] = $veto_before_discard && $veto_after_discard
+        && $veto_before_discard[0]['meta_value'] === $veto_after_discard[0]['meta_value'];
+    $veto_probe['real_publish_ok']  = ! is_wp_error( $veto_real_pub );
+    $veto_probe['edit_ok']          = ! is_wp_error( $veto_edit );
+    $veto_probe['retry_ok']         = ! is_wp_error( $veto_retried );
+    $veto_probe['retry_code']       = is_wp_error( $veto_retried ) ? $veto_retried->get_error_code() : '';
+}
+
+probe( 'p19_audit_veto', $veto_probe );
+
+/* ---------------------------------------------------------------------------
+ * P20 — a table set that cannot roll back refuses a required transaction
+ *
+ * Proven against the real server rather than a fake: a MyISAM table is created
+ * for the duration of the probe, the engine probe is asked about it, and the
+ * two modes are compared. The callback must not run in required mode, and must
+ * run in optional mode.
+ * ------------------------------------------------------------------------ */
+
+$myisam_table = $wpdb->prefix . 'agentshell_forms_probe_myisam';
+$wpdb->query( "DROP TABLE IF EXISTS {$myisam_table}" );
+$myisam_created = false !== $wpdb->query( "CREATE TABLE {$myisam_table} ( id INT NOT NULL ) ENGINE=MyISAM" );
+
+$engine_myisam = $myisam_created ? Form_DB::engine_for( array( $myisam_table ) ) : 'untested';
+$engine_innodb = Form_DB::engine_for( Form_DB::definition_tables() );
+
+$required_ran = false;
+$required     = Form_DB::run(
+    array( $myisam_table ),
+    function () use ( &$required_ran ) {
+        $required_ran = true;
+        return 'written';
+    }
+);
+
+$optional_ran = false;
+$optional     = Form_DB::run(
+    array( $myisam_table ),
+    function () use ( &$optional_ran ) {
+        $optional_ran = true;
+        return 'written';
+    },
+    Form_DB::TRANSACTION_OPTIONAL
+);
+
+$wpdb->query( "DROP TABLE IF EXISTS {$myisam_table}" );
+
+probe(
+    'p20_engine',
+    array(
+        'myisam_created'      => $myisam_created,
+        'myisam_engine'       => $engine_myisam,
+        'definition_engine'   => $engine_innodb,
+        'tables'              => array_values( Form_DB::definition_tables() ),
+        'options_included'    => in_array( $wpdb->options, Form_DB::definition_tables(), true ),
+        'required_is_error'   => is_wp_error( $required ),
+        'required_code'       => is_wp_error( $required ) ? $required->get_error_code() : '',
+        'required_reason'     => is_wp_error( $required ) && is_array( $required->get_error_data() ) ? (string) ( $required->get_error_data()['reason'] ?? '' ) : '',
+        'required_ran'        => $required_ran,
+        'optional_ran'        => $optional_ran,
+        'optional_result'     => is_string( $optional ) ? $optional : '',
+        'table_dropped'       => null === $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $myisam_table ) ),
+    )
+);
+
+/* ---------------------------------------------------------------------------
+ * P21 — cleanup: every disposable record is gone
  * ------------------------------------------------------------------------ */
 
 $deleted = array();
@@ -807,7 +1296,7 @@ $stray_meta = (int) $wpdb->get_var(
 Form_Audit::clear();
 
 probe(
-    'p16_cleanup',
+    'p21_cleanup',
     array(
         'leftovers'  => array_map( 'intval', $leftovers ),
         'stray_meta' => $stray_meta,

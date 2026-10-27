@@ -116,10 +116,52 @@ Agentshell_Test::run(
         Agentshell_Test::assert_equals( 'pending', $p['second_status'] ?? null, 'a second claim must not own the challenge' );
 
         Agentshell_Test::assert_true( true === ( $p['linked'] ?? false ), 'linking the submission must succeed' );
+        Agentshell_Test::assert_equals( 'linked', $p['linked_status'] ?? null, 'a first link must report itself as linked' );
+        Agentshell_Test::assert_true( true === ( $p['linked_changed'] ?? false ), 'a first link must report that it wrote' );
+        Agentshell_Test::assert_equals( 4242, (int) ( $p['linked_submission'] ?? -1 ), 'the link must name the submission it linked' );
         Agentshell_Test::assert_equals( 'replay', $p['after_link_status'] ?? null, 'after linking, a claim is a replay of a known submission' );
         Agentshell_Test::assert_equals( 4242, (int) ( $p['after_link_submission'] ?? -1 ), 'the replay must name the submission that was already made' );
         Agentshell_Test::assert_true( true === ( $p['consumed_at_set'] ?? false ), 'the claim time must be recorded' );
         Agentshell_Test::assert_equals( 4242, (int) ( $p['submission_stored'] ?? -1 ), 'the submission id must be stored on the challenge' );
+    }
+);
+
+Agentshell_Test::run(
+    'forms protocol: linking refuses an unclaimed, expired, absent or malformed challenge, and never replaces a submission',
+    function () {
+        $p = fpr( 'c2b_link_rules' );
+
+        // An unclaimed challenge has produced nothing to link to.
+        Agentshell_Test::assert_equals( 'unclaimed', $p['unclaimed_status'] ?? null, 'an unclaimed challenge must not be linkable' );
+        Agentshell_Test::assert_false( (bool) ( $p['unclaimed_linked'] ?? true ), 'an unclaimed challenge must not report itself linked' );
+        Agentshell_Test::assert_false( (bool) ( $p['unclaimed_changed'] ?? true ), 'an unclaimed challenge must not be written' );
+        Agentshell_Test::assert_equals( 0, (int) ( $p['unclaimed_submission'] ?? -1 ), 'an unclaimed challenge must still hold no submission' );
+
+        // An expired challenge is not a valid one, claimed or not.
+        Agentshell_Test::assert_equals( 'expired', $p['expired_status'] ?? null, 'an expired challenge must not be linkable' );
+        Agentshell_Test::assert_false( (bool) ( $p['expired_linked'] ?? true ), 'an expired challenge must not report itself linked' );
+        Agentshell_Test::assert_equals( 0, (int) ( $p['expired_submission'] ?? -1 ), 'an expired challenge must still hold no submission' );
+
+        // The first link wins, and the second is refused rather than replacing.
+        Agentshell_Test::assert_equals( 'linked', $p['first_status'] ?? null, 'the first link of a claimed challenge must succeed' );
+        Agentshell_Test::assert_true( true === ( $p['first_changed'] ?? false ), 'the first link must have written' );
+        Agentshell_Test::assert_equals( 'conflict', $p['conflict_status'] ?? null, 'linking a different submission must be refused as a conflict' );
+        Agentshell_Test::assert_false( (bool) ( $p['conflict_linked'] ?? true ), 'a conflicting link must not report the other submission as linked' );
+        Agentshell_Test::assert_false( (bool) ( $p['conflict_changed'] ?? true ), 'a conflicting link must not write' );
+        Agentshell_Test::assert_equals( 333, (int) ( $p['conflict_reports_existing'] ?? -1 ), 'the conflict must name the submission that is already linked' );
+
+        // Retrying the *same* link is not an error, and writes nothing.
+        Agentshell_Test::assert_equals( 'already_linked', $p['idempotent_status'] ?? null, 'relinking the same submission must be idempotent' );
+        Agentshell_Test::assert_true( true === ( $p['idempotent_linked'] ?? false ), 'a repeated link must report the challenge as linked' );
+        Agentshell_Test::assert_false( (bool) ( $p['idempotent_changed'] ?? true ), 'a repeated link must not write again' );
+        Agentshell_Test::assert_equals( 333, (int) ( $p['stored_submission'] ?? -1 ), 'the stored submission must be the first one, not the last attempt' );
+        Agentshell_Test::assert_equals( 333, (int) ( $p['stored_after_invalid'] ?? -1 ), 'no refused attempt may change the stored submission' );
+
+        // Malformed and unknown inputs.
+        Agentshell_Test::assert_equals( 'invalid', $p['invalid_token_status'] ?? null, 'a token that is not a token must be refused as invalid' );
+        Agentshell_Test::assert_equals( 'invalid', $p['short_token_status'] ?? null, 'a short token must be refused as invalid' );
+        Agentshell_Test::assert_equals( 'absent', $p['absent_status'] ?? null, 'an unknown token must be reported absent' );
+        Agentshell_Test::assert_equals( 'invalid', $p['zero_submission_status'] ?? null, 'a zero submission id must be refused as invalid' );
     }
 );
 

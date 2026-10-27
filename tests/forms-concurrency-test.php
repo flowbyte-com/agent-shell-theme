@@ -89,9 +89,13 @@ function fc_run_one( array $config, $script, array $argv ) {
     $mode = (string) array_shift( $argv );
 
     // The child's argument layout is fixed: wp_root, mode, report, ready, go,
-    // then the mode's own arguments. A sequential run has no barrier, so the
-    // ready and go positions are empty strings.
-    $full = array( (string) $config['wp_root'], $mode, $report, '', '' );
+    // then the mode's own arguments. A sequential run has no barrier to wait
+    // for, so its gate is opened before the process starts — a mode that does
+    // call `wait_for_go()` then proceeds immediately rather than timing out.
+    $go = $report . '.go';
+    file_put_contents( $go, '1' );
+
+    $full = array( (string) $config['wp_root'], $mode, $report, $report . '.ready', $go );
     foreach ( $argv as $arg ) {
         $full[] = (string) $arg;
     }
@@ -101,6 +105,8 @@ function fc_run_one( array $config, $script, array $argv ) {
 
     $decoded = json_decode( (string) @file_get_contents( $report ), true );
     @unlink( $report );
+    @unlink( $go );
+    @unlink( $report . '.ready' );
 
     if ( ! is_array( $decoded ) ) {
         return array( 'error' => 'no_report', 'output' => implode( "\n", $out ), 'status' => $status );
@@ -622,6 +628,407 @@ Agentshell_Test::run(
             (int) ( $rows[0]['window_start'] ?? -2 ),
             'the bucket must be the window the contenders were released in'
         );
+    }
+);
+
+/* ---------------------------------------------------------------------------
+ * G — a publisher paused between its read and its lock
+ *
+ * This is the race the pre-lock revision check cannot catch. The publisher has
+ * already read the working definition and passed its `expected_revision`
+ * check; another process then commits an edit — same actor, same wall-clock
+ * second — and only the verification inside the transaction stands between the
+ * stale definition and a new published version.
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Run one paused publication against a concurrent editor.
+ *
+ * The publisher announces what it read and waits; the editor runs to
+ * completion in its own process; then the publisher is released.
+ *
+ * @param array  $config      Test-bed config.
+ * @param string $child       Child script.
+ * @param string $label       Unique label.
+ * @param string $form_id     Form to publish.
+ * @param int    $revision    Revision to publish against.
+ * @param array  $editor_argv Editor mode and arguments.
+ * @return array{read:?array,editor:?array,publisher:?array,results:array}
+ */
+function fc_paused_publish( array $config, $child, $label, $form_id, $revision, array $editor_argv ) {
+    global $tmp, $run_id;
+
+    $base   = $tmp . '/as-fcx-' . $run_id . '-' . $label;
+    $paused = $base . '.paused.json';
+    $resume = $base . '.resume';
+    @unlink( $paused );
+    @unlink( $resume );
+
+    $handles = array(
+        fc_spawn( $config, $child, $label, 0, 'publish_paused', array( $form_id, $revision, $paused, $resume ) ),
+    );
+
+    // This contender is alone at its own gate, so it is released at once; the
+    // pause it takes is the thing under test, not the starting barrier.
+    file_put_contents( $handles[0]['go'], '1' );
+
+    $deadline = microtime( true ) + 90;
+    while ( microtime( true ) < $deadline ) {
+        clearstatcache( true, $paused );
+        if ( is_file( $paused ) ) {
+            break;
+        }
+        usleep( 5000 );
+    }
+
+    $read = is_file( $paused ) ? json_decode( (string) @file_get_contents( $paused ), true ) : null;
+    $read = is_array( $read ) ? $read : null;
+
+    $editor = is_array( $read ) ? fc_run_one( $config, $child, $editor_argv ) : null;
+
+    file_put_contents( $resume, '1' );
+
+    $results = fc_release( $handles );
+
+    return array(
+        'read'      => $read,
+        'editor'    => $editor,
+        'publisher' => isset( $results[0]['report'] ) ? $results[0]['report'] : null,
+        'results'   => $results,
+    );
+}
+
+$pause_forms = isset( $prep['pause'] ) && is_array( $prep['pause'] ) ? $prep['pause'] : array();
+
+$race_g1 = fc_paused_publish(
+    $config,
+    $child,
+    'pause-different',
+    (string) ( $pause_forms[0]['form_id'] ?? '' ),
+    (int) ( $pause_forms[0]['revision'] ?? 0 ),
+    array( 'update', (string) ( $pause_forms[0]['form_id'] ?? '' ), (int) ( $pause_forms[0]['revision'] ?? 0 ), 'Race G editor ' . $token )
+);
+
+$pause_verify_1 = fc_run_one( $config, $child, array( 'verify_publish', (string) ( $pause_forms[0]['form_id'] ?? '' ) ) );
+
+$race_g2 = fc_paused_publish(
+    $config,
+    $child,
+    'pause-identical',
+    (string) ( $pause_forms[1]['form_id'] ?? '' ),
+    (int) ( $pause_forms[1]['revision'] ?? 0 ),
+    array( 'update_identical', (string) ( $pause_forms[1]['form_id'] ?? '' ), (int) ( $pause_forms[1]['revision'] ?? 0 ) )
+);
+
+$pause_verify_2 = fc_run_one( $config, $child, array( 'verify_publish', (string) ( $pause_forms[1]['form_id'] ?? '' ) ) );
+
+Agentshell_Test::run(
+    'forms concurrency G1: a publisher that read a stale definition cannot publish it',
+    function () use ( $race_g1, $pause_verify_1 ) {
+        $read      = $race_g1['read'];
+        $editor    = $race_g1['editor'];
+        $publisher = $race_g1['publisher'];
+
+        Agentshell_Test::assert_true( is_array( $read ), 'the publisher must have announced what it read: ' . fc_summary( $race_g1['results'] ) );
+        Agentshell_Test::assert_true( is_array( $editor ), 'the editor must have run' );
+        Agentshell_Test::assert_true( is_array( $publisher ), 'the publisher must have reported: ' . fc_summary( $race_g1['results'] ) );
+
+        // The scenario is only the scenario if the publisher really did read
+        // first and the editor really did commit after it.
+        Agentshell_Test::assert_equals( 0, (int) ( $read['revision'] ?? -1 ), 'the publisher must have read revision 0' );
+        Agentshell_Test::assert_true( true === ( $editor['ok'] ?? false ), 'the editor must have committed: ' . ( $editor['code'] ?? '' ) );
+        Agentshell_Test::assert_equals( 1, (int) ( $editor['revision'] ?? -1 ), 'the editor must have advanced the revision to 1' );
+
+        // Same actor, same second: the publisher read, the editor committed and
+        // the publisher was refused inside one wall-clock second, so nothing
+        // about the ordering can be attributed to a timestamp.
+        Agentshell_Test::assert_equals(
+            (int) ( $publisher['started_at'] ?? 0 ),
+            (int) ( $publisher['finished_at'] ?? 0 ),
+            'the whole read-pause-refuse sequence must have happened inside one second: '
+                . wp_json_encode( $publisher )
+        );
+        Agentshell_Test::assert_equals(
+            (int) ( $publisher['started_at'] ?? 0 ),
+            (int) ( $read['at'] ?? 0 ),
+            'the publisher must have read the definition in the same second it finished in'
+        );
+
+        Agentshell_Test::assert_false( (bool) ( $publisher['ok'] ?? true ), 'a stale publication must be refused' );
+        Agentshell_Test::assert_equals(
+            'form_state_changed',
+            $publisher['code'] ?? null,
+            'the refusal must say the state changed under the publisher, not that the caller passed a stale number'
+        );
+
+        // And nothing from the stale definition reached the live one.
+        Agentshell_Test::assert_equals( 0, (int) ( $pause_verify_1['version'] ?? -1 ), 'no version may have been created: ' . fc_summary( $race_g1['results'] ) );
+        Agentshell_Test::assert_equals( 0, (int) ( $pause_verify_1['published_rows'] ?? -1 ), 'no published row may exist' );
+        Agentshell_Test::assert_false( (bool) ( $pause_verify_1['has_been_published'] ?? true ), 'the form must not claim to have been published' );
+        Agentshell_Test::assert_false(
+            false !== strpos( (string) ( $pause_verify_1['published_bytes'] ?? '' ), 'Your name' ),
+            'no definition at all may have been published'
+        );
+        Agentshell_Test::assert_equals( 'draft', $pause_verify_1['post_status'] ?? null, 'a refused first publication must leave the post a draft' );
+        Agentshell_Test::assert_true(
+            0 === strpos( (string) ( $pause_verify_1['working_name'] ?? '' ), 'Race G editor' ),
+            'the editor’s write must have survived intact: ' . ( $pause_verify_1['working_name'] ?? '' )
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'forms concurrency G2: the revision row alone is enough to refuse a stale publication',
+    function () use ( $race_g2, $pause_verify_2 ) {
+        $read      = $race_g2['read'];
+        $editor    = $race_g2['editor'];
+        $publisher = $race_g2['publisher'];
+
+        Agentshell_Test::assert_true( is_array( $read ), 'the publisher must have announced what it read: ' . fc_summary( $race_g2['results'] ) );
+        Agentshell_Test::assert_true( is_array( $editor ), 'the identical editor must have run' );
+        Agentshell_Test::assert_true( is_array( $publisher ), 'the publisher must have reported' );
+
+        Agentshell_Test::assert_true( true === ( $editor['ok'] ?? false ), 'the identical edit must still commit: ' . ( $editor['code'] ?? '' ) );
+        Agentshell_Test::assert_equals( 1, (int) ( $editor['revision'] ?? -1 ), 'the identical edit must advance the revision' );
+        Agentshell_Test::assert_false(
+            (bool) ( $editor['bytes_changed'] ?? true ),
+            'the identical edit must not change the working bytes — otherwise this race is the G1 race again'
+        );
+
+        Agentshell_Test::assert_false( (bool) ( $publisher['ok'] ?? true ), 'a publication whose revision moved must be refused even when the bytes did not' );
+        Agentshell_Test::assert_equals( 'form_state_changed', $publisher['code'] ?? null, 'the refusal must name the state change' );
+
+        Agentshell_Test::assert_equals( 0, (int) ( $pause_verify_2['version'] ?? -1 ), 'no version may have been created' );
+        Agentshell_Test::assert_equals( 0, (int) ( $pause_verify_2['published_rows'] ?? -1 ), 'no published row may exist' );
+        Agentshell_Test::assert_equals( 'draft', $pause_verify_2['post_status'] ?? null, 'the post must still be a draft' );
+    }
+);
+
+/* ---------------------------------------------------------------------------
+ * H — a slug change racing an editor that read the same revision
+ * ------------------------------------------------------------------------ */
+
+$slug_race = isset( $prep['slug_race'] ) && is_array( $prep['slug_race'] ) ? $prep['slug_race'] : array();
+$slug_form = (string) ( $slug_race['form_id'] ?? '' );
+$slug_old  = (string) ( $slug_race['slug'] ?? '' );
+$slug_new  = $slug_old . '-moved';
+
+$handles   = array();
+$handles[] = fc_spawn( $config, $child, 'slugrace-edit', 0, 'update', array( $slug_form, 0, 'Race H editor ' . $token ) );
+$handles[] = fc_spawn( $config, $child, 'slugrace-slug', 1, 'set_slug', array( $slug_form, $slug_new ) );
+$race_h    = fc_release( $handles );
+
+$slug_state_h = fc_run_one( $config, $child, array( 'verify_slug_state', $slug_form ) );
+
+Agentshell_Test::run(
+    'forms concurrency H: a slug change and an edit cannot leave the two slug representations disagreeing',
+    function () use ( $race_h, $slug_state_h, $slug_old, $slug_new ) {
+        $reports = fc_reports( $race_h );
+        Agentshell_Test::assert_equals( 2, count( $reports ), 'both contenders must have run: ' . fc_summary( $race_h ) );
+
+        $ok      = array_values( array_filter( $reports, function ( $r ) { return ! empty( $r['ok'] ); } ) );
+        $refused = array_values( array_filter( $reports, function ( $r ) { return empty( $r['ok'] ); } ) );
+
+        Agentshell_Test::assert_true( count( $ok ) >= 1, 'at least one contender must succeed: ' . fc_summary( $race_h ) );
+
+        foreach ( $refused as $r ) {
+            Agentshell_Test::assert_true(
+                in_array(
+                    (string) ( $r['code'] ?? '' ),
+                    array( 'form_state_changed', 'form_revision_mismatch', 'form_slug_duplicate' ),
+                    true
+                ),
+                'a losing contender must be refused by name: ' . ( $r['code'] ?? '' )
+            );
+        }
+
+        // The invariant, whatever the order of the two writes.
+        Agentshell_Test::assert_true(
+            true === ( $slug_state_h['slug_consistent'] ?? false ),
+            'the dedicated row and the working definition must agree afterwards: row='
+                . ( $slug_state_h['slug_row'] ?? '' ) . ' working=' . ( $slug_state_h['working_slug'] ?? '' )
+        );
+        Agentshell_Test::assert_equals(
+            $slug_state_h['slug_row'] ?? null,
+            $slug_state_h['working_slug'] ?? null,
+            'the two representations must be the same string'
+        );
+        Agentshell_Test::assert_true(
+            in_array( (string) ( $slug_state_h['slug_row'] ?? '' ), array( $slug_old, $slug_new ), true ),
+            'the slug must be one of the two contenders’ values, never a mixture: ' . ( $slug_state_h['slug_row'] ?? '' )
+        );
+
+        // Never a second row for any key — a racing slug change must not add
+        // or lose one — and the six keys a stored form always has must all be
+        // present with exactly one row.
+        $counts  = is_array( $slug_state_h['row_counts'] ?? null ) ? $slug_state_h['row_counts'] : array();
+        $present = 0;
+        foreach ( $counts as $key => $count ) {
+            Agentshell_Test::assert_true(
+                (int) $count <= 1,
+                'key ' . $key . ' must never have more than one row: ' . wp_json_encode( $counts )
+            );
+            if ( 1 === (int) $count ) {
+                $present++;
+            }
+        }
+        Agentshell_Test::assert_true(
+            $present >= 6,
+            'the six keys a form always has must all still exist: ' . wp_json_encode( $counts )
+        );
+    }
+);
+
+/* ---------------------------------------------------------------------------
+ * I — concurrent audited mutations
+ *
+ * The audit ring is one option row, appended by read-modify-write. Under
+ * concurrency the failure modes are a lost entry (a change with no record) and
+ * a corrupted ring (a change that can no longer be read). Neither may happen.
+ * ------------------------------------------------------------------------ */
+
+$audit_forms = isset( $prep['audit'] ) && is_array( $prep['audit'] ) ? $prep['audit'] : array();
+$distinct    = array_slice( $audit_forms, 0, 4 );
+$shared      = isset( $audit_forms[4] ) ? $audit_forms[4] : array();
+
+$handles = array();
+foreach ( $distinct as $i => $row ) {
+    $handles[] = fc_spawn( $config, $child, 'audit-distinct', $i, 'update', array( (string) $row['form_id'], 0, 'Audit distinct ' . $token . ' #' . $i ) );
+}
+$race_i1 = fc_release( $handles );
+
+$distinct_ids = array_map( function ( $row ) { return (string) $row['form_id']; }, $distinct );
+$audit_verify_1 = fc_run_one( $config, $child, array_merge( array( 'verify_audit', $token ), $distinct_ids ) );
+
+$handles = array();
+for ( $i = 0; $i < 4; $i++ ) {
+    $handles[] = fc_spawn( $config, $child, 'audit-shared', $i, 'update', array( (string) ( $shared['form_id'] ?? '' ), 0, 'Audit shared ' . $token . ' #' . $i ) );
+}
+$race_i2 = fc_release( $handles );
+
+$audit_verify_2 = fc_run_one( $config, $child, array( 'verify_audit', $token, (string) ( $shared['form_id'] ?? '' ) ) );
+
+Agentshell_Test::run(
+    'forms concurrency I: concurrent audited mutations lose no audit entries',
+    function () use ( $race_i1, $audit_verify_1, $distinct_ids ) {
+        $reports = fc_reports( $race_i1 );
+        Agentshell_Test::assert_equals( count( $distinct_ids ), count( $reports ), 'every contender must have run: ' . fc_summary( $race_i1 ) );
+
+        $ok = array_values( array_filter( $reports, function ( $r ) { return ! empty( $r['ok'] ); } ) );
+        Agentshell_Test::assert_equals(
+            count( $distinct_ids ),
+            count( $ok ),
+            'every contender is editing a different form, so every one must succeed: ' . fc_summary( $race_i1 )
+        );
+
+        Agentshell_Test::assert_true( true === ( $audit_verify_1['ring_is_array'] ?? false ), 'the audit ring must still be a readable array' );
+        Agentshell_Test::assert_equals(
+            (int) ( $audit_verify_1['ring_size'] ?? -1 ),
+            (int) ( $audit_verify_1['well_formed'] ?? -2 ),
+            'every retained entry must be well formed, not a partial write'
+        );
+
+        $per_event = is_array( $audit_verify_1['per_event'] ?? null ) ? $audit_verify_1['per_event'] : array();
+        foreach ( $distinct_ids as $form_id ) {
+            Agentshell_Test::assert_equals(
+                1,
+                (int) ( $per_event[ $form_id ]['form_created'] ?? 0 ),
+                'form ' . $form_id . ' must record exactly one creation: ' . wp_json_encode( $per_event )
+            );
+            Agentshell_Test::assert_equals(
+                1,
+                (int) ( $per_event[ $form_id ]['form_updated'] ?? 0 ),
+                'form ' . $form_id . ' must record exactly one update, with no entry lost to a concurrent append: '
+                    . wp_json_encode( $per_event )
+            );
+        }
+    }
+);
+
+Agentshell_Test::run(
+    'forms concurrency I2: concurrent edits of one form record exactly one change',
+    function () use ( $race_i2, $audit_verify_2 ) {
+        $reports = fc_reports( $race_i2 );
+        Agentshell_Test::assert_equals( 4, count( $reports ), 'every contender must have run: ' . fc_summary( $race_i2 ) );
+
+        $ok = array_values( array_filter( $reports, function ( $r ) { return ! empty( $r['ok'] ); } ) );
+        Agentshell_Test::assert_equals( 1, count( $ok ), 'exactly one editor may win: ' . fc_summary( $race_i2 ) );
+
+        $per_event = is_array( $audit_verify_2['per_event'] ?? null ) ? $audit_verify_2['per_event'] : array();
+        $form_id   = (string) ( $audit_verify_2['form_ids'][0] ?? '' );
+
+        Agentshell_Test::assert_equals(
+            1,
+            (int) ( $per_event[ $form_id ]['form_updated'] ?? 0 ),
+            'one committed change means exactly one update entry, not one per contender: ' . wp_json_encode( $per_event )
+        );
+        Agentshell_Test::assert_equals(
+            (int) ( $audit_verify_2['ring_size'] ?? -1 ),
+            (int) ( $audit_verify_2['well_formed'] ?? -2 ),
+            'the ring must still be well formed after the failed appends'
+        );
+    }
+);
+
+/* ---------------------------------------------------------------------------
+ * J — concurrent creations, all racing the audit ring's first insert
+ *
+ * The ring is one option row. When several transactions append to it for the
+ * first time, exactly one inserts it and the rest must find it rather than
+ * lose their entry (or fail). `INSERT` + duplicate-key retry is only safe if
+ * that is true, so it is raced rather than reasoned about.
+ * ------------------------------------------------------------------------ */
+
+// An empty ring, so every contender really is racing the *first* insert.
+$audit_cleared = fc_run_one( $config, $child, array( 'clear_audit' ) );
+
+$handles = array();
+for ( $i = 0; $i < 4; $i++ ) {
+    $handles[] = fc_spawn( $config, $child, 'create-audit', $i, 'create_same_slug', array( 'cx-' . strtolower( $token ) . '-create-' . $i, $token ) );
+}
+$race_j = fc_release( $handles );
+
+$created_reports = fc_reports( $race_j );
+$created_ids     = array();
+foreach ( $created_reports as $r ) {
+    if ( ! empty( $r['form_id'] ) ) {
+        $created_ids[] = (string) $r['form_id'];
+    }
+}
+$audit_verify_3 = fc_run_one( $config, $child, array_merge( array( 'verify_audit', $token ), $created_ids ) );
+
+Agentshell_Test::run(
+    'forms concurrency J: concurrent creations all record their own audit entry',
+    function () use ( $race_j, $created_reports, $created_ids, $audit_verify_3, $audit_cleared ) {
+        Agentshell_Test::assert_equals( 4, count( $created_reports ), 'every creator must have run: ' . fc_summary( $race_j ) );
+        Agentshell_Test::assert_equals( 4, count( $created_ids ), 'every creator must have created its form: ' . fc_summary( $race_j ) );
+
+        foreach ( $created_reports as $r ) {
+            Agentshell_Test::assert_true( true === ( $r['created'] ?? false ), 'a creation with its own slug must succeed: ' . fc_summary( $race_j ) );
+            Agentshell_Test::assert_equals( 1, count( (array) ( $r['posts_with_slug'] ?? array() ) ), 'each slug must resolve to exactly one form' );
+        }
+
+        Agentshell_Test::assert_true( true === ( $audit_cleared['cleared'] ?? false ), 'the probe must have emptied the ring first' );
+        Agentshell_Test::assert_true( true === ( $audit_verify_3['ring_is_array'] ?? false ), 'the ring must still be readable' );
+        Agentshell_Test::assert_true(
+            (int) ( $audit_verify_3['ring_size'] ?? -1 ) >= 4,
+            'every creation must have appended an entry: ' . wp_json_encode( $audit_verify_3 )
+        );
+        Agentshell_Test::assert_equals(
+            (int) ( $audit_verify_3['ring_size'] ?? -1 ),
+            (int) ( $audit_verify_3['well_formed'] ?? -2 ),
+            'no concurrent first append may leave a partial entry'
+        );
+
+        $per_event = is_array( $audit_verify_3['per_event'] ?? null ) ? $audit_verify_3['per_event'] : array();
+        foreach ( $created_ids as $form_id ) {
+            Agentshell_Test::assert_equals(
+                1,
+                (int) ( $per_event[ $form_id ]['form_created'] ?? 0 ),
+                'form ' . $form_id . ' must have exactly one creation entry, and none may be lost to the ring insert race: '
+                    . wp_json_encode( $per_event )
+            );
+        }
     }
 );
 

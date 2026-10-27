@@ -32,6 +32,7 @@ define( 'ABSPATH', rtrim( $wp_root, '/' ) . '/' );
 define( 'WP_USE_THEMES', false );
 require_once ABSPATH . 'wp-load.php';
 
+use AgentShell_Forms\Form_Audit;
 use AgentShell_Forms\Form_Challenges;
 use AgentShell_Forms\Form_DB;
 use AgentShell_Forms\Form_Definition;
@@ -203,6 +204,66 @@ switch ( $mode ) {
             done( array( 'error' => 'challenge_form_publish', 'code' => $challenge_publish->get_error_code() ) );
         }
 
+        // 6. Four independent forms, one per contender, for the audit-integrity
+        //    race: concurrent appends must not lose one another's entries.
+        $audit_forms = array();
+        for ( $i = 0; $i < 4; $i++ ) {
+            $made = Form_Definition::create(
+                array( 'name' => 'Concurrency audit ' . $token . ' #' . $i, 'slug' => $slug . '-audit-' . $i, 'fields' => f_fields() ),
+                0
+            );
+            if ( is_wp_error( $made ) ) {
+                done( array( 'error' => 'audit_form_create', 'code' => $made->get_error_code() ) );
+            }
+            $audit_forms[] = array(
+                'post_id'  => (int) $made['post_id'],
+                'form_id'  => (string) $made['form_id'],
+                'revision' => (int) $made['revision'],
+            );
+        }
+
+        // 7. A form for the slug race, at revision 0, never published.
+        $slug_race_form = Form_Definition::create(
+            array( 'name' => 'Concurrency slug ' . $token, 'slug' => $slug . '-slugrace', 'fields' => f_fields() ),
+            0
+        );
+        if ( is_wp_error( $slug_race_form ) ) {
+            done( array( 'error' => 'slug_form_create', 'code' => $slug_race_form->get_error_code() ) );
+        }
+
+        // 8. Two forms for the paused-publisher race, never published, so the
+        //    version a refused publication must not create is version 1.
+        $pause_forms = array();
+        for ( $i = 0; $i < 2; $i++ ) {
+            $made = Form_Definition::create(
+                array( 'name' => 'Concurrency paused ' . $token . ' #' . $i, 'slug' => $slug . '-paused-' . $i, 'fields' => f_fields() ),
+                0
+            );
+            if ( is_wp_error( $made ) ) {
+                done( array( 'error' => 'pause_form_create', 'code' => $made->get_error_code() ) );
+            }
+            $pause_forms[] = array(
+                'post_id'  => (int) $made['post_id'],
+                'form_id'  => (string) $made['form_id'],
+                'revision' => (int) $made['revision'],
+                'version'  => (int) $made['version'],
+            );
+        }
+
+        // 9. One more form for the same-form audit race.
+        $shared_audit = Form_Definition::create(
+            array( 'name' => 'Concurrency shared audit ' . $token, 'slug' => $slug . '-audit-shared', 'fields' => f_fields() ),
+            0
+        );
+        if ( is_wp_error( $shared_audit ) ) {
+            done( array( 'error' => 'shared_audit_create', 'code' => $shared_audit->get_error_code() ) );
+        }
+        $audit_forms[] = array(
+            'post_id'  => (int) $shared_audit['post_id'],
+            'form_id'  => (string) $shared_audit['form_id'],
+            'revision' => (int) $shared_audit['revision'],
+        );
+
         $token_value = Form_Challenges::mint(
             (string) $challenge_form['form_id'],
             (int) $challenge_publish['version'],
@@ -235,11 +296,28 @@ switch ( $mode ) {
                     'version' => (int) $challenge_publish['version'],
                     'token'   => (string) $token_value,
                 ),
-                'post_ids' => array(
-                    (int) $update_form['post_id'],
-                    (int) $publish_form['post_id'],
-                    $bare_id,
-                    (int) $challenge_form['post_id'],
+                'audit'   => $audit_forms,
+                'slug_race' => array(
+                    'post_id'  => (int) $slug_race_form['post_id'],
+                    'form_id'  => (string) $slug_race_form['form_id'],
+                    'slug'     => (string) $slug_race_form['slug'],
+                    'revision' => (int) $slug_race_form['revision'],
+                ),
+                'pause'   => $pause_forms,
+                'post_ids' => array_merge(
+                    array(
+                        (int) $update_form['post_id'],
+                        (int) $publish_form['post_id'],
+                        $bare_id,
+                        (int) $challenge_form['post_id'],
+                        (int) $slug_race_form['post_id'],
+                    ),
+                    array_map(
+                        function ( $row ) {
+                            return (int) $row['post_id'];
+                        },
+                        array_merge( $audit_forms, $pause_forms )
+                    )
                 ),
             )
         );
@@ -426,6 +504,145 @@ switch ( $mode ) {
         );
 
     /* ---------------------------------------------------------------------
+     * Race G — a publisher paused between its read and its lock.
+     *
+     * The publisher announces what it read, then waits. While it waits, a
+     * separate process commits an edit to the same form with the same actor.
+     * The publisher's `expected_revision` check has already passed and cannot
+     * help it; only the verification *inside* the transaction can refuse the
+     * publication. What it must never do is commit the definition it read.
+     * ------------------------------------------------------------------ */
+
+    case 'publish_paused':
+        $form_id  = (string) ( $args[0] ?? '' );
+        $revision = (int) ( $args[1] ?? 0 );
+        $paused   = (string) ( $args[2] ?? '' );
+        $resume   = (string) ( $args[3] ?? '' );
+        $started  = time();
+
+        if ( ! wait_for_go() ) {
+            done( array( 'barrier' => 'timeout' ) );
+        }
+
+        $read_revision = -1;
+        $read_name     = '';
+
+        $handler = function ( $fid, $rev, $state ) use ( $form_id, $paused, $resume, &$read_revision, &$read_name ) {
+            if ( (string) $fid !== $form_id ) {
+                return;
+            }
+
+            $read_revision = (int) ( $state['revision'] ?? -1 );
+            $read_name     = is_array( $state['working'] ) ? (string) ( $state['working']['name'] ?? '' ) : '';
+
+            if ( '' !== $paused ) {
+                file_put_contents(
+                    $paused,
+                    wp_json_encode(
+                        array(
+                            'revision'  => $read_revision,
+                            'name'      => $read_name,
+                            'at'        => time(),
+                            'pid'       => getmypid(),
+                        )
+                    )
+                );
+            }
+
+            $deadline = microtime( true ) + 90;
+            while ( '' !== $resume && microtime( true ) < $deadline ) {
+                clearstatcache( true, $resume );
+                if ( is_file( $resume ) ) {
+                    return;
+                }
+                usleep( 2000 );
+            }
+        };
+
+        add_action( 'agentshell_forms_before_publish_write', $handler, 10, 3 );
+        $result = Form_Definition::publish( $form_id, $revision, 0 );
+        remove_action( 'agentshell_forms_before_publish_write', $handler, 10 );
+
+        $published_doc = is_wp_error( $result ) || ! is_array( $result['published'] )
+            ? null
+            : $result['published'];
+
+        done(
+            array(
+                'ok'             => ! is_wp_error( $result ),
+                'code'           => is_wp_error( $result ) ? $result->get_error_code() : '',
+                'version'        => is_wp_error( $result ) ? -1 : (int) $result['version'],
+                'published_name' => is_array( $published_doc ) ? (string) ( $published_doc['name'] ?? '' ) : '',
+                'published_slug' => is_array( $published_doc ) ? (string) ( $published_doc['slug'] ?? '' ) : '',
+                'read_revision'  => $read_revision,
+                'read_name'      => $read_name,
+                'started_at'     => $started,
+                'finished_at'    => time(),
+            )
+        );
+
+    /* ---------------------------------------------------------------------
+     * The concurrent editor, in two shapes: one that writes a different
+     * definition, and one that writes the identical document so that only the
+     * revision row can tell the publisher anything changed.
+     * ------------------------------------------------------------------ */
+
+    case 'update_identical':
+        $form_id  = (string) ( $args[0] ?? '' );
+        $revision = (int) ( $args[1] ?? 0 );
+
+        $before = Form_Definition::get( $form_id );
+        if ( is_wp_error( $before ) ) {
+            done( array( 'error' => $before->get_error_code() ) );
+        }
+
+        $before_rows = raw_rows( (int) $before['post_id'], Form_Post_Types::META_WORKING );
+        $before_bytes = $before_rows ? (string) $before_rows[0]['meta_value'] : '';
+        $started = time();
+
+        if ( ! wait_for_go() ) {
+            done( array( 'barrier' => 'timeout' ) );
+        }
+
+        $result = Form_Definition::update_working( $form_id, $before['working'], $revision, 0 );
+
+        $after_rows  = raw_rows( (int) $before['post_id'], Form_Post_Types::META_WORKING );
+        $after_bytes = $after_rows ? (string) $after_rows[0]['meta_value'] : '';
+
+        done(
+            array(
+                'ok'            => ! is_wp_error( $result ),
+                'code'          => is_wp_error( $result ) ? $result->get_error_code() : '',
+                'revision'      => is_wp_error( $result ) ? -1 : (int) $result['revision'],
+                'bytes_changed' => $before_bytes !== $after_bytes,
+                'started_at'    => $started,
+                'finished_at'   => time(),
+            )
+        );
+
+    /* ---------------------------------------------------------------------
+     * Race H — a slug change against an editor that read the same revision.
+     * ------------------------------------------------------------------ */
+
+    case 'set_slug':
+        $form_id = (string) ( $args[0] ?? '' );
+        $slug    = (string) ( $args[1] ?? '' );
+
+        if ( ! wait_for_go() ) {
+            done( array( 'barrier' => 'timeout' ) );
+        }
+
+        $result = Form_Definition::set_slug( $form_id, $slug, 0 );
+
+        done(
+            array(
+                'ok'    => ! is_wp_error( $result ),
+                'code'  => is_wp_error( $result ) ? $result->get_error_code() : '',
+                'slug'  => is_wp_error( $result ) ? '' : (string) $result['slug'],
+            )
+        );
+
+    /* ---------------------------------------------------------------------
      * Verification and cleanup — runs alone, after the races.
      * ------------------------------------------------------------------ */
 
@@ -485,6 +702,77 @@ switch ( $mode ) {
         done(
             array(
                 'posts_with_slug' => array_map( 'intval', Form_Definition::find_post_ids_by_meta( Form_Post_Types::META_SLUG, $slug ) ),
+            )
+        );
+
+    case 'verify_slug_state':
+        $form_id = (string) ( $args[0] ?? '' );
+        $state   = Form_Definition::get( $form_id );
+        if ( is_wp_error( $state ) ) {
+            done( array( 'error' => $state->get_error_code() ) );
+        }
+
+        $post_id     = (int) $state['post_id'];
+        $slug_rows   = raw_rows( $post_id, Form_Post_Types::META_SLUG );
+        $work_rows   = raw_rows( $post_id, Form_Post_Types::META_WORKING );
+        $work_doc    = $work_rows ? json_decode( (string) $work_rows[0]['meta_value'], true ) : null;
+
+        done(
+            array(
+                'slug_row'       => $slug_rows ? (string) $slug_rows[0]['meta_value'] : '',
+                'working_slug'   => is_array( $work_doc ) ? (string) ( $work_doc['slug'] ?? '' ) : '',
+                'state_slug'     => (string) $state['slug'],
+                'revision'       => (int) $state['revision'],
+                'slug_consistent' => true === ( $state['slug_consistent'] ?? null ),
+                'row_counts'     => row_counts( $post_id ),
+            )
+        );
+
+    case 'clear_audit':
+        Form_Audit::clear();
+        done( array( 'cleared' => true, 'entries' => count( Form_Audit::entries() ) ) );
+
+    case 'verify_audit':
+        // Args: the run token, then one form id per contender.
+        $run_token = (string) ( $args[0] ?? '' );
+        $form_ids  = array_slice( $args, 1 );
+
+        $entries = Form_Audit::entries();
+        $per_form = array();
+        $per_event = array();
+        $well_formed = 0;
+        $tokens_found = 0;
+
+        foreach ( $entries as $entry ) {
+            if ( ! is_array( $entry ) ) {
+                continue;
+            }
+            if ( isset( $entry['event'], $entry['at'], $entry['actor'], $entry['data'] ) ) {
+                $well_formed++;
+            }
+            $fid   = is_array( $entry['data'] ?? null ) ? (string) ( $entry['data']['form_id'] ?? '' ) : '';
+            $event = (string) ( $entry['event'] ?? '' );
+            if ( '' !== $fid && in_array( $fid, $form_ids, true ) ) {
+                $per_form[ $fid ] = (int) ( $per_form[ $fid ] ?? 0 ) + 1;
+                if ( ! isset( $per_event[ $fid ] ) || ! is_array( $per_event[ $fid ] ) ) {
+                    $per_event[ $fid ] = array();
+                }
+                $per_event[ $fid ][ $event ] = (int) ( $per_event[ $fid ][ $event ] ?? 0 ) + 1;
+            }
+            if ( false !== strpos( (string) wp_json_encode( $entry ), $run_token ) ) {
+                $tokens_found++;
+            }
+        }
+
+        done(
+            array(
+                'ring_is_array'  => is_array( $entries ),
+                'ring_size'      => count( $entries ),
+                'well_formed'    => $well_formed,
+                'tokens_found'   => $tokens_found,
+                'per_form'       => $per_form,
+                'per_event'      => $per_event,
+                'form_ids'       => $form_ids,
             )
         );
 

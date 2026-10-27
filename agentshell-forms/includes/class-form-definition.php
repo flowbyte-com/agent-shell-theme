@@ -161,7 +161,7 @@ class Form_Definition {
 
 			$result = Form_DB::run(
 				Form_DB::definition_tables(),
-				function () use ( $name, $definition, $json, $form_id, $slug ) {
+				function () use ( $name, $definition, $json, $form_id, $slug, $actor_id ) {
 					$post_id = wp_insert_post(
 						array(
 							'post_type'    => Form_Post_Types::FORM,
@@ -205,6 +205,24 @@ class Form_Definition {
 						}
 					}
 
+					// The record of the creation commits with the creation.
+					// A form that exists with no audit row would be a form whose
+					// origin nobody can establish, so the whole write is
+					// refused instead (§9.3's discipline, applied here too).
+					$recorded = Form_Audit::record_locked(
+						'form_created',
+						array(
+							'form_id' => $form_id,
+							'slug'    => $slug,
+							'post_id' => $post_id,
+						),
+						(int) $actor_id
+					);
+
+					if ( ! $recorded ) {
+						return self::audit_failed( 'form_created' );
+					}
+
 					return $post_id;
 				}
 			);
@@ -212,21 +230,30 @@ class Form_Definition {
 			Form_DB::unlock( $lock );
 		}
 
+		// An unconfirmed commit is resolved from the data, not guessed at: the
+		// creation is identified by the internal id it was writing.
+		if ( self::is_uncertain( $result ) ) {
+			$reconciled = Form_DB::reconcile_creation( $form_id );
+
+			if ( 'applied' === $reconciled['outcome'] ) {
+				$result = (int) $reconciled['post_ids'][0];
+			} else {
+				return self::uncertain(
+					'form_created',
+					$reconciled['outcome'],
+					array(
+						'form_id'  => $form_id,
+						'post_ids' => $reconciled['post_ids'],
+					)
+				);
+			}
+		}
+
 		if ( is_wp_error( $result ) ) {
 			return $result;
 		}
 
 		$post_id = (int) $result;
-
-		Form_Audit::record(
-			'form_created',
-			array(
-				'form_id' => $form_id,
-				'slug'    => $slug,
-				'post_id' => $post_id,
-			),
-			(int) $actor_id
-		);
 
 		return self::get_by_post_id( $post_id );
 	}
@@ -254,7 +281,7 @@ class Form_Definition {
 		}
 
 		if ( count( $ids ) > 1 ) {
-			Form_Audit::record(
+			$recorded = Form_Audit::record(
 				'form_identity_duplicate',
 				array(
 					'form_id'  => $form_id,
@@ -262,13 +289,17 @@ class Form_Definition {
 				),
 				0
 			);
-			return new \WP_Error(
-				'form_identity_duplicate',
-				__( 'More than one form record claims that id; refusing to choose one.', 'agentshell-forms' ),
-				array(
-					'form_id'  => $form_id,
-					'post_ids' => $ids,
-				)
+
+			return self::audit_noted(
+				new \WP_Error(
+					'form_identity_duplicate',
+					__( 'More than one form record claims that id; refusing to choose one.', 'agentshell-forms' ),
+					array(
+						'form_id'  => $form_id,
+						'post_ids' => $ids,
+					)
+				),
+				$recorded
 			);
 		}
 
@@ -343,7 +374,7 @@ class Form_Definition {
 		foreach ( Form_Post_Types::all_meta_keys() as $key ) {
 			$row = Form_DB::read_one( $post_id, $key );
 			if ( 'duplicate' === $row['status'] ) {
-				Form_Audit::record(
+				$recorded = Form_Audit::record(
 					'form_meta_duplicate',
 					array(
 						'post_id'  => (int) $post_id,
@@ -352,7 +383,7 @@ class Form_Definition {
 					),
 					0
 				);
-				return $row['error'];
+				return self::audit_noted( $row['error'], $recorded );
 			}
 			$rows[ $key ] = $row;
 		}
@@ -376,6 +407,14 @@ class Form_Definition {
 			'revision'           => $revision,
 			'version'            => $version,
 			'has_been_published' => $version > 0 || is_array( $published ),
+			// The slug has two representations — the dedicated row and the
+			// copy embedded in the definition — and they are written together.
+			// This reports whether they agree, so a divergence created by an
+			// older build is visible rather than silent. Repair happens on the
+			// next write, which re-imposes the authoritative row.
+			'slug_consistent'    => is_array( $working )
+				? ( (string) ( isset( $working['slug'] ) ? $working['slug'] : '' ) === $slug )
+				: null,
 			'meta'               => is_array( $meta ) ? $meta : array(),
 			'raw'                => $rows,
 		);
@@ -451,22 +490,25 @@ class Form_Definition {
 						)
 					),
 				),
+			),
+			array(
+				'event' => 'form_updated',
+				'data'  => array(
+					'form_id'           => $state['form_id'],
+					'revision'          => (int) $state['revision'] + 1,
+					'expected_revision' => (int) $expected_revision,
+					'changed'           => self::describe_change(
+						is_array( $state['working'] ) ? $state['working'] : array(),
+						$definition
+					),
+				),
+				'actor' => (int) $actor_id,
 			)
 		);
 
 		if ( is_wp_error( $result ) ) {
 			return $result;
 		}
-
-		Form_Audit::record(
-			'form_updated',
-			array(
-				'form_id'         => $state['form_id'],
-				'revision'        => (int) $state['revision'] + 1,
-				'expected_revision' => (int) $expected_revision,
-			),
-			(int) $actor_id
-		);
 
 		return self::get( $form_id );
 	}
@@ -535,6 +577,13 @@ class Form_Definition {
 
 		$new_version = (int) $state['version'] + 1;
 		$published   = $state['working'];
+
+		// The slug has two representations and the dedicated row is the
+		// authority — it is what the shortcode resolver reads. The definition is
+		// given the row's value rather than the other way round, so a definition
+		// whose embedded slug had drifted can never be published with the wrong
+		// one.
+		$published['slug']    = (string) $state['slug'];
 		$published['version'] = $new_version;
 		$published['status']  = 'published';
 
@@ -571,7 +620,52 @@ class Form_Definition {
 			),
 		);
 
-		$result = self::write_state_atomic( (int) $state['post_id'], $state, $writes );
+		/**
+		 * Fires after the publisher has read and validated the working
+		 * definition, and before its transaction begins.
+		 *
+		 * This is the interval the publication guard exists for: everything
+		 * the publisher decided was read from a state that another process can
+		 * change before the publisher takes its lock. The hook is an
+		 * observation point — it exists so that interval can be *tested* with
+		 * two real processes rather than assumed to be too short to matter.
+		 *
+		 * A listener must not write the definition. It is not a place to stage
+		 * extra edits: the guard inside the transaction will refuse them, and
+		 * the publication will fail rather than wait.
+		 *
+		 * @param string $form_id The form's internal identifier.
+		 * @param int    $expected_revision The revision the caller passed.
+		 * @param array  $state    The state the publisher read.
+		 */
+		do_action( 'agentshell_forms_before_publish_write', (string) $form_id, (int) $expected_revision, $state );
+
+		// The audit row is written **inside** this transaction (§9.3 step 5),
+		// so a publication that cannot be recorded does not happen at all. The
+		// verification inside also covers the working definition and its
+		// revision — which this write does not touch, but which is what the
+		// publication is *of*: a publisher whose snapshot went stale while it
+		// waited for the lock is refused rather than committing the old
+		// definition as the new version.
+		$result = self::write_state_atomic(
+			(int) $state['post_id'],
+			$state,
+			$writes,
+			array(
+				'event' => 'form_published',
+				'data'  => array(
+					'form_id'      => $state['form_id'],
+					'from_version' => (int) $state['version'],
+					'version'      => $new_version,
+					'fields'       => count( $published['fields'] ),
+					'initial'      => ! is_array( $state['published'] ),
+					'changed'      => is_array( $state['published'] )
+						? self::describe_change( $state['published'], $published )
+						: array(),
+				),
+				'actor' => (int) $actor_id,
+			)
+		);
 
 		if ( is_wp_error( $result ) ) {
 			return $result;
@@ -580,36 +674,34 @@ class Form_Definition {
 		// The post's status records "has this form ever been published". It is
 		// written after the definition transaction commits, because a failure
 		// here leaves a published definition with a draft status, which is
-		// recoverable, whereas the reverse is a form visitors can see with no
-		// published definition.
+		// recoverable, whereas writing it before would mean a visible form with
+		// no published definition. The outcome is reported rather than assumed.
+		$status_synced = true;
 		if ( 'publish' !== get_post_status( (int) $state['post_id'] ) ) {
-			wp_update_post(
+			$updated       = wp_update_post(
 				array(
 					'ID'          => (int) $state['post_id'],
 					'post_status' => 'publish',
-				)
+				),
+				true
 			);
+			$status_synced = ! is_wp_error( $updated ) && (int) $updated > 0;
 		}
-
-		Form_Audit::record(
-			'form_published',
-			array(
-				'form_id' => $state['form_id'],
-				'version' => $new_version,
-				'fields'  => count( $published['fields'] ),
-			),
-			(int) $actor_id
-		);
 
 		// A native revision captures the definition exactly as it was
 		// published. Taken AFTER the meta row is written, because core copies
 		// the meta's current value at the moment the revision is created.
-		self::take_revision( (int) $state['post_id'] );
+		// Revisions are a secondary record (§9.3), so a failure here does not
+		// undo the publication — but it is reported, not swallowed.
+		$revision_id = (int) self::take_revision( (int) $state['post_id'] );
 
 		$fresh = self::get( $form_id );
 		if ( is_wp_error( $fresh ) ) {
 			return $fresh;
 		}
+
+		$fresh['status_synced'] = $status_synced;
+		$fresh['revision_id']   = $revision_id;
 
 		return $fresh;
 	}
@@ -658,21 +750,21 @@ class Form_Definition {
 						)
 					),
 				),
+			),
+			array(
+				'event' => 'form_discarded',
+				'data'  => array(
+					'form_id'  => $state['form_id'],
+					'revision' => (int) $state['revision'] + 1,
+					'version'  => (int) $state['version'],
+				),
+				'actor' => (int) $actor_id,
 			)
 		);
 
 		if ( is_wp_error( $result ) ) {
 			return $result;
 		}
-
-		Form_Audit::record(
-			'form_discarded',
-			array(
-				'form_id'  => $state['form_id'],
-				'revision' => (int) $state['revision'] + 1,
-			),
-			(int) $actor_id
-		);
 
 		self::take_revision( (int) $state['post_id'] );
 
@@ -714,6 +806,24 @@ class Form_Definition {
 			);
 		}
 
+		// The slug lives in two places — the dedicated row and the copy inside
+		// the working definition — and a change that wrote only one of them
+		// would leave the form describing itself two ways. Both are written in
+		// the same transaction, together with the revision bump that makes a
+		// concurrent editor's save fail instead of silently reinstating the old
+		// slug (an editor's write re-imposes the row's slug, so the two would
+		// otherwise disagree again).
+		if ( ! is_array( $state['working'] ) ) {
+			return new \WP_Error(
+				'form_definition_incomplete',
+				__( 'This form has no working definition, so its slug cannot be changed consistently.', 'agentshell-forms' )
+			);
+		}
+
+		$working            = $state['working'];
+		$working['slug']    = $slug;
+		$new_revision       = (int) $state['revision'] + 1;
+
 		$lock = Form_DB::lock( Form_DB::slug_lock_name( $slug ), 5 );
 		if ( false === $lock ) {
 			return new \WP_Error(
@@ -739,6 +849,36 @@ class Form_Definition {
 						'key'   => Form_Post_Types::META_SLUG,
 						'value' => $slug,
 					),
+					array(
+						'key'   => Form_Post_Types::META_WORKING,
+						'value' => self::encode( $working ),
+					),
+					array(
+						'key'   => Form_Post_Types::META_REVISION,
+						'value' => (string) $new_revision,
+					),
+					array(
+						'key'   => Form_Post_Types::META_META,
+						'value' => self::encode(
+							array_merge(
+								$state['meta'],
+								array(
+									'modified_at' => gmdate( 'c' ),
+									'modified_by' => (int) $actor_id,
+								)
+							)
+						),
+					),
+				),
+				array(
+					'event' => 'form_slug_changed',
+					'data'  => array(
+						'form_id'  => $state['form_id'],
+						'from'     => $state['slug'],
+						'to'       => $slug,
+						'revision' => $new_revision,
+					),
+					'actor' => (int) $actor_id,
 				)
 			);
 		} finally {
@@ -749,15 +889,7 @@ class Form_Definition {
 			return $result;
 		}
 
-		Form_Audit::record(
-			'form_slug_changed',
-			array(
-				'form_id'  => $state['form_id'],
-				'from'     => $state['slug'],
-				'to'       => $slug,
-			),
-			(int) $actor_id
-		);
+		self::take_revision( (int) $state['post_id'] );
 
 		return self::get( $form_id );
 	}
@@ -838,29 +970,64 @@ class Form_Definition {
 
 	/**
 	 * Write a set of definition rows inside one transaction, verifying that
-	 * every row the caller observed is still exactly as they observed it.
+	 * the definition is still exactly what the caller observed.
 	 *
 	 * This is the mechanism behind "a lost race is refused, never
-	 * overwritten". It covers **creation** as well as update: a row the caller
-	 * expected to be absent must still be absent when the write runs, so two
-	 * concurrent first writes cannot both insert.
+	 * overwritten". It covers **creation** as well as update, and it verifies
+	 * **every** definition key — not only the ones being written.
 	 *
-	 * @param int   $post_id Form post id.
-	 * @param array $state   The state the caller observed (from `read_state()`).
-	 * @param array $writes  Each `{ key, value }`.
+	 * That last point is what makes publication safe. A publisher decides what
+	 * to publish from the working definition and its revision, but writes
+	 * neither of them; verifying only the rows it writes would let an editor's
+	 * commit slip between the publisher's read and its transaction, and the
+	 * publisher would then publish the definition it had read as a *new*
+	 * version. Verifying the working definition and the revision under the lock
+	 * is what turns "the caller looked at revision 3" into a fact checked at the
+	 * moment of writing.
+	 *
+	 * The reads are locking reads (`SELECT … FOR UPDATE`): they see the latest
+	 * committed row rather than a snapshot taken earlier in the transaction, so
+	 * the verification cannot be satisfied by stale data.
+	 *
+	 * @param int        $post_id Form post id.
+	 * @param array      $state   The state the caller observed (`read_state()`).
+	 * @param array      $writes  Each `{ key, value }`.
+	 * @param array|null $audit   `{ event, data, actor }`, written inside this
+	 *                            transaction, or null for none.
 	 * @return true|\WP_Error
 	 */
-	private static function write_state_atomic( $post_id, array $state, array $writes ) {
+	private static function write_state_atomic( $post_id, array $state, array $writes, $audit = null ) {
 		$raw = isset( $state['raw'] ) && is_array( $state['raw'] ) ? $state['raw'] : array();
 
-		return Form_DB::run(
+		$result = Form_DB::run(
 			Form_DB::definition_tables(),
-			function () use ( $post_id, $raw, $writes, $state ) {
+			function () use ( $post_id, $raw, $writes, $state, $audit ) {
 				if ( ! Form_DB::lock_post_row( $post_id ) ) {
 					return new \WP_Error(
 						'form_lock_failed',
 						__( 'The form record could not be locked; please retry.', 'agentshell-forms' )
 					);
+				}
+
+				$written = array();
+				foreach ( $writes as $write ) {
+					$written[ (string) $write['key'] ] = true;
+				}
+
+				// The keys this write does not touch, verified first. Each of
+				// them contributed to the decision that produced this write —
+				// a publisher's working definition, a slug change's
+				// `has_been_published`, a discard's published definition — so a
+				// change to any of them means the decision is stale.
+				foreach ( Form_Post_Types::all_meta_keys() as $guard_key ) {
+					if ( isset( $written[ $guard_key ] ) ) {
+						continue;
+					}
+
+					$current = self::verify_row( $post_id, $raw, $guard_key, $state );
+					if ( is_wp_error( $current ) ) {
+						return $current;
+					}
 				}
 
 				foreach ( $writes as $write ) {
@@ -886,25 +1053,12 @@ class Form_Definition {
 					 */
 					do_action( 'agentshell_forms_before_definition_write', (int) $post_id, $key, $write['value'] );
 
-					// Re-read inside the lock. This is the verification, not the
-					// observation: the expected value is the one the caller saw
-					// before the transaction began.
-					$current = Form_DB::read_one( $post_id, $key );
-
-					if ( 'duplicate' === $current['status'] ) {
-						return $current['error'];
+					$current = self::verify_row( $post_id, $raw, $key, $state );
+					if ( is_wp_error( $current ) ) {
+						return $current;
 					}
 
-					$expected = isset( $raw[ $key ] ) && is_array( $raw[ $key ] ) ? $raw[ $key ] : array(
-						'status'  => 'absent',
-						'value'   => null,
-						'meta_id' => null,
-					);
-
-					if ( 'absent' === $expected['status'] ) {
-						if ( 'absent' !== $current['status'] ) {
-							return self::state_changed( $key, 'absent', $current, $state );
-						}
+					if ( 'absent' === $current['status'] ) {
 						$meta_id = Form_DB::insert_row( $post_id, $key, $write['value'] );
 						if ( false === $meta_id ) {
 							return self::write_failed( $key );
@@ -912,20 +1066,194 @@ class Form_Definition {
 						continue;
 					}
 
-					if ( 'one' !== $current['status']
-						|| (int) $current['meta_id'] !== (int) $expected['meta_id']
-						|| (string) $current['value'] !== (string) $expected['value'] ) {
-						return self::state_changed( $key, (string) $expected['value'], $current, $state );
-					}
-
 					if ( ! Form_DB::cas_update( (int) $current['meta_id'], $write['value'], (string) $current['value'], (int) $post_id ) ) {
 						return self::write_failed( $key );
+					}
+				}
+
+				// The record of the change is part of the change. A mutation
+				// whose audit row cannot be written is refused, not committed
+				// with a gap in the log.
+				if ( is_array( $audit ) ) {
+					$event    = isset( $audit['event'] ) ? (string) $audit['event'] : 'form_changed';
+					$data     = isset( $audit['data'] ) && is_array( $audit['data'] ) ? $audit['data'] : array();
+					$actor_id = isset( $audit['actor'] ) ? (int) $audit['actor'] : 0;
+
+					if ( ! Form_Audit::record_locked( $event, $data, $actor_id ) ) {
+						return self::audit_failed( $event );
 					}
 				}
 
 				return true;
 			}
 		);
+
+		if ( ! self::is_uncertain( $result ) ) {
+			return $result;
+		}
+
+		// The commit's answer was lost. The rows are the evidence: if every
+		// row holds the value this write intended, the transaction committed
+		// (and so did its audit row). If every row still holds what the caller
+		// observed, it did not. Anything else is reported as unknown.
+		$reconciled = Form_DB::reconcile_writes( (int) $post_id, $writes, $state );
+
+		if ( 'applied' === $reconciled['outcome'] ) {
+			return true;
+		}
+
+		$event = is_array( $audit ) && isset( $audit['event'] ) ? (string) $audit['event'] : 'form_changed';
+
+		return self::uncertain( $event, (string) $reconciled['outcome'], array( 'rows' => $reconciled['rows'] ) );
+	}
+
+	/**
+	 * Verify one key against the state the caller observed, under a lock.
+	 *
+	 * @param int    $post_id Post id.
+	 * @param array  $raw     The observed raw rows.
+	 * @param string $key     Meta key.
+	 * @param array  $state   The observed state, for the refusal's payload.
+	 * @return array|\WP_Error The current row (`absent` or `one`), or a refusal.
+	 */
+	private static function verify_row( $post_id, array $raw, $key, array $state ) {
+		$current = Form_DB::read_one_locked( (int) $post_id, (string) $key );
+
+		if ( 'duplicate' === $current['status'] ) {
+			return $current['error'];
+		}
+
+		$expected = isset( $raw[ $key ] ) && is_array( $raw[ $key ] ) ? $raw[ $key ] : array(
+			'status'  => 'absent',
+			'value'   => null,
+			'meta_id' => null,
+		);
+
+		if ( 'absent' === $expected['status'] ) {
+			if ( 'absent' !== $current['status'] ) {
+				return self::state_changed( $key, 'absent', $current, $state );
+			}
+			return $current;
+		}
+
+		if ( 'one' !== $current['status']
+			|| (int) $current['meta_id'] !== (int) $expected['meta_id']
+			|| (string) $current['value'] !== (string) $expected['value'] ) {
+			return self::state_changed( $key, (string) $expected['value'], $current, $state );
+		}
+
+		return $current;
+	}
+
+	/**
+	 * Whether a result is the "the commit's answer was lost" error.
+	 *
+	 * @param mixed $result A `run()` result.
+	 * @return bool
+	 */
+	private static function is_uncertain( $result ) {
+		return is_wp_error( $result ) && 'form_commit_uncertain' === $result->get_error_code();
+	}
+
+	/**
+	 * A refusal for a change whose outcome could not be established.
+	 *
+	 * @param string $event    The event that was being recorded.
+	 * @param string $outcome  `applied`, `not_applied` or `uncertain`.
+	 * @param array  $extra    Extra error data.
+	 * @return \WP_Error
+	 */
+	private static function uncertain( $event, $outcome, array $extra = array() ) {
+		$data = array_merge(
+			array(
+				'event'               => (string) $event,
+				'reconciled'          => (string) $outcome,
+				'transaction_outcome' => 'not_applied' === $outcome ? 'not_applied' : 'unknown',
+			),
+			$extra
+		);
+
+		if ( 'not_applied' === $outcome ) {
+			return new \WP_Error(
+				'form_commit_failed',
+				__( 'The database did not confirm the commit, and reading the data back shows the change was not applied.', 'agentshell-forms' ),
+				array_merge( array( 'reason' => 'commit_failed' ), $data )
+			);
+		}
+
+		return new \WP_Error(
+			'form_transaction_uncertain',
+			__( 'The database did not confirm the commit, and reading the data back could not establish whether the change was applied. It is reported as unknown rather than as a success or a failure.', 'agentshell-forms' ),
+			array_merge( array( 'reason' => 'transaction_uncertain' ), $data )
+		);
+	}
+
+	/**
+	 * A refusal for a change whose audit row could not be written.
+	 *
+	 * @param string $event The event.
+	 * @return \WP_Error
+	 */
+	private static function audit_failed( $event ) {
+		return new \WP_Error(
+			'form_audit_failed',
+			__( 'The audit log could not record this change, so the change was not made. A state change is never committed without its record.', 'agentshell-forms' ),
+			array(
+				'reason'              => 'audit_failed',
+				'event'               => (string) $event,
+				'transaction_outcome' => 'not_applied',
+			)
+		);
+	}
+
+	/**
+	 * Annotate a refusal with whether its audit row was written.
+	 *
+	 * @param \WP_Error $error    The refusal.
+	 * @param bool      $recorded Whether the audit row was written.
+	 * @return \WP_Error
+	 */
+	private static function audit_noted( \WP_Error $error, $recorded ) {
+		if ( $recorded ) {
+			return $error;
+		}
+
+		$data = $error->get_error_data();
+		$data = is_array( $data ) ? $data : array();
+
+		$data['audit_recorded'] = false;
+		$error->add_data( $data );
+
+		return $error;
+	}
+
+	/**
+	 * Name the top-level keys that differ between two definitions.
+	 *
+	 * A description the store can justify, and nothing more: an empty list means
+	 * the documents are identical at the top level, and the caller reports that
+	 * rather than inventing a summary.
+	 *
+	 * @param array $before The earlier document.
+	 * @param array $after  The later document.
+	 * @return array<int,string>
+	 */
+	private static function describe_change( array $before, array $after ) {
+		$changed = array();
+
+		foreach ( $after as $key => $value ) {
+			if ( ! array_key_exists( $key, $before ) || $before[ $key ] !== $value ) {
+				$changed[] = (string) $key;
+			}
+		}
+
+		foreach ( $before as $key => $value ) {
+			if ( ! array_key_exists( $key, $after ) ) {
+				$changed[] = (string) $key;
+			}
+		}
+
+		return array_values( array_unique( $changed ) );
 	}
 
 	/**

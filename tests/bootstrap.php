@@ -196,6 +196,12 @@ function is_wp_error( $thing ) {
     return $thing instanceof WP_Error;
 }
 
+// `ARRAY_A` is one of WordPress's own output-format constants. Production code
+// passes it to `$wpdb->get_results()`; without it PHP 8 raises on the bare
+// constant, so the bootstrap defines it rather than leaving suites to notice.
+if ( ! defined( 'ARRAY_A' ) ) { define( 'ARRAY_A', 'ARRAY_A' ); }
+if ( ! defined( 'ARRAY_N' ) ) { define( 'ARRAY_N', 'ARRAY_N' ); }
+
 class WP_Error {
     public $code;
     public $message;
@@ -207,6 +213,20 @@ class WP_Error {
     }
     public function get_error_code()    { return $this->code; }
     public function get_error_message() { return $this->message; }
+    // Core's accessors. `get_error_data()` and `add_data()` matter to code
+    // that reports *why* something was refused: a refusal that has to attach
+    // the original cause to a rollback report cannot do it without them.
+    public function get_error_data( $code = '' ) { return $this->data; }
+    public function add_data( $data, $code = '' ) {
+        // Core merges rather than replaces, so a caller that adds one key does
+        // not silently discard the rest of the refusal's payload.
+        if ( is_array( $this->data ) && is_array( $data ) ) {
+            $this->data = array_merge( $this->data, $data );
+        } else {
+            $this->data = $data;
+        }
+    }
+    public function has_errors() { return '' !== (string) $this->code; }
 }
 
 if ( ! class_exists( 'WP_REST_Request' ) ) {

@@ -1084,11 +1084,20 @@ $suites = array(
         'path'     => __DIR__ . '/forms-storage-test.php',
         'requires' => 'destructive',
     ),
-    // Six races, each contender a separate process with its own MySQL
+    // Twelve races, each contender a separate process with its own MySQL
     // connection, released together by a file barrier. Destructive.
     'forms-concurrency' => array(
         'path'     => __DIR__ . '/forms-concurrency-test.php',
         'requires' => 'destructive',
+    ),
+    // The bounded-transaction contract: what happens when BEGIN, COMMIT or
+    // ROLLBACK fails, why a required transaction refuses to run its callback,
+    // why a nested call joins instead of opening a second transaction, and how
+    // an unconfirmed commit is reconciled from the data. Pure unit: `$wpdb` is
+    // replaced with a recorder whose answers are scripted.
+    'forms-transaction' => array(
+        'path'     => __DIR__ . '/forms-transaction-test.php',
+        'requires' => 'unit',
     ),
     // The challenge and rate-limit stores: hashing, consume-once, expiry, the
     // counter ceiling, window rollover and pruning. The concurrent halves live

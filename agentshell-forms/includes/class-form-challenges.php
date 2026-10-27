@@ -203,28 +203,130 @@ class Form_Challenges {
 	 * Link a claimed challenge to the submission it produced.
 	 *
 	 * This is what makes a retry recognisable as a retry rather than as a
-	 * replayed token.
+	 * replayed token, so the rules are about the *first* link being the only
+	 * one that may happen:
+	 *
+	 *   - an **unclaimed** challenge cannot be linked — a token nobody consumed
+	 *     has no attempt to record a submission for, and linking one would let a
+	 *     caller claim and use it without ever going through `claim()`;
+	 *   - an **expired** challenge cannot be linked, because an expired
+	 *     challenge is not a valid one (the claim statement re-checks expiry for
+	 *     the same reason);
+	 *   - an existing submission id is **never replaced**: two different
+	 *     submissions for one challenge is exactly the duplicate the challenge
+	 *     exists to prevent, and which of the two is "the" submission would then
+	 *     be a matter of arrival order;
+	 *   - linking the **same** submission again is not an error — a retry that
+	 *     got as far as writing the submission but failed to record it must be
+	 *     able to finish. Nothing is written in that case.
+	 *
+	 * The write is one guarded statement, so two callers racing to link cannot
+	 * both succeed. The classification below runs only when that statement
+	 * changed nothing, which is why it can be a plain read.
 	 *
 	 * @param string $token         The token.
 	 * @param int    $submission_id The entry post id.
-	 * @return bool
+	 * @return array{status:string,linked:bool,changed:bool,form_id:string,submission_id:int}
+	 *         `status` is one of `linked`, `already_linked`, `unclaimed`,
+	 *         `expired`, `conflict`, `absent`, `invalid`, `error`. `linked` is
+	 *         true for the two states in which the challenge holds this
+	 *         submission; `changed` is true only when this call wrote it.
 	 */
 	public static function link( $token, $submission_id ) {
 		global $wpdb;
 
-		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
-			return false;
+		$submission_id = (int) $submission_id;
+
+		$result = array(
+			'status'        => 'error',
+			'linked'        => false,
+			'changed'       => false,
+			'form_id'       => '',
+			'submission_id' => $submission_id,
+		);
+
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'query' ) ) {
+			return $result;
 		}
+
+		// A token that this plugin could never have minted is refused without a
+		// lookup: hashing arbitrary input to discover that it is not a token is
+		// a query that can only ever answer "no".
+		if ( ! is_string( $token ) || ! preg_match( '/^[a-f0-9]{64}$/', $token ) ) {
+			$result['status'] = 'invalid';
+			return $result;
+		}
+
+		if ( $submission_id < 1 ) {
+			$result['status'] = 'invalid';
+			return $result;
+		}
+
+		$hash  = hash( 'sha256', $token );
+		$now   = gmdate( 'Y-m-d H:i:s' );
+		$table = self::table();
 
 		$affected = $wpdb->query(
 			$wpdb->prepare(
-				'UPDATE ' . self::table() . ' SET submission_id = %d WHERE token_hash = %s',
-				(int) $submission_id,
-				hash( 'sha256', (string) $token )
+				"UPDATE {$table} SET submission_id = %d
+				  WHERE token_hash = %s
+				    AND consumed_at IS NOT NULL
+				    AND submission_id = 0
+				    AND expires_at > %s",
+				$submission_id,
+				$hash,
+				$now
 			)
 		);
 
-		return 1 === (int) $affected;
+		if ( 1 === (int) $affected ) {
+			$row = self::row( $hash );
+
+			$result['status']  = 'linked';
+			$result['linked']  = true;
+			$result['changed'] = true;
+			$result['form_id'] = isset( $row['form_id'] ) ? (string) $row['form_id'] : '';
+
+			return $result;
+		}
+
+		// Nothing was written: say which rule applied, rather than only that it
+		// did not work.
+		$row = self::row( $hash );
+
+		if ( null === $row ) {
+			$result['status'] = 'absent';
+			return $result;
+		}
+
+		$result['form_id'] = (string) $row['form_id'];
+		$existing          = (int) $row['submission_id'];
+
+		$expires = (string) $row['expires_at'];
+		if ( '' !== $expires && $expires <= $now ) {
+			$result['status']        = 'expired';
+			$result['submission_id'] = $existing;
+			return $result;
+		}
+
+		if ( null === $row['consumed_at'] ) {
+			$result['status'] = 'unclaimed';
+			return $result;
+		}
+
+		if ( $existing === $submission_id ) {
+			$result['status'] = 'already_linked';
+			$result['linked'] = true;
+			return $result;
+		}
+
+		if ( $existing > 0 ) {
+			$result['status']        = 'conflict';
+			$result['submission_id'] = $existing;
+			return $result;
+		}
+
+		return $result;
 	}
 
 	/**
