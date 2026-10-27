@@ -1089,13 +1089,24 @@ UPDATE wp_agentshell_form_challenges
   retry without reloading the page.
 
 When the submission is written, the challenge is linked to it in the same
-transaction:
+transaction — and only if the challenge is genuinely available to be linked:
 
 ```sql
 UPDATE wp_agentshell_form_challenges
    SET submission_id = %d
  WHERE token_hash = %s
+   AND consumed_at IS NOT NULL   -- only a claimed challenge has an attempt
+   AND submission_id = 0         -- never replace a submission already linked
+   AND expires_at > %s           -- an expired challenge is not a valid one
 ```
+
+One statement, so two callers cannot both link. When it changes nothing the
+reason is read back and reported by name: `unclaimed` (nobody consumed this
+token), `expired`, `conflict` (a *different* submission is already linked, and
+it is named in the refusal), `already_linked` (the same submission again —
+idempotent, writes nothing, and a retry after a partial failure can finish),
+`absent`, or `invalid`. Repeating a link is therefore safe, and replacing one
+is impossible.
 
 ### 6.3b The rate-limit algorithm, exactly
 
@@ -1902,6 +1913,39 @@ order, inside **one SQL transaction**:
 
 The transaction is short and bounded by the single call, exactly as the
 content write guard is. It is never held across a request boundary.
+
+**The revision is verified twice, and the second check is the load-bearing
+one.** Step 3 compares the caller's revision with what was read — but an editor
+can commit between that read and the lock, and the caller's number would then
+describe a state that no longer exists. So the write transaction re-reads every
+definition row it does not write (the working definition and the revision
+counter among them) with `SELECT … FOR UPDATE`, and refuses with
+`form_state_changed` if any of them moved. The pre-lock check is the fast
+refusal; the locked check is the guarantee. It is what stops a publisher that
+read revision 3 from committing that definition as a new version after an
+editor has committed revision 4 — even when the two writes happen in the same
+second and under the same actor.
+
+**The audit row is part of the change, not a note after it.** Step 5 is inside
+the transaction, and a definition mutation whose audit row cannot be written is
+refused rather than committed: the rows are rolled back and the caller is told
+`form_audit_failed`. That discipline covers create, update, publish, discard
+and a slug change. The diagnostic appends — a detected duplicate row, a refused
+grant — are the exception, because they describe a refusal rather than a state
+change; they retry outside the transaction and report whether the record
+landed.
+
+**The ring's append is serialised before it touches the row.** The ring is one
+option row, and creating it is an `INSERT` into a `UNIQUE` name: concurrent
+inserts of the same *not-yet-existing* row deadlock in InnoDB, because each
+transaction takes the same gap lock and then tries to insert into it. Measured
+on a real MySQL, six concurrent creations produced four deadlock victims, and
+each victim had to refuse its creation — a state change refused because
+somebody else was being audited at the same moment. A named advisory lock
+scoped to the options table name serialises the section, which makes the
+ring's creation a single-writer event; the append inside it is a locking read
+and one compare-and-swap. Losing an entry and corrupting the ring are both
+raced in `forms-concurrency` (I, I2, J), not merely reasoned about.
 
 **A published definition is never silently overwritten.** The previous
 published definition is kept in `_agentshell_form_published_previous`, so a
@@ -2890,14 +2934,17 @@ of §8.3a is implemented — but the screens that use it are Phase 3's.
 `schema_version` so that a later version can be recognised and migrated.
 
 **Tests.** `tests/forms-schema-test.php` (the validator, each error code, the
-field-type registry, the settings schema walk); `tests/forms-definition-test.php`
+field-type registry, the settings schema walk); `tests/forms-storage-test.php`
 (create, read, write, publish, discard, the compare-and-swap refusal, the
-version increment, the authoritative-row creation, the duplicate detection);
-`tests/forms-concurrency-test.php` (the four named races of §9.6, each driven
-from a separate process); `tests/forms-challenge-test.php` (the claim, the
-expiry, the retry replay); `tests/forms-rate-limit-test.php` (the reserve, the
-cap, the concurrency property); `tests/forms-capabilities-test.php` (the
-capability is registered, it is not granted to the administrator role, and
+version increment, the authoritative-row creation, the duplicate detection,
+the audit row inside each mutation, and the two slug representations);
+`tests/forms-concurrency-test.php` (the named races of §9.6, each driven from a
+separate process: the two named there, plus a publisher paused between its read
+and its lock, a slug change against an editor, and concurrent audit appends);
+`tests/forms-protocol-test.php` (the claim, the expiry, the retry replay, and
+the linking rules); `tests/forms-transaction-test.php` (begin, commit and
+rollback failure, with a scripted database); `tests/forms-capabilities-test.php`
+(the capability is registered, it is not granted to the administrator role, and
 the per-user grant and revocation work).
 
 **Acceptance.** A form can be created, edited, published and discarded
@@ -3187,19 +3234,27 @@ stubs has not been tested.
 |---|---|---|
 | Form-definition validation | `tests/forms-schema-test.php` | unit |
 | Field-type registry and the settings walk | `tests/forms-schema-test.php` | unit |
-| Definition storage, versioning, the compare-and-swap | `tests/forms-definition-test.php` | unit |
+| Definition storage, versioning, the compare-and-swap | `tests/forms-storage-test.php` | destructive |
 | Rendering, escaping, labels, groups | `tests/forms-render-test.php` | unit |
 | Rendering on a real site | `tests/forms-render-live-test.php` | live |
 | Input validation and required fields | `tests/forms-submission-test.php` | destructive |
 | Malformed requests, wrong types, oversized bodies | `tests/forms-submission-test.php` | destructive |
 | The honeypot's fake success | `tests/forms-submission-test.php` | destructive |
-| Duplicate submission, the single claim, the retry's idempotent replay | `tests/forms-challenge-test.php` | destructive |
-| Challenge expiry and the pruned table | `tests/forms-challenge-test.php` | destructive |
-| Rate limiting, the cap, and the concurrency property | `tests/forms-rate-limit-test.php` | destructive |
+| Duplicate submission, the single claim, the retry's idempotent replay | `tests/forms-protocol-test.php` | destructive |
+| Challenge expiry, the linking rules and the pruned table | `tests/forms-protocol-test.php` | destructive |
+| Rate limiting, the cap, and the concurrency property | `tests/forms-protocol-test.php`, `tests/forms-concurrency-test.php` | destructive |
 | Two simultaneous initial writes of a definition | `tests/forms-concurrency-test.php` | destructive |
 | Two simultaneous edits of a definition | `tests/forms-concurrency-test.php` | destructive |
 | Two simultaneous publications | `tests/forms-concurrency-test.php` | destructive |
-| A duplicate definition row injected into `wp_postmeta` | `tests/forms-concurrency-test.php` | destructive |
+| A duplicate definition row injected into `wp_postmeta` | `tests/forms-concurrency-test.php`, `tests/forms-storage-test.php` | destructive |
+| A publisher paused between its read and its lock, with an editor committing in between (same actor, same second) | `tests/forms-concurrency-test.php` | destructive |
+| A slug change racing an editor that read the same revision | `tests/forms-concurrency-test.php` | destructive |
+| Concurrent audited mutations: no lost audit entry, no corrupted ring | `tests/forms-concurrency-test.php` | destructive |
+| A mutation whose audit row cannot be written is refused and rolled back | `tests/forms-storage-test.php` | destructive |
+| BEGIN, COMMIT and ROLLBACK failure; a required transaction that cannot start | `tests/forms-transaction-test.php` | unit |
+| A table set that cannot roll back refuses a required transaction | `tests/forms-storage-test.php` | destructive |
+| Slug consistency: create → change → inspect → publish | `tests/forms-storage-test.php` | destructive |
+| The linking rules: unclaimed, expired, conflict, idempotent replay | `tests/forms-protocol-test.php` | destructive |
 | Turnstile verification and every failure branch | `tests/forms-turnstile-test.php` | unit |
 | Turnstile against a real HTTP transport | `tests/forms-turnstile-live-test.php` | live |
 | The recording path for a refusal that has no submission | `tests/forms-turnstile-test.php` | unit |
@@ -3215,7 +3270,7 @@ stubs has not been tested.
 | The per-user grant and revocation, and that the role is not granted | `tests/forms-capabilities-test.php` | unit |
 | The grant action is refused for a non-cookie-authenticated principal | `tests/forms-capabilities-test.php` | unit |
 | The transport timeout is set, and it is shorter than the claim TTL | `tests/forms-notification-test.php` | unit |
-| Form versioning | `tests/forms-definition-test.php` | unit |
+| Form versioning | `tests/forms-storage-test.php` | destructive |
 | Native revision registration and the revision trigger | `tests/forms-revisions-test.php` | unit |
 | The builder's models | `tests/forms-builder-test.js` | node |
 | The builder's interface | `tests/forms-builder-browser-test.js` | browser |
@@ -3223,9 +3278,9 @@ stubs has not been tested.
 | Release packaging | `tests/forms-packaging-test.php` | unit |
 
 **The concurrency suites are destructive, and they drive their two writers
-from separate processes**, so the race is real rather than simulated. Each of
-the four concurrency cases in §9.6 has its own named assertion, and each one
-must fail if the guarantee it covers is removed — the mutation-harness
+from separate processes**, so the race is real rather than simulated. Each
+concurrency case has its own named assertion, and each one must fail if the
+guarantee it covers is removed — the mutation-harness
 discipline the repository already uses for its other guarantees.
 
 ### 14.3 The environment
