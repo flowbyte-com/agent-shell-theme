@@ -29,18 +29,18 @@ one new zone block type — and through the existing
 are stored as a **custom post type** (`agentshell_form`) whose definition
 lives in **post meta**, which gives native WordPress revisions, native
 capabilities, native trash and a native REST surface for free. Submissions are
-stored as a **second, separate custom post type** (`agentshell_submission`),
+stored as a **second, separate custom post type** (`agentshell_entry`),
 which keeps personal data out of the definition store and out of AgentShell's
-existing content tools. The plugin owns **one** small table for ephemeral
-protocol state (single-use submission challenges and rate-limit counters),
-because that state must be consumed atomically and neither the options table
-nor transients can do that.
+existing content tools. The plugin owns **two** small tables for ephemeral
+protocol state (single-use submission challenges, and rate-limit counters),
+because that state must be claimed and counted atomically and neither the
+options table nor transients can do that.
 
 ### 1.2 The MVP in one paragraph
 
 An administrator configures a contact form in a visual builder at
 **Appearance → AgentShell Forms**, inserts it into a page with the shortcode
-`[agentshell_form id="contact"]`, optionally protects it with Cloudflare
+`[agentshell_form slug="contact"]`, optionally protects it with Cloudflare
 Turnstile, and receives submissions by email. Submissions land in
 **Submissions**, where an authorised administrator can read them, export them
 as CSV, and delete them. The definition has a **draft** and a **published**
@@ -81,7 +81,19 @@ four phases can proceed largely in parallel.
    agent the same Preview → Save → Discard semantics the configurator has.
 5. **Reading personal data is a separate authority from editing forms.** An
    agent that can create a form does not thereby gain the right to read what
-   people wrote into it.
+   people wrote into it — and the boundary is enforced by a **capability the
+   agent's principal may not hold**, not by a flag the agent supplies for
+   itself (§8.3).
+
+**What a focused review changed.** A review of this document corrected eight
+details without changing the architecture: the submission post type's name
+(WordPress caps a post type key at 20 characters), the form identifier and
+slug formats, how native WordPress revisions actually work, the
+compare-and-swap on post meta, the exact guarantees the public challenge and
+the rate limiter give, what an explicit authorisation flag can and cannot
+enforce, the difference between a notification being *accepted* and being
+*delivered*, and two documentation claims that overstated what the design
+does. §16 records each one, with its revised decision.
 
 ### 1.5 What this document deliberately does not do
 
@@ -300,7 +312,7 @@ constraint the design has to satisfy, not a preference.
 | F2 | The MCP plugin is the agent transport, not a product data layer; the forms system must exist without it | The engine cannot depend on the MCP plugin |
 | F3 | `agentshell-blocks` is a widget plugin with three tools and no block infrastructure | Extending it would be a category error |
 | F4 | The repository has no custom post types | A post type is a new architectural element and is introduced deliberately, once, with a stated rationale |
-| F5 | Core copies post meta into revisions (`_wp_copy_post_meta` in `wp_save_post_revision`) | A definition in post meta gets native revision support for free — a decisive argument for the post-type choice |
+| F5 | **Core does *not* version arbitrary post meta.** `wp_save_revisioned_meta_fields()` (hooked to `_wp_put_post_revision`) copies only the keys returned by `wp_post_revision_meta_keys()`, which is the set registered through `register_meta()` with `revisions_enabled => true` — and `register_meta()`'s default for that argument is `false`. Separately, `wp_save_post_revision()` only takes a revision when one of `_wp_post_revision_fields()` — `post_title`, `post_content`, `post_excerpt` — has changed | A definition in post meta gets **no** native revision support by default. §5.8 specifies the registration, the trigger and the relationship between native revisions and the plugin's own definition history |
 | F6 | The generic content tools are hard-limited to `post` and `page` (`Content_Primitives::TYPES`, and the `type` enums in the tool schemas) | A submission post type is invisible to `agentshell_search_content`, `agentshell_get_content` and `agentshell_trash_content` — no leakage, and no change to those tools |
 | F7 | The registry keys tools by name and keeps the *first* registration, so a third plugin registering at a later priority can never shadow an existing tool | The forms plugin registers its tools at priority 15 and cannot collide |
 | F8 | `tests/tool-count-test.php` scans exactly two plugin files, and `tests/doc-consistency-test.php` gates the documented count in two places | Adding a third publishing plugin **requires** extending the count test and updating the documented count, or the count becomes wrong |
@@ -308,6 +320,10 @@ constraint the design has to satisfy, not a preference.
 | F10 | The doctor is the single source of truth for what a valid block is, and configuration writes are staged by intercepting one option name | The forms domain does not need to join the configuration transaction, and should not |
 | F11 | WordPress's cookie authentication already refuses a REST request without a valid nonce | The admin REST routes need a capability check, not a hand-rolled nonce check |
 | F12 | The repository has no build step: `configurator/*.js` are plain files that also export via `module.exports` for Node tests | The forms builder must be plain JavaScript with no bundler |
+| F13 | **A post type key must be 20 characters or fewer.** `register_post_type()` returns `WP_Error( 'post_type_length_invalid' )` above 20 characters, and `wp_posts.post_type` is `varchar(20)` — so an over-long key is not merely refused, it would be **truncated in the database** | `agentshell_submission` is 21 characters and is **invalid**. The submission post type is renamed — §3.3, §6.2 |
+| F14 | **`wp_postmeta` has no uniqueness guarantee.** Its only keys are `PRIMARY KEY (meta_id)` and two non-unique indexes; `add_metadata()` is a `SELECT COUNT(*)` followed by an `INSERT`, and `update_metadata()` updates **every** row matching the key | A compare-and-swap cannot rely on one row per `(post_id, meta_key)`. §9.6 specifies creation, duplicate detection and guarded updates that depend only on `meta_id` |
+| F15 | **`wp_mail()` returning `true` means the message was accepted by the sending mechanism** — handed to PHPMailer and the local MTA without an error. It does not mean the message was delivered, and it does not mean it was not | The notification vocabulary must say *accepted*, never *delivered*, and the delivery guarantee is at-least-once — §11.5, §11.6 |
+| F16 | **A WordPress REST nonce is not a CSRF defence for an anonymous visitor.** `wp_create_nonce()` derives from the user id and the session token, so every logged-out visitor without a cookie receives the same value | The public submission endpoint cannot rely on a nonce; §7.1 separates replay prevention, duplicate suppression, cross-origin browser restrictions and server-side automated abuse |
 
 ---
 
@@ -352,7 +368,7 @@ control it does not need.
 
 | Option | What it means | For | Against |
 |---|---|---|---|
-| **A. A custom post type** | `agentshell_submission` posts, values in meta | Capabilities, trash, search, `wp_delete_post`, the WordPress personal-data exporter/eraser hooks, and invisibility to the generic content tools (F6); a durable record that a notification retry can reference | `wp_posts` is a wide table; each submission is a post row plus meta rows; no native indexing of field values |
+| **A. A custom post type** | `agentshell_entry` posts, values in meta | Capabilities, trash, search, `wp_delete_post`, the WordPress personal-data exporter/eraser hooks, and invisibility to the generic content tools (F6); a durable record that a notification retry can reference | `wp_posts` is a wide table; each submission is a post row plus meta rows; no native indexing of field values |
 | **B. A dedicated table** | `agentshell_form_submissions` | Exact shape, indexes on form and date, efficient export | Re-implements capabilities, deletion, pagination, privacy export, and the audit trail; a new migration surface for data that is the most sensitive thing on the site |
 | **C. An option** | Submissions in an option array | Trivial to implement | Unbounded growth in a serialised option; no per-record capability; no trash; no privacy hooks; catastrophic for a busy form |
 | **D. Post meta on the form** | Submissions as meta rows on the form post | One place to look | Mixes definitions and personal data in one record, which the brief forbids; deletion, export and privacy all become ad hoc |
@@ -366,6 +382,15 @@ than needing to be enforced by a new mechanism. WordPress also ships the
 privacy exporter and eraser registries, which turns the UK GDPR access and
 erasure obligations into a registration rather than a subsystem.
 
+**The post type key is `agentshell_entry`, not `agentshell_submission`.**
+The obvious name is invalid: `agentshell_submission` is 21 characters, and
+WordPress caps a post type key at 20 (`register_post_type()` returns
+`WP_Error( 'post_type_length_invalid' )` above that, and `wp_posts.post_type`
+is `varchar(20)`, so an over-long key would additionally be truncated in the
+database — F13). `agentshell_entry` is 16 characters, is not a reserved name,
+and reads correctly: a submission is an *entry* in a form. The form post type
+is `agentshell_form` (15 characters), which is within the limit.
+
 The cost is real: `wp_posts` is not a submission table. The documented exit
 criterion is in §6.7 — a form or site that sustains submission volumes where
 per-post overhead dominates should move to a dedicated table, behind the same
@@ -375,7 +400,7 @@ service interface, without changing the pipeline.
 
 | Option | What it means | For | Against |
 |---|---|---|---|
-| **A. Shortcode** | `[agentshell_form id="contact"]` | Theme-independent; works with the core Shortcode block; works with any editor; the existing `[agent_block]` precedent; no build step | Not drag-and-drop; not visually represented in the editor canvas |
+| **A. Shortcode** | `[agentshell_form slug="contact"]` | Theme-independent; works with the core Shortcode block; works with any editor; the existing `[agent_block]` precedent; no build step | Not drag-and-drop; not visually represented in the editor canvas |
 | **B. A Gutenberg block** | A real block with `block.json` | The best editor experience; native | The repository has no block infrastructure at all (F-style: zero `block.json`, zero `register_block_type`); a block needs `wp-blocks`/`wp-element` and, for anything beyond a wrapper, a build step or careful vanilla registration; the core Shortcode block already covers the insertion case |
 | **C. A `WP_Widget`** | A widget the plugin registers | Theme-independent; appears in every widget area; AgentShell's `wp_widget_area` block renders it | Not available in the block editor without the Legacy Widget block; widget areas are a theme concept |
 | **D. A new AgentShell zone block type** | `{type: 'agentshell_form', id: 'contact'}` | The most AgentShell-native: a form drops into the nine-area grid like any other block | Requires the five coordinated changes F-style; expands the fixed block vocabulary, which is a contract change, not a feature |
@@ -413,8 +438,8 @@ into it.
 |---|---|---|
 | Where does the engine live? | A new `agentshell-forms` plugin | F1, F2 |
 | Where do definitions live? | `agentshell_form` post type, definition in post meta | F5, and the theme-scoping argument |
-| Where do submissions live? | `agentshell_submission` post type, values in meta | F6, plus the privacy hooks |
-| Where does ephemeral protocol state live? | One plugin-owned table | Atomicity requirements |
+| Where do submissions live? | `agentshell_entry` post type, values in meta | F6, F13, plus the privacy hooks |
+| Where does ephemeral protocol state live? | Two plugin-owned tables | Atomicity requirements |
 | How is a form inserted? | Shortcode + `WP_Widget`; zone block later | Theme-independence |
 | Where is the builder? | A plugin-owned admin page | Theme-independence |
 | How does it reach agents? | The `agentshell_mcp_register_tools` filter at priority 15 | F7 |
@@ -443,14 +468,15 @@ agentshell-forms/
   agentshell-forms.php          bootstrap: constants, activation, uninstall hook
   uninstall.php                 removes the plugin's own tables and options
   includes/
-    class-form-post-types.php   registers `agentshell_form` and `agentshell_submission`
+    class-form-post-types.php   registers `agentshell_form` and `agentshell_entry`
     class-form-schema.php       the authoritative schema, the validator, the error codes
     class-form-field-types.php  the field-type registry
     class-form-definition.php   read/write of working and published definitions; the CAS
     class-form-renderer.php     server-side rendering of a form
     class-form-shortcode.php    `[agentshell_form id="…"]`
     class-form-widget.php       the `WP_Widget` subclass
-    class-form-challenges.php   the single-use challenge and rate-limit store
+    class-form-challenges.php   the single-use challenge store
+    class-form-rate-limits.php the rate-limit counter store
     class-submission-handler.php the one authoritative submission pipeline
     class-submission-store.php   persistence, retention, export, erasure
     class-form-notifier.php      `wp_mail()` notifications and their retry
@@ -530,10 +556,40 @@ One schema, stored once, used by every consumer: the builder, the MCP tools,
 the renderer, the submission pipeline and the validator. There is no second
 copy of the rules.
 
+**Two identifiers, and they are not interchangeable.**
+
+| | The internal identifier | The slug |
+|---|---|---|
+| Format | exactly 32 lowercase hexadecimal characters — a UUIDv4 rendered without its dashes | `^[a-z0-9][a-z0-9-]{0,63}$` |
+| Example | `7c1d2e3a4b5c6d7e8f9a0b1c2d3e4f5a` | `contact` |
+| Mutable? | **No.** Assigned once at creation, never changed, never reused | Yes, but **only while the form has never been published** — see below |
+| Unique? | Yes, globally | Yes, per site |
+| Used by | The database, the API paths, the MCP tools, the submission pipeline | The shortcode, the admin screens, the human |
+| Storage | `char(32)` / `varchar(32)` | `varchar(64)` in the form's own meta |
+
+The internal identifier is the **authoritative** one. It is what a submission
+records, what a version refers to, and what an agent addresses. It is
+immutable, so a submission's meaning never changes and a form cannot be
+"replaced" underneath a stored record.
+
+The slug exists because `[agentshell_form slug="contact"]` is something a
+human can read and edit, and a 32-character hex string is not. The two
+namespaces cannot collide, because **the validator refuses a slug that
+matches `^[a-f0-9]{32}$`** — so a value that looks like an internal
+identifier is always an internal identifier, and the resolution rule in §7.3
+is total.
+
+A slug may be changed while the form is a draft. **Once the form has been
+published, the slug is frozen**, because a published form's shortcode is
+already embedded in pages, and a silent rename would break them. Renaming a
+published form means creating a new form, or editing the pages that embed
+it — which is the operator's decision to make deliberately.
+
 ```json
 {
   "schema_version": 1,
-  "form_id": "f_7c1d2e3a4b5c6d7e8f9a0b1c2d3e4f5a",
+  "form_id": "7c1d2e3a4b5c6d7e8f9a0b1c2d3e4f5a",
+  "slug": "contact",
   "name": "Contact us",
   "description": "Get in touch with the studio.",
   "version": 3,
@@ -609,7 +665,9 @@ header, and a way to collide with a reserved meta name.
 
 **Field keys are not renamable once a form has submissions.** Renaming is a
 migration, not an edit, and the plugin refuses it with a named error. The
-builder offers "duplicate" and "remove" instead.
+builder offers "duplicate" and "remove" instead. The **slug** follows the same
+principle with a different trigger: it is free to change while the form is a
+draft, and frozen once the form has been published (§5.1).
 
 **`options`** is meaningful only for `select`, `radio` and `checkbox`. Each
 option is `{ "value": "…", "label": "…" }`, where `value` is a stable slug
@@ -708,7 +766,10 @@ and the publish path.
 | Rule | Error code |
 |---|---|
 | `schema_version` is a supported integer | `form_schema_version_unsupported` |
-| `form_id` matches `^[a-f0-9]{32}$` | `form_id_invalid` |
+| `form_id` matches `^[a-f0-9]{32}$` — 32 lowercase hexadecimal characters, exactly | `form_id_invalid` |
+| `slug` matches `^[a-z0-9][a-z0-9-]{0,63}$`, and does **not** match `^[a-f0-9]{32}$` | `form_slug_invalid` |
+| `slug` is unique across forms | `form_slug_duplicate` |
+| `slug` is unchanged once the form has been published | `form_slug_frozen` |
 | `name` is non-empty, at most 200 characters | `form_name_invalid` |
 | `fields` is a list of at least one and at most 200 entries | `form_fields_count_invalid` |
 | every field has a unique key matching `^[a-z][a-z0-9_]{0,39}$` | `form_field_key_invalid`, `form_field_key_duplicate` |
@@ -730,17 +791,33 @@ Unknown top-level keys and unknown keys inside a field are **rejected**, not
 ignored. A silently ignored key is a definition that says something the
 system does not do.
 
-### 5.6 Form versioning
+**The identifier rules are the same everywhere.** The `form_id` is 32
+lowercase hexadecimal characters and nothing else — no prefix, no dashes, no
+uppercase. The database column is `char(32)`, the validator's pattern is
+`^[a-f0-9]{32}$`, the API path segment is that string, and the MCP tools
+address a form by it. A prefix such as `f_` would make the stored value 34
+characters and would not fit a `char(32)` column; it is deliberately absent.
 
-`version` is an integer, incremented when a definition is published. It is
-meaningful in exactly two places:
+### 5.6 Form versioning, and the five things that are not the same
 
-- a submission records the version it was validated against, so a later change
-  to the form does not change what a past submission means;
-- a notification records the version it described.
+Five distinct artefacts carry state about a form. They are frequently
+conflated, so each is named, and each is told apart.
 
-The version is **not** a content hash and is not used to detect concurrent
-edits; that is the working definition's revision counter (§9.6).
+| Artefact | What it is | Who changes it | What it is for |
+|---|---|---|---|
+| **`version`** | An integer on the published definition, incremented on each publication | The publish path only | Naming *which* published definition a submission was validated against. It is a label, not a concurrency token |
+| **The working definition** | The definition being edited | The builder, and the agent's update tool | The draft. The renderer never reads it |
+| **The published definition** | The live definition | The publish path only | What visitors get and what submissions are validated against |
+| **The previous publication** | The published definition as it was immediately before the last publication | The publish path only | A one-level undo, so a publication can be reversed by a human without digging through revisions |
+| **The working-revision counter** | A monotonic integer on the working definition, incremented on every write to it | Every working-definition write | A **concurrency token**. It says "the draft I looked at is still the draft", and nothing else |
+
+The version is **not** a content hash, and the working-revision counter is
+**not** a version. They answer different questions: "which definition was
+live?" and "has the draft changed under me?".
+
+The working-revision counter is deliberately **not** recorded in native
+revisions (§5.8): it is a concurrency token rather than content, and a
+revision carrying a stale counter would be misleading.
 
 ### 5.7 Draft and published definitions
 
@@ -753,6 +830,91 @@ A form carries two definitions:
 A form with no published definition is **unpublished**: it renders nothing to
 visitors, and the builder says so. §9 describes the publish protocol.
 
+### 5.8 Native WordPress revisions, and what they do and do not give
+
+This section exists because the naive assumption is wrong, and the naive
+assumption is expensive (F5).
+
+**What WordPress does not do.** It does **not** version arbitrary custom post
+meta. Two independent facts combine:
+
+1. `wp_save_revisioned_meta_fields()` — hooked to `_wp_put_post_revision` —
+   copies into the revision only the meta keys returned by
+   `wp_post_revision_meta_keys()`. That function returns the keys registered
+   through `register_meta()` / `register_post_meta()` whose `revisions_enabled`
+   argument is true — and **`register_meta()`'s default for that argument is
+   `false`**. A meta key the plugin never registered is never copied.
+2. `wp_save_post_revision()` only takes a revision at all when one of
+   `_wp_post_revision_fields()` — `post_title`, `post_content`,
+   `post_excerpt` — has changed since the last revision. A definition stored
+   entirely in meta does not change any of those three fields, so **a
+   definition-only edit would silently produce no revision at all**.
+
+**What the plugin therefore does.**
+
+The post type is registered with `'supports' => array( 'title', 'revisions' )`.
+`register_meta()` refuses `revisions_enabled` unless the object subtype
+supports revisions, so the two registrations must agree.
+
+The three definition meta keys are registered explicitly:
+
+```php
+register_post_meta( 'agentshell_form', '_agentshell_form_working', array(
+    'type'              => 'string',
+    'single'            => true,
+    'revisions_enabled' => true,
+    'show_in_rest'      => false,
+    'auth_callback'     => 'agentshell_forms_meta_auth_callback',
+) );
+// …the same for '_agentshell_form_published' and '_agentshell_form_published_previous'
+```
+
+`show_in_rest` is false and an `auth_callback` is supplied for all three, so
+the definition is not reachable through the post REST API — the plugin's own
+routes are the only way in.
+
+**When a revision is taken.** Because a definition change does not alter
+`post_title`, `post_content` or `post_excerpt`, the plugin takes the
+revision itself, explicitly, at the moments where a snapshot of the
+definition is meaningful:
+
+- **after a publication** — so a revision captures the definition exactly as
+  it was published;
+- **after a discard** — so the discarded draft is recoverable.
+
+The plugin calls `wp_save_post_revision( $post_id )` and, for that call only,
+sets the `wp_save_post_revision_post_has_changed` filter to true, because
+core's own "the post did not change" test looks only at the three post fields
+and cannot see a meta change.
+
+**The ordering matters and is fixed.** The meta row is written *first*, and
+the revision is taken *after*. `wp_save_revisioned_meta_fields()` copies the
+meta's current value at the moment the revision is created, so writing the
+meta first and then taking the revision captures the new value; the reverse
+order would capture the old one.
+
+**What native revisions are, and are not.** They are a **secondary,
+browsable record**: the admin's revision browser shows what a form looked
+like at a point in time, and `wp_restore_post_revision()` can restore the
+registered meta from one. They are **not**:
+
+- the **authoritative history** of a form's live definition. The
+  authoritative live state is `_agentshell_form_published`; the authoritative
+  one-level undo is `_agentshell_form_published_previous`; the authoritative
+  draft is `_agentshell_form_working`. The plugin never reads a native
+  revision to decide what to render or validate against.
+- a **complete history**. WordPress keeps a bounded number of revisions
+  (`wp_revisions_to_keep()`, and the `WP_POST_REVISIONS` constant), and the
+  plugin's own publications are not revisions at all — each publication
+  replaces the previous one in `_agentshell_form_published`.
+- **the concurrency mechanism**. That is the working-revision counter
+  (§5.6), which is deliberately not revisioned.
+
+**A native revision is not a rollback.** Restoring a revision restores a
+*state*, not a *publication*. Restoring the plugin's own state is what
+`agentshell_discard_form_changes` does (§9.5), and it is the only path the
+plugin exposes, because it is the one that cannot half-apply.
+
 ---
 
 ## 6. The submission storage model
@@ -760,77 +922,219 @@ visitors, and the builder says so. §9 describes the publish protocol.
 ### 6.1 The organising principle
 
 **Durable, user-visible records live in WordPress's own tables. Ephemeral
-protocol state lives in a table the plugin owns.**
+protocol state lives in tables the plugin owns.**
 
 The distinction is not tidiness; it is about which guarantees each store can
 give. The options table and transients give no atomicity for a
 consume-once operation and no atomicity for a counter increment. A table with
-a unique key and a deleting `DELETE` gives both. So the plugin owns one small
-table, and nothing else.
+a unique key does. So the plugin owns two small tables, and nothing else.
 
 ### 6.2 The submission record
 
-`agentshell_submission` is a post type registered with:
+`agentshell_entry` is a post type registered with:
 
 - `public => false`, `exclude_from_search => true`, `show_ui => false` — the
   plugin provides its own screens;
-- `capability_type => 'agentshell_submission'`, with the capabilities mapped
-  to `read`, `edit_post`, `delete_post` so WordPress's per-post model applies
-  to a submission exactly as it applies to a page;
+- `capability_type => 'agentshell_entry'`, with the capabilities mapped to
+  `read`, `edit_post`, `delete_post` so WordPress's per-post model applies to
+  a submission exactly as it applies to a page;
 - `supports => array( 'title' )` only. A submission is immutable: no editor,
   no revisions, no comments.
+
+The post type key is `agentshell_entry` and **not** `agentshell_submission`,
+which is 21 characters and therefore invalid (F13, §3.3). The capability
+type follows the same name, so the generated capabilities read
+`edit_agentshell_entry`, `read_agentshell_entry` and
+`delete_agentshell_entry`, and are mapped by the plugin onto the capability
+set §8.3 describes.
 
 The record's content is in post meta:
 
 | Meta key | Holds |
 |---|---|
-| `_agentshell_form_id` | the form's stable id (not the post id) |
+| `_agentshell_form_id` | the form's **internal identifier** — 32 hex characters, not the post id |
 | `_agentshell_form_version` | the published version the submission was validated against |
 | `_agentshell_form_data` | the submitted values, JSON, keyed by field key |
 | `_agentshell_form_meta` | received-at, source, the hash of the source address, the user agent (only if enabled) |
 | `_agentshell_form_spam` | `clean`, `spam`, `unverified` |
-| `_agentshell_form_notification` | `{status, attempts, last_error, sent_at}` |
-| `_agentshell_form_hash` | the SHA-256 of the canonical submitted payload — the tamper-evidence record and the duplicate key |
+| `_agentshell_form_notification` | the notification record — see §11.6 |
+| `_agentshell_form_hash` | the SHA-256 of the canonical submitted payload — the tamper-evidence record |
+| `_agentshell_form_challenge` | the challenge token hash this submission consumed, so a retry can be recognised (§7.1) |
 
 The post **title** is generated by the server (`Contact us — 2026-10-27
 14:03`), never taken from the submission, so no personal data lands in a
 field the admin list table sorts on or a search index.
 
-### 6.3 The plugin's own table
+### 6.3 The plugin's own tables
 
-One table, `agentshell_form_challenges`, holding two kinds of short-lived
-row:
+Two tables, each with exactly one job and exactly one unique key.
+
+**The challenge table** — `agentshell_form_challenges`:
 
 ```
-id            bigint unsigned AUTO_INCREMENT PRIMARY KEY
-token_hash    char(64) NOT NULL
-kind          varchar(16) NOT NULL      -- 'challenge' | 'rate'
-subject_hash  char(64) NOT NULL         -- the hashed source address, for 'rate'
-form_id       varchar(32) NOT NULL
-form_version  int unsigned NOT NULL
-created_at    datetime NOT NULL
-expires_at    datetime NOT NULL
+id             bigint unsigned AUTO_INCREMENT PRIMARY KEY
+token_hash     char(64)     NOT NULL            -- SHA-256 of the challenge token
+form_id        char(32)     NOT NULL            -- the internal form identifier
+form_version   int unsigned NOT NULL            -- the published version it was minted for
+subject_hash   char(64)     NOT NULL DEFAULT '' -- HMAC of the source address
+consumed_at    datetime     NULL                -- when it was claimed
+submission_id  bigint unsigned NOT NULL DEFAULT 0 -- the entry it produced, once known
+created_at     datetime     NOT NULL
+expires_at     datetime     NOT NULL
 UNIQUE KEY token_hash (token_hash)
-KEY kind_subject (kind, subject_hash, created_at)
+KEY form_id (form_id)
 KEY expires_at (expires_at)
 ```
 
-**Why a table and not a transient.** The challenge must be consumed exactly
-once. Consuming a transient is a read followed by a delete, and two concurrent
-requests can both read it. A `DELETE … WHERE token_hash = ?` is atomic: the
-affected-row count says who won. The same argument applies to the rate-limit
-counter, which is an increment.
+**The rate-limit table** — `agentshell_form_rate_limits`:
+
+```
+id             bigint unsigned AUTO_INCREMENT PRIMARY KEY
+scope          varchar(16)  NOT NULL            -- 'form' | 'site'
+subject_hash   char(64)     NOT NULL            -- HMAC of the source address
+form_id        char(32)     NOT NULL DEFAULT ''  -- '' for the site scope
+window_start   int unsigned NOT NULL            -- unix seconds, floored to the window
+hits           int unsigned NOT NULL DEFAULT 0  -- the counter
+created_at     datetime     NOT NULL
+expires_at     datetime     NOT NULL
+UNIQUE KEY bucket (scope, subject_hash, form_id, window_start)
+KEY expires_at (expires_at)
+```
+
+**Why a table and not a transient.** A challenge must be claimed exactly once,
+and a counter must be incremented exactly once. Consuming a transient is a
+read followed by a delete, and two concurrent requests can both read it;
+incrementing a transient is a read, an addition and a write. A guarded
+`UPDATE … WHERE <condition>` in a table is a single atomic statement, and its
+affected-row count says who won. The same argument applies to the counter,
+which needs a unique bucket key to make the increment atomic.
 
 **Why not the options table.** The options table's `add_option()` is atomic
 against the unique key on `option_name`, which is the trick
 `Transaction_Manager` uses to open a transaction — but a challenge row per
-rendered form would grow `wp_options` without bound and would need its
-autoload behaviour managed per row. A table with an expiry index and a cron
-prune is the right shape for data that is born expiring.
+rendered form would grow `wp_options` without bound, would need its autoload
+behaviour managed per row, and — for the counter — would still need a
+compare-and-swap per increment. A table with an expiry index and a cron prune
+is the right shape for data that is born expiring.
 
 **Retention.** Rows are deleted by a cron job that runs hourly and removes
 anything past `expires_at`. Correctness never depends on the cron firing:
 every read re-checks the expiry itself, exactly as the screenshot store does.
+
+**The two tables are separate on purpose.** The challenge table's unique key is
+a token; the rate table's is a bucket. Mixing them would mean one table with
+two incompatible uniqueness rules and a `NULL`-key trick to reconcile them,
+which is harder to reason about than two tables.
+
+### 6.3a The challenge claim, exactly
+
+The challenge is **claimed**, not deleted, so that a retry can be recognised
+(§7.1). The claim is one statement:
+
+```sql
+UPDATE wp_agentshell_form_challenges
+   SET consumed_at = %s
+ WHERE token_hash = %s
+   AND consumed_at IS NULL
+```
+
+- **One affected row** — this request owns the challenge. It proceeds.
+- **Zero affected rows** — the challenge was already claimed. The plugin then
+  reads the row: if `submission_id` is non-zero, an earlier attempt of this
+  same request **succeeded**, and the plugin **replays the success response**
+  without creating anything (§7.1). If `submission_id` is zero, the earlier
+  attempt is still in flight or failed, and the plugin refuses with a
+  retryable error that carries a **fresh challenge**, so the visitor can
+  retry without reloading the page.
+
+When the submission is written, the challenge is linked to it in the same
+transaction:
+
+```sql
+UPDATE wp_agentshell_form_challenges
+   SET submission_id = %d
+ WHERE token_hash = %s
+```
+
+### 6.3b The rate-limit algorithm, exactly
+
+The limit is enforced by a **fixed window per (scope, subject, form)**, and
+the limit is baked into the statement so the counter can never be driven past
+it by a flood.
+
+**Reserve a slot** — one atomic statement:
+
+```sql
+INSERT INTO wp_agentshell_form_rate_limits
+       (scope, subject_hash, form_id, window_start, hits, created_at, expires_at)
+VALUES (%s, %s, %s, %d, 1, %s, %s)
+ON DUPLICATE KEY UPDATE
+       hits       = IF(hits <= %d, hits + 1, hits),
+       expires_at = VALUES(expires_at)
+```
+
+The third parameter of the `IF` is the **limit**; the counter therefore stops
+at `limit + 1` and can never exceed it, however many concurrent writers
+arrive.
+
+**Read the counter** — one statement:
+
+```sql
+SELECT hits FROM wp_agentshell_form_rate_limits
+ WHERE scope = %s AND subject_hash = %s AND form_id = %s AND window_start = %d
+```
+
+**Admit iff `hits <= limit`.**
+
+The property this gives is the one that matters: **the number of admitted
+requests in a window never exceeds the limit.** The reasoning is that the
+counter is monotonic and the admission test is a read of a value that is at
+least the number of reservations made so far; a request that finds the counter
+at or below the limit is one of at most `limit` such requests.
+
+The cost is **under-admission under concurrency**: several requests may
+reserve concurrently, drive the counter above the limit, and then all find
+themselves refused even though fewer than `limit` slots were used. That is
+the safe direction — the limit is never exceeded — and it is the right
+trade for an abuse control.
+
+Two limits are enforced, and both are reserved from the same table:
+
+| Scope | Subject | Form | Meaning |
+|---|---|---|---|
+| `form` | HMAC of the source address | the form's internal id | The per-form, per-source limit from `spam.rate_limit` |
+| `site` | a fixed constant | `''` | A site-wide ceiling on submissions per unit time, independent of the source address |
+
+The site scope exists because the per-source limit is defeated by rotating
+source addresses. It is the backstop that bounds total volume.
+
+**Fixed windows have a known property**, stated plainly: a subject can send
+`limit` requests at the end of one window and `limit` at the start of the
+next. The site scope and the honeypot and Turnstile are the controls for that;
+the rate limiter is not the only defence, and it is not claimed to be.
+
+**The reservation happens before the expensive work** — before the Turnstile
+verification — so that a flood is rejected without a round trip to a third
+party. A refused attempt **consumes a slot**, which is the intended
+behaviour: an attempt that fails verification is still an attempt.
+
+### 6.3c Denial of service against the plugin's own tables
+
+The tables are the plugin's most attackable surface, because a flood would
+grow them.
+
+- **Challenges are minted on render, so renders are rate limited too.** The
+  render path takes a slot from a *separate, more generous* render budget, so
+  a bot looping over the form page cannot mint challenges without spending
+  budget.
+- **The site scope bounds the total.** Even with rotating addresses, the
+  number of outstanding challenges is bounded by the site budget times the
+  window.
+- **Expiry bounds the table absolutely.** A challenge expires two hours after
+  it was minted; a rate row expires at the end of its window plus a grace
+  period. The hourly prune removes both.
+- **The challenge is opaque.** Only its SHA-256 is stored, so a database
+  disclosure does not yield usable tokens.
 
 ### 6.4 Data minimisation
 
@@ -848,10 +1152,21 @@ nothing else.
 - The user agent is not stored unless `storage.store_user_agent` is on.
 - `storage.retain_days` is a per-form retention period. The site default is 90
   days. A form with no explicit period inherits the default.
-- The **definition is the record of processing.** What a form collects, from
-  whom, on what basis and for how long is written down in the form itself —
-  which is a genuinely useful property: the form *is* the Article 30 record,
-  not a separate document that can drift from it.
+- **The definition is useful processing metadata.** What a form collects, on
+  what stated basis, for how long, and where the privacy notice is, is
+  written down in the form itself — which is a genuinely useful property,
+  because the metadata cannot drift from the thing it describes.
+
+  **It is not, by itself, a record of processing, and it is not
+  compliance.** A record of processing under Article 30 covers more than this:
+  the identity of the controller and any joint controllers, the categories of
+  data subjects and data, the recipients and any third-party processors, the
+  international transfers and the safeguards for them, the security measures,
+  and the retention periods across the whole operation. A form definition
+  holds the fields, the stated basis, one retention period and one notice
+  URL. It is **input to** a record of processing, not a record of one, and
+  nothing the plugin does makes a site compliant. §10.3 says the same thing
+  from the legal side.
 
 ### 6.5 Retention, deletion and export
 
@@ -925,28 +1240,56 @@ The body:
 
 ```json
 {
-  "form_id": "f_7c1d2e3a4b5c6d7e8f9a0b1c2d3e4f5a",
+  "form_id": "7c1d2e3a4b5c6d7e8f9a0b1c2d3e4f5a",
   "challenge": "3f9a…",
   "fields": { "name": "Ada Lovelace", "message": "…", "consent": true },
   "turnstile_token": "0x4AAAA…"
 }
 ```
 
-**The challenge token.** When a form is rendered, the plugin creates a
-random 32-byte token, stores its SHA-256 in the `challenge` table with the
-form id, the published version and an expiry (two hours by default), and
-renders the token into a hidden input. On submit, the row is **deleted**
-atomically; the affected-row count decides whether this is the first use. A
-second use of the same token finds no row and is refused.
+`form_id` is the **internal identifier** — 32 lowercase hexadecimal characters
+(§5.1). The slug is not accepted here: the request body names the form
+unambiguously, and the form's own HTML already carries the identifier.
 
-This is the duplicate-submission defence and it is deliberately *not* a
-WordPress nonce. **A WordPress REST nonce is not a CSRF defence for an
-anonymous form**: `wp_create_nonce()` for a logged-out visitor with no cookie
-derives from user id 0 and an empty session token, so every anonymous visitor
-on the site receives the *same* nonce value. It is not a secret, and it
-provides no protection against a cross-site post. The single-use challenge is
-what actually prevents a blind cross-site post and a double-click, because
-the token can only be read from the form's own HTML by a same-origin client.
+**The challenge token.** When a form is rendered, the plugin creates a random
+32-byte token, stores its SHA-256 in the challenge table with the form's
+internal identifier, the published version, the hashed source address and an
+expiry (two hours by default), and renders the token into a hidden input. On
+submit, the row is **claimed** by the guarded update in §6.3a; the
+affected-row count decides whether this is the first use.
+
+**What the challenge does, and what it does not.** This is worth being
+precise about, because it is easy to over-claim.
+
+| Property | Does the challenge provide it? | Why |
+|---|---|---|
+| **Replay prevention** | **Yes** | The token is claimed exactly once. A captured token cannot be used twice, so it cannot be replayed against the endpoint |
+| **Duplicate suppression** | **Yes** | A double-clicked submit, or a client that retries after a network failure, carries the same token; the second attempt is recognised and does not create a second entry (§6.3a) |
+| **Cross-origin browser abuse** | **Partly** | A page on another origin cannot *read* the form's HTML, so it cannot obtain a token to embed in a cross-site post. This is the same-origin policy doing the work, not the token being a secret. It holds only while the form's page is served without a CORS policy that lets another origin read it |
+| **Server-side automated abuse** | **No** | An attacker running their own HTTP client can fetch the form, read the token out of the HTML, and post with it. The token is **not** a secret from a non-browser client, and it is not an anti-bot control |
+
+So the challenge is a **protocol correctness control** — it makes the
+submission endpoint idempotent and replay-proof — and it is **not** a spam
+control. The spam controls are the honeypot, Turnstile and the rate limiter
+(§11.4), and the challenge is deliberately independent of all three.
+
+**It is deliberately not a WordPress nonce.** A WordPress REST nonce is not a
+CSRF defence for an anonymous form (F16): `wp_create_nonce()` for a logged-out
+visitor with no cookie derives from user id 0 and an empty session token, so
+every anonymous visitor on the site receives the *same* nonce value. It is not
+a secret and it protects nothing here. The challenge is used instead, for
+the reasons in the table above, which are the reasons a nonce cannot serve.
+
+**Genuine retries after a network failure.** A visitor whose request reached
+the server but whose response was lost would retry with the same token. The
+second attempt finds the challenge already claimed. If the first attempt
+succeeded, the challenge row carries the entry it produced, and the plugin
+**replays the success response** — the same message, the same status, and no
+second entry. If the first attempt did not succeed, the plugin refuses with a
+retryable error and a **fresh challenge**, so the visitor can try again
+without reloading the page. The two cases are distinguished by whether
+`submission_id` is set, which is why the challenge row is claimed rather than
+deleted (§6.3a).
 
 **The response.** Success is `200` with a body that never echoes submitted
 values:
@@ -969,7 +1312,7 @@ The error messages come from the field type's validator and are operator-
 controlled templates, not user content.
 
 **Refusals that are not field errors** — an unknown form, an expired or
-already-used challenge, a rate limit, a failed Turnstile verification — are
+already-claimed challenge, a rate limit, a failed Turnstile verification — are
 answered with a **single generic shape**, `{"ok": false, "code": "form_rejected",
 "message": "This submission was not accepted."}`, and never disclose which
 control fired. The one deliberate exception is the **honeypot**, which
@@ -1012,10 +1355,36 @@ builder's transport attaches `X-WP-Nonce` on every request, exactly as
 add_shortcode( 'agentshell_form', array( 'AgentShell_Forms\\Form_Shortcode', 'render' ) );
 ```
 
-Attributes: `id` (required — the stable form id), `title` (optional — show or
-hide the form's name), `class` (optional — extra classes on the wrapper).
+Attributes:
+
+| Attribute | Meaning |
+|---|---|
+| `id` | The form's **internal identifier** — 32 lowercase hexadecimal characters |
+| `slug` | The form's **human-readable slug** — an alternative to `id` |
+| `title` | Optional — show or hide the form's name |
+| `class` | Optional — extra classes on the wrapper |
+
+**Exactly one of `id` or `slug` must be present.** If both are present they
+must resolve to the same form; if they resolve to different forms, the
+shortcode renders nothing and says so to an editor who can manage forms. The
+resolution rule is total, because the validator refuses a slug that looks
+like an internal identifier (§5.5):
+
+- a value matching `^[a-f0-9]{32}$` is an internal identifier;
+- anything else is a slug.
+
+The builder's "copy shortcode" button copies the **slug** form, because
+`[agentshell_form slug="contact"]` is something a person can read and edit in
+a page — and the slug is frozen once the form is published (§5.1), so the
+shortcode cannot silently break.
+
 Unknown or unpublished forms render **nothing** to a visitor and a small
 diagnostic to an editor who can manage forms.
+
+The admin REST routes (§7.2) address a form by its **internal identifier**
+only. The slug is returned in every response and accepted by the admin
+screens, but it is never the key of a stored record — the identifier is
+(§5.1).
 
 The `WP_Widget` renders the same output through the same function, so there
 is exactly one renderer.
@@ -1058,22 +1427,29 @@ drifts must fail the build, not mislead an agent.
 
 ### 8.2 The proposed tools
 
+> **Nothing in this section is committed.** These are *proposals* for the
+> agent surface, written so the shape can be reviewed. The names are
+> **provisional** and may change; the tool count in `AGENTS.md` §2 is
+> **unchanged** until a phase actually ships these tools, and the tool-count
+> test keeps it honest (§8.1). No tool in this list exists, and this
+> documentation PR adds none.
+
 The agent surface is deliberately small, and the table names the **capability
 first** — the authoritative list of the existing tool surface is in
 `AGENTS.md` §2.
 
 | Capability | Proposed name | Effect | Authority |
 |---|---|---|---|
-| List the forms | `agentshell_list_forms` | Every form: id, name, status, version, field count, submission count. No field values | Transport |
-| Read one form | `agentshell_get_form` | The working and published definitions, the validation result, the metadata | Transport |
-| Create a form | `agentshell_create_form` | A new draft form with a name and, optionally, a first field | Transport |
-| Change a form | `agentshell_update_form` | Replace or patch the working definition. A compare-and-swap against the expected revision | Transport |
-| Check a form | `agentshell_validate_form` | Validate a definition and return the errors and warnings, without writing | Transport |
-| Publish a form | `agentshell_publish_form` | Promote the working definition to published, increment the version | Transport |
-| Discard a form's changes | `agentshell_discard_form_changes` | Revert the working definition to the published one | Transport |
-| List the submissions | `agentshell_list_submissions` | **Metadata only**: id, form, received-at, spam status, notification status. No field values | Transport + personal-data authorisation |
-| Read one submission | `agentshell_get_submission` | The submitted values | Transport + personal-data authorisation |
-| Export the submissions | `agentshell_export_submissions` | CSV or JSON for one form | Transport + personal-data authorisation |
+| List the forms | `agentshell_list_forms` | Every form: internal identifier, slug, name, status, version, field count, entry count. No field values | Transport + `manage_agentshell_forms` |
+| Read one form | `agentshell_get_form` | The working and published definitions, the validation result, the metadata | Transport + `manage_agentshell_forms` |
+| Create a form | `agentshell_create_form` | A new draft form with a name and, optionally, a first field | Transport + `manage_agentshell_forms` |
+| Change a form | `agentshell_update_form` | Replace or patch the working definition. A compare-and-swap against the expected revision | Transport + `manage_agentshell_forms` |
+| Check a form | `agentshell_validate_form` | Validate a definition and return the errors and warnings, without writing | Transport + `manage_agentshell_forms` |
+| Publish a form | `agentshell_publish_form` | Promote the working definition to published, increment the version | Transport + `manage_agentshell_forms` |
+| Discard a form's changes | `agentshell_discard_form_changes` | Revert the working definition to the published one | Transport + `manage_agentshell_forms` |
+| List the submissions | `agentshell_list_submissions` | **Metadata only**: id, form, received-at, spam status, notification status. No field values | Transport + the personal-data policy (§8.3) |
+| Read one submission | `agentshell_get_submission` | The submitted values | Transport + the personal-data policy (§8.3) |
+| Export the submissions | `agentshell_export_submissions` | CSV or JSON for one form | Transport + the personal-data policy (§8.3) |
 | Remove a submission | `agentshell_trash_submission` | Move a submission to the trash | Transport + per-post `delete_post` |
 | Erase a submission | `agentshell_delete_submission` | Hard delete — the erasure path | Transport + per-post `delete_post` + `confirm` |
 
@@ -1086,7 +1462,7 @@ Two tools are proposed for a later phase rather than the MVP:
 its submissions, which is a decision worth making deliberately) and
 `agentshell_restore_submission`.
 
-### 8.3 The two permission domains
+### 8.3 The two permission domains, and what actually enforces them
 
 **Editing a form** and **reading what people wrote into it** are different
 acts with different consequences. The first is a configuration act; the
@@ -1098,34 +1474,75 @@ The plugin therefore defines two capabilities:
 - `manage_agentshell_forms_submissions` — read, export and delete
   submissions.
 
-Both are granted to administrators on activation and can be delegated to a
-role such as "site editor" without granting anything else.
+**What an explicit authorisation flag is, and what it is not.** A tool that
+reads submission *contents* may require the caller to pass
+`authorize_personal_data: true`. That flag is **supplied by the caller**, and
+a caller who is already permitted to read submissions can simply supply it.
+It is therefore a **deliberation and audit mechanism, not a permission
+boundary**: it forces the moment to be stated, it puts the actor and the
+stated reason in the audit log, and it makes a careless read visible. It does
+**not** stop a caller who has the underlying permission. Saying otherwise
+would be a claim the mechanism cannot support.
 
-**An honest statement about what that means today.** The MCP transport
-requires `manage_options` for every call, so **every MCP agent already holds
-both capabilities**, and the capability split does not by itself separate the
-two domains for agents. The separation that actually binds is the
-**explicit personal-data authorisation**, which is the mechanism the content
-journal already uses:
+**The separation therefore has to be enforced somewhere the agent cannot
+supply.** Three mechanisms are available, and they differ in strength.
 
-- a tool that reads submission *contents* requires the caller to pass
-  `authorize_personal_data: true` **in the same call**;
-- the tool then re-checks the capability at that moment;
-- a refusal is answered with a full-shaped result that says the authorisation
-  was absent, and it writes an audit row naming the actor and the role they
-  acted under — **including refusals**, so a refusal is distinguishable from
+| Mechanism | What it is | Enforced by | Strength |
+|---|---|---|---|
+| **(A) A capability the principal does not hold** | The submission tools check `manage_agentshell_forms_submissions` and **do not** accept `manage_options` as a substitute. If the operator runs the agent under a principal that lacks the capability, the agent cannot read submissions, and it cannot grant itself the capability | WordPress's capability system, at the moment of the call | **Strong**, and it is the recommended default. The agent cannot widen its own authority |
+| **(B) A separate credential** | A second, dedicated secret for the personal-data tools, presented as its own header and mapped to its own principal. The agent's ordinary credential carries no personal-data authority at all | The transport, before the tool runs | **Strong**, and it creates a second trust domain. It costs a second secret to provision and rotate |
+| **(C) An out-of-band human approval** | A short-lived, single-use approval recorded by a person in the admin UI. The agent cannot create one | The plugin's own approval record | Moderate: it is time-boxed and human-gated, but it is still a gate the agent can ask a human to open |
+
+**The recommendation is (A), with (B) available as a second trust domain.**
+
+Concretely, for (A) to bite, the plugin's activation must **not** grant
+`manage_agentshell_forms_submissions` to the administrator role, because the
+MCP transport requires `manage_options` and therefore every MCP agent is an
+administrator. The deployment that separates the two domains is:
+
+1. the operator creates a role — say **Forms data steward** — holding
+   `manage_agentshell_forms_submissions` and `read`, and grants it to the
+   people who are allowed to see what people wrote;
+2. the administrator role does **not** hold it;
+3. the agent, running under the administrator account, therefore **cannot**
+   read submissions, because the tool checks the specific capability and
+   `manage_options` does not imply it.
+
+This is enforceable by WordPress, it costs nothing to implement beyond
+checking the right capability, and it is the only one of the three that does
+not depend on a new credential or a new UI.
+
+**The site-wide policy switch** makes the posture explicit and adjustable
+without a code change:
+
+| `agentshell_forms_personal_data_policy` | Behaviour |
+|---|---|
+| `off` | Submission **contents** are never readable through the agent surface, whatever else is true. The metadata-only listing remains available |
+| `capability` | **The default.** Readable only by a principal holding `manage_agentshell_forms_submissions`, and only with the explicit `authorize_personal_data` flag |
+| `credential` | Readable only with the dedicated data credential (B), and only with the explicit flag |
+
+In every policy, the **metadata-only listing stays available**, and **every
+read and every refusal is audited**.
+
+**The audit trail.** Following the content journal's pattern:
+
+- a tool that reads submission contents writes an audit row naming the
+  actor, the form, the entry, the authorisation that was presented, and the
+  policy in force;
+- a **refusal** writes an audit row too, so a refusal is distinguishable from
   a call that never happened;
-- the metadata-only listing never returns a field value, so an agent can
-  audit a form's traffic without reading anybody's message.
+- the capability is re-checked **at the moment** it is exercised, not only
+  when the transport authenticated — so a principal whose role changed since
+  the session began cannot read;
+- the audit row never carries a submitted value. It carries identifiers and
+  counts.
 
 This is the same two-part shape as `authorize_inspection` /
 `authorize_recovery` in the content journal: **read authority and
 destructive authority are separate, and both are re-checked at the moment
-they are exercised.**
-
-The capability split is still worth having: it is what makes the *admin UI*
-and the *MCP surface* separable, and it is what would matter if a
-lower-privileged MCP transport were ever introduced.
+they are exercised.** The difference is that here the read authority is a
+*capability the principal may not hold*, rather than a flag the caller
+supplies.
 
 ### 8.4 Read-only defaults for submissions
 
@@ -1133,10 +1550,13 @@ lower-privileged MCP transport were ever introduced.
 
 ```json
 { "submissions": [
-    { "id": 812, "form_id": "f_7c1d…", "form_version": 3, "received_at": "2026-10-27T14:03:11Z",
-      "spam_status": "clean", "notification_status": "sent", "field_count": 3 }
+    { "id": 812, "form_id": "7c1d2e3a…", "form_version": 3, "received_at": "2026-10-27T14:03:11Z",
+      "spam_status": "clean", "notification_status": "accepted", "field_count": 3 }
   ], "total": 1 }
 ```
+
+The `notification_status` values are the ones §11.6 defines. Note
+`accepted`, not `sent` and not `delivered`.
 
 Field values appear only in `agentshell_get_submission`, and only with the
 explicit authorisation. This is the same discipline the codebase already uses
@@ -1254,9 +1674,11 @@ content write guard is. It is never held across a request boundary.
 
 **A published definition is never silently overwritten.** The previous
 published definition is kept in `_agentshell_form_published_previous`, so a
-publish can be undone by a human, and the plugin's own revision history —
-native WordPress revisions, because the definition is post meta (F5) — keeps
-the full lineage.
+publish can be undone by a human in one step. Native WordPress revisions
+(§5.8) keep a browsable record of earlier states, but they are a **secondary**
+record — the plugin never reads one to decide what to render, and a restore
+through WordPress's own revision UI is not a supported rollback path
+(§5.8).
 
 ### 9.4 Preview
 
@@ -1283,36 +1705,109 @@ the working definition and leaves the published one alone. It is the exact
 inverse of the edit path, and it is a single atomic write. It writes an
 audit row, because discarding work is an event worth recording.
 
-### 9.6 Concurrent editing
+### 9.6 Concurrent editing, and the post-meta row it needs
 
 Two editors, or an editor and an agent, can have the same form open. The
 plugin detects this rather than resolving it by last-write-wins.
 
-Every write to the working definition carries an **expected revision**. The
-revision is an integer incremented on every write, stored alongside the
-definition. The write is a value-guarded update:
+**The precondition, stated first, because it is the part that is easy to get
+wrong.** `wp_postmeta` has **no uniqueness guarantee** (F14): its only keys
+are `PRIMARY KEY (meta_id)` and two non-unique indexes. `add_post_meta()` is a
+`SELECT COUNT(*)` followed by an `INSERT` — not atomic — and
+`update_post_meta()` **updates every row** matching the key. So "there is one
+row per key" is not a property the schema gives us, and a compare-and-swap
+written against `(post_id, meta_key)` would be written against a guarantee
+that does not exist.
+
+The design therefore rests on `meta_id`, which **is** a primary key, and on
+three explicit mechanisms.
+
+**1. Authoritative-row creation.** The first write of a definition key must
+create exactly one row, and two concurrent first writes must not create two.
+The plugin takes a **named advisory lock** for the form before creating the
+row:
+
+```sql
+SELECT GET_LOCK('agentshell_forms_def_<form_post_id>', 0);
+```
+
+This is the pattern the codebase already proves: `Content_Recovery` uses
+`GET_LOCK` for the same purpose, and the lock is **connection-scoped, not
+transaction-scoped**, so a `KILL -9` of the owning process releases it via
+the server's connection-close handler — which an in-process `finally` block
+could not guarantee.
+
+Under the lock, the plugin re-reads the rows for the key with a direct query
+and then does exactly one of three things:
+
+| Rows found | Action |
+|---|---|
+| **zero** | Create the single authoritative row with a direct `INSERT` |
+| **one** | Use it |
+| **more than one** | **Refuse.** This is corruption, and the plugin does not pick one and carry on |
+
+**2. Duplicate detection.** Every read counts the rows for the key. A count
+above one is a corruption signal: the plugin refuses to operate on that form
+and writes an audit row naming the form and the key. The lock *prevents* the
+plugin from creating a duplicate; the count *detects* one that arrived some
+other way. Neither depends on a schema guarantee.
+
+**3. Guarded updates.** Every write to a definition row is a single-row,
+value-guarded update scoped by `meta_id`:
 
 ```sql
 UPDATE wp_postmeta
    SET meta_value = %s
- WHERE post_id = %d
-   AND meta_key = '_agentshell_form_working'
+ WHERE meta_id  = %d
    AND meta_value = %s
 ```
 
-where the last parameter is the exact previous value. Zero affected rows means
+The last parameter is the exact previous value. Zero affected rows means
 somebody else wrote first. The write is then **refused**, and the result
 names the other editor, the time of their change, and the fact that the
 caller's draft was not saved. The caller can reload and re-apply.
 
-This is the same compare-and-swap discipline the rest of the system uses:
-**a lost race is refused, never overwritten.** It is the reason the
-configuration's revision ring and the transaction row both use value-guarded
-writes, and it is applied here to post meta, which is not unique-indexed and
-therefore needs the value guard to be safe.
+This depends on `meta_id` being a primary key — which it is — and on nothing
+else. It is the same compare-and-swap discipline the rest of the system uses:
+**a lost race is refused, never overwritten.** It is why the configuration's
+revision ring and the transaction row both use value-guarded writes.
 
-The revision counter is also what the publish path checks (§9.3 step 3), so
+**The revision counter is a separate row**, incremented in the same guarded
+write as the definition it accompanies, and it is the value the caller is
+asked to echo. It is also what the publish path checks (§9.3 step 3), so
 "publish what I previewed" is guaranteed.
+
+**4. Publication atomicity.** A publication writes three rows — the new
+published definition, the new version, and the previous published definition
+— and they must move together or not at all. The plugin runs all three
+guarded updates inside **one SQL transaction** over `wp_postmeta`, in the
+order:
+
+1. copy the current published definition into `_agentshell_form_published_previous`;
+2. copy the working definition into `_agentshell_form_published`, guarded on
+   the working revision counter the caller presented;
+3. write the new version, guarded on the current version.
+
+Any of the three failing rolls the transaction back, so the published
+definition, the version and the previous publication are always mutually
+consistent. The transaction is short and bounded by the single call, exactly
+as the content write guard is; it is never held across a request boundary.
+The plugin owns a small local equivalent of that guard, because it must not
+depend on the MCP plugin (§4.1).
+
+**The concurrency tests this design requires**, because a claim about a race
+is only worth what its test is worth:
+
+| Test | What must hold |
+|---|---|
+| **Two simultaneous initial writes** | Exactly one authoritative row exists afterwards; one writer succeeds and the other is refused; no duplicate row is created |
+| **Two simultaneous edits** | Exactly one write lands; the other is refused with the conflict reported; the surviving value is one of the two submitted values, never a mixture |
+| **Two simultaneous publications** | Exactly one publication commits; the version increments once, not twice; the published definition and the version agree; `_agentshell_form_published_previous` holds the definition that was live before the winning publication |
+| **A duplicate row injected directly into `wp_postmeta`** | The plugin detects it, refuses to operate on that form, and audits it — rather than silently reading one of the two rows |
+
+Each of these is a destructive suite that writes to a verified test bed, and
+each drives the two writers from **separate processes** so the race is real
+rather than simulated.
 
 ### 9.7 The comparison with the configurator
 
@@ -1349,26 +1844,29 @@ other out of the whole site.
 |---|---|---|---|
 | **Anonymous endpoint abuse** | A script posts to the public route | Turnstile (where enabled), honeypot, rate limit, single-use challenge, size limits | `Submission_Handler` |
 | **Resource exhaustion** | A huge body, a huge field, a flood | A total body limit, a per-field limit, a field-count limit, a per-source rate limit, a per-form submission quota, a site-wide form-count limit | `Submission_Handler`, `Form_Challenges` |
-| **Duplicate submission** | A double-click, a retried request, a replayed POST | The single-use challenge token, consumed atomically | `Form_Challenges::consume()` |
-| **Cross-site request forgery on an anonymous form** | A page on another origin posts to the endpoint | The single-use challenge. A WordPress nonce is **not** a defence here — anonymous visitors all share one | `Submission_Handler` |
+| **Duplicate submission** | A double-click, a retried request, a replayed POST | The single-use challenge token, claimed atomically (§6.3a). A retry whose first attempt succeeded **replays the success response** and creates nothing | `Form_Challenges::claim()` |
+| **Cross-site request forgery on an anonymous form** | A page on another origin posts to the endpoint | The challenge cannot be read cross-origin (the same-origin policy), so a browser-based cross-site post cannot carry one. A WordPress nonce is **not** a defence here — anonymous visitors all share one. This is **not** a defence against a server-side attacker, who can read the form and obtain a challenge; that is what the honeypot, Turnstile and the rate limiter are for | `Submission_Handler` |
 | **CSRF on the admin routes** | A page on another origin calls the admin REST route | WordPress's cookie authentication requires a valid nonce on a cookie-authenticated request; the capability check is a second gate | `Form_REST` |
 | **CSRF on the MCP surface** | A browser tricked into calling the agent transport | The transport is authenticated by an application password or a static token, not by a cookie, so a browser cannot forge it | The existing transport |
 | **Cross-site scripting through a field label** | A malicious definition puts `<script>` in a label | Every operator-authored string is escaped on output. There is **no** raw-HTML escape hatch anywhere in the renderer | `Form_Renderer` |
 | **Cross-site scripting through a submitted value** | A value is echoed back | Submitted values are never echoed into the page. The success message is operator text; errors are operator templates | `Form_Renderer` |
-| **SQL injection** | A field key or a value reaches a query | Every query uses `$wpdb->prepare()`; the definition is stored through `update_post_meta()`, which core parameterises; field keys are constrained to a safe character class anyway | Everywhere |
+| **SQL injection** | A field key or a value reaches a query | Every query uses `$wpdb->prepare()`; the definition rows are written with direct parameterised SQL; field keys are constrained to a safe character class anyway | Everywhere |
+| **Duplicate definition rows** | Two writers create the definition row at once | The named advisory lock serialises creation; a row count above one is detected and refused rather than silently resolved (§9.6) | `Form_Definition` |
 | **Email header injection** | A submitted value is interpolated into a subject or a recipient | Subjects have CR, LF and other control characters stripped and are length-limited; recipients come only from the definition and are validated with `is_email()`; `From:` is never set to a submitter's address — `Reply-To:` is used instead, and only from an `email` field | `Form_Notifier` |
 | **Arbitrary recipient routing** | A definition names an attacker as a recipient | Recipients are drawn from an allowlist: the site administrator's address, plus addresses on the site's own domain. A recipient outside the allowlist is refused by name | `Form_Notifier` |
 | **Arbitrary outbound requests** | A definition names a URL to fetch | The plugin makes exactly one outbound request, to a **hard-coded** verification endpoint. There is no configuration path to a URL | `Turnstile` |
 | **Secret key disclosure** | The secret appears in a tool result, a log, a page, an export | The secret is read from a constant or a protected option and is never returned by any tool, never rendered, never exported. The transport's argument redaction covers it too | Everywhere |
-| **Unauthorised submission access** | An agent, an editor or a subscriber reads submissions | The post type is non-public and excluded from search; the generic content tools are hard-limited to `post` and `page` (F6), so submissions are outside their reach; the plugin's own routes check `manage_agentshell_forms_submissions` | `Form_REST`, the tools |
+| **Unauthorised submission access** | An agent, an editor or a subscriber reads submissions | The post type is non-public and excluded from search; the generic content tools are hard-limited to `post` and `page` (F6), so submissions are outside their reach; the plugin's own routes check `manage_agentshell_forms_submissions` and do **not** accept `manage_options` as a substitute, so a principal without that capability is refused (§8.3) | `Form_REST`, the tools |
+| **An agent self-authorising for personal data** | An agent passes `authorize_personal_data: true` to unlock a read | The flag is a deliberation and audit mechanism, **not** a permission boundary (§8.3). The boundary is the capability the principal may not hold, or a separate credential. In the `off` policy the contents are not readable at all | The tools |
 | **Cross-form data leakage** | A request posts field values belonging to another form | Only the fields declared in *that* form's published definition are read, and only those are stored. A value for an undeclared key is discarded | `Submission_Handler` |
 | **Stored personal information** | Submissions accumulate indefinitely | Data minimisation (§6.4); per-form retention; a daily purge; the source address is an HMAC, not an address | `Submission_Store` |
 | **Agent-initiated destruction** | An agent deletes a form and its submissions | `confirm: true`; a separate, separately-named `delete_submissions` flag; the per-post `delete_post` capability re-checked at the moment of destruction; an audit row for the refusal as well as the act | The tools |
-| **Concurrent form edits** | Two editors overwrite each other | A value-guarded update on the working definition; the loser is refused and told who won | `Form_Definition` |
+| **Concurrent form edits** | Two editors overwrite each other | A `meta_id`-scoped, value-guarded update on the working definition; the loser is refused and told who won (§9.6) | `Form_Definition` |
 | **Accidental publication** | A draft reaches visitors | Nothing renders from the working definition; publishing is a separate, explicit act that re-validates and re-checks the revision | `Form_Definition::publish()` |
 | **Malicious field definitions** | A definition carries unknown keys, huge strings, or HTML | The validator rejects unknown keys by name, bounds every length, and validates every setting against its type's declared schema. A field type registered by a third party is **trusted code** — the registry is a trust boundary, and that is stated | `Form_Schema` |
 | **Stored XSS via an option value** | An option value is HTML | Option values are slugs; option labels are escaped | `Form_Renderer` |
-| **Notification failure causing a duplicate** | A failed email is retried by re-running the submission | The notification retry re-uses the **same submission row**. The pipeline never creates a second submission for a notification failure | `Form_Notifier`, `Submission_Store` |
+| **Notification failure causing a duplicate submission** | A failed email is retried by re-running the submission | The notification retry re-uses the **same submission row**. The pipeline never creates a second submission for a notification failure | `Form_Notifier`, `Submission_Store` |
+| **Duplicate notification emails** | Two workers retry the same failed notification concurrently | The notification record is **claimed** by a guarded update before any send (§11.6), so only one worker attempts a given notification at a time. Delivery is at-least-once, not exactly-once, and the plugin does not claim otherwise | `Form_Notifier` |
 | **Email abuse** | A form is used to mail arbitrary people | Recipients are allowlisted; a per-form notification quota; the rate limit applies to the submission that triggers the mail, not only to the request | `Form_Notifier` |
 | **Turnstile used as the only defence** | The operator believes Turnstile makes the form safe | Turnstile is **one layer**. The honeypot, the rate limit, the single-use challenge and the size limits are independent of it, and the documentation says so | Documentation |
 
@@ -1417,10 +1915,28 @@ and their assessment, and the plugin's part is to make the fact visible: the
 builder states that enabling Turnstile means the visitor's address is sent to
 Cloudflare.
 
-**Records of processing.** The definition *is* the record: what is collected,
-on what basis, for how long, and where the privacy notice is. That is a
-genuinely useful property, and it is why the definition is a first-class
-document rather than a set of loose fields.
+**Processing metadata, not a record of processing.** The definition records
+what the form collects, the stated lawful basis, the retention period and the
+privacy notice URL. That is **useful processing metadata**, and it is a
+genuine advantage over loose fields, because the metadata cannot drift from
+the thing it describes.
+
+It is **not** a record of processing under Article 30, and it is **not**
+compliance. A record of processing covers more: the identity of the
+controller and any joint controllers, the categories of data subjects and
+data, the recipients and any third-party processors, the international
+transfers and their safeguards, the technical and organisational security
+measures, and the retention periods across the operation as a whole. A form
+definition holds four of those things about one form, and knows nothing about
+the controller, the processors or the security measures.
+
+So the honest statement is: **the definition is good input to a record of
+processing, and it is not one.** Whether a site is compliant is the
+controller's judgement and is unaffected by anything the plugin does. What
+the plugin can do — and does — is make the metadata **present, per form, in
+a form that cannot drift from the collection it describes**, and make the
+gaps **visible** (§10.3): the builder shows which of the fields a record of
+processing would need are not known to the plugin.
 
 ### 10.4 Accessibility, to WCAG 2.2 AA
 
@@ -1515,11 +2031,44 @@ Where the operator prefers availability over certainty, `optional` gives it,
 and the submissions that pass without a verification are marked `unverified`
 so the operator can see how many there were.
 
-**Every refusal and every failure is recorded** on the submission — the
-policy in force, the Cloudflare error codes, whether the failure was a
-network failure — so the operator can distinguish "people are being blocked
-because Cloudflare is down" from "people are being blocked because the
-secret is wrong".
+**Every refusal and every failure is recorded — but not always on a
+submission, because a refusal usually has no submission to be recorded on.**
+This distinction matters, and the earlier draft of this document got it
+wrong. There are two paths:
+
+| Path | Is there a submission row? | Where the outcome is recorded |
+|---|---|---|
+| The verification **failed** on a form whose policy is `required` | **No** — the submission is refused before it is stored | The plugin's **rejection log** (§11.2a) and the rate-limit counters. The visitor receives the generic refusal |
+| The verification **failed or was unavailable** on a form whose policy is `optional` | **Yes** — the submission is stored | On the submission itself, as `_agentshell_form_spam = 'unverified'` (verification unavailable) or `'spam'` (verification failed) |
+
+So a `required` form's Turnstile failure leaves **no submission row**, and
+therefore cannot be recorded on one. What the operator gets instead is the
+rejection log and the counters, which is enough to distinguish "people are
+being blocked because Cloudflare is down" from "people are being blocked
+because the secret is wrong" from "people are being blocked because they
+submitted too fast".
+
+### 11.2a The rejection log
+
+A small, bounded, personal-data-free record of refusals that happened **before
+a submission existed**.
+
+- It is the plugin's own bounded log — the same shape as the configuration
+  event ring the rest of the system uses, but owned by this plugin, because
+  this plugin must not depend on the MCP plugin (§4.1).
+- Each entry carries the form's internal identifier, the reason code
+  (`turnstile_failed`, `turnstile_unavailable`, `rate_limited`,
+  `challenge_invalid`, `honeypot`), the Cloudflare error codes where they
+  apply, the timestamp, and the hashed source address. **No submitted value
+  ever appears in it.**
+- It is **bounded** (a fixed number of entries, oldest dropped first), and it
+  is written with the same compare-and-swap discipline as the rest of the
+  system, so concurrent writers cannot corrupt it.
+- **Under a flood it may drop entries, and that is stated.** The log is a
+  diagnostic; the *volume* is recorded exactly by the rate-limit counters, so
+  a flood is visible in the counters even when the log has rolled over.
+- The audit log for **administrative** acts — a form published, a submission
+  erased — is separate and is never dropped silently.
 
 ### 11.3 Local development
 
@@ -1553,10 +2102,11 @@ Turnstile is **one layer of five**, and none of them depends on another.
    The honeypot is **not** a field type — it is a mechanism the plugin adds
    to the rendered form, so it can never be a legitimate field and can never
    be optional in a way that turns it off.
-2. **The rate limit.** Per source address and per form: a maximum number of
-   submissions in a rolling window. Enforced with an atomic counter (§6.3),
-   so it holds under concurrency. The limit is per form, so a form used for
-   a legitimate campaign does not consume another form's budget.
+2. **The rate limit.** Per source address and per form, plus a site-wide
+   ceiling: a maximum number of submissions in a fixed window. Enforced with
+   the atomic counter of §6.3b, so it holds under concurrency, and it never
+   admits more than the limit. The limit is per form, so a form used for a
+   legitimate campaign does not consume another form's budget.
 3. **The single-use challenge.** §7.1.
 4. **The size limits.** A total body limit, a per-field length limit, a
    field-count limit and a form-count limit.
@@ -1572,8 +2122,36 @@ Turnstile is **one layer of five**, and none of them depends on another.
 way to send mail, and it means **every SMTP plugin works unchanged**, because
 those plugins replace the transport beneath `wp_mail()` rather than replacing
 `wp_mail()`. The plugin does not implement an SMTP transport, does not
-configure one, and does not check whether one exists. If `wp_mail()` returns
-`false`, the delivery failed, and that is the whole story.
+configure one, and does not check whether one exists.
+
+**What `wp_mail()`'s return value actually means, stated precisely** (F15).
+`wp_mail()` returning `true` means **the message was accepted by the sending
+mechanism** — handed to PHPMailer and onward to the local MTA (or to the
+SMTP server an operator's plugin has configured) without an error being
+raised. It does **not** mean the message was delivered to the recipient, and
+it does **not** mean the message was not delivered. A message accepted by
+`mail()` can still be rejected by the receiving server, quarantined as spam,
+or silently dropped. A message that returns `false` was **not** accepted, and
+the reason is available through the `wp_mail_failed` action.
+
+So the plugin's vocabulary is **accepted**, never *delivered* and never
+*sent*, and the submission's notification status uses those words.
+
+**Plain text is the MVP default, and it is the only MVP format.** The reason
+is technical and it is worth stating plainly: `wp_mail()` sends **one**
+message and cannot emit a `multipart/alternative` body. Producing one would
+mean hand-rolling MIME inside the plugin, which would conflict with whatever
+transport the operator has configured and would break the "do not implement a
+separate transport" rule (§11.5's first paragraph). An HTML-only message
+would be the alternative, and it is worse: it loses the plain-text reading
+path that many mail clients and spam filters prefer.
+
+Therefore: the MVP sends **plain text only**, and the templates are plain
+text. If HTML notifications are wanted later, the supported route is a mail
+plugin that adds an HTML alternative to `wp_mail()` — not a MIME builder
+inside this plugin — and any HTML the plugin ever produces is built from the
+same escaped values as the plain-text part, with no raw-HTML placeholder
+(§11.5).
 
 **Administrator notification.** The recipients are drawn from an **allowlist**:
 
@@ -1590,7 +2168,7 @@ placeholders:
 | Placeholder | Expands to |
 |---|---|
 | `{form:name}` | The form's name |
-| `{form:id}` | The form's stable id |
+| `{form:id}` | The form's **internal identifier** — 32 hex characters (§5.1) |
 | `{submission:id}` | The submission's id |
 | `{field:<key>}` | One submitted value, escaped for the context |
 | `{fields}` | Every submitted field, as `key: value` lines |
@@ -1638,10 +2216,10 @@ submission, and it happens **once**, before any notification is attempted:
 ```
 1. resolve the form and its published version
 2. check the size limits
-3. consume the challenge token          ← atomic, single-use
+3. claim the challenge token           ← atomic, single-use (§6.3a)
 4. verify Turnstile, if the form requires it
 5. check the honeypot                  ← a filled honeypot returns a fake success here
-6. check the rate limit
+6. reserve a rate-limit slot           ← atomic, capped (§6.3b)
 7. validate every field against the published definition
 8. write the submission row             ← the only write that creates anything
 9. attempt the notification             ← may fail
@@ -1654,18 +2232,105 @@ committed. A failed `wp_mail()` therefore leaves a submission that exists and
 is marked `notification.status = failed` — it does not produce a second
 submission, and it does not roll back the first one.
 
-**Retries re-use the row.** A cron job picks up submissions whose
-notification status is `pending` or `failed` and whose attempt count is below
-the limit, and re-sends **using the same submission record**, incrementing
-the attempt count. The retry path does not go through the submission writer
-at all, so it structurally cannot duplicate.
+**That answers the duplicate-submission question, and it is a different
+question from the duplicate-notification question.** Reusing the submission
+row guarantees that a failed notification never produces a second
+*submission*. It does **not** guarantee that a failed notification never
+produces a second *email* — and no mechanism built on `wp_mail()` can.
+
+**The notification record** lives in the submission's
+`_agentshell_form_notification` meta row:
+
+```json
+{
+  "status": "pending",
+  "attempts": 0,
+  "next_attempt_at": "2026-10-27T14:03:11Z",
+  "claimed_at": null,
+  "claimed_by": null,
+  "last_error": null,
+  "accepted_at": null
+}
+```
+
+The status vocabulary, and what each value actually asserts:
+
+| Status | Asserts |
+|---|---|
+| `pending` | The notification has not been attempted, or is due for another attempt |
+| `claimed` | A worker has taken it and may be sending it right now |
+| `accepted` | **`wp_mail()` returned true.** The message was accepted by the sending mechanism. It does **not** assert delivery |
+| `failed` | The attempt was made and `wp_mail()` returned false, or the attempt errored |
+| `uncertain` | The attempt's outcome is unknown — the transport timed out, or the worker died while holding the claim |
+| `exhausted` | The attempt limit was reached. No further automatic attempt will be made |
+
+**The atomic claim.** Before any send, a worker takes the notification by a
+guarded update on the record — the same `meta_id`-scoped, value-guarded
+compare-and-swap of §9.6:
+
+```sql
+UPDATE wp_postmeta
+   SET meta_value = %s
+ WHERE meta_id  = %d
+   AND meta_value = %s
+```
+
+where the new value is the record with `status = 'claimed'`, the attempt
+count incremented, `claimed_at` and `claimed_by` set, and the expected value
+is the record exactly as it was read. **One affected row means this worker
+owns the notification**; zero means somebody else already claimed it, and
+this worker moves on. Two workers can therefore never send the same
+notification concurrently.
+
+**Retry limits and backoff.** Attempts are capped, and the delay grows:
+
+| Attempt | Delay before the next attempt |
+|---|---|
+| 1 | 1 minute |
+| 2 | 5 minutes |
+| 3 | 30 minutes |
+| 4 | 2 hours |
+| 5 | 12 hours |
+
+After the fifth attempt the status becomes `exhausted` and the submission is
+flagged for the operator, who can re-send it by hand from the administrative
+screen. The attempt count and the last error are kept on the record, so the
+operator can see that it was tried five times and why it failed each time.
+
+**Reconciliation after an uncertain outcome.** Two situations leave the
+notification in a state nobody can interpret:
+
+- the worker **died** while holding the claim, so the record is stuck at
+  `claimed`;
+- the transport **timed out**, so the plugin does not know whether the
+  message was accepted.
+
+The reconciler — the same cron job — treats a `claimed` record whose
+`claimed_at` is older than the **claim TTL** (fifteen minutes) as
+`uncertain`, and an `uncertain` record is retried at the next attempt time.
+That is the only way an uncertain notification can make progress.
+
+**The delivery guarantee is at-least-once, and the plugin does not claim
+otherwise.** If the transport accepted a message and the response was lost,
+the retry can produce a second email. Exactly-once delivery is not
+achievable with `wp_mail()`, and no amount of bookkeeping in this plugin
+changes that. What the plugin does is bound the exposure and make it
+detectable:
+
+- the attempt count is small (five) and the backoff is long;
+- every message carries the submission's identifier in the body **and** in a
+  `Message-ID` header, so a duplicate is recognisable by a receiving client
+  or mail system;
+- the attempt history is on the submission, so an operator who sees two
+  emails for one submission can see that the first was uncertain.
 
 **A failed notification does not fail the submission.** The visitor gets a
 success response. The operator sees a failed notification on the submission
 and can re-send it from the administrative screen.
 
 **A delivery that hangs** is bounded by the transport's own timeout, and the
-attempt is recorded as failed with the timeout as the reason.
+attempt is recorded as `uncertain` with the timeout as the reason — not as
+`failed`, because the plugin genuinely does not know.
 
 ### 11.7 Preventing email abuse
 
@@ -1710,7 +2375,7 @@ Three screens:
 
 | Screen | Purpose |
 |---|---|
-| The list | Every form: name, status, version, field count, submission count, last change. Actions: edit, duplicate, publish, discard, trash |
+| The list | Every form: name, slug, status, version, field count, entry count, last change. Actions: edit, duplicate, publish, discard, trash |
 | The builder | The field list and the field inspector, plus the settings tabs (notification, spam, storage, privacy) and the preview |
 | The submissions | One form's submissions: metadata by default, the values on demand, export, trash, erase |
 
@@ -1723,7 +2388,7 @@ models and the DOM.
 | Module | Responsibility |
 |---|---|
 | `admin/js/forms-model.js` | Pure models: the form model, the field model, the status model, the settings model. No DOM, no network. Exports via `module.exports` so a Node suite can exercise it |
-| `admin/js/forms-api.js` | The transport. Attaches `X-WP-Nonce` and `X-WP-Nonce` on every request; knows the REST shapes |
+| `admin/js/forms-api.js` | The transport. Attaches `X-WP-Nonce` on every request; knows the REST shapes |
 | `admin/js/forms-ui.js` | The view. Builds DOM, holds no state |
 | `admin/js/forms-app.js` | The application layer. The only module that knows both models and DOM |
 
@@ -1814,14 +2479,36 @@ The configurator does **not** become the builder. It offers a route into it.
 
 | Phase | Title | Size | Depends on |
 |---|---|---|---|
-| 1 | The form model, the schema and the store | Large | — |
+| 1 | The form model, the schema, the store and the protocol state | Large | — |
 | 2 | Rendering and insertion | Medium | 1 |
-| 3 | The submission pipeline, notifications and Turnstile | Large | 1, 2 |
-| 4 | The visual builder | Large | 1 |
-| 5 | The agent tool surface | Medium | 1 |
+| 3 | The submission pipeline, notifications and Turnstile | Large | 1 (2 for the end-to-end path) |
+| 4 | The visual builder | Large | 1, 2 |
+| 5 | The agent tool surface | Medium | 1 (3 for the submission tools) |
 | 6 | The AgentShell integration and release packaging | Small | 2 |
 
 Six PRs. Phase 1 is the only hard blocker.
+
+**No phase depends on a later phase.** The dependencies above are the whole
+graph, and each is a *build* dependency, not a convenience:
+
+- **Phase 2** needs the schema and the definition store (Phase 1). It also
+  **mints** the challenge, because the challenge is part of the rendered form
+  — so the challenge store and its minting primitive are in **Phase 1**, not
+  Phase 3. Phase 3 consumes what Phase 2 mints.
+- **Phase 3** needs the schema, the definition store and the challenge
+  primitives (Phase 1). It does **not** need the renderer: the pipeline
+  validates and stores without rendering anything. The *end-to-end* path
+  (render → submit) needs Phase 2's renderer, which is why the acceptance
+  criterion in Phase 3 is stated as "with Phase 2 present".
+- **Phase 4** needs the definition store (Phase 1) and the renderer (Phase 2),
+  because the preview renders the working definition through the real
+  renderer. It does **not** need Phase 3: the builder edits definitions, and
+  the entry count on the list screen is the only thing it takes from Phase 3,
+  which it shows as "—" when that phase has not landed.
+- **Phase 5** splits: the seven **form** tools need only Phase 1. The five
+  **submission** tools need Phase 3's store. If the phases are cut short, the
+  submission tools are the part that waits — the form tools do not.
+- **Phase 6** needs the renderer (Phase 2).
 
 ### 13.2 The phases in detail
 
@@ -1829,43 +2516,55 @@ Six PRs. Phase 1 is the only hard blocker.
 
 **Scope.** The plugin skeleton; the two post types; the authoritative schema
 and its validator; the field-type registry with the ten MVP types; the
-definition store with the working/published split and the compare-and-swap;
-the challenge table and its pruning.
+definition store with the working/published split, the authoritative-row
+creation, the duplicate detection and the compare-and-swap; the **protocol
+state** — the challenge table and the rate-limit table, their claim and
+reserve primitives, and their pruning.
 
 **Reused.** Nothing — this is the bottom of the stack. It reuses *WordPress*:
 the post type, post meta, the revision machinery, `dbDelta`, the cron API.
 
 **New modules.** `class-form-post-types.php`, `class-form-schema.php`,
 `class-form-field-types.php`, `class-form-definition.php`,
-`class-form-challenges.php`.
+`class-form-challenges.php`, `class-form-rate-limits.php`.
 
-**Data model.** The `agentshell_form` post type; the `agentshell_form_working`,
-`_agentshell_form_published`, `_agentshell_form_published_previous`,
-`_agentshell_form_revision`, `_agentshell_form_id`, `_agentshell_form_version`
-and `_agentshell_form_meta` meta keys; the `agentshell_form_challenges` table.
+**Data model.** The `agentshell_form` and `agentshell_entry` post types; the
+`_agentshell_form_working`, `_agentshell_form_published`,
+`_agentshell_form_published_previous`, `_agentshell_form_revision`,
+`_agentshell_form_id`, `_agentshell_form_slug`, `_agentshell_form_version`
+and `_agentshell_form_meta` meta keys, the latter three registered with
+`revisions_enabled => true` where §5.8 says so; the
+`agentshell_form_challenges` and `agentshell_form_rate_limits` tables.
 
 **MCP.** None yet.
 
-**WordPress integration.** The post type registration, the activation hook
-that creates the table and grants the capabilities, the uninstall handler
-that removes the table and the options.
+**WordPress integration.** The post type registration, the `register_post_meta`
+calls, the activation hook that creates the tables and grants the
+capabilities, the uninstall handler that removes the tables and the options.
 
 **Security.** The validator is the boundary; unknown keys are refused by
 name; every length is bounded; the field-type registry is documented as a
-trust boundary.
+trust boundary; the capability split is set up so that
+`manage_agentshell_forms_submissions` is **not** granted to administrators
+by default (§8.3).
 
 **Migration.** None — this is the first version. The schema carries a
 `schema_version` so that a later version can be recognised and migrated.
 
-**Tests.** `tests/forms-schema-test.php` (the validator, each error code,
-the field-type registry, the settings schema walk); `tests/forms-definition-test.php`
+**Tests.** `tests/forms-schema-test.php` (the validator, each error code, the
+field-type registry, the settings schema walk); `tests/forms-definition-test.php`
 (create, read, write, publish, discard, the compare-and-swap refusal, the
-version increment).
+version increment, the authoritative-row creation, the duplicate detection);
+`tests/forms-challenge-test.php` (the claim, the expiry, the retry
+replay); `tests/forms-rate-limit-test.php` (the reserve, the cap, the
+concurrency property).
 
 **Acceptance.** A form can be created, edited, published and discarded
 programmatically. An invalid definition is refused with a named error. A
 second writer with a stale revision is refused, and the working definition is
-unchanged. The challenge is consumed exactly once.
+unchanged. Two simultaneous initial writes produce exactly one authoritative
+row. The challenge is claimed exactly once. A rate-limit bucket never admits
+more than its limit.
 
 #### Phase 2 — Rendering and insertion
 
@@ -1903,48 +2602,58 @@ a legend.
 #### Phase 3 — The submission pipeline, notifications and Turnstile
 
 **Scope.** The authoritative handler; the field validation; the challenge
-consumption; the rate limiter; the honeypot; the Turnstile client; the
-notifier; the submission store; the retention cron; the privacy exporter and
-eraser; the submissions screen.
+claim; the rate-limit reservation; the honeypot; the Turnstile client; the
+notifier; the submission store; the notification claim, retry and
+reconciliation; the retention cron; the privacy exporter and eraser; the
+rejection log; the submissions screen.
 
 **Reused.** `wp_mail()`, `is_email()`, `wp_remote_post()`, the cron API, the
-WordPress privacy registries, the `Store::record_event()` vocabulary, the
-`Content_Write_Guard` *pattern* (re-implemented locally, because the forms
-plugin must not depend on the MCP plugin).
+WordPress privacy registries, the `Store::record_event()` *vocabulary* and the
+`Content_Write_Guard` *pattern* — both re-implemented locally, because the
+forms plugin must not depend on the MCP plugin.
 
 **New modules.** `class-submission-handler.php`, `class-submission-store.php`,
 `class-form-notifier.php`, `class-turnstile.php`, `class-form-privacy.php`,
-`class-form-admin.php` (the submissions screen).
+`class-form-rejections.php` (the bounded rejection log), `class-form-admin.php`
+(the submissions screen).
 
-**Data model.** The `agentshell_submission` post type and its meta keys; the
-notification status; the retention setting.
+**Data model.** The `agentshell_entry` post type and its meta keys; the
+notification record; the retention setting.
 
 **MCP.** None yet, but the submission store is written with the tool
-authorisation in mind from the start.
+authorisation in mind from the start, and the notification record is written
+so that the claim is a compare-and-swap on it (§11.6).
 
 **WordPress integration.** The public REST route, the cron jobs, the privacy
 hooks, the admin screen.
 
 **Security.** The whole of §10.2 applies. The submission is written before
-the notification is attempted, so a delivery failure cannot duplicate it.
+the notification is attempted, so a delivery failure cannot duplicate it. The
+notification is claimed before it is sent, so two workers cannot send it
+twice concurrently. A Turnstile refusal on a `required` form leaves no
+submission and is recorded in the rejection log instead (§11.2a).
 
 **Migration.** None.
 
 **Tests.** `tests/forms-submission-test.php` (validation, required fields,
-the honeypot's fake success, the challenge's single use, the rate limit, the
-size limits, the malformed request, the cross-form key discard);
+the honeypot's fake success, the challenge's single claim, the rate limit,
+the size limits, the malformed request, the cross-form key discard, the
+retry's idempotent replay);
 `tests/forms-turnstile-test.php` (every branch of the response handling, the
-failure policies, the test-credential refusal in production);
+failure policies, the test-credential refusal in production, the recording
+path for a refusal with no submission);
 `tests/forms-notification-test.php` (the templates, the escaping, the header
-injection attempts, the recipient allowlist, the retry reusing the row, the
-failure not duplicating the submission);
+injection attempts, the recipient allowlist, the atomic claim, the retry
+backoff, the reconciliation of an uncertain outcome, the reuse of the row);
 `tests/forms-retention-test.php` (the purge, the deletion paths).
 
 **Acceptance.** A submission is stored once, validated against the published
 version, and produces exactly one notification. A failed notification leaves
-one submission and a retry re-uses it. A honeypot-filled submission returns
-success and stores nothing. A Turnstile token that was already used is
-refused.
+one submission and a retry re-uses it. Two workers cannot send the same
+notification concurrently. A honeypot-filled submission returns success and
+stores nothing. A Turnstile token that was already used is refused, and the
+refusal is recorded where it can be — in the rejection log, because there is
+no submission to record it on.
 
 #### Phase 4 — The visual builder
 
@@ -1996,19 +2705,28 @@ argument redaction.
 
 **WordPress integration.** None beyond the plugin's own activation.
 
-**Security.** Read authority and destructive authority separated; the
-explicit personal-data authorisation; `confirm` on destruction; the per-post
-`delete_post` re-check at the moment of deletion; the secret never returned.
+**Security.** Read authority and destructive authority separated. The
+read authority is the **capability the principal may not hold**
+(`manage_agentshell_forms_submissions`), and `manage_options` is **not**
+accepted as a substitute; the explicit `authorize_personal_data` flag is
+required in addition, as a deliberation and audit mechanism rather than as
+the boundary (§8.3). `confirm` on destruction; the per-post `delete_post`
+re-check at the moment of deletion; the secret never returned.
 
 **Migration.** The tool-count test is extended to three plugin files, and the
 documented count is updated in the two places the documentation gate checks.
 
 **Tests.** `tests/forms-tools-test.php` (each tool's schema, its refusals,
-its result shape, its authorisation behaviour, its audit rows).
+its result shape, its authorisation behaviour, its audit rows);
+`tests/forms-personal-data-test.php` (a principal **without**
+`manage_agentshell_forms_submissions` is refused, `manage_options` alone is
+not accepted as a substitute, the `off` policy refuses everything, the
+metadata-only listing never contains a field value, and a refusal is audited).
 
 **Acceptance.** Every tool is reachable by name and returns a documented
-shape. A listing never contains a field value. A refusal is written to the
-audit log. The documented count equals the registry's.
+shape. A listing never contains a field value. An agent whose principal
+lacks the submissions capability is refused, and the refusal is audited. The
+documented count equals the registry's.
 
 #### Phase 6 — The AgentShell integration and release packaging
 
@@ -2052,22 +2770,24 @@ refuses an archive that does not.
 ### 13.3 The dependency graph
 
 ```
-        ┌──────────────┐
-        │    Phase 1   │  the model, the schema, the store
-        └──┬───┬───┬───┘
-     ┌─────┘   │   └─────┐
-  ┌──▼──┐  ┌───▼───┐  ┌───▼──┐
-  │ P2  │  │  P4   │  │  P5  │
-  │render│ │builder│  │ tools│
-  └──┬──┘  └───────┘  └──────┘
-     │
-  ┌──▼──┐
-  │ P3  │  the pipeline, the notifications, Turnstile
-  └─────┘
-     │
-  ┌──▼──┐
-  │ P6  │  the zone block, the packaging
-  └─────┘
+              ┌──────────────────────┐
+              │        Phase 1       │  the model, the schema, the store,
+              │  the model, the      │  the protocol state (challenge +
+              │  schema, the store   │  rate-limit tables and primitives)
+              └──┬────────┬───────┬───┘
+         ┌───────┘        │       └───────┬──────────────┐
+    ┌────▼────┐     ┌─────▼─────┐   ┌────▼─────┐   ┌────▼────┐
+    │   P2    │     │    P4     │   │    P5    │   │    P3    │
+    │ render  │────▶│  builder  │   │   tools  │   │ pipeline │
+    │ (mints  │     └───────────┘   │ (form +  │   │ notifs   │
+    │  the    │                      │  entry)  │   │ turnstile│
+    │  token) │                      └────┬─────┘   └────┬─────┘
+    └─────────┘                           │              │
+                                          └──────▶ P5 ◀───┘
+                                                 (entry tools)
+    ┌─────────┐
+    │   P6    │◀─ needs P2 (the renderer)
+    └─────────┘
 ```
 
 ### 13.4 What can be developed in parallel
@@ -2075,11 +2795,13 @@ refuses an archive that does not.
 - **Phase 4's model work** — the pure models in `forms-model.js` — can be
   written against the frozen schema while Phase 2 and Phase 3 are in flight.
   It has no dependency on the renderer.
-- **Phase 5's tool classes** can be written against the Phase 1 service API
+- **Phase 5's form tools** can be written against the Phase 1 service API
   while Phase 3 is in flight. The tools call the definition service, not the
-  pipeline.
+  pipeline. Only the five entry tools wait for Phase 3.
 - **Phase 3's Turnstile client** is self-contained once the schema is
   frozen; it depends on nothing but the configuration and the transport.
+- **Phase 3's notifier** depends on the Phase 1 schema for the template
+  settings and on nothing else.
 - **Phase 6's release-tooling change** can be made at any point after the
   plugin exists, and is worth doing early so that no intermediate release
   ships a plugin the archive does not carry.
@@ -2118,22 +2840,36 @@ stubs has not been tested.
 | Input validation and required fields | `tests/forms-submission-test.php` | destructive |
 | Malformed requests, wrong types, oversized bodies | `tests/forms-submission-test.php` | destructive |
 | The honeypot's fake success | `tests/forms-submission-test.php` | destructive |
-| Duplicate submission and the single-use challenge | `tests/forms-challenge-test.php` | destructive |
-| Rate limiting | `tests/forms-rate-limit-test.php` | destructive |
+| Duplicate submission, the single claim, the retry's idempotent replay | `tests/forms-challenge-test.php` | destructive |
+| Challenge expiry and the pruned table | `tests/forms-challenge-test.php` | destructive |
+| Rate limiting, the cap, and the concurrency property | `tests/forms-rate-limit-test.php` | destructive |
+| Two simultaneous initial writes of a definition | `tests/forms-concurrency-test.php` | destructive |
+| Two simultaneous edits of a definition | `tests/forms-concurrency-test.php` | destructive |
+| Two simultaneous publications | `tests/forms-concurrency-test.php` | destructive |
+| A duplicate definition row injected into `wp_postmeta` | `tests/forms-concurrency-test.php` | destructive |
 | Turnstile verification and every failure branch | `tests/forms-turnstile-test.php` | unit |
 | Turnstile against a real HTTP transport | `tests/forms-turnstile-live-test.php` | live |
+| The recording path for a refusal that has no submission | `tests/forms-turnstile-test.php` | unit |
 | Notification templates, escaping, header injection | `tests/forms-notification-test.php` | unit |
+| The atomic notification claim, the retry backoff, the reconciliation | `tests/forms-notification-test.php` | unit |
 | Notification delivery and the retry path | `tests/forms-notification-live-test.php` | live |
 | Submission storage, trash, erasure, export | `tests/forms-retention-test.php` | destructive |
 | The privacy exporter and eraser hooks | `tests/forms-privacy-test.php` | live |
 | Permission enforcement on every route | `tests/forms-permissions-test.php` | unit |
-| MCP access boundaries and the personal-data authorisation | `tests/forms-tools-test.php` | unit |
+| MCP access boundaries, and the personal-data capability | `tests/forms-tools-test.php` | unit |
+| A principal without the submissions capability is refused | `tests/forms-personal-data-test.php` | unit |
 | Form versioning | `tests/forms-definition-test.php` | unit |
-| Concurrent editing | `tests/forms-concurrency-test.php` | unit |
+| Native revision registration and the revision trigger | `tests/forms-revisions-test.php` | unit |
 | The builder's models | `tests/forms-builder-test.js` | node |
 | The builder's interface | `tests/forms-builder-browser-test.js` | browser |
 | Accessibility of the rendered form | `tests/forms-accessibility-test.php` | unit + browser |
 | Release packaging | `tests/forms-packaging-test.php` | unit |
+
+**The concurrency suites are destructive, and they drive their two writers
+from separate processes**, so the race is real rather than simulated. Each of
+the four concurrency cases in §9.6 has its own named assertion, and each one
+must fail if the guarantee it covers is removed — the mutation-harness
+discipline the repository already uses for its other guarantees.
 
 ### 14.3 The environment
 
@@ -2201,9 +2937,12 @@ demonstration rather than an assertion:
     says nothing about which control fired.
 11. An editor who changes the form without publishing sees no change on the
     site, and the status chip says the work is unsaved.
-12. An agent lists the forms, reads one, changes it, and publishes it — and
-    an agent reading a submission's contents must pass the explicit
-    personal-data authorisation, and the refusal is audited.
+12. An agent lists the forms, reads one, changes it, and publishes it — and an
+    agent whose principal **lacks** `manage_agentshell_forms_submissions` is
+    **refused** when it tries to read a submission's contents, with the
+    refusal audited (§8.3). `manage_options` alone is not accepted as a
+    substitute, and the explicit `authorize_personal_data` flag is required
+    in addition.
 13. The release archive contains the plugin, and the checker refuses an
     archive that does not.
 14. The whole suite is green, on the disposable environment, with no leaked
@@ -2222,7 +2961,9 @@ demonstration rather than an assertion:
 | The post-type choice conflicts with a future WordPress direction | Low | A migration | The definition is a JSON document in meta, which is portable to a table or to a plugin's own storage without changing the schema |
 | Turnstile becomes a single point of failure for a site's forms | Medium | Submissions stop during a Cloudflare outage | The policy is per form and explicit; `optional` is available; the failure is recorded so the operator can see the cause; the builder states the trade-off in the panel where the choice is made |
 | The submission pipeline accumulates a monolith | Medium | It becomes hard to reason about and hard to test | The pipeline is a sequence of small, separately testable stages, each with one responsibility, and the stages are the subject of the unit suites |
-| An agent with `manage_options` reads personal data it should not | Medium | A privacy incident | The explicit personal-data authorisation is the binding control, it is re-checked at the moment of use, listings are metadata-only by construction, and every read and every refusal is audited |
+| An agent with `manage_options` reads personal data it should not | Medium | A privacy incident | The binding control is the **capability the principal may not hold** (§8.3): `manage_agentshell_forms_submissions` is not granted to administrators, `manage_options` is not accepted as a substitute, and the explicit flag is required in addition. Listings are metadata-only by construction, and every read and every refusal is audited. The residual risk is the deployment: if the operator grants the capability to the administrator role, the separation collapses back to the flag — which is why Q12 asks the owner to confirm the deployment |
+| The notification guarantee is stronger than the transport can give | Medium | A duplicate email reaches an administrator | The design says **at-least-once**, never exactly-once (§11.6); the attempt count is small with a long backoff; every message carries the submission's identifier in the body and in a `Message-ID`; and the attempt history is on the submission so a duplicate is recognisable |
+| A duplicate definition row appears through a path the plugin does not control | Low | An ambiguous definition | The authoritative-row creation is serialised by a named advisory lock, and **every read counts the rows**: a count above one is refused and audited rather than silently resolved (§9.6) |
 | The count test is not extended and the documented count goes stale | **High if forgotten** | The agent-facing documentation lies about the tool surface | The count test is a *build failure*, not a note; the phase that adds the tools is the phase that extends the test, and the extension is in the same PR |
 | The release archive ships without the plugin | Medium | The feature is missing in production with nothing noticing | The packager and the checker share one list, and the checker requires the plugin's files — the same discipline the configurator's packaging fix used |
 | The honeypot penalises assistive technology | Low | Some legitimate visitors are silently dropped | The honeypot is `aria-hidden`, `tabindex="-1"` and off-screen — never `display:none` alone — and it is verified against a real browser in the accessibility suite |
@@ -2236,15 +2977,19 @@ made, who should make it, and when.
 | # | Question | Why it is open | Proposed default | Decided by |
 |---|---|---|---|---|
 | Q1 | Should the site key and secret be site-level or form-level? | A site with several forms may want different Turnstile configurations | **Site-level** configuration, with the *policy* (`disabled`/`optional`/`required`) per form. One secret, one verification path, many policies | Before Phase 3 |
-| Q2 | Should a submission be visible to an editor who can edit pages? | The capability split is proposed, but the default mapping to roles is a site decision | Administrators only by default; the capability is assignable to a "site editor" role by the operator | Before Phase 3 |
+| Q2 | Should a submission be visible to an editor who can edit pages? | The capability split is proposed, but the default mapping to roles is a site decision | **Not by default.** The capability is *not* granted to administrators, so it is granted only to a role the operator creates — the deployment §8.3 describes. Administrators who also need it can have it granted explicitly | Before Phase 3 |
 | Q3 | What is the site-wide default retention period? | It is a policy decision with a legal dimension | 90 days, with the operator able to change it | Before Phase 3 |
-| Q4 | Should the notification body be plain text, HTML, or both? | HTML is friendlier; plain text is safer and always readable | **Both**: an HTML part and a plain-text alternative, generated from the same values. `wp_mail()` accepts the alternative as the `Content-Type` boundary, and the plain-text part is what a client without HTML support reads | Before Phase 3 |
+| Q4 | Should the notification body be plain text, HTML, or both? | HTML is friendlier; plain text is safer and always readable | **Plain text only**, and this is now settled on technical grounds rather than preference: `wp_mail()` sends one message and cannot emit `multipart/alternative`, so "both" would mean hand-rolling MIME inside the plugin (§11.5). If HTML is wanted later, the supported route is a mail plugin that adds the HTML part to `wp_mail()`, not a MIME builder here | Before Phase 3 |
 | Q5 | Should the Turnstile `action` be per form or per site? | Per form is stricter; per site is simpler | Per form, and the action is verified on the response | Before Phase 3 |
 | Q6 | Should the plugin be active by default when the theme is installed? | A theme that installs a plugin is unusual, and the plugin must not be auto-enabled | **No.** The theme does not install it. It is documented, and the packaging ships it ready to activate | Before Phase 6 |
 | Q7 | Should the forms plugin offer an export/import of definitions? | Useful for moving a site; a security surface if it can carry submissions | Definitions only, in Phase 6 or later, with the secret never included in an export | Before Phase 6 |
 | Q8 | Should the builder support a form template gallery? | A convenience that could pull in a definition from an untrusted source | No gallery. Templates are defined in the plugin's own code, where they are reviewable | Before Phase 4 |
-| Q9 | Should the post type's `capability_type` be a single capability or a set? | WordPress's model is per-type capabilities | A set — `edit_agentshell_form`, `read_agentshell_form`, `delete_agentshell_form` — mapped to `manage_agentshell_forms` | Before Phase 1 |
+| Q9 | Should the post type's `capability_type` be a single capability or a set? | WordPress's model is per-type capabilities | A set — `edit_agentshell_form`, `read_agentshell_form`, `delete_agentshell_form` for the definition type, and the parallel set for `agentshell_entry` — mapped to the plugin's own capabilities (§8.3) | Before Phase 1 |
 | Q10 | Should the submission's source address be a salted HMAC or a plain hash? | Both are irreversible in practice; an HMAC is stronger | HMAC with a per-site salt, truncated. A plain hash of an IPv4 address is trivially reversible by enumeration | Before Phase 1 |
+| Q11 | **Should the personal-data boundary be (A) a capability, (B) a separate credential, or (C) a human approval?** | §8.3 proposes all three and recommends (A). They are not mutually exclusive, and the operating cost differs: (B) needs a second secret to provision and rotate; (C) needs an approval UI | **(A) as the default**, with (B) available for an operator who wants a hard second trust domain, and (C) deferred. The owner should confirm whether (B) is wanted in the first release | Before Phase 5 |
+| Q12 | **Should `manage_agentshell_forms_submissions` be granted to administrators after all?** | This is the deployment decision that makes (A) bite. If it is granted to administrators, every MCP agent holds it, because the transport requires `manage_options` — and the separation collapses back to the flag | **No**, by default. The operator grants it to a dedicated role if the site has a data steward. The owner should confirm that this is acceptable for their own workflow, because it means a form-editing agent cannot read submissions **at all** | Before Phase 3 |
+| Q13 | **What is the claim TTL for an in-flight notification?** | A claim older than the TTL is reclaimed and retried. Too short and a slow send is duplicated; too long and a crashed worker's notification stalls | 15 minutes, with the backoff of §11.6. The owner should confirm it against the slowest realistic mail transport | Before Phase 3 |
+| Q14 | **Should a form's slug be frozen at publication, or stay mutable with a warning?** | Freezing breaks a shortcode when the operator renames; staying mutable breaks it silently | **Frozen at publication** (§5.1). The alternative — mutable with a warning and an "update the pages that use it" report — is more work and more failure modes | Before Phase 2 |
 
 ### 15.3 Alternatives rejected
 
@@ -2298,10 +3043,16 @@ can be implemented.** In particular:
 The hardest part of this design is not the pipeline, the schema or the
 builder. It is the **separation of two permissions that a single
 `manage_options` currently collapses**: the right to change a form, and the
-right to read what people wrote into it. The capability split alone does not
-separate them, because the agent transport requires `manage_options` for
-every call. The separation that actually binds is the **explicit
-personal-data authorisation**, the metadata-only listing, and the audit row
+right to read what people wrote into it.
+
+The correction the review forced here is the important one: **an explicit
+authorisation flag supplied by the caller is not a permission separation.**
+A caller who is already permitted can simply supply it. The flag is a
+deliberation and audit mechanism, and it is worth having — but the boundary
+has to be enforced by something the caller cannot supply. §8.3 now proposes
+three such mechanisms and recommends the one that costs nothing: **a
+capability the principal may not hold**, with the deployment described
+step by step, the metadata-only listing preserved, and the audit row written
 on every read *and every refusal*.
 
 That is the same lesson the content journal learned — that read authority and
@@ -2310,6 +3061,34 @@ they are exercised, and that a refusal is indistinguishable from an absence
 — applied to a domain where the sensitive thing is not a transaction but a
 person's message. It is the part of this design that should be reviewed
 hardest, and the part that should be built first.
+
+---
+
+## 16. Design-review resolution
+
+This section records what a focused review changed, so a reader does not have
+to diff two revisions to find out what was decided and why. The architecture
+was accepted and is unchanged; these are corrections to its details.
+
+| # | The issue raised | The revised decision | Where |
+|---|---|---|---|
+| **1** | `agentshell_submission` is 21 characters and exceeds WordPress's 20-character post type key limit | The submission post type is **`agentshell_entry`** (16 characters). `register_post_type()` returns `WP_Error( 'post_type_length_invalid' )` above 20, and `wp_posts.post_type` is `varchar(20)`, so the original name would also have been truncated in the database. The form type is `agentshell_form` (15). The capability type follows the same name | §3.3, §6.2, F13 |
+| **2** | The examples used `f_` + 32 hex, the validator required 32 hex, the schema column was `varchar(32)` and the shortcode used `contact` | **One immutable internal identifier**: exactly 32 lowercase hexadecimal characters, no prefix, stored in a `char(32)` column. **One optional human-readable slug**, `^[a-z0-9][a-z0-9-]{0,63}$`, frozen once the form is published, and refused by the validator if it looks like an internal identifier so the two namespaces cannot collide. The shortcode takes exactly one of `id` or `slug`; the API and the MCP tools use the identifier; the schema column matches | §5.1, §5.5, §6.2, §7.1, §7.3 |
+| **3** | WordPress does not automatically version every custom post-meta field | **§5.8 now documents the whole arrangement**: `register_post_meta()` with `revisions_enabled => true` for the three definition keys (the default is `false`), the post type declaring `revisions` support, and the explicit `wp_save_post_revision()` call — with the `wp_save_post_revision_post_has_changed` filter — because `_wp_post_revision_fields()` is only `post_title`/`post_content`/`post_excerpt` and a meta-only change triggers nothing. Native revisions are named as a **secondary, browsable** record, and the five artefacts (version, working, published, previous publication, working-revision counter) are told apart in one table | §5.6, §5.8, F5 |
+| **4** | The compare-and-swap relied on an unstated uniqueness guarantee for `wp_postmeta` | `wp_postmeta` has **no** unique key on `(post_id, meta_key)`; `add_post_meta()` is a `SELECT COUNT` then an `INSERT`, and `update_post_meta()` updates *every* matching row. The design now rests on **`meta_id`**, which is a primary key: a named advisory lock for authoritative-row creation, a row-count check that **refuses** a duplicate rather than picking one, `meta_id`-scoped value-guarded updates, and a publication transaction covering the three rows together. Four named concurrency tests are specified | §9.6, F14 |
+| **5** | An unbound public challenge does not provide complete CSRF protection | §7.1 now separates **replay prevention** (yes), **duplicate suppression** (yes), **cross-origin browser abuse** (partly — the same-origin policy, not a secret) and **server-side automated abuse** (no). The challenge is a protocol-correctness control, not a spam control. The rate limiter gained an exact algorithm: a fixed window per (scope, subject, form), a reserve statement with the limit baked into the `IF`, and the proof that **admissions never exceed the limit** while under-admission is possible. A separate table replaces the mixed one; the **retry replay** is specified (a consumed challenge whose submission exists replays the success response); challenge expiry, denial-of-service and the genuine-retry policy are covered | §6.3, §6.3a, §6.3b, §6.3c, §7.1, F16 |
+| **6** | An agent with `manage_options` can supply `authorize_personal_data: true` itself | §8.3 now says plainly that an explicit flag is **a deliberation and audit mechanism, not a permission boundary**, and proposes three enforceable mechanisms: a **capability the principal may not hold** (recommended; requires that `manage_agentshell_forms_submissions` is *not* granted to administrators, with the deployment spelled out), a **separate credential**, and an **out-of-band human approval**. A site policy switch (`off` / `capability` / `credential`) makes the posture explicit. Metadata-only listings and audit rows survive every mode. §8.2 is now explicitly marked **not committed**, with provisional names and an unchanged tool count | §8.2, §8.3, §10.2 |
+| **7** | Reusing a submission row does not guarantee exactly-once email delivery | §11.6 now specifies the **notification record** (`pending` / `claimed` / `accepted` / `failed` / `uncertain` / `exhausted`), an **atomic claim** by a guarded update so two workers cannot send concurrently, **five attempts** with a stated backoff, and a **reconciliation** that reclaims a claim older than the TTL. The guarantee is named honestly: **at-least-once, not exactly-once**, with the mitigations listed. `wp_mail()` returning `true` is now defined as **accepted by the sending mechanism** — never *delivered* — and the vocabulary follows. **Plain text is the MVP default and the only MVP format**, on the technical ground that `wp_mail()` cannot emit `multipart/alternative` | §11.5, §11.6, F15 |
+| **8a** | Turnstile failures were said to be recorded on submissions that are intentionally refused before storage | The two paths are now separated: a `required` form's refusal produces **no submission row** and is recorded in a new bounded **rejection log** (no personal data, with the volume recorded exactly by the counters); an `optional` form's failure **is** stored and carries `unverified` or `spam` on the submission | §11.2, §11.2a, §10.2 |
+| **8b** | A form definition alone was called a complete UK GDPR Article 30 record | The definition is now described as **useful processing metadata** and as **input to** a record of processing, not one. The section names what a record of processing covers that the definition does not, and states plainly that compliance is the controller's judgement and is unaffected by the plugin | §6.4, §10.3 |
+| **8c** | No phase may depend on a later phase | The dependency table is corrected and the reasons given: the challenge store and its minting move **into Phase 1** because Phase 2's renderer mints the token; Phase 3 does not need the renderer; Phase 4 needs Phases 1 and 2; Phase 5 splits into the form tools (Phase 1) and the entry tools (Phase 3). The graph is redrawn | §13.1, §13.2, §13.3, §13.4 |
+
+**What did not change.** The plugin boundary, the storage model, the six
+phases, the schema, the pipeline's shape, the threat model's coverage, and
+the verification strategy are all as accepted. The corrections are to
+identifiers, to the mechanisms inside the storage and notification paths, to
+the permission model's enforcement, and to the documentation's accuracy about
+what it can claim.
 
 ---
 
