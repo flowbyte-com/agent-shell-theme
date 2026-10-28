@@ -89,7 +89,12 @@ Agentshell_Test::run(
         $p = fst( 'precondition' );
 
         Agentshell_Test::assert_true( true === ( $p['plugin_constant'] ?? false ), 'the plugin must be loaded' );
-        Agentshell_Test::assert_equals( '0.1.0', $p['version'] ?? null, 'the plugin version must be the one in the header' );
+        Agentshell_Test::assert_true( '' !== (string) ( $p['header_version'] ?? '' ), 'the plugin file must carry a Version header' );
+        Agentshell_Test::assert_equals(
+            (string) ( $p['header_version'] ?? '' ),
+            (string) ( $p['version'] ?? '' ),
+            'the plugin version must be the one in the header'
+        );
         Agentshell_Test::assert_equals( 1, (int) ( $p['schema_version'] ?? 0 ), 'the schema version must be 1' );
         Agentshell_Test::assert_true( true === ( $p['form_type'] ?? false ), 'agentshell_form must be registered' );
         Agentshell_Test::assert_true( true === ( $p['entry_type'] ?? false ), 'agentshell_entry must be registered' );

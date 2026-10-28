@@ -108,7 +108,10 @@ if ( ! function_exists( 'home_url' ) ) {
 }
 
 if ( ! defined( 'AGENTSHELL_FORMS_VERSION' ) ) {
-	define( 'AGENTSHELL_FORMS_VERSION', '0.1.0' );
+	// Only a cache-busting value in the stub renderer; it is never compared with
+	// the plugin header. `tests/forms-storage-test.php` is what asserts that the
+	// constant and the header agree, against the real plugin.
+	define( 'AGENTSHELL_FORMS_VERSION', '0.0.0-stub' );
 }
 
 if ( ! defined( 'AGENTSHELL_FORMS_PLUGIN_DIR' ) ) {
