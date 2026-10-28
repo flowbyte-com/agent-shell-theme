@@ -128,7 +128,12 @@ $agentshell_forms_fixture_dir = dirname( __DIR__ ) . '/agentshell-forms/includes
 require_once $agentshell_forms_fixture_dir . 'class-form-field-types.php';
 require_once $agentshell_forms_fixture_dir . 'class-form-schema.php';
 require_once $agentshell_forms_fixture_dir . 'class-form-capabilities.php';
+// Phase 3: the renderer asks the Turnstile client whether a form needs the
+// widget, and emits the submission route as the form's action.
+require_once $agentshell_forms_fixture_dir . 'class-form-rejections.php';
+require_once $agentshell_forms_fixture_dir . 'class-turnstile.php';
 require_once $agentshell_forms_fixture_dir . 'class-form-challenge-endpoint.php';
+require_once $agentshell_forms_fixture_dir . 'class-submission-handler.php';
 require_once $agentshell_forms_fixture_dir . 'class-form-renderer.php';
 
 unset( $agentshell_forms_fixture_dir );

@@ -78,9 +78,15 @@ delete_option( 'agentshell_forms_db_version' );
 delete_option( 'agentshell_forms_audit' );
 delete_option( 'agentshell_forms_audit_dropped' );
 delete_option( 'agentshell_forms_personal_data_policy' );
+delete_option( 'agentshell_forms_rejections' );
+delete_option( 'agentshell_forms_retention_days' );
+delete_option( 'agentshell_forms_turnstile_site_key' );
+delete_option( 'agentshell_forms_turnstile_secret' );
 
-// The scheduled job.
+// The scheduled jobs.
 wp_clear_scheduled_hook( 'agentshell_forms_prune' );
+wp_clear_scheduled_hook( 'agentshell_forms_notifications' );
+wp_clear_scheduled_hook( 'agentshell_forms_retention' );
 
 // The capabilities, from every role.
 //

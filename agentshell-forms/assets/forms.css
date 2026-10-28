@@ -319,6 +319,34 @@ select.agentshell-forms__control {
 	margin: 0;
 }
 
+/*
+ * The stale-page reload, and the no-JavaScript notice.
+ *
+ * The reload button is a real button, not a link: it performs an action, and
+ * it is what a visitor is offered when the page they hold is too old to send.
+ */
+.agentshell-forms__reload {
+	margin-block-start: 0.6rem;
+}
+
+.agentshell-forms__noscript {
+	margin: 0.75rem 0 0;
+	padding: 0.65rem 0.8rem;
+	border-inline-start: 4px solid var(--asf-muted);
+	background: color-mix(in srgb, var(--asf-muted) 10%, transparent);
+	border-radius: var(--asf-radius);
+}
+
+.agentshell-forms__turnstile {
+	margin-block-start: var(--asf-gap);
+}
+
+/* The button is disabled while a request is in flight; make that visible even
+   where a browser does not dim a disabled button much. */
+.agentshell-forms[aria-busy="true"] .agentshell-forms__submit {
+	opacity: 0.6;
+}
+
 /* ---------------------------------------------------------------------------
  * The honeypot
  * ------------------------------------------------------------------------ */

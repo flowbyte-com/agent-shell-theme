@@ -2,7 +2,12 @@
 /**
  * Plugin Name: AgentShell Forms
  * Description: Native WordPress forms — definitions, storage, protocol state and the accessible front-end renderer. Theme-independent and agent-transport-independent.
- * Version: 0.1.0
+ * Version: 0.3.0
+ *
+ * The header and `AGENTSHELL_FORMS_VERSION` are kept equal. The constant is
+ * what assets are enqueued with, so it must change whenever the stylesheet or
+ * the script does — and a header that disagreed with it would report a version
+ * to WordPress that is not the version being served.
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: AgentShell
@@ -11,25 +16,23 @@
  *
  * ## What this plugin is, and what it is not
  *
- * This is **Phase 1 and Phase 2** of the forms system described in
+ * This is **Phases 1, 2 and 3** of the forms system described in
  * `docs/AGENTSHELL-FORMS-DESIGN.md` (§13.2). Phase 1 is the plugin
  * foundation: the authoritative schema, the two post types, the storage
  * invariants, the validation and the concurrency controls. Phase 2 is
  * rendering and insertion: the server-side renderer, the `[agentshell_form]`
  * shortcode, the widget, the accessible markup and the cache-safe challenge
- * provisioning that lets a published form live on a cached page.
+ * provisioning that lets a published form live on a cached page. Phase 3 is
+ * functional submissions: the public submission pipeline, server-side
+ * validation, the challenge claim, rate limits, the honeypot, Turnstile,
+ * storage, administrator notifications with retries, retention, the privacy
+ * exporter and eraser, and the submission screens.
  *
  * It deliberately does **not** contain:
  *
  *   - a visual form builder (Phase 4);
- *   - public submission processing (Phase 3);
- *   - email notifications or Turnstile verification (Phase 3);
  *   - any MCP tool (Phase 5) — the documented tool count is unchanged;
  *   - any AgentShell zone integration (Phase 6).
- *
- * A rendered form has no submission handler yet: the markup is complete and
- * the challenge is provisioned, but there is deliberately no `action`
- * attribute pointing at a route that does not exist. Phase 3 adds both.
  *
  * ## The one dependency direction
  *
@@ -50,7 +53,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'AGENTSHELL_FORMS_VERSION', '0.1.0' );
+define( 'AGENTSHELL_FORMS_VERSION', '0.3.0' );
 define( 'AGENTSHELL_FORMS_FILE', __FILE__ );
 define( 'AGENTSHELL_FORMS_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'AGENTSHELL_FORMS_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
@@ -98,6 +101,22 @@ require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-shortcode.php';
 require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-widget.php';
 require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-challenge-endpoint.php';
 
+/*
+ * Phase 3 — functional submissions.
+ *
+ * The order is dependency order for readability: the rejection log and the
+ * Turnstile client have no dependencies; the store needs the post types; the
+ * notifier needs the store; the handler needs all of them; the admin screens
+ * need the store and the capabilities; the privacy hooks need the store.
+ */
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-rejections.php';
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-turnstile.php';
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-submission-store.php';
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-notifier.php';
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-submission-handler.php';
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-privacy.php';
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-admin.php';
+
 // The documented PHP API (§4.3). Loaded last, because it is the only global
 // surface and it delegates to the classes above.
 require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/functions.php';
@@ -131,6 +150,39 @@ add_action( 'plugins_loaded', array( 'AgentShell_Forms\\Form_Install', 'maybe_up
 add_action( 'init', array( 'AgentShell_Forms\\Form_Post_Types', 'register' ), 5 );
 
 /**
+ * The two extra cron schedules.
+ *
+ * `five_minutes` drives the notification worker (a retry that waits an hour for
+ * the next hourly tick would make the one-minute backoff meaningless), and
+ * `daily` drives retention. Both are registered on `cron_schedules` so
+ * `wp_schedule_event()` can name them.
+ */
+add_filter(
+	'cron_schedules',
+	function ( $schedules ) {
+		if ( ! is_array( $schedules ) ) {
+			return $schedules;
+		}
+
+		if ( ! isset( $schedules['agentshell_forms_five_minutes'] ) ) {
+			$schedules['agentshell_forms_five_minutes'] = array(
+				'interval' => 300,
+				'display'  => __( 'Every five minutes (AgentShell Forms notifications)', 'agentshell-forms' ),
+			);
+		}
+
+		if ( ! isset( $schedules['agentshell_forms_daily'] ) ) {
+			$schedules['agentshell_forms_daily'] = array(
+				'interval' => DAY_IN_SECONDS,
+				'display'  => __( 'Once daily (AgentShell Forms retention)', 'agentshell-forms' ),
+			);
+		}
+
+		return $schedules;
+	}
+);
+
+/**
  * The hourly prune of ephemeral protocol state.
  *
  * Correctness never depends on this firing — every read re-checks expiry
@@ -138,6 +190,32 @@ add_action( 'init', array( 'AgentShell_Forms\\Form_Post_Types', 'register' ), 5 
  */
 add_action( 'agentshell_forms_prune', array( 'AgentShell_Forms\\Form_Challenges', 'prune' ) );
 add_action( 'agentshell_forms_prune', array( 'AgentShell_Forms\\Form_Rate_Limits', 'prune' ) );
+
+/**
+ * The notification worker.
+ *
+ * It attempts every due record, reconciles claims older than the claim TTL,
+ * and stops. There is no second scheduler: the reconciler and the retry worker
+ * are this one job, so they cannot disagree about a record.
+ */
+add_action( 'agentshell_forms_notifications', array( 'AgentShell_Forms\\Form_Notifier', 'reconcile' ) );
+add_action(
+	'agentshell_forms_notifications',
+	function () {
+		\AgentShell_Forms\Form_Notifier::run_due( 'admin' );
+		\AgentShell_Forms\Form_Notifier::run_due( 'confirmation' );
+	}
+);
+
+/**
+ * The daily retention purge.
+ *
+ * A hard delete, because a retention period that leaves data recoverable is
+ * not a retention period (§6.5). Correctness does not depend on it firing at a
+ * particular minute; a missed run leaves data a day longer, never longer than
+ * the period plus the gap.
+ */
+add_action( 'agentshell_forms_retention', array( 'AgentShell_Forms\\Submission_Store', 'purge_expired' ) );
 
 /**
  * The per-user submissions-access grant and revocation (§8.3a).
@@ -175,3 +253,22 @@ add_action( 'widgets_init', 'AgentShell_Forms\\agentshell_forms_register_widget'
  * to it.
  */
 add_action( 'rest_api_init', array( 'AgentShell_Forms\\Form_Challenge_Endpoint', 'register' ) );
+
+/*
+ * The submission route (Phase 3).
+ *
+ * Public by design, and separate from the mint route so that the surface which
+ * issues state and the surface which accepts a submission are reasoned about,
+ * rate-limited and audited independently.
+ */
+add_action( 'rest_api_init', array( 'AgentShell_Forms\\Submission_Handler', 'register' ) );
+
+/**
+ * The submission screens and the personal-data hooks.
+ *
+ * `Form_Admin::register()` attaches `admin_menu` and the `admin_post`
+ * handlers; `Form_Privacy::register()` attaches the exporter and the eraser.
+ * Neither runs on a front-end request unless WordPress asks for its hook.
+ */
+\AgentShell_Forms\Form_Admin::register();
+\AgentShell_Forms\Form_Privacy::register();

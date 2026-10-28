@@ -1293,6 +1293,7 @@ The body:
 ```json
 {
   "form_id": "7c1d2e3a4b5c6d7e8f9a0b1c2d3e4f5a",
+  "form_version": 3,
   "challenge": "3f9a…",
   "fields": { "name": "Ada Lovelace", "message": "…", "consent": true },
   "turnstile_token": "0x4AAAA…"
@@ -1302,6 +1303,14 @@ The body:
 `form_id` is the **internal identifier** — 32 lowercase hexadecimal characters
 (§5.1). The slug is not accepted here: the request body names the form
 unambiguously, and the form's own HTML already carries the identifier.
+
+`form_version` is **required** and is the published version the page was
+rendered from. A body without it, or with a version that is not the current
+one, is refused as **stale** (§7.1b) rather than validated against a schema
+the visitor never saw. The rendered form carries the version in
+`data-form-version`, and the client sends exactly that — it has no way to
+learn the current version, which is the point: a client cannot silently
+"upgrade" a form it rendered an hour ago.
 
 **The challenge token.** The plugin creates a random 32-byte token, stores its
 SHA-256 in the challenge table with the form's internal identifier, the
@@ -1480,6 +1489,82 @@ answered with a **single generic shape**, `{"ok": false, "code": "form_rejected"
 control fired. The one deliberate exception is the **honeypot**, which
 answers with a *fake success* (§11.4): telling a bot that it was caught is
 telling the bot what to change.
+
+### 7.1b The pipeline as implemented, and one deliberate reordering
+
+The implemented order (Phase 3) is:
+
+```
+parse body → size and field-count limits → resolve the form → compare the version
+→ inspect the challenge → minimum time → honeypot → Turnstile
+→ validate every declared field → reserve the rate-limit slot → claim the challenge
+→ store → link → notify
+```
+
+**This is not the order §11.6 sketched.** The design record's first sketch
+claimed the challenge and reserved the rate-limit slot *before* validating,
+and the implementation does the opposite. The reason is a visitor-facing one:
+the challenge is single-use, and burning it on a mistyped email address makes
+the visitor reload the page for something that is their own typo. The same
+argument applies to the quota — a submission that stores nothing should not
+spend a slot that a real one needs. Nothing is weakened by the reordering: the
+claim is still atomic and still exactly-once, the quota is still reserved
+before any write, and the challenge inspection that precedes validation is
+read-only. The deviation is recorded here rather than silently implemented,
+because it changes which answer a failed submission receives.
+
+Each stage answers with the smallest vocabulary that is still actionable:
+
+| Situation | Status and code | What the visitor is told |
+|---|---|---|
+| Body is not a JSON object, `fields` is not a map, the form identifier is malformed, or the challenge is not a 64-character token | `400` / `422`, `form_rejected` | the generic refusal |
+| The body is larger than 64 KiB, carries more than 100 field keys, or a value beyond its raw size limit | `413`, `form_rejected` | the generic refusal |
+| Unknown, unpublished or trashed form | `422`, `form_rejected` | the generic refusal |
+| A published definition that no longer validates | `503`, `form_rejected` | the generic refusal (the operator is told by the rejection log) |
+| Missing `form_version`, or not the current one | `409`, `form_stale` | the page is out of date; reload |
+| Challenge unknown or expired | `422`, `form_rejected` | the generic refusal |
+| Challenge belongs to another form | `422`, `form_rejected` (and the row is **not** consumed) | the generic refusal |
+| Challenge minted for an older published version | `409`, `form_stale` | the page is out of date; reload |
+| The token was already spent and produced this submission | `200`, the original success | success — nothing is written twice, and no second mail is sent |
+| The token is claimed and its submission is still being written | `409`, `form_pending`, `Retry-After` | wait a moment and try again |
+| The token is claimed by an attempt that died; nothing was stored | `409`, `form_retry`, with a **fresh challenge** in the body | try again — no reload needed |
+| Validation failed | `422`, `form_invalid`, `errors` keyed by field | which fields, and why |
+| Honeypot filled | `200`, the form's real success message | success (and nothing is stored) |
+| Required Turnstile failed, was unavailable, or the server is misconfigured | `422`, `form_rejected` | the generic refusal |
+| Quota exhausted | `429`, `form_rejected`, `Retry-After` | the generic refusal, after the wait |
+| The quota could not be reserved (a database failure) | `503`, `form_rejected` | the generic refusal |
+
+`form_stale`, `form_pending` and `form_retry` are the three refusals that say
+something about *state* rather than *content*, and they are the three that
+give the visitor a way forward. **None of them discloses an anti-spam
+control, a stored value, or another visitor's submission.** A refusal never
+names the control that fired: the reasons above are written to the rejection
+log (§11.2a) and nowhere else.
+
+**A stale page is never reinterpreted.** The version check happens before any
+field is looked at, so a page rendered from version 2 can never be validated
+against version 3's fields, and the visitor's typed values are not silently
+mapped onto a different schema. The client keeps what was typed (in
+`sessionStorage`, keyed by form id and version) and offers a reload; the
+reloaded page restores the values it can still justify and says so.
+
+**The client's halves of this contract** are `assets/forms.js`: a submit that
+is in flight cannot be started twice, a `form_pending` answer is retried with
+the same token after the server's `Retry-After`, a `form_retry` answer
+replaces the token in place, a `form_stale` answer disables the form and
+offers a reload while keeping the answers, and a lost response is retried with
+the same token (which is what makes the server's replay path the duplicate
+guard). The browser suite tests each of those paths against the real script.
+
+**A spent Turnstile token is renewed, not reused.** The server verifies a
+Turnstile token while it decides whether to accept the request, so from that
+moment the token is dead. Every refusal that leaves the form usable — a field
+error, a generic refusal, a fresh challenge, a lost response — therefore
+resets the widget and takes a new token before the next attempt. Without that,
+a `required` form would answer every retry with the generic refusal while the
+page looked healthy, and the visitor would have no way forward. The browser
+suite asserts both directions: a successful submission renews nothing, and a
+refusal renews the token.
 
 ### 7.2 The admin endpoints
 
@@ -2447,14 +2532,33 @@ a submission existed**.
 - It is the plugin's own bounded log — the same shape as the configuration
   event ring the rest of the system uses, but owned by this plugin, because
   this plugin must not depend on the MCP plugin (§4.1).
-- Each entry carries the form's internal identifier, the reason code
-  (`turnstile_failed`, `turnstile_unavailable`, `rate_limited`,
-  `challenge_invalid`, `honeypot`), the Cloudflare error codes where they
-  apply, the timestamp, and the hashed source address. **No submitted value
-  ever appears in it.**
-- It is **bounded** (a fixed number of entries, oldest dropped first), and it
-  is written with the same compare-and-swap discipline as the rest of the
-  system, so concurrent writers cannot corrupt it.
+- Each entry carries the form's internal identifier, the reason code, the
+  Cloudflare error codes where they apply, the timestamp, and the hashed
+  source address. **No submitted value ever appears in it.**
+
+  The implemented vocabulary (`class-form-rejections.php` and its callers) is:
+
+  | Reason | Recorded when |
+  |---|---|
+  | `turnstile_failed` | A token was presented and Cloudflare refused it |
+  | `turnstile_unavailable` | Verification could not be performed (network, 5xx, timeout) |
+  | `turnstile_misconfigured` | The operator asked for `required` and the site has no usable secret |
+  | `rate_limited` | The per-form quota refused the submission |
+  | `challenge_invalid` | The token was unknown, expired, spent, from another form, or presented sooner than `min_seconds` allows |
+  | `challenge_expired` | The token was found and out of date |
+  | `challenge_pending` | The token is claimed and its submission is still being written |
+  | `honeypot` | The trap field was filled |
+  | `malformed` | The body, the form reference, the version or the field shape was unusable |
+  | `too_large` | More field keys than declared, or a value beyond its limit |
+  | `stale` | The page's version is not the published one |
+  | `write_failed` | The submission could not be stored, linked or validated against its definition |
+
+  A reason code is for the operator. The visitor receives the generic refusal
+  or one of the three state answers (§7.1b), never the reason.
+- It is **bounded** (50 entries, oldest dropped first), and it is written with
+  the same compare-and-swap discipline as the rest of the system — five
+  attempts, then the entry is dropped rather than retried forever — so
+  concurrent writers cannot corrupt it.
 - **Under a flood it may drop entries, and that is stated.** The log is a
   diagnostic; the *volume* is recorded exactly by the rate-limit counters, so
   a flood is visible in the counters even when the log has rolled over.
@@ -3110,13 +3214,18 @@ label containing `<script>` renders as text. A radio group is a fieldset with
 a legend.
 
 **Accepted, with the evidence.** `tests/forms-render-test.php` (26 assertions,
-no database), `tests/forms-render-live-test.php` (17 assertions against a real
+no database), `tests/forms-render-live-test.php` (18 assertions against a real
 WordPress: shortcode, widget, API, REST mints, rate limit, cleanup) and
-`tests/forms-render-browser-test.js` (the page in a real Chrome: markup,
-contrast, focus, per-instance provisioning and the bfcache refresh). Verified on
-2026-10-27 against WordPress 6.8.2 and PHP 8.5.
+`tests/forms-render-browser-test.js` (61 assertions in a real Chrome: markup,
+contrast, focus, per-instance provisioning, the bfcache refresh and the
+provisioning-failure recovery). Verified on 2026-10-27 against WordPress 6.8.2
+and PHP 8.5.
 
-#### Phase 3 — The submission pipeline, notifications and Turnstile
+#### Phase 3 — The submission pipeline, notifications and Turnstile (implemented)
+
+**Status.** Implemented, on `feat/forms-phase-3`. The normative behaviour is
+§7.1b, §11.2a, §11.6 and §11.6a; this entry records what was built and where
+it deviates from the sketch below it.
 
 **Scope.** The authoritative handler; the field validation; the challenge
 claim; the rate-limit reservation; the honeypot; the Turnstile client; the
@@ -3129,40 +3238,109 @@ WordPress privacy registries, the `Store::record_event()` *vocabulary* and the
 `Content_Write_Guard` *pattern* — both re-implemented locally, because the
 forms plugin must not depend on the MCP plugin.
 
-**New modules.** `class-submission-handler.php`, `class-submission-store.php`,
-`class-form-notifier.php`, `class-turnstile.php`, `class-form-privacy.php`,
-`class-form-rejections.php` (the bounded rejection log), `class-form-admin.php`
-(the submissions screen).
+**Modules, as built.** `class-submission-handler.php` (the pipeline),
+`class-submission-store.php` (entries, retention, export bytes),
+`class-form-notifier.php` (composition, claims, retries, reconciliation),
+`class-turnstile.php` (policies and the single outbound request),
+`class-form-privacy.php` (the WordPress exporter and eraser),
+`class-form-rejections.php` (the bounded rejection log),
+`class-form-admin.php` (the submissions list, view, delete, export and the
+per-user access screen). The client is `assets/forms.js` and
+`assets/forms.css`; the routes are registered from the two endpoint classes
+only, and `wp_mail()` is called from one file only — both asserted by
+`tests/forms-schema-test.php`'s independence scan.
 
-**Data model.** The `agentshell_entry` post type and its meta keys; the
-notification record; the retention setting.
-
-**MCP.** None yet, but the submission store is written with the tool
-authorisation in mind from the start, and the notification record is written
-so that the claim is a compare-and-swap on it (§11.6).
-
-**WordPress integration.** The public REST route, the cron jobs, the privacy
-hooks, the admin screen.
+**Data model.** The `agentshell_entry` post type and its meta keys
+(`_agentshell_form_id`, `_agentshell_form_version`, `_agentshell_form_data`,
+`_agentshell_form_meta`, `_agentshell_form_hash`, `_agentshell_form_spam`,
+`_agentshell_form_challenge`, `_agentshell_form_notification`,
+`_agentshell_form_notification_confirmation` — registered from
+`Submission_Store::meta_keys()`, so the vocabulary has one definition); the
+notification record's status vocabulary (`pending`, `claimed`, `accepted`,
+`failed`, `uncertain`, `exhausted`); the site retention default and the
+per-form `retain_days`.
 
 **Security.** The whole of §10.2 applies. The submission is written before
 the notification is attempted, so a delivery failure cannot duplicate it. The
 notification is claimed before it is sent, so two workers cannot send it
 twice concurrently. A Turnstile refusal on a `required` form leaves no
-submission and is recorded in the rejection log instead (§11.2a).
+submission and is recorded in the rejection log instead (§11.2a). Submission
+access is a per-user capability that the administrator role does **not** hold;
+the owner grants it to themselves through the Phase 1 mechanism, and every
+grant, revocation, refusal, export and deletion is audited.
+
+**Deviations from the plan, and why.**
+
+1. **Validation runs before the claim and before the quota reservation**
+   (§7.1b). A single-use token burnt on a typo, and a quota slot spent on a
+   submission that stores nothing, are both worse for the visitor than for
+   any attacker.
+2. **Minting and submitting have separate rate buckets.** They shared a bucket
+   in the first implementation, so a form configured for five submissions
+   accepted two: obtaining the token spent one slot and using it spent
+   another. `SCOPE_MINT` (30 per 5 minutes per source and form) now counts
+   mints; the operator's quota counts submissions; a site-wide backstop is
+   shared by both routes.
+3. **`form_version` is part of the body** (§7.1), and a token minted for an
+   older version answers `form_stale` rather than the generic refusal, so the
+   visitor is given a reload instead of being told their submission was not
+   accepted for unstated reasons.
+4. **`min_seconds` is enforced only when the form has neither a honeypot nor
+   Turnstile.** With another control present the elapsed-time check adds
+   nothing but false refusals for a fast typist, and it is filterable.
+
+**Known limitations, stated rather than implied.**
+
+- A privacy request matches the **whole value**, case-insensitively: an
+  address written inside a free-text answer ("reach me at …") is not matched.
+  Over-matching would disclose a third party's words, so the safe direction
+  was chosen and is asserted by `tests/forms-privacy-test.php`.
+- `run_due()` is **bounded**: it examines at most 2000 entries per run, so a
+  very large backlog is drained over several cron ticks rather than one.
+- A notification's `accepted` status means **the transport accepted the
+  message**, not that it was delivered. The record says so in as many words.
+- `optional` Turnstile records `unverified` (no signal) and `spam` (a failed
+  verification) differently, because they are different facts.
 
 **Migration.** None.
 
-**Tests.** `tests/forms-submission-test.php` (validation, required fields,
-the honeypot's fake success, the challenge's single claim, the rate limit,
-the size limits, the malformed request, the cross-form key discard, the
-retry's idempotent replay);
-`tests/forms-turnstile-test.php` (every branch of the response handling, the
-failure policies, the test-credential refusal in production, the recording
-path for a refusal with no submission);
-`tests/forms-notification-test.php` (the templates, the escaping, the header
-injection attempts, the recipient allowlist, the atomic claim, the retry
-backoff, the reconciliation of an uncertain outcome, the reuse of the row);
-`tests/forms-retention-test.php` (the purge, the deletion paths).
+**Tests, as built.**
+
+- `tests/forms-turnstile-test.php` — the three policies, every verification
+  branch, the fixed endpoint, the empty-constant rule, the test-credential
+  refusal in production, the classification of failures. Injected transport,
+  no network. Unit.
+- `tests/forms-notifier-test.php` — the templates, the header-injection
+  defences, the recipient allowlist, `Reply-To`, the two clock invariants
+  (backoff monotonic; attempt budget below the claim TTL). Unit.
+- `tests/forms-submission-test.php` (+ `forms-submission-live-child.php`) — the
+  whole pipeline against a real WordPress: validation before the claim, the
+  replay, a **genuinely stale page**, foreign/expired/claimed challenges, the
+  honeypot's fake success, the quota, required and optional Turnstile, the
+  declared-field-only storage, the permission checks, the export, and that no
+  refusal names a control. Destructive.
+- `tests/forms-notification-live-test.php` (+ child) — accepted/not-resent,
+  failure and backoff, exhaustion, a live claim respected and an abandoned one
+  taken over, reconciliation to `uncertain`, an over-budget attempt, a
+  throwing transport, notifications switched off later, the confirmation, and
+  the retry worker. Destructive.
+- `tests/forms-retention-test.php` (+ child) — per-form and inherited periods,
+  the trashed entry, the orphaned entry, idempotence, and the CSV/JSON export
+  with spreadsheet-formula injection and RFC 4180 quoting. Destructive.
+- `tests/forms-privacy-test.php` (+ child) — the WordPress exporter and
+  eraser: across forms, whole-value matching, hard delete, no collateral
+  deletion, repeated erasure, both audited. Destructive.
+- `tests/forms-submission-concurrency-test.php` (+ child) — separate
+  processes with their own MySQL connections, released by a file barrier: one
+  token and four contenders, six contenders against a quota of three, two mail
+  workers claiming one record. Destructive.
+- `tests/forms-submit-browser-test.js` (+ `forms-submit-browser-fixture.php`,
+  `run-forms-submit-browser.php`) — the real script on a real origin in a real
+  browser: success, field errors with focus and a summary, a stale page that
+  keeps the answers, a server-side stale refusal, a pending retry, a retry
+  with a fresh token, a lost response, a double click, a provisioning failure
+  that recovers, and the renewal of a spent Turnstile token on every refusal
+  that leaves the form usable. 85 assertions.
 
 **Acceptance.** A submission is stored once, validated against the published
 version, and produces exactly one notification. A failed notification leaves
@@ -3170,7 +3348,9 @@ one submission and a retry re-uses it. Two workers cannot send the same
 notification concurrently. A honeypot-filled submission returns success and
 stores nothing. A Turnstile token that was already used is refused, and the
 refusal is recorded where it can be — in the rejection log, because there is
-no submission to record it on.
+no submission to record it on. A page rendered from an older published
+version is refused as stale, keeps the visitor's answers, and is never
+reinterpreted against the newer schema.
 
 #### Phase 4 — The visual builder
 
@@ -3366,9 +3546,9 @@ stubs has not been tested.
 | Input validation and required fields | `tests/forms-submission-test.php` | destructive |
 | Malformed requests, wrong types, oversized bodies | `tests/forms-submission-test.php` | destructive |
 | The honeypot's fake success | `tests/forms-submission-test.php` | destructive |
-| Duplicate submission, the single claim, the retry's idempotent replay | `tests/forms-protocol-test.php` | destructive |
-| Challenge expiry, the linking rules and the pruned table | `tests/forms-protocol-test.php` | destructive |
-| Rate limiting, the cap, and the concurrency property | `tests/forms-protocol-test.php`, `tests/forms-concurrency-test.php` | destructive |
+| Duplicate submission, the single claim, the retry's idempotent replay | `tests/forms-protocol-test.php`, `tests/forms-submission-test.php`, `tests/forms-submission-concurrency-test.php` | destructive |
+| Challenge expiry, the linking rules and the pruned table | `tests/forms-protocol-test.php`, `tests/forms-render-live-test.php`, `tests/forms-submission-test.php` | destructive |
+| Rate limiting, the cap, and the concurrency property | `tests/forms-protocol-test.php`, `tests/forms-submission-test.php`, `tests/forms-submission-concurrency-test.php` | destructive |
 | Two simultaneous initial writes of a definition | `tests/forms-concurrency-test.php` | destructive |
 | Two simultaneous edits of a definition | `tests/forms-concurrency-test.php` | destructive |
 | Two simultaneous publications | `tests/forms-concurrency-test.php` | destructive |
@@ -3380,22 +3560,27 @@ stubs has not been tested.
 | BEGIN, COMMIT and ROLLBACK failure; a required transaction that cannot start | `tests/forms-transaction-test.php` | unit |
 | A table set that cannot roll back refuses a required transaction | `tests/forms-storage-test.php` | destructive |
 | Slug consistency: create → change → inspect → publish | `tests/forms-storage-test.php` | destructive |
-| The linking rules: unclaimed, expired, conflict, idempotent replay | `tests/forms-protocol-test.php` | destructive |
+| The linking rules: unclaimed, expired, conflict, idempotent replay | `tests/forms-protocol-test.php`, `tests/forms-submission-test.php` | destructive |
 | Turnstile verification and every failure branch | `tests/forms-turnstile-test.php` | unit |
-| Turnstile against a real HTTP transport | `tests/forms-turnstile-live-test.php` | live |
-| The recording path for a refusal that has no submission | `tests/forms-turnstile-test.php` | unit |
-| Notification templates, escaping, header injection | `tests/forms-notification-test.php` | unit |
-| The atomic notification claim, the retry backoff, the reconciliation | `tests/forms-notification-test.php` | unit |
-| Notification delivery and the retry path | `tests/forms-notification-live-test.php` | live |
-| Submission storage, trash, erasure, export | `tests/forms-retention-test.php` | destructive |
-| The privacy exporter and eraser hooks | `tests/forms-privacy-test.php` | live |
-| Permission enforcement on every route | `tests/forms-permissions-test.php` | unit |
+| Turnstile's three policies through the real pipeline (`required` fails closed, `optional` never blocks) | `tests/forms-submission-test.php` | destructive |
+| The recording path for a refusal that has no submission | `tests/forms-turnstile-test.php`, `tests/forms-submission-test.php` | unit + destructive |
+| Notification templates, escaping, header injection, the recipient allowlist | `tests/forms-notifier-test.php` | unit |
+| The atomic notification claim, the retry backoff, the reconciliation, exhaustion | `tests/forms-notification-live-test.php` | destructive |
+| Notification delivery, a throwing transport, and the rule that a failure never creates a submission | `tests/forms-notification-live-test.php` | destructive |
+| Two workers claiming one notification | `tests/forms-submission-concurrency-test.php` | destructive |
+| Submission storage: only declared fields, a hidden field never taken from the request | `tests/forms-submission-test.php` | destructive |
+| Retention: per form, inherited, trashed, orphaned, idempotent | `tests/forms-retention-test.php` | destructive |
+| Export: the capability gate, spreadsheet-formula injection, RFC 4180 quoting | `tests/forms-retention-test.php` | destructive |
+| The privacy exporter and eraser | `tests/forms-privacy-test.php` | destructive |
+| Submission access: per user, the role not granted, refused read/export/delete, grant and revocation | `tests/forms-submission-test.php` | destructive |
+| A page rendered from an older published version is refused as stale and not reinterpreted | `tests/forms-submission-test.php`, `tests/forms-submit-browser-test.js` | destructive + browser |
+| The visitor-facing client: success, errors with focus, stale, pending, retry, lost response, double click | `tests/forms-submit-browser-test.js` | browser |
 | MCP access boundaries, and the personal-data capability | `tests/forms-tools-test.php` | unit |
 | An entry tool is refused under the default `off` policy | `tests/forms-personal-data-test.php` | unit |
 | A principal without the submissions capability is refused | `tests/forms-personal-data-test.php` | unit |
 | The per-user grant and revocation, and that the role is not granted | `tests/forms-capabilities-test.php` | unit |
 | The grant action is refused for a non-cookie-authenticated principal | `tests/forms-capabilities-test.php` | unit |
-| The transport timeout is set, and it is shorter than the claim TTL | `tests/forms-notification-test.php` | unit |
+| The transport budget is set, and it is shorter than the claim TTL | `tests/forms-notifier-test.php` | unit |
 | Form versioning | `tests/forms-storage-test.php` | destructive |
 | Native revision registration and the revision trigger | `tests/forms-revisions-test.php` | unit |
 | The builder's models | `tests/forms-builder-test.js` | node |

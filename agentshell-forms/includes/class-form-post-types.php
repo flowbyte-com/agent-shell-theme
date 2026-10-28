@@ -152,6 +152,7 @@ class Form_Post_Types {
 		self::register_form_type();
 		self::register_entry_type();
 		self::register_meta();
+		self::register_entry_meta();
 	}
 
 	/**
@@ -326,6 +327,39 @@ class Form_Post_Types {
 			}
 
 			register_post_meta( self::FORM, $key, $args );
+		}
+	}
+
+	/**
+	 * Register the submission meta.
+	 *
+	 * Every key is `show_in_rest => false` and refuses the generic meta API for
+	 * the same reason the definition keys do: the store writes exact bytes and
+	 * the notification claim compares them. `auth_callback` is the REST
+	 * authorisation hook, so a submission's values are not reachable through
+	 * the post meta REST surface either.
+	 *
+	 * Registered from `Submission_Store::meta_keys()` so the vocabulary has one
+	 * definition; the store is loaded before `init` runs.
+	 *
+	 * @return void
+	 */
+	private static function register_entry_meta() {
+		if ( ! class_exists( 'AgentShell_Forms\\Submission_Store' ) ) {
+			return;
+		}
+
+		foreach ( Submission_Store::meta_keys() as $key ) {
+			register_post_meta(
+				self::ENTRY,
+				$key,
+				array(
+					'type'          => 'string',
+					'single'        => true,
+					'show_in_rest'  => false,
+					'auth_callback' => array( __CLASS__, 'auth_callback' ),
+				)
+			);
 		}
 	}
 

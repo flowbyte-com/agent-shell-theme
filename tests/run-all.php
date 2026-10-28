@@ -1143,6 +1143,63 @@ $suites = array(
         'path'     => __DIR__ . '/forms-render-live-test.php',
         'requires' => 'destructive',
     ),
+
+    // ── AgentShell Forms, Phase 3 ───────────────────────────────────────────
+
+    // Cloudflare Turnstile: the three policies, every verification branch, the
+    // fixed endpoint, the empty-constant rule and the refusal of a test
+    // credential in production. The transport is injected, so no network.
+    'forms-turnstile' => array(
+        'path'     => __DIR__ . '/forms-turnstile-test.php',
+        'requires' => 'unit',
+    ),
+    // What a notification says: the templates, the header-injection defences,
+    // the recipient allowlist and the two clock invariants. Pure functions.
+    'forms-notifier' => array(
+        'path'     => __DIR__ . '/forms-notifier-test.php',
+        'requires' => 'unit',
+    ),
+    // The whole submission pipeline against a real WordPress: validation before
+    // the claim, the replay, a genuinely stale page, foreign and expired
+    // challenges, the honeypot, the quota, Turnstile's policies, declared-field
+    // storage, permission checks and the export. Destructive.
+    'forms-submission' => array(
+        'path'     => __DIR__ . '/forms-submission-test.php',
+        'requires' => 'destructive',
+    ),
+    // The notification lifecycle with a transport that accepts, refuses, hangs
+    // and throws: claims, backoff, exhaustion, reconciliation and the rule that
+    // a mail failure never creates a submission. Destructive.
+    'forms-notification-live' => array(
+        'path'     => __DIR__ . '/forms-notification-live-test.php',
+        'requires' => 'destructive',
+    ),
+    // Retention as a hard delete (per form, inherited, orphaned, trashed) and
+    // the export's spreadsheet-formula defence. Destructive.
+    'forms-retention' => array(
+        'path'     => __DIR__ . '/forms-retention-test.php',
+        'requires' => 'destructive',
+    ),
+    // WordPress's own privacy exporter and eraser. Destructive.
+    'forms-privacy' => array(
+        'path'     => __DIR__ . '/forms-privacy-test.php',
+        'requires' => 'destructive',
+    ),
+    // The submission pipeline's races in separate processes: one challenge and
+    // four contenders, six contenders against a quota of three, and two mail
+    // workers claiming one record. Destructive.
+    'forms-submission-concurrency' => array(
+        'path'     => __DIR__ . '/forms-submission-concurrency-test.php',
+        'requires' => 'destructive',
+    ),
+    // The client a visitor actually runs: success, field errors, a stale page,
+    // a pending attempt, a retry, a lost response, a double click and a failed
+    // provisioning. Node and a browser are required; either missing is a skip
+    // here and a failure in CI.
+    'forms-submit-browser' => array(
+        'path'     => __DIR__ . '/run-forms-submit-browser.php',
+        'requires' => 'unit',
+    ),
 );
 
 // ── the environment, resolved once ───────────────────────────────────────────

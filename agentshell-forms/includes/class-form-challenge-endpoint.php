@@ -271,7 +271,7 @@ class Form_Challenge_Endpoint {
 		$subject = self::subject_hash();
 
 		$reserved = Form_Rate_Limits::reserve(
-			Form_Rate_Limits::SCOPE_FORM,
+			Form_Rate_Limits::SCOPE_MINT,
 			$subject,
 			$form_id,
 			self::RATE_LIMIT,
@@ -292,6 +292,37 @@ class Form_Challenge_Endpoint {
 			return self::refusal(
 				'form_challenge_rate_limited',
 				__( 'Too many attempts to start this form. Please wait a few minutes and try again.', 'agentshell-forms' ),
+				429,
+				$retry_after > 0 ? array( 'Retry-After' => (string) $retry_after ) : array()
+			);
+		}
+
+		// The site-wide backstop (§6.3c). The per-source limit is defeated by
+		// rotating addresses; this bounds the total, and it is the same bucket
+		// the submission route uses, so minting is included in the site's
+		// overall form traffic rather than escaping it.
+		$site = Form_Rate_Limits::reserve(
+			Form_Rate_Limits::SCOPE_SITE,
+			Form_Rate_Limits::SITE_SUBJECT,
+			'',
+			Submission_Handler::site_limit(),
+			Submission_Handler::site_window()
+		);
+
+		if ( ! empty( $site['error'] ) ) {
+			return self::refusal(
+				'form_challenge_unavailable',
+				__( 'A submission challenge could not be issued right now. Please try again.', 'agentshell-forms' ),
+				503
+			);
+		}
+
+		if ( empty( $site['admitted'] ) ) {
+			$retry_after = self::retry_after( $site );
+
+			return self::refusal(
+				'form_challenge_rate_limited',
+				__( 'Too many attempts to start a form right now. Please wait a few minutes and try again.', 'agentshell-forms' ),
 				429,
 				$retry_after > 0 ? array( 'Retry-After' => (string) $retry_after ) : array()
 			);

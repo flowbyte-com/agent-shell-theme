@@ -156,13 +156,15 @@ class Form_Challenges {
 				'form_id'       => isset( $row['form_id'] ) ? (string) $row['form_id'] : '',
 				'form_version'  => isset( $row['form_version'] ) ? (int) $row['form_version'] : 0,
 				'submission_id' => isset( $row['submission_id'] ) ? (int) $row['submission_id'] : 0,
+				'created_at'    => isset( $row['created_at'] ) ? (string) $row['created_at'] : '',
+				'consumed_at'   => isset( $row['consumed_at'] ) ? (string) $row['consumed_at'] : '',
 			);
 		}
 
 		$row = self::row( $hash );
 
 		if ( null === $row ) {
-			return array( 'status' => 'absent', 'form_id' => '', 'form_version' => 0, 'submission_id' => 0 );
+			return array( 'status' => 'absent', 'form_id' => '', 'form_version' => 0, 'submission_id' => 0, 'created_at' => '', 'consumed_at' => '' );
 		}
 
 		$form_id      = (string) $row['form_id'];
@@ -176,6 +178,8 @@ class Form_Challenges {
 				'form_id'       => $form_id,
 				'form_version'  => $form_version,
 				'submission_id' => $submission,
+				'created_at'    => (string) $row['created_at'],
+				'consumed_at'   => null === $row['consumed_at'] ? '' : (string) $row['consumed_at'],
 			);
 		}
 
@@ -185,6 +189,8 @@ class Form_Challenges {
 				'form_id'       => $form_id,
 				'form_version'  => $form_version,
 				'submission_id' => $submission,
+				'created_at'    => (string) $row['created_at'],
+				'consumed_at'   => (string) $row['consumed_at'],
 			);
 		}
 
@@ -196,7 +202,72 @@ class Form_Challenges {
 			'form_id'       => $form_id,
 			'form_version'  => $form_version,
 			'submission_id' => $submission,
+			'created_at'    => (string) $row['created_at'],
+			'consumed_at'   => '',
 		);
+	}
+
+	/**
+	 * Read a challenge's state **without claiming it**.
+	 *
+	 * The submission pipeline needs to know whether a token is already spent
+	 * before it does the expensive work — a replay should return the earlier
+	 * success, a pending attempt should not be duplicated, an expired token
+	 * should be refused — but it must not consume a token just to find out.
+	 * Validation happens between this read and the claim, so a visitor who
+	 * mistyped a field keeps the token they were given.
+	 *
+	 * This is a snapshot, not a reservation: another request may claim the
+	 * token a microsecond later. `claim()` is still the only thing that
+	 * decides ownership, and its answer is authoritative.
+	 *
+	 * @param string $token The token.
+	 * @return array{status:string,form_id:string,form_version:int,submission_id:int,created_at:string,consumed_at:string}
+	 *         `status` is `unclaimed`, `replay`, `pending`, `expired`,
+	 *         `absent`, `invalid` or `error`.
+	 */
+	public static function inspect( $token ) {
+		$result = array(
+			'status'        => 'invalid',
+			'form_id'       => '',
+			'form_version'  => 0,
+			'submission_id' => 0,
+			'created_at'    => '',
+			'consumed_at'   => '',
+		);
+
+		if ( ! is_string( $token ) || ! preg_match( '/^[a-f0-9]{64}$/', $token ) ) {
+			return $result;
+		}
+
+		$row = self::row( hash( 'sha256', $token ) );
+
+		if ( null === $row ) {
+			$result['status'] = 'absent';
+			return $result;
+		}
+
+		$result['form_id']       = (string) $row['form_id'];
+		$result['form_version']  = (int) $row['form_version'];
+		$result['submission_id'] = (int) $row['submission_id'];
+		$result['created_at']    = (string) $row['created_at'];
+		$result['consumed_at']   = null === $row['consumed_at'] ? '' : (string) $row['consumed_at'];
+
+		$now = gmdate( 'Y-m-d H:i:s' );
+
+		if ( '' !== (string) $row['expires_at'] && (string) $row['expires_at'] <= $now ) {
+			$result['status'] = 'expired';
+			return $result;
+		}
+
+		if ( null !== $row['consumed_at'] ) {
+			$result['status'] = (int) $row['submission_id'] > 0 ? 'replay' : 'pending';
+			return $result;
+		}
+
+		$result['status'] = 'unclaimed';
+
+		return $result;
 	}
 
 	/**

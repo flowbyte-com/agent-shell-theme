@@ -71,6 +71,19 @@ class Form_Rate_Limits {
 	const SCOPE_FORM = 'form';
 
 	/**
+	 * The per-form **minting** scope identifier.
+	 *
+	 * A mint and a submission are two different things, and they are counted
+	 * separately. They used to share the `form` scope, which meant every
+	 * submission spent two slots — one to obtain the token, one to use it — so
+	 * a form configured to accept five submissions accepted two, and a form
+	 * configured for one accepted none. The 30-mints-per-five-minutes render
+	 * limit (§6.3c) and the operator's submission quota are independent limits
+	 * on independent events, so they get independent buckets.
+	 */
+	const SCOPE_MINT = 'mint';
+
+	/**
 	 * The site-scope subject: a fixed constant, so the site bucket is shared by
 	 * every request regardless of source address.
 	 */
@@ -107,7 +120,7 @@ class Form_Rate_Limits {
 	/**
 	 * Reserve a slot and report whether the request is admitted.
 	 *
-	 * @param string $scope        `form` or `site`.
+	 * @param string $scope        `form`, `mint` or `site`.
 	 * @param string $subject_hash HMAC of the source address (or the fixed site subject).
 	 * @param string $form_id      The form's internal identifier, or '' for the site scope.
 	 * @param int    $limit        Maximum admitted requests in the window.
