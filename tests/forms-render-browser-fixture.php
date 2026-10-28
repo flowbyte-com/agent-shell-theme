@@ -118,16 +118,44 @@ __CSS__
  * form instance asked for exactly one.
  */
 (function () {
+    var scenario = ( function () {
+        var m = /(?:^|[?&])scenario=([a-z]+)/.exec( window.location.search );
+        return m ? m[1] : 'ok';
+    }() );
+
     var state = window.__asfHarness = {
         calls: [],
         counter: 0,
-        fail: /(?:^|[?&])scenario=fail(?:&|$)/.test( window.location.search ),
+        scenario: scenario,
+        // The first `failFirst` requests fail, then the network is fine. That is
+        // what a form whose endpoint was briefly unavailable looks like, and it
+        // is the state a bfcache restore has to be able to leave behind.
+        failFirst: 'restore' === scenario ? 5 : 0,
+        // In `race` mode the first batch of requests is held open, so the page
+        // can restore itself and finish a newer request before the older
+        // answers arrive — the overlap a generation counter exists to survive.
+        manual: [],
+        manualMode: 'race' === scenario,
         pageErrors: []
     };
 
     window.addEventListener( 'error', function ( event ) {
         state.pageErrors.push( String( event.message || 'error' ) );
     } );
+
+    function response( token ) {
+        return {
+            ok: true,
+            status: 200,
+            json: function () {
+                return Promise.resolve( {
+                    challenge: token,
+                    form_version: 3,
+                    expires_in: 7200
+                } );
+            }
+        };
+    }
 
     window.fetch = function ( url, options ) {
         var body = null;
@@ -148,21 +176,22 @@ __CSS__
             token: token
         } );
 
-        if ( state.fail ) {
+        if ( 'race' === scenario && state.manualMode ) {
+            return new Promise( function ( resolve ) {
+                state.manual.push( {
+                    token: token,
+                    resolve: function () {
+                        resolve( response( token ) );
+                    }
+                } );
+            } );
+        }
+
+        if ( 'fail' === scenario || state.counter <= state.failFirst ) {
             return Promise.reject( new Error( 'the network is down' ) );
         }
 
-        return Promise.resolve( {
-            ok: true,
-            status: 200,
-            json: function () {
-                return Promise.resolve( {
-                    challenge: token,
-                    form_version: 3,
-                    expires_in: 7200
-                } );
-            }
-        } );
+        return Promise.resolve( response( token ) );
     };
 }());
 </script>
@@ -284,7 +313,7 @@ __FORMS__
         // ── provisioning ────────────────────────────────────────────────────
         check( 'the page contains five form instances', list.length === 5, list.length );
 
-        if ( harness.fail ) {
+        if ( 'fail' === harness.scenario ) {
             check( 'a failed provisioning is reported as an error state', list.every( function ( form ) {
                 return form.getAttribute( 'data-challenge-state' ) === 'error';
             } ) );
@@ -514,24 +543,160 @@ __FORMS__
         }, 50 );
     }
 
-    function start() {
-        if ( ! document.querySelector( 'form[data-agentshell-form]' ) ) {
-            document.title = JSON.stringify( { harness_error: 'the page rendered no forms' } );
-            return;
+    /**
+     * Dispatch a `pageshow` that looks like a bfcache restore.
+     *
+     * @return {void}
+     */
+    function restoreFromBfCache() {
+        var event;
+
+        try {
+            event = new PageTransitionEvent( 'pageshow', { persisted: true } );
+        } catch ( e ) {
+            event = document.createEvent( 'Event' );
+            event.initEvent( 'pageshow', true, true );
+            event.persisted = true;
         }
 
-        // Wait until every instance has reached a terminal state — ready or
-        // error. The stub resolves in a microtask, so this is fast; the bound
-        // exists so a broken script reports a result instead of hanging the
-        // browser until its virtual time budget runs out.
+        window.dispatchEvent( event );
+    }
+
+    function statusOf( form ) {
+        var region = form.querySelector( '[data-agentshell-forms-status]' );
+        return region ? region.textContent : null;
+    }
+
+    function tokensOf( list ) {
+        return list.map( function ( form ) {
+            var input = form.querySelector( '[data-agentshell-forms-challenge]' );
+            return input ? input.value : '';
+        } );
+    }
+
+    /**
+     * Failure, then a bfcache restore, then success.
+     *
+     * The first five requests fail (the stub is told to), so the page begins in
+     * the state a visitor sees when the mint route is briefly unavailable: an
+     * error state, a message in the status region and no token. The restore must
+     * drop that token, drop that *message*, and provision successfully — a form
+     * that has recovered while still telling the visitor it could not be
+     * prepared is a form that lies.
+     *
+     * @return {void}
+     */
+    function runRestore() {
+        var list = forms();
+
+        check( 'the page contains five form instances', list.length === 5, list.length );
+        check( 'a failed first attempt is an error state', list.every( function ( form ) {
+            return form.getAttribute( 'data-challenge-state' ) === 'error';
+        } ) );
+        check( 'a failed first attempt announces itself', list.every( function ( form ) {
+            return ( statusOf( form ) || '' ).length > 0;
+        } ), JSON.stringify( list.map( statusOf ) ) );
+        check( 'a failed first attempt leaves no token', tokensOf( list ).every( function ( t ) { return t === ''; } ) );
+
+        restoreFromBfCache();
+
+        whenSettled( function () {
+            var tokens = tokensOf( list );
+
+            check( 'a bfcache restore recovers every instance', ready(), JSON.stringify( list.map( function ( form ) {
+                return form.getAttribute( 'data-challenge-state' );
+            } ) ) );
+            check( 'a recovered instance has a token again', tokens.every( function ( t ) { return t !== ''; } ) );
+            check( 'a recovered instance has a distinct token', new Set( tokens ).size === tokens.length );
+            check( 'a recovered instance shows no failure message', list.every( function ( form ) {
+                return statusOf( form ) === '';
+            } ), JSON.stringify( list.map( statusOf ) ) );
+
+            report();
+        } );
+    }
+
+    /**
+     * An older in-flight response must not overwrite a newer one.
+     *
+     * The first batch of requests is held open by the stub. The page is then
+     * restored from the bfcache, which invalidates those tokens and starts a
+     * second batch that completes immediately. Only after the page is ready are
+     * the older answers delivered — out of order, newest first — and the tokens
+     * on the page must still be the second batch's.
+     *
+     * @return {void}
+     */
+    function runRace() {
+        var list = forms();
         var attempts = 0;
 
-        function waitSettled() {
+        function waitForFirstBatch() {
+            attempts += 1;
+
+            if ( harness.manual.length < list.length && attempts <= 240 ) {
+                window.setTimeout( waitForFirstBatch, 10 );
+                return;
+            }
+
+            var stale = harness.manual.slice();
+            var staleTokens = stale.map( function ( entry ) { return entry.token; } );
+
+            check( 'the first batch of requests is in flight', stale.length === list.length, stale.length );
+
+            // From here the stub answers immediately: the "newer" requests.
+            harness.manualMode = false;
+            restoreFromBfCache();
+
+            whenSettled( function () {
+                var fresh = tokensOf( list );
+
+                check( 'the newer requests provision every instance', ready() );
+                check( 'the newer tokens are on the page', fresh.every( function ( token ) {
+                    return token !== '' && staleTokens.indexOf( token ) === -1;
+                } ), JSON.stringify( fresh ) );
+
+                // Deliver the older answers, newest first, after the page is
+                // already ready. None of them may land.
+                stale.reverse().forEach( function ( entry ) { entry.resolve(); } );
+
+                window.setTimeout( function () {
+                    var after = tokensOf( list );
+
+                    check( 'a stale response does not overwrite a newer token',
+                        after.join( ',' ) === fresh.join( ',' ),
+                        JSON.stringify( after ) );
+                    check( 'a stale response does not change the state', ready() );
+                    check( 'a stale response does not announce anything', list.every( function ( form ) {
+                        return statusOf( form ) === '';
+                    } ), JSON.stringify( list.map( statusOf ) ) );
+
+                    report();
+                }, 50 );
+            } );
+        }
+
+        waitForFirstBatch();
+    }
+
+    /**
+     * Wait until every instance has reached a terminal state — ready or error —
+     * then run `callback`. The stub resolves in a microtask, so this is fast;
+     * the bound exists so a broken script reports a result instead of hanging
+     * the browser until its virtual time budget runs out.
+     *
+     * @param {Function} callback What to run once the page has settled.
+     * @return {void}
+     */
+    function whenSettled( callback ) {
+        var attempts = 0;
+
+        function poll() {
             attempts += 1;
 
             if ( settled() || attempts > 240 ) {
                 try {
-                    run();
+                    callback();
                 } catch ( e ) {
                     document.title = JSON.stringify( {
                         harness_error: 'an assertion threw: ' + ( e && e.message ? e.message : String( e ) ),
@@ -543,10 +708,29 @@ __FORMS__
                 return;
             }
 
-            window.setTimeout( waitSettled, 10 );
+            window.setTimeout( poll, 10 );
         }
 
-        waitSettled();
+        poll();
+    }
+
+    function start() {
+        if ( ! document.querySelector( 'form[data-agentshell-form]' ) ) {
+            document.title = JSON.stringify( { harness_error: 'the page rendered no forms' } );
+            return;
+        }
+
+        if ( 'race' === harness.scenario ) {
+            runRace();
+            return;
+        }
+
+        if ( 'restore' === harness.scenario ) {
+            whenSettled( runRestore );
+            return;
+        }
+
+        whenSettled( run );
     }
 
     if ( document.readyState === 'complete' ) {

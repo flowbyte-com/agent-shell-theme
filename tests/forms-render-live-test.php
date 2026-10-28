@@ -351,6 +351,31 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
+    'a trashed form is refused a challenge, and refused without creating a row',
+    function () use ( $p ) {
+        Agentshell_Test::assert_true( asr( $p, 'trashed_challenge', 'created' ), 'the fixture form must be created' );
+
+        Agentshell_Test::assert_equals( 200, asr( $p, 'trashed_challenge', 'before_status' ), 'a published form must mint' );
+        Agentshell_Test::assert_true( asr( $p, 'trashed_challenge', 'before_token_len' ) > 0, 'the published form must receive a token' );
+        Agentshell_Test::assert_equals( 1, asr( $p, 'trashed_challenge', 'rows_published' ), 'the successful mint must store exactly one row' );
+
+        Agentshell_Test::assert_equals( 'trash', asr( $p, 'trashed_challenge', 'post_status' ), 'the fixture form must be trashed' );
+        Agentshell_Test::assert_equals( 404, asr( $p, 'trashed_challenge', 'after_status' ), 'a trashed form must not mint' );
+        Agentshell_Test::assert_equals(
+            'form_unavailable',
+            asr( $p, 'trashed_challenge', 'after_code' ),
+            'the refusal must be the same generic one an unpublished form gets'
+        );
+        Agentshell_Test::assert_equals( '', asr( $p, 'trashed_challenge', 'after_token' ), 'no token may be returned' );
+        Agentshell_Test::assert_equals(
+            asr( $p, 'trashed_challenge', 'rows_published' ),
+            asr( $p, 'trashed_challenge', 'rows_after_trash' ),
+            'a refusal must not create a challenge row'
+        );
+    }
+);
+
+Agentshell_Test::run(
     'the challenge route is rate-limited per source and form',
     function () use ( $p ) {
         Agentshell_Test::assert_equals(

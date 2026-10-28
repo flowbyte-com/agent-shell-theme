@@ -226,6 +226,17 @@ class Form_Challenge_Endpoint {
 			return self::unavailable();
 		}
 
+		// A trashed form keeps its meta rows, so it still has a published
+		// definition and the check below would let it through. The renderer
+		// refuses to render a trashed form, so this route must refuse to mint
+		// for one for the same reason: a challenge for a form no visitor can
+		// see is a challenge nobody legitimately holds. The answer is the same
+		// generic refusal every other unavailable state produces, so the
+		// distinction between "trashed" and "never published" is not disclosed.
+		if ( 'trash' === (string) get_post_status( $post_id ) ) {
+			return self::unavailable();
+		}
+
 		$state = Form_Definition::get_by_post_id( $post_id );
 
 		// A trashed form, a form with no published definition and a form whose

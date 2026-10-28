@@ -162,11 +162,14 @@ function main() {
             process.exit( 1 );
         }
 
-        // The happy path, then the failure path: a form that could not be
-        // prepared must say so rather than sit there looking ready. Each
-        // scenario gets its own browser profile, so a profile a previous
-        // browser has not quite released cannot make the next one wait.
-        [ [ 'ok', '' ], [ 'fail', 'fail' ] ].forEach( function ( pair ) {
+        // The happy path; the failure path (a form that could not be prepared
+        // must say so rather than sit there looking ready); the recovery path
+        // (failure, then a bfcache restore, then success — with the token *and*
+        // the displayed status checked); and the overlap path (an older
+        // in-flight answer must not overwrite a newer token). Each scenario gets
+        // its own browser profile, so a profile a previous browser has not quite
+        // released cannot make the next one wait.
+        [ [ 'ok', '' ], [ 'fail', 'fail' ], [ 'restore', 'restore' ], [ 'race', 'race' ] ].forEach( function ( pair ) {
             var name = pair[ 0 ];
             var scenario = pair[ 1 ];
             var profile = path.join( work, 'profile-' + name );

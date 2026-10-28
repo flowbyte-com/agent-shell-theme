@@ -732,6 +732,61 @@ probe(
     )
 );
 
+// A trashed form keeps its meta rows, so it still has a published definition.
+// The renderer refuses to render one; the mint route must refuse to issue a
+// challenge for one, and it must not create a row while refusing.
+$trashable = Form_Definition::create(
+    array(
+        'name'       => 'Trashable probe ' . $token,
+        'slug'       => 'trashable-probe-' . strtolower( $token ),
+        'definition' => agentshell_render_live_second_definition(),
+    ),
+    1
+);
+
+$trash_facts = array( 'created' => ! is_wp_error( $trashable ) );
+
+if ( ! is_wp_error( $trashable ) ) {
+    $trash_id   = (string) $trashable['form_id'];
+    $trash_post = track( (int) $trashable['post_id'] );
+    $trash_rows = function () use ( $wpdb, $trash_id ) {
+        return (int) $wpdb->get_var(
+            $wpdb->prepare( 'SELECT COUNT(*) FROM ' . Form_Challenges::table() . ' WHERE form_id = %s', $trash_id )
+        );
+    };
+
+    Form_Definition::publish( $trash_id, (int) $trashable['revision'], 1 );
+
+    $before_trash   = agentshell_render_live_mint( $trash_id, '203.0.113.44' );
+    $rows_published = $trash_rows();
+
+    wp_trash_post( $trash_post );
+
+    $after_trash    = agentshell_render_live_mint( $trash_id, '203.0.113.44' );
+    $rows_trashed   = $trash_rows();
+    $status_trashed = (string) get_post_status( $trash_post );
+
+    $trash_facts += array(
+        'before_status'    => $before_trash['status'],
+        'before_token_len' => strlen( $before_trash['token'] ),
+        'rows_published'   => $rows_published,
+        'post_status'      => $status_trashed,
+        'after_status'     => $after_trash['status'],
+        'after_code'       => $after_trash['code'],
+        'after_token'      => $after_trash['token'],
+        'rows_after_trash' => $rows_trashed,
+    );
+
+    $wpdb->query(
+        $wpdb->prepare( 'DELETE FROM ' . Form_Challenges::table() . ' WHERE form_id = %s', $trash_id )
+    );
+    $wpdb->query(
+        $wpdb->prepare( 'DELETE FROM ' . Form_Rate_Limits::table() . ' WHERE form_id = %s', $trash_id )
+    );
+}
+
+probe( 'trashed_challenge', $trash_facts );
+
 // The rate limit: the same source may not mint without bound.
 $limited_statuses = array();
 for ( $i = 0; $i < Form_Challenge_Endpoint::RATE_LIMIT + 3; $i++ ) {

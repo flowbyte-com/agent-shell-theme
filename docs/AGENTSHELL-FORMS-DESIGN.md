@@ -1375,15 +1375,22 @@ bought a protocol detail with a tax on every visitor.
    definition the visitor was never shown. It accepts the **internal
    identifier only** — 128 bits of randomness, not enumerable the way a slug
    would be.
-5. It answers **404 for both "no such form" and "no published version"**, so it
-   does not disclose a draft, and it is **rate-limited per source and per form**
-   (30 mints per 5 minutes), keyed on an HMAC of the source address — never the
-   address itself (§9.1). A refusal is `429` with `Retry-After`.
+5. It answers **404 for "no such form", "no published version" and a trashed
+   form alike**, so it does not disclose a draft, and it is **rate-limited per
+   source and per form** (30 mints per 5 minutes), keyed on an HMAC of the
+   source address — never the address itself (§9.1). A refusal is `429` with
+   `Retry-After`. A refused mint writes neither a challenge row nor a
+   rate-limit hit that would matter: the refusal happens before either.
 6. Every response, including every refusal, is **`no-store`** — a cached
    refusal would be served to the next visitor, who might well be entitled to a
    challenge.
 7. A page restored from the **bfcache** clears every instance's token and
-   provisions again, because the token it carried may already be spent.
+   provisions again, because the token it carried may already be spent. A form
+   that failed and then recovered also **clears the failure message** it
+   announced: the visitor must not keep reading "could not be prepared" over a
+   form that is ready. And only the **newest** request may write to a form — an
+   answer that arrives after a newer one has started is stale by definition,
+   and writing it would put back a token nobody is holding.
 
 **What it costs.** The form needs JavaScript to be submittable. Without it the
 page renders, the fields are labelled and the browser validates them, but no

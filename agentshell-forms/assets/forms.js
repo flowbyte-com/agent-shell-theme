@@ -56,21 +56,56 @@
 	function announce( form, message ) {
 		var region = form.querySelector( STATUS_SELECTOR );
 
-		if ( ! region || ! message ) {
+		if ( ! region ) {
 			return;
 		}
 
 		// `textContent`, never `innerHTML`: the message is plugin-supplied today,
 		// and a status region is not a place to start trusting strings.
-		region.textContent = message;
+		//
+		// An empty message **clears** the region. It used to be ignored, which
+		// left a failure message on screen after the form had recovered — the
+		// visitor kept reading "could not be prepared" over a form that was
+		// ready to send.
+		region.textContent = message ? String( message ) : '';
 	}
 
 	function setState( form, state ) {
 		form.setAttribute( 'data-challenge-state', state );
 	}
 
+	/**
+	 * Per-form request generations.
+	 *
+	 * Only the newest request may write to a form. A response that arrives
+	 * after a newer one has started is stale by definition: the page may have
+	 * been restored from the bfcache (which invalidates every token), or a
+	 * caller may have asked twice, and the older answer would overwrite the
+	 * newer token with one nobody is holding any more.
+	 *
+	 * A `WeakMap` rather than an expando property, because the form element is
+	 * page content and this state is the script's, not the page's.
+	 */
+	var generations = new WeakMap();
+
+	function nextGeneration( form ) {
+		var next = ( generations.get( form ) || 0 ) + 1;
+
+		generations.set( form, next );
+
+		return next;
+	}
+
+	function generationOf( form ) {
+		return generations.get( form ) || 0;
+	}
+
 	function clear( form ) {
 		var input = form.querySelector( CHALLENGE_SELECTOR );
+
+		// Invalidate anything in flight *before* dropping the token, so a
+		// response for the previous page-life cannot land in this one.
+		nextGeneration( form );
 
 		if ( input ) {
 			input.value = '';
@@ -101,6 +136,10 @@
 		if ( ! input || ! formId ) {
 			return Promise.resolve();
 		}
+
+		// This request is now the newest one for this form; anything older that
+		// is still in flight becomes stale.
+		var mine = nextGeneration( form );
 
 		if ( ! endpoint ) {
 			setState( form, 'error' );
@@ -138,6 +177,12 @@
 					);
 			} )
 			.then( function ( result ) {
+				// A newer request has started since this one: its answer is the
+				// one that belongs on the page.
+				if ( generationOf( form ) !== mine ) {
+					return;
+				}
+
 				var token = result.ok && result.body && typeof result.body.challenge === 'string'
 					? result.body.challenge
 					: '';
@@ -148,8 +193,16 @@
 
 				input.value = token;
 				setState( form, 'ready' );
+
+				// A form that has recovered must not keep the failure it
+				// announced while it was broken.
+				announce( form, '' );
 			} )
 			.catch( function () {
+				if ( generationOf( form ) !== mine ) {
+					return;
+				}
+
 				input.value = '';
 				setState( form, 'error' );
 				announce( form, strings().error || 'This form could not be prepared. Please reload the page and try again.' );
