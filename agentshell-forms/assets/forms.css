@@ -1,0 +1,380 @@
+/*
+ * AgentShell Forms — front-end styles.
+ *
+ * ## Theme-independent, not theme-ignorant
+ *
+ * This stylesheet must work on any theme, including one that has never heard of
+ * AgentShell. So it ships a complete, self-sufficient appearance, and then
+ * reads the theme's design tokens where they exist:
+ *
+ *   var( --theme-text,      #1f2937 )
+ *
+ * Every token has a fallback, so the form is styled on a bare WordPress
+ * install and inherits the site's palette when the AgentShell theme (or any
+ * theme that defines the same tokens) is active. Nothing here depends on the
+ * theme's layout, grid or reset — the two rules that matter are that the form
+ * is a block-level flow and that every control is keyboard reachable.
+ *
+ * ## Contrast, honestly
+ *
+ * The submit button is filled with the *text* token and labelled with the *bg*
+ * token, because those two are designed by the theme to be legible against one
+ * another. Filling it with the accent colour would look more branded and would
+ * be unreadable on themes whose accent is a mid-tone orange (the AgentShell
+ * theme's own accent reaches only ~2.9:1 against white). Focus rings use the
+ * text token for the same reason: a 3:1 non-text contrast against the page is
+ * the requirement (WCAG 1.4.11) and the text token satisfies it on the theme's
+ * own background by construction.
+ *
+ * Error text carries a colour *and* a weight and an adjacent message, so no
+ * meaning is carried by colour alone (WCAG 1.4.1).
+ *
+ * ## Nothing here hides a control from a screen reader
+ *
+ * The honeypot is moved off-screen rather than hidden with `display: none` —
+ * `display: none` is skipped by some bots and by some assistive technology in
+ * ways that make the trap unreliable — and it is marked `aria-hidden` with a
+ * negative `tabindex` in the markup, so a person never meets it.
+ */
+
+/* ---------------------------------------------------------------------------
+ * The form as a whole
+ * ------------------------------------------------------------------------ */
+
+.agentshell-forms {
+	--asf-gap: 1.25rem;
+	--asf-radius: 0.4rem;
+	--asf-control-bg: var(--theme-surface, #ffffff);
+	--asf-control-border: var(--theme-border, #d4d4d8);
+	--asf-muted: var(--theme-text-muted, #4b5563);
+	--asf-text: var(--theme-text, #1f2937);
+	--asf-bg: var(--theme-bg, #ffffff);
+	--asf-error: var(--theme-error, #b3261e);
+	--asf-accent: var(--theme-accent, #1f6feb);
+
+	box-sizing: border-box;
+	display: block;
+	max-inline-size: 42rem;
+	margin-block: 1.5rem;
+	color: var(--asf-text);
+	font: inherit;
+	line-height: 1.55;
+}
+
+.agentshell-forms *,
+.agentshell-forms *::before,
+.agentshell-forms *::after {
+	box-sizing: inherit;
+}
+
+.agentshell-forms__title {
+	margin: 0 0 0.5rem;
+	font-size: 1.25rem;
+	line-height: 1.3;
+	color: inherit;
+}
+
+.agentshell-forms__description {
+	margin: 0 0 var(--asf-gap);
+	color: var(--asf-muted);
+}
+
+/* ---------------------------------------------------------------------------
+ * The field grid
+ * ------------------------------------------------------------------------ */
+
+.agentshell-forms__fields {
+	display: grid;
+	gap: var(--asf-gap);
+	grid-template-columns: minmax(0, 1fr);
+	margin: 0 0 var(--asf-gap);
+}
+
+.agentshell-forms__field {
+	display: block;
+	min-inline-size: 0;
+	margin: 0;
+}
+
+.agentshell-forms__group {
+	min-inline-size: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.agentshell-forms__label,
+.agentshell-forms__group > .agentshell-forms__label {
+	display: block;
+	margin: 0 0 0.35rem;
+	padding: 0;
+	font-weight: 600;
+	color: inherit;
+}
+
+.agentshell-forms__required {
+	font-weight: 400;
+}
+
+.agentshell-forms__description,
+.agentshell-forms__hint {
+	margin: 0.25rem 0 0;
+	font-size: 0.9em;
+	color: var(--asf-muted);
+}
+
+.agentshell-forms__field > .agentshell-forms__description {
+	margin: 0 0 0.35rem;
+}
+
+.agentshell-forms__error {
+	margin: 0.35rem 0 0;
+	font-size: 0.95em;
+	font-weight: 600;
+	color: var(--asf-error);
+}
+
+/* ---------------------------------------------------------------------------
+ * Controls
+ * ------------------------------------------------------------------------ */
+
+.agentshell-forms__control {
+	display: block;
+	inline-size: 100%;
+	max-inline-size: 100%;
+	margin: 0;
+	padding: 0.55rem 0.7rem;
+	font: inherit;
+	line-height: 1.4;
+	color: inherit;
+	background: var(--asf-control-bg);
+	border: 1px solid var(--asf-control-border);
+	border-radius: var(--asf-radius);
+}
+
+.agentshell-forms__control::placeholder {
+	color: var(--asf-muted);
+	opacity: 1;
+}
+
+textarea.agentshell-forms__control {
+	min-block-size: 7rem;
+	resize: vertical;
+}
+
+select.agentshell-forms__control {
+	/* The arrow is the platform's: a custom one needs a background image the
+	   plugin would have to ship, and the native control is already usable. */
+	max-inline-size: 100%;
+}
+
+/*
+ * Focus. `:focus-visible` is the modern rule; the `:focus` rule is the fallback
+ * for browsers that do not support it, scoped so both do not apply at once.
+ */
+.agentshell-forms__control:focus,
+.agentshell-forms__submit:focus,
+.agentshell-forms__option-label:focus,
+.agentshell-forms__summary:focus {
+	outline: 3px solid var(--asf-text);
+	outline-offset: 2px;
+}
+
+@supports selector(:focus-visible) {
+	.agentshell-forms__control:focus:not(:focus-visible),
+	.agentshell-forms__submit:focus:not(:focus-visible),
+	.agentshell-forms__summary:focus:not(:focus-visible) {
+		outline: none;
+	}
+
+	.agentshell-forms__control:focus-visible,
+	.agentshell-forms__submit:focus-visible,
+	.agentshell-forms__option input:focus-visible,
+	.agentshell-forms__summary:focus-visible {
+		outline: 3px solid var(--asf-text);
+		outline-offset: 2px;
+	}
+}
+
+/* An invalid control is marked by its message, its border and its weight. */
+
+.agentshell-forms__field--invalid .agentshell-forms__control,
+.agentshell-forms__field--invalid .agentshell-forms__group {
+	border-color: var(--asf-error);
+}
+
+.agentshell-forms__field--invalid .agentshell-forms__label {
+	text-decoration: underline;
+	text-decoration-color: var(--asf-error);
+	text-decoration-thickness: 2px;
+	text-underline-offset: 0.2em;
+}
+
+/* ---------------------------------------------------------------------------
+ * Radio and checkbox groups
+ * ------------------------------------------------------------------------ */
+
+.agentshell-forms__options {
+	display: grid;
+	gap: 0.4rem;
+	grid-template-columns: minmax(0, 1fr);
+	margin: 0;
+}
+
+.agentshell-forms__option {
+	display: flex;
+	gap: 0.55rem;
+	align-items: flex-start;
+	min-inline-size: 0;
+}
+
+.agentshell-forms__option input {
+	flex: 0 0 auto;
+	margin: 0.3rem 0 0;
+	accent-color: var(--asf-accent);
+}
+
+.agentshell-forms__option-label {
+	font-weight: 400;
+	margin: 0;
+	cursor: pointer;
+}
+
+/* A single consent checkbox is not a full-width control. */
+
+.agentshell-forms__consent {
+	inline-size: auto;
+	block-size: auto;
+	min-block-size: 1.15rem;
+	min-inline-size: 1.15rem;
+	margin: 0.2rem 0 0.35rem;
+	padding: 0;
+	accent-color: var(--asf-accent);
+}
+
+/* ---------------------------------------------------------------------------
+ * Errors, status and the submit button
+ * ------------------------------------------------------------------------ */
+
+.agentshell-forms__summary {
+	margin: 0 0 var(--asf-gap);
+	padding: 0.85rem 1rem;
+	border-inline-start: 4px solid var(--asf-error);
+	background: color-mix(in srgb, var(--asf-error) 8%, transparent);
+	border-radius: var(--asf-radius);
+}
+
+.agentshell-forms__summary[hidden] {
+	display: none;
+}
+
+.agentshell-forms__summary-title {
+	margin: 0 0 0.35rem;
+	font-weight: 700;
+}
+
+.agentshell-forms__summary-list {
+	margin: 0;
+	padding-inline-start: 1.15rem;
+}
+
+.agentshell-forms__summary-list a {
+	color: inherit;
+	text-decoration: underline;
+	text-underline-offset: 0.2em;
+}
+
+.agentshell-forms__actions {
+	margin: 0;
+}
+
+.agentshell-forms__submit {
+	display: inline-block;
+	padding: 0.65rem 1.4rem;
+	font: inherit;
+	font-weight: 600;
+	color: var(--asf-bg);
+	background: var(--asf-text);
+	border: 2px solid var(--asf-text);
+	border-radius: var(--asf-radius);
+	cursor: pointer;
+	transition: opacity 120ms ease-in-out;
+}
+
+.agentshell-forms__submit:hover {
+	opacity: 0.88;
+}
+
+.agentshell-forms__submit:disabled {
+	cursor: not-allowed;
+	opacity: 0.6;
+}
+
+.agentshell-forms__status {
+	margin: 0.75rem 0 0;
+	min-block-size: 1.2em;
+}
+
+.agentshell-forms__status:empty {
+	margin: 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * The honeypot
+ * ------------------------------------------------------------------------ */
+
+.agentshell-forms__hp {
+	position: absolute !important;
+	inset-inline-start: -9999px !important;
+	block-size: 1px;
+	inline-size: 1px;
+	overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------------
+ * The editor's diagnostic
+ * ------------------------------------------------------------------------ */
+
+/*
+ * Rendered only for an actor who can manage forms, and the request is marked
+ * uncacheable when it is. It is styled to be noticed by that actor rather than
+ * to look like part of the page.
+ */
+
+.agentshell-forms__diagnostic {
+	margin: 1rem 0;
+	padding: 0.6rem 0.8rem;
+	font-size: 0.95em;
+	color: inherit;
+	background: color-mix(in srgb, currentColor 6%, transparent);
+	border: 1px dashed currentColor;
+	border-radius: var(--asf-radius, 0.4rem);
+}
+
+/* ---------------------------------------------------------------------------
+ * Small screens and reduced motion
+ * ------------------------------------------------------------------------ */
+
+@media (max-width: 30rem) {
+	.agentshell-forms {
+		--asf-gap: 1rem;
+	}
+
+	.agentshell-forms__submit {
+		inline-size: 100%;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.agentshell-forms__submit {
+		transition: none;
+	}
+}
+
+/* A forced-colours mode drops backgrounds; keep the button's border visible. */
+
+@media (forced-colors: active) {
+	.agentshell-forms__submit {
+		border: 2px solid ButtonText;
+	}
+}
