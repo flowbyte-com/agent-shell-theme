@@ -433,6 +433,11 @@ class Form_Field_Types {
 				'label'       => __( 'Consent checkbox', 'agentshell-forms' ),
 				'multiple'    => false,
 				'has_options' => false,
+				// The submission pipeline normalises the request value through
+				// this flag rather than by type name: a JSON `false` and the
+				// string `"false"` must both mean "not consented", and casting
+				// the string with `(bool)` would turn it into consent.
+				'boolean'     => true,
 				'settings'    => array(
 					'privacy_url' => array(
 						'type'    => 'url',
@@ -460,6 +465,10 @@ class Form_Field_Types {
 				'label'       => __( 'Hidden value', 'agentshell-forms' ),
 				'multiple'    => false,
 				'has_options' => false,
+				// The stored value is the definition's, never the request's.
+				// The pipeline reads this flag instead of the type name, so a
+				// third-party type can declare the same property.
+				'definition_value' => true,
 				'settings'    => array(
 					'value' => array(
 						'type'      => 'string',

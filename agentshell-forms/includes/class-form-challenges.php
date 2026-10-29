@@ -31,6 +31,33 @@
  * success response** when the first attempt succeeded, and refuse with a fresh
  * challenge when it did not.
  *
+ * ## What the stored source HMAC is, and what it is not
+ *
+ * The row records an HMAC of the source address that minted the token. That
+ * value is **accounting and rate-limiting**, not a binding between the token
+ * and the requester:
+ *
+ *   - it is the key of the per-source rate-limit bucket, so the mint and the
+ *     submission of one visitor are counted together and one visitor cannot
+ *     mint an unbounded supply of tokens by rotating addresses inside one
+ *     window;
+ *   - it is what the operator sees when a bucket is refused.
+ *
+ * It is deliberately **not** checked when a token is claimed. Two reasons:
+ *
+ *   1. **It would add nothing.** The token is not a secret — a client that
+ *      can fetch the page can read it — so binding it to an address protects
+ *      nothing that the honeypot, Turnstile and the rate limiter do not
+ *      already protect.
+ *   2. **It would break honest visitors.** A mobile network, a corporate
+ *      proxy or an IPv6 privacy address can change a visitor's address
+ *      between the page being rendered and the form being sent. A binding
+ *      would refuse their submission for a reason they cannot see or fix.
+ *
+ * The consequence is stated rather than implied: a token minted for one
+ * source may be presented from another. The token itself is the credential,
+ * and it is single-use either way.
+ *
  * ## Why a table and not a transient
  *
  * Claiming a transient is a read followed by a delete, and two concurrent
@@ -74,7 +101,10 @@ class Form_Challenges {
 	 *
 	 * @param string $form_id      The form's internal identifier.
 	 * @param int    $form_version The published version it was minted for.
-	 * @param string $subject_hash HMAC of the source address, or ''.
+	 * @param string $subject_hash HMAC of the source address, or ''. It is
+	 *                              recorded for rate-limit accounting; it does
+	 *                              **not** bind the token to the requester (see
+	 *                              the class docblock).
 	 * @param int    $ttl          Seconds until expiry.
 	 * @return string|\WP_Error The token, or an error.
 	 */
@@ -156,13 +186,15 @@ class Form_Challenges {
 				'form_id'       => isset( $row['form_id'] ) ? (string) $row['form_id'] : '',
 				'form_version'  => isset( $row['form_version'] ) ? (int) $row['form_version'] : 0,
 				'submission_id' => isset( $row['submission_id'] ) ? (int) $row['submission_id'] : 0,
+				'created_at'    => isset( $row['created_at'] ) ? (string) $row['created_at'] : '',
+				'consumed_at'   => isset( $row['consumed_at'] ) ? (string) $row['consumed_at'] : '',
 			);
 		}
 
 		$row = self::row( $hash );
 
 		if ( null === $row ) {
-			return array( 'status' => 'absent', 'form_id' => '', 'form_version' => 0, 'submission_id' => 0 );
+			return array( 'status' => 'absent', 'form_id' => '', 'form_version' => 0, 'submission_id' => 0, 'created_at' => '', 'consumed_at' => '' );
 		}
 
 		$form_id      = (string) $row['form_id'];
@@ -176,6 +208,8 @@ class Form_Challenges {
 				'form_id'       => $form_id,
 				'form_version'  => $form_version,
 				'submission_id' => $submission,
+				'created_at'    => (string) $row['created_at'],
+				'consumed_at'   => null === $row['consumed_at'] ? '' : (string) $row['consumed_at'],
 			);
 		}
 
@@ -185,6 +219,8 @@ class Form_Challenges {
 				'form_id'       => $form_id,
 				'form_version'  => $form_version,
 				'submission_id' => $submission,
+				'created_at'    => (string) $row['created_at'],
+				'consumed_at'   => (string) $row['consumed_at'],
 			);
 		}
 
@@ -196,7 +232,72 @@ class Form_Challenges {
 			'form_id'       => $form_id,
 			'form_version'  => $form_version,
 			'submission_id' => $submission,
+			'created_at'    => (string) $row['created_at'],
+			'consumed_at'   => '',
 		);
+	}
+
+	/**
+	 * Read a challenge's state **without claiming it**.
+	 *
+	 * The submission pipeline needs to know whether a token is already spent
+	 * before it does the expensive work — a replay should return the earlier
+	 * success, a pending attempt should not be duplicated, an expired token
+	 * should be refused — but it must not consume a token just to find out.
+	 * Validation happens between this read and the claim, so a visitor who
+	 * mistyped a field keeps the token they were given.
+	 *
+	 * This is a snapshot, not a reservation: another request may claim the
+	 * token a microsecond later. `claim()` is still the only thing that
+	 * decides ownership, and its answer is authoritative.
+	 *
+	 * @param string $token The token.
+	 * @return array{status:string,form_id:string,form_version:int,submission_id:int,created_at:string,consumed_at:string}
+	 *         `status` is `unclaimed`, `replay`, `pending`, `expired`,
+	 *         `absent`, `invalid` or `error`.
+	 */
+	public static function inspect( $token ) {
+		$result = array(
+			'status'        => 'invalid',
+			'form_id'       => '',
+			'form_version'  => 0,
+			'submission_id' => 0,
+			'created_at'    => '',
+			'consumed_at'   => '',
+		);
+
+		if ( ! is_string( $token ) || ! preg_match( '/^[a-f0-9]{64}$/', $token ) ) {
+			return $result;
+		}
+
+		$row = self::row( hash( 'sha256', $token ) );
+
+		if ( null === $row ) {
+			$result['status'] = 'absent';
+			return $result;
+		}
+
+		$result['form_id']       = (string) $row['form_id'];
+		$result['form_version']  = (int) $row['form_version'];
+		$result['submission_id'] = (int) $row['submission_id'];
+		$result['created_at']    = (string) $row['created_at'];
+		$result['consumed_at']   = null === $row['consumed_at'] ? '' : (string) $row['consumed_at'];
+
+		$now = gmdate( 'Y-m-d H:i:s' );
+
+		if ( '' !== (string) $row['expires_at'] && (string) $row['expires_at'] <= $now ) {
+			$result['status'] = 'expired';
+			return $result;
+		}
+
+		if ( null !== $row['consumed_at'] ) {
+			$result['status'] = (int) $row['submission_id'] > 0 ? 'replay' : 'pending';
+			return $result;
+		}
+
+		$result['status'] = 'unclaimed';
+
+		return $result;
 	}
 
 	/**

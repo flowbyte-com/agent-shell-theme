@@ -187,6 +187,18 @@ jobs:
           AGENTSHELL_REQUIRE_BROWSER: '1'
         run: node tests/forms-render-browser-test.js
 
+      # Forms, submitted: the client a visitor actually runs, against the real
+      # renderer and the real script, served from a real origin and driven in a
+      # real browser. The network is the only thing replaced, and it is replaced
+      # with the exact bodies the server sends — so success, field errors with
+      # focus, a stale page that keeps the answers, a pending attempt, a retry, a
+      # lost response and a double click are all exercised end to end. A missing
+      # browser is a failure here, not a skip.
+      - name: Forms submission (headless browser)
+        env:
+          AGENTSHELL_REQUIRE_BROWSER: '1'
+        run: node tests/forms-submit-browser-test.js
+
       # The widget runtime's behavioural half needs the JavaScript the
       # theme actually emits, which only PHP can produce. It is generated
       # here (through the same bootstrap the PHP suite uses) and handed to

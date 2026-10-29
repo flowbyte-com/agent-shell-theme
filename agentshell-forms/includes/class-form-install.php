@@ -65,9 +65,7 @@ class Form_Install {
 
 		update_option( AGENTSHELL_FORMS_DB_VERSION_OPTION, AGENTSHELL_FORMS_DB_VERSION, false );
 
-		if ( ! wp_next_scheduled( 'agentshell_forms_prune' ) ) {
-			wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', 'agentshell_forms_prune' );
-		}
+		self::schedule_events();
 	}
 
 	/**
@@ -80,6 +78,37 @@ class Form_Install {
 	 */
 	public static function deactivate() {
 		wp_clear_scheduled_hook( 'agentshell_forms_prune' );
+		wp_clear_scheduled_hook( 'agentshell_forms_notifications' );
+		wp_clear_scheduled_hook( 'agentshell_forms_retention' );
+	}
+
+	/**
+	 * Schedule the plugin's jobs, idempotently.
+	 *
+	 * Called from activation **and** from every `maybe_upgrade` run, so an
+	 * installation that predates a job gets it without having to be
+	 * deactivated and reactivated. The schedule names are registered on
+	 * `cron_schedules` in the bootstrap; a filter that removes them leaves the
+	 * job unscheduled rather than scheduling something that cannot run.
+	 *
+	 * @return void
+	 */
+	public static function schedule_events() {
+		if ( function_exists( 'wp_get_schedules' ) ) {
+			$schedules = wp_get_schedules();
+
+			if ( isset( $schedules['agentshell_forms_five_minutes'] ) && ! wp_next_scheduled( 'agentshell_forms_notifications' ) ) {
+				wp_schedule_event( time() + 300, 'agentshell_forms_five_minutes', 'agentshell_forms_notifications' );
+			}
+
+			if ( isset( $schedules['agentshell_forms_daily'] ) && ! wp_next_scheduled( 'agentshell_forms_retention' ) ) {
+				wp_schedule_event( time() + HOUR_IN_SECONDS, 'agentshell_forms_daily', 'agentshell_forms_retention' );
+			}
+		}
+
+		if ( ! wp_next_scheduled( 'agentshell_forms_prune' ) ) {
+			wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', 'agentshell_forms_prune' );
+		}
 	}
 
 	/**
@@ -94,15 +123,15 @@ class Form_Install {
 		$installed = get_option( AGENTSHELL_FORMS_DB_VERSION_OPTION, '' );
 
 		if ( AGENTSHELL_FORMS_DB_VERSION === $installed ) {
+			// The storage is current, but a job added by a later build still
+			// needs scheduling. This is three option reads, not a migration.
+			self::schedule_events();
 			return;
 		}
 
 		self::create_tables();
 		Form_Capabilities::register();
-
-		if ( ! wp_next_scheduled( 'agentshell_forms_prune' ) ) {
-			wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', 'agentshell_forms_prune' );
-		}
+		self::schedule_events();
 
 		update_option( AGENTSHELL_FORMS_DB_VERSION_OPTION, AGENTSHELL_FORMS_DB_VERSION, false );
 	}

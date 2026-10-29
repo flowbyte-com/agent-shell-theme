@@ -47,6 +47,34 @@ function find_browser() {
     return null;
 }
 
+/**
+ * The environment a browser child should start in.
+ *
+ * A browser is not PHP. When the destructive suites are run the way the test
+ * bed requires — with `LD_LIBRARY_PATH` pointing at LocalWP's PHP shared
+ * libraries — that path also reaches Chrome, which then loads a mismatched
+ * `libgobject` and dies with `undefined symbol: g_dir_unref` before it renders
+ * anything. CI does not set the variable, so the failure existed only on the
+ * machine where the full suite is actually run.
+ *
+ * Removing it for the browser child is not a workaround for a browser
+ * problem: it is refusing to hand one runtime's private library path to a
+ * different runtime.
+ *
+ * @return {object} Environment for `execFile`.
+ */
+function browser_env() {
+    var env = {};
+
+    Object.keys( process.env ).forEach( function ( key ) {
+        if ( 'LD_LIBRARY_PATH' !== key ) {
+            env[ key ] = process.env[ key ];
+        }
+    } );
+
+    return env;
+}
+
 function php_binary() {
     return process.env.AGENTSHELL_PHP || 'php';
 }
@@ -95,6 +123,7 @@ function run_scenario( browser, page, profile, scenario ) {
         output = child_process.execFileSync( browser, args, {
             maxBuffer: 64 * 1024 * 1024,
             stdio: [ 'ignore', 'pipe', 'pipe' ],
+            env: browser_env(),
             // A browser that starts and never finishes is a failure. The bound
             // is generous — the page's own virtual time budget is 20s — and it
             // exists so a stuck browser reports rather than hangs.

@@ -143,14 +143,23 @@ __CSS__
         state.pageErrors.push( String( event.message || 'error' ) );
     } );
 
-    function response( token ) {
+    // The published version of each fixture form. The challenge route mints
+    // for the form's current version, and the script compares it with the
+    // version the page was rendered from — so the stub has to answer with the
+    // right number per form, or every form but one would look stale.
+    var versions = {
+        '7c1d2e3a4b5c6d7e8f9a0b1c2d3e4f5a': 3,
+        'abcdef0123456789abcdef0123456789': 1
+    };
+
+    function response( token, version ) {
         return {
             ok: true,
             status: 200,
             json: function () {
                 return Promise.resolve( {
                     challenge: token,
-                    form_version: 3,
+                    form_version: version,
                     expires_in: 7200
                 } );
             }
@@ -168,6 +177,7 @@ __CSS__
         // waiting caller the most recent one — which is the bug the page is
         // meant to detect, so the stub must not have it too.
         var token = 'test-token-' + state.counter + '-a1b2c3d4';
+        var version = body && versions[ body.form_id ] ? versions[ body.form_id ] : 3;
 
         state.calls.push( {
             url: String( url ),
@@ -181,7 +191,7 @@ __CSS__
                 state.manual.push( {
                     token: token,
                     resolve: function () {
-                        resolve( response( token ) );
+                        resolve( response( token, version ) );
                     }
                 } );
             } );
@@ -191,7 +201,7 @@ __CSS__
             return Promise.reject( new Error( 'the network is down' ) );
         }
 
-        return Promise.resolve( response( token ) );
+        return Promise.resolve( response( token, version ) );
     };
 }());
 </script>

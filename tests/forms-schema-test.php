@@ -1201,34 +1201,70 @@ Agentshell_Test::run(
             }
         }
 
-        // The plugin registers no MCP tool and sends no mail. It does now render
-        // for a visitor — that is Phase 2 — and the rendering half is allowed
-        // exactly one shortcode, registered from one file. A second
-        // registration, or a shortcode defined somewhere else, would be a
-        // second public surface an operator could paste into a page.
+        // The plugin registers no MCP tool. It renders for a visitor (Phase 2),
+        // it accepts a submission and sends mail (Phase 3), and each of those
+        // is a named, single place rather than something any file may do. A
+        // second shortcode, a second mail call site or a third REST route would
+        // be a public surface nobody decided to add.
         $shortcode_files = array();
+        $mail_files      = array();
+        $route_files     = array();
 
         foreach ( $files as $file ) {
             $source = (string) file_get_contents( $file );
 
-            if ( false !== strpos( $source, 'add_shortcode(' ) ) {
+            // Comments are stripped first. The docblocks in this plugin talk
+            // about `wp_mail()` and `wp_remote_post()` on purpose — explaining
+            // why a call is in one place and not another is the documentation's
+            // job — and a scan that counted a mention as a call would force the
+            // documentation to stop being accurate.
+            $code = (string) preg_replace( '#/\*.*?\*/#s', '', $source );
+            $code = (string) preg_replace( '#^\s*//.*$#m', '', $code );
+
+            if ( false !== strpos( $code, 'add_shortcode(' ) ) {
                 $shortcode_files[] = basename( $file );
             }
 
-            Agentshell_Test::assert_false(
-                false !== strpos( $source, 'wp_mail(' ),
-                basename( $file ) . ' must not send mail (that is Phase 3)'
-            );
-            Agentshell_Test::assert_false(
-                false !== strpos( $source, 'register_rest_route(' ) && 'class-form-challenge-endpoint.php' !== basename( $file ),
-                basename( $file ) . ' must not register a REST route outside the challenge endpoint'
-            );
+            if ( false !== strpos( $code, 'wp_mail(' ) ) {
+                $mail_files[] = basename( $file );
+            }
+
+            if ( false !== strpos( $code, 'register_rest_route(' ) ) {
+                $route_files[] = basename( $file );
+            }
+
+            // The submission path must never reach the network directly: the
+            // only outbound request the plugin may make is Turnstile's, and it
+            // is made from one file against one hard-coded endpoint.
+            if ( false !== strpos( $code, 'wp_remote_post(' ) ) {
+                Agentshell_Test::assert_equals(
+                    'class-turnstile.php',
+                    basename( $file ),
+                    basename( $file ) . ' must not make an outbound request outside the Turnstile client'
+                );
+            }
         }
 
         Agentshell_Test::assert_equals(
             array( 'class-form-shortcode.php' ),
             $shortcode_files,
             'exactly one file registers the shortcode'
+        );
+
+        Agentshell_Test::assert_equals(
+            array( 'class-form-notifier.php' ),
+            $mail_files,
+            'exactly one file sends mail'
+        );
+
+        $expected_routes = array( 'class-form-challenge-endpoint.php', 'class-submission-handler.php' );
+        sort( $expected_routes );
+        sort( $route_files );
+
+        Agentshell_Test::assert_equals(
+            $expected_routes,
+            $route_files,
+            'exactly two files register a REST route: the mint and the submission'
         );
     }
 );

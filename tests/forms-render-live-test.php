@@ -126,9 +126,14 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
-    'the shortcode renders no submission action and does not disable validation',
+    'the shortcode points at the submission route and does not disable validation',
     function () use ( $p ) {
-        Agentshell_Test::assert_false( asr( $p, 'shortcode_by_slug', 'has_action' ), 'Phase 2 must not point at a submission route' );
+        $expected = (string) asr( $p, 'shortcode_by_slug', 'submit_url' );
+
+        Agentshell_Test::assert_true( asr( $p, 'shortcode_by_slug', 'has_action' ), 'the form must carry an action' );
+        Agentshell_Test::assert_true( '' !== $expected, 'the child must report the submission route' );
+        Agentshell_Test::assert_equals( $expected, asr( $p, 'shortcode_by_slug', 'submit_action' ), 'the action must be the submission route' );
+        Agentshell_Test::assert_equals( $expected, asr( $p, 'shortcode_by_slug', 'submit_endpoint' ), 'the script must be given the submission route' );
         Agentshell_Test::assert_false( asr( $p, 'shortcode_by_slug', 'has_novalidate' ), 'native validation must stay on' );
     }
 );

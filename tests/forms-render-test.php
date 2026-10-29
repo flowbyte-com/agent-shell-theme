@@ -73,7 +73,7 @@ function asf_tag( $html, $pattern ) {
 }
 
 Agentshell_Test::run(
-	'the form element carries the published identity and no submission action',
+	'the form element carries the published identity and the submission route',
 	function () {
 		$html = Form_Renderer::render_definition( agentshell_forms_fixture_definition(), array( 'instance' => 1 ) );
 		$tag  = asf_tag( $html, '/<form\b[^>]*>/' );
@@ -86,10 +86,17 @@ Agentshell_Test::run(
 		);
 		Agentshell_Test::assert_true( asf_has( $tag, 'data-form-version="3"' ), 'the form must carry the published version' );
 		Agentshell_Test::assert_true( asf_has( $tag, 'data-challenge-endpoint="' ), 'the form must name the challenge route' );
-		Agentshell_Test::assert_false( asf_has( $tag, 'action=' ), 'Phase 2 has no submission endpoint to point at' );
+		Agentshell_Test::assert_true(
+			asf_has( $tag, 'action="' . \AgentShell_Forms\Submission_Handler::submit_url() . '"' ),
+			'the form must point at the submission route for the no-script fallback'
+		);
+		Agentshell_Test::assert_true(
+			asf_has( $tag, 'data-submit-endpoint="' . \AgentShell_Forms\Submission_Handler::submit_url() . '"' ),
+			'the script must be given the submission route'
+		);
 		Agentshell_Test::assert_false(
 			asf_has( $tag, 'novalidate' ),
-			'novalidate would remove the only validation a visitor has in Phase 2'
+			'novalidate would remove the browser validation a visitor relies on'
 		);
 	}
 );

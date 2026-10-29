@@ -29,6 +29,30 @@ var CANDIDATES = [
     'chrome',
 ];
 
+/**
+ * The environment a browser child should start in.
+ *
+ * `LD_LIBRARY_PATH` is how LocalWP's PHP finds its shared libraries, and it is
+ * set for every process in a shell that runs the destructive suites. Chrome is
+ * not PHP: handed that path it loads a mismatched `libgobject` and dies with
+ * `undefined symbol: g_dir_unref` before it renders anything. CI never sets
+ * the variable, so this failed only on the machine where the whole suite is
+ * run — the same defect, and the same fix, as the two forms browser runners.
+ *
+ * @return {object} Environment for `execFileSync`.
+ */
+function browser_env() {
+    var env = {};
+
+    Object.keys( process.env ).forEach( function ( key ) {
+        if ( 'LD_LIBRARY_PATH' !== key ) {
+            env[ key ] = process.env[ key ];
+        }
+    } );
+
+    return env;
+}
+
 function find_browser() {
     for ( var i = 0; i < CANDIDATES.length; i++ ) {
         var name = CANDIDATES[ i ];
@@ -69,6 +93,7 @@ function run_scenario( browser, harness, profile, scenario ) {
         output = child_process.execFileSync( browser, args, {
             maxBuffer: 64 * 1024 * 1024,
             stdio: [ 'ignore', 'pipe', 'pipe' ],
+            env: browser_env(),
         } ).toString();
     } catch ( e ) {
         failed_to_run = e;

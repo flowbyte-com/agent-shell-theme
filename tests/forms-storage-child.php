@@ -133,11 +133,26 @@ function fields( $suffix = '' ) {
  * exist. If any of that is false the rest of the suite is proving nothing.
  * ------------------------------------------------------------------------ */
 
+// The `Version:` header WordPress reads, parsed from the plugin file. The
+// suite asserts that the constant and the header agree: the constant versions
+// the assets, and a header that disagreed would tell WordPress a version that
+// is not the version being served.
+$header_version = '';
+
+if ( defined( 'AGENTSHELL_FORMS_FILE' ) && is_readable( AGENTSHELL_FORMS_FILE ) ) {
+    $head = (string) file_get_contents( AGENTSHELL_FORMS_FILE, false, null, 0, 8192 );
+
+    if ( preg_match( '/^[ \t*#@]*Version:\s*([^\r\n]+)/mi', $head, $m ) ) {
+        $header_version = trim( $m[1] );
+    }
+}
+
 probe(
     'precondition',
     array(
         'plugin_constant'   => defined( 'AGENTSHELL_FORMS_VERSION' ),
         'version'           => defined( 'AGENTSHELL_FORMS_VERSION' ) ? AGENTSHELL_FORMS_VERSION : '',
+        'header_version'    => $header_version,
         'schema_version'    => defined( 'AGENTSHELL_FORMS_SCHEMA_VERSION' ) ? AGENTSHELL_FORMS_SCHEMA_VERSION : 0,
         'form_type'         => post_type_exists( Form_Post_Types::FORM ),
         'entry_type'        => post_type_exists( Form_Post_Types::ENTRY ),

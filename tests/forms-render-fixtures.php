@@ -108,7 +108,10 @@ if ( ! function_exists( 'home_url' ) ) {
 }
 
 if ( ! defined( 'AGENTSHELL_FORMS_VERSION' ) ) {
-	define( 'AGENTSHELL_FORMS_VERSION', '0.1.0' );
+	// Only a cache-busting value in the stub renderer; it is never compared with
+	// the plugin header. `tests/forms-storage-test.php` is what asserts that the
+	// constant and the header agree, against the real plugin.
+	define( 'AGENTSHELL_FORMS_VERSION', '0.0.0-stub' );
 }
 
 if ( ! defined( 'AGENTSHELL_FORMS_PLUGIN_DIR' ) ) {
@@ -128,7 +131,12 @@ $agentshell_forms_fixture_dir = dirname( __DIR__ ) . '/agentshell-forms/includes
 require_once $agentshell_forms_fixture_dir . 'class-form-field-types.php';
 require_once $agentshell_forms_fixture_dir . 'class-form-schema.php';
 require_once $agentshell_forms_fixture_dir . 'class-form-capabilities.php';
+// Phase 3: the renderer asks the Turnstile client whether a form needs the
+// widget, and emits the submission route as the form's action.
+require_once $agentshell_forms_fixture_dir . 'class-form-rejections.php';
+require_once $agentshell_forms_fixture_dir . 'class-turnstile.php';
 require_once $agentshell_forms_fixture_dir . 'class-form-challenge-endpoint.php';
+require_once $agentshell_forms_fixture_dir . 'class-submission-handler.php';
 require_once $agentshell_forms_fixture_dir . 'class-form-renderer.php';
 
 unset( $agentshell_forms_fixture_dir );

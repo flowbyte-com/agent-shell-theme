@@ -264,25 +264,23 @@ class Form_Renderer {
 		$show_title = self::to_bool( isset( $args['title'] ) ? $args['title'] : 'show', true );
 		$heading    = self::heading_tag( isset( $args['heading_level'] ) ? $args['heading_level'] : 2 );
 
-		// There is deliberately **no `action` attribute** in Phase 2. The
-		// submission endpoint is Phase 3's, and pointing a form at a route that
-		// does not exist yet would turn "submission is not implemented" into a
-		// 404 the visitor sees. With no action the native POST goes to the page
-		// itself and changes nothing, which is the truthful behaviour of a build
-		// that does not process submissions. Phase 3 sets the action.
-		//
-		// `novalidate` is deliberately not emitted either: in Phase 2 the
-		// browser's own constraint validation is the only validation a visitor
-		// gets, and disabling it would leave a form with no feedback at all.
+		// Phase 3 sets the action. The script intercepts the submit and sends
+		// JSON; the `action` is what a script that failed to load falls back to,
+		// and the endpoint answers that request with a generic refusal rather
+		// than pretending it succeeded. `novalidate` is still not emitted: the
+		// browser's own constraint validation is the first line, and the server
+		// validates everything again.
 		$attrs = array(
 			'class'                   => implode( ' ', array_map( 'sanitize_html_class', $classes ) ),
 			'method'                  => 'post',
+			'action'                  => self::submit_url(),
 			'data-agentshell-form'    => '1',
 			'data-form-id'            => $form_id,
 			'data-form-version'       => (string) $version,
 			'data-form-instance'      => (string) $instance,
 			'data-form-context'       => $context,
 			'data-challenge-endpoint' => self::challenge_url(),
+			'data-submit-endpoint'    => self::submit_url(),
 		);
 
 		$html  = '<form' . self::attrs( $attrs ) . '>';
@@ -321,9 +319,24 @@ class Form_Renderer {
 			? (string) $definition['settings']['submit_label']
 			: __( 'Send', 'agentshell-forms' );
 
+		// The Turnstile widget, when the form declares a policy that needs it.
+		// A form whose policy is `disabled` — the default — renders nothing
+		// external at all.
+		$html .= Form_Turnstile::widget( $definition );
+
 		$html .= '<div class="agentshell-forms__actions">'
-			. '<button type="submit" class="agentshell-forms__submit">' . esc_html( $submit_label ) . '</button>'
+			. '<button type="submit" class="agentshell-forms__submit" data-agentshell-forms-submit>'
+			. esc_html( $submit_label )
+			. '</button>'
 			. '</div>';
+
+		// The honest statement for a visitor with JavaScript disabled: this
+		// form cannot be sent, because the challenge is provisioned by script.
+		// It is deliberately *not* styled as an error — it is a fact about the
+		// form, not a failure of the visitor's.
+		$html .= '<noscript><p class="agentshell-forms__noscript">'
+			. esc_html__( 'This form needs JavaScript to be sent. Please enable JavaScript, or contact us another way.', 'agentshell-forms' )
+			. '</p></noscript>';
 
 		// The status region exists from Phase 2 so a success message has
 		// somewhere to go that assistive technology already knows about; it is
@@ -1212,6 +1225,15 @@ class Form_Renderer {
 	}
 
 	/**
+	 * The submission route.
+	 *
+	 * @return string
+	 */
+	private static function submit_url() {
+		return Submission_Handler::submit_url();
+	}
+
+	/**
 	 * A heading tag, from the allowed set.
 	 *
 	 * @param mixed $level Requested level.
@@ -1374,6 +1396,14 @@ class Form_Renderer {
 				array(
 					'error'       => __( 'This form could not be prepared. Please reload the page and try again.', 'agentshell-forms' ),
 					'unsupported' => __( 'This form cannot be started in this browser.', 'agentshell-forms' ),
+					'submitting'  => __( 'Sending…', 'agentshell-forms' ),
+					'pending'     => __( 'This submission is still being processed. Please wait a moment…', 'agentshell-forms' ),
+					'network'     => __( 'The form could not be sent. Please check your connection and try again.', 'agentshell-forms' ),
+					'stale'       => __( 'This form has changed since this page was loaded. Reload the page to see the current version.', 'agentshell-forms' ),
+					'reload'      => __( 'Reload the form', 'agentshell-forms' ),
+					'summary'     => __( 'There is a problem', 'agentshell-forms' ),
+					'retained'    => __( 'Your previously entered answers have been kept. Please check them before sending.', 'agentshell-forms' ),
+					'required'    => __( 'Please correct the highlighted fields.', 'agentshell-forms' ),
 				)
 			);
 		}
