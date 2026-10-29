@@ -466,5 +466,3 @@ class Form_REST {
 		return is_array( $params ) ? $params : array();
 	}
 }
-EOF
-echo written

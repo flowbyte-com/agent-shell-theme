@@ -288,4 +288,3 @@ if ( typeof module !== 'undefined' && module.exports ) {
 } else {
     ( typeof window !== 'undefined' ? window : this ).AgentshellFormsApp = { FormsApp: FormsApp, bootstrap: bootstrap };
 }
-EOF
