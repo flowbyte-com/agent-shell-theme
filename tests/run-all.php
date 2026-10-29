@@ -1200,6 +1200,10 @@ $suites = array(
         'path'     => __DIR__ . '/run-forms-submit-browser.php',
         'requires' => 'unit',
     ),
+    'forms-builder-browser' => array(
+        'path'     => __DIR__ . '/run-forms-builder-browser.php',
+        'requires' => 'unit',
+    ),
 );
 
 // ── the environment, resolved once ───────────────────────────────────────────
