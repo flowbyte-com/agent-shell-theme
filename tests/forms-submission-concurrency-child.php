@@ -110,12 +110,12 @@ function fsx_report( array $data ) {
  * @param string $log Path.
  * @return void
  */
-function fsx_mail_log( $log ) {
+function fsx_mail_log( $log, $delay_ms = 300 ) {
     $GLOBALS['fsx_mail_log_path'] = (string) $log;
 
     add_filter(
         'pre_wp_mail',
-        function ( $return, $atts ) {
+        function ( $return, $atts ) use ( $delay_ms ) {
             $line = gmdate( 'c' ) . "\t" . getmypid() . "\t" . ( is_array( $atts['to'] ) ? implode( ',', $atts['to'] ) : (string) $atts['to'] ) . "\n";
 
             file_put_contents( $GLOBALS['fsx_mail_log_path'], $line, FILE_APPEND | LOCK_EX );
@@ -123,7 +123,7 @@ function fsx_mail_log( $log ) {
             // Hold the "transport" open long enough that a second worker is
             // genuinely overlapping, rather than arriving after the first has
             // already finished and settled the record.
-            usleep( 300000 );
+            usleep( max( 0, (int) $delay_ms ) * 1000 );
 
             return true;
         },
@@ -326,6 +326,26 @@ switch ( $mode ) {
             fsx_report( array( 'error' => 'entry', 'message' => $entry->get_error_message() ) );
         }
 
+        // A second submission with a pending notification, for the settlement
+        // race: the first one is settled by the two-worker race below.
+        $entry_two = Submission_Store::create(
+            array(
+                'form_id'      => (string) $notify['form_id'],
+                'form_name'    => 'Notify race',
+                'form_version' => (int) $notify['version'],
+                'fields'       => fsx_fields_values(),
+                'spam_status'  => 'clean',
+                'meta'         => array( 'received_at' => gmdate( 'c' ) ),
+                'challenge'    => '',
+                'notification' => Form_Notifier::initial_record( 'admin' ),
+                'confirmation' => null,
+            )
+        );
+
+        if ( is_wp_error( $entry_two ) ) {
+            fsx_report( array( 'error' => 'entry_two', 'message' => $entry_two->get_error_message() ) );
+        }
+
         fsx_report(
             array(
                 'token'            => (string) $token,
@@ -335,6 +355,7 @@ switch ( $mode ) {
                 'duplicate_token'  => $duplicate_token['token'],
                 'quota_tokens'     => $quota_tokens,
                 'notify_entry'     => (int) $entry['post_id'],
+                'notify_entry_two' => (int) $entry_two['post_id'],
             )
         );
         break;
@@ -364,10 +385,23 @@ switch ( $mode ) {
         break;
 
     case 'notify':
+    case 'notify_slow':
         $entry_id = (int) $args[0];
         $log      = (string) $args[1];
+        $delay    = ( 'notify_slow' === $mode ) ? (int) ( $args[2] ?? 6000 ) : 300;
 
-        fsx_mail_log( $log );
+        // The claim must expire while this worker is still working: the race
+        // under test is an older worker finishing *after* a newer worker has
+        // taken the record over. Two seconds is the shortest claim the
+        // notifier will honour (a filter below one second is refused).
+        add_filter(
+            'agentshell_forms_notification_claim_ttl',
+            function () {
+                return 2;
+            }
+        );
+
+        fsx_mail_log( $log, $delay );
 
         $record = Submission_Store::get( $entry_id, true );
 
@@ -406,6 +440,17 @@ switch ( $mode ) {
         }
 
         fsx_report( array( 'counts' => $out ) );
+        break;
+
+    case 'verify_notification':
+        $entry_id = (int) ( $args[0] ?? 0 );
+        $state    = Submission_Store::notification_state( $entry_id, 'admin' );
+
+        fsx_report(
+            array(
+                'notification' => is_array( $state['record'] ) ? $state['record'] : array(),
+            )
+        );
         break;
 
     case 'cleanup':

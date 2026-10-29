@@ -297,6 +297,37 @@ Agentshell_Test::run(
 );
 
 Agentshell_Test::run(
+    'a notification is sent under the settings it was accepted with',
+    function () use ( $p ) {
+        Agentshell_Test::assert_true( asn3r( $p, 'republished', 'sent_to_a' ), 'the recipient configured when the submission was accepted still receives it' );
+        Agentshell_Test::assert_false( asn3r( $p, 'republished', 'sent_to_b' ), 'a recipient added by a later publication does not receive an old submission' );
+    }
+);
+
+Agentshell_Test::run(
+    'the retry worker is not starved by settled records',
+    function () use ( $p ) {
+        $probe = (array) asn3r( $p, 'starvation', 'settled' );
+        // The fixture created 2001 settled records ahead of the pending one.
+        Agentshell_Test::assert_true( asn3r( $p, 'starvation', 'settled' ) >= 2000, 'the fixture must place thousands of settled records ahead of the pending one' );
+
+        $statuses = (array) asn3r( $p, 'starvation', 'statuses' );
+
+        // The first run must not process the pending record: it is behind the
+        // settled ones, and a fixed window would stop there forever.
+        Agentshell_Test::assert_equals(
+            'pending',
+            (string) ( $statuses[0] ?? '' ),
+            'the first run does not reach the pending record: the window rotates rather than restarting'
+        );
+        Agentshell_Test::assert_true(
+            asn3r( $p, 'starvation', 'processed' ),
+            'the pending record is processed within a bounded number of runs'
+        );
+    }
+);
+
+Agentshell_Test::run(
     'the suite left nothing behind',
     function () use ( $p ) {
         Agentshell_Test::assert_equals( 0, asn3r( $p, 'cleanup', 'remaining' ), 'no submission may outlive the suite' );

@@ -385,7 +385,7 @@ function asf3_challenge_row( $token ) {
 
     return $wpdb->get_row(
         $wpdb->prepare(
-            'SELECT form_id, form_version, consumed_at, submission_id, expires_at FROM ' . Form_Challenges::table() . ' WHERE token_hash = %s',
+            'SELECT form_id, form_version, consumed_at, submission_id, expires_at, subject_hash FROM ' . Form_Challenges::table() . ' WHERE token_hash = %s',
             hash( 'sha256', (string) $token )
         ),
         ARRAY_A
@@ -972,11 +972,121 @@ probe(
     )
 );
 
+// ══ a link that failed: the submission exists, the bookkeeping does not ══
+//
+// What a failed `Form_Challenges::link()` leaves behind is exactly this: the
+// entry was written, and the challenge row still says `submission_id = 0`.
+// The visitor's response was lost. The retry must find the stored submission,
+// repair the link, and answer with the success they are owed — and there must
+// still be exactly one submission.
+
+$form_link = asf3_form( 'Link failure' );
+$mint_link = asf3_mint( $form_link['form_id'], '203.0.113.70' );
+
+$first_link = asf3_submit( $form_link['form_id'], $form_link['version'], $mint_link['token'], asf3_valid_fields(), array(), '203.0.113.70' );
+$entries_after_first = asf3_entries( $form_link['form_id'] );
+
+// Simulate the failed link: the row points at nothing.
+global $wpdb;
+$wpdb->query(
+    $wpdb->prepare(
+        'UPDATE ' . Form_Challenges::table() . ' SET submission_id = 0 WHERE token_hash = %s',
+        hash( 'sha256', $mint_link['token'] )
+    )
+);
+
+// The claim is old enough that the old implementation would answer
+// `form_retry` and hand out a fresh token — which would create a second
+// submission.
+$wpdb->query(
+    $wpdb->prepare(
+        'UPDATE ' . Form_Challenges::table() . ' SET consumed_at = %s WHERE token_hash = %s',
+        gmdate( 'Y-m-d H:i:s', time() - 120 ),
+        hash( 'sha256', $mint_link['token'] )
+    )
+);
+
+$retry_link = asf3_submit( $form_link['form_id'], $form_link['version'], $mint_link['token'], asf3_valid_fields(), array(), '203.0.113.70' );
+$entries_after_retry = asf3_entries( $form_link['form_id'] );
+$row_after_retry     = asf3_challenge_row( $mint_link['token'] );
+
+probe(
+    'link_failure',
+    array(
+        'first_status'   => $first_link['status'],
+        'first_entries'  => count( $entries_after_first ),
+        'retry_status'   => $retry_link['status'],
+        'retry_ok'       => $retry_link['ok'],
+        'retry_code'     => $retry_link['code'],
+        'retry_entries'  => count( $entries_after_retry ),
+        'linked_now'     => isset( $row_after_retry['submission_id'] ) ? (int) $row_after_retry['submission_id'] : -1,
+        'stored_id'      => count( $entries_after_first ) > 0 ? (int) $entries_after_first[0] : 0,
+    )
+);
+
+// ══ the size of the request is decided before the body is decoded ══════════
+//
+// An oversized body that is also malformed must be refused as too large. A
+// `400` would mean the decoder was consulted first.
+
+$oversized_malformed = asf3_raw_submit( str_repeat( 'x', 70000 ), '203.0.113.71' );
+
+probe(
+    'body_size',
+    array(
+        'malformed_oversized_status' => $oversized_malformed['status'],
+        'malformed_oversized_code'   => $oversized_malformed['code'],
+    )
+);
+
+// ══ the source hash is accounting, not a binding ══════════════════════════
+//
+// A token minted for one source may be presented from another: the token is
+// the credential, and the HMAC of the address keys the rate-limit bucket and
+// the audit trail. The stored value is the HMAC of the minting address.
+
+$form_bind = asf3_form( 'Source binding' );
+$mint_bind = asf3_mint( $form_bind['form_id'], '203.0.113.80' );
+
+$_SERVER['REMOTE_ADDR'] = '203.0.113.80';
+$subject_a = Form_Challenge_Endpoint::subject_hash();
+
+$submit_bind = asf3_submit( $form_bind['form_id'], $form_bind['version'], $mint_bind['token'], asf3_valid_fields(), array(), '203.0.113.81' );
+$row_bind    = asf3_challenge_row( $mint_bind['token'] );
+
+probe(
+    'source_binding',
+    array(
+        'mint_status'     => $mint_bind['status'],
+        'submit_status'   => $submit_bind['status'],
+        'submit_ok'       => $submit_bind['ok'],
+        'stored_matches'  => isset( $row_bind['subject_hash'] ) ? (string) $row_bind['subject_hash'] === (string) $subject_a : false,
+        'stored_present'  => isset( $row_bind['subject_hash'] ) ? '' !== (string) $row_bind['subject_hash'] : false,
+    )
+);
+
+// ══ the submission carries the notification settings it was accepted under ═
+
+$snapshot_probe = array();
+
+if ( count( $entries_after_first ) > 0 ) {
+    $snapshot = Submission_Store::notification_snapshot( (int) $entries_after_first[0] );
+
+    $snapshot_probe = array(
+        'has_snapshot' => is_array( $snapshot ) && ! empty( $snapshot ),
+        'has_name'     => is_array( $snapshot ) && isset( $snapshot['name'] ) && '' !== (string) $snapshot['name'],
+        'has_fields'   => is_array( $snapshot ) && isset( $snapshot['fields'] ) && is_array( $snapshot['fields'] ) && count( $snapshot['fields'] ) > 0,
+        'has_settings' => is_array( $snapshot ) && isset( $snapshot['notification'] ) && is_array( $snapshot['notification'] ),
+    );
+}
+
+probe( 'snapshot', $snapshot_probe );
+
 // ══ cleanup ═════════════════════════════════════════════════════════════════
 
 // Entries first: they are the personal data, and a form deleted before them
 // would leave them unattributable.
-foreach ( array( $form['form_id'], $form_v['form_id'], $form_m['form_id'], $form_s['form_id'], $form_a2['form_id'], $form_b2['form_id'], $form_h['form_id'], $form_r['form_id'], $form_t['form_id'], $form_o['form_id'], $form_x['form_id'], $form_p['form_id'] ) as $cleanup_form ) {
+foreach ( array( $form['form_id'], $form_v['form_id'], $form_m['form_id'], $form_s['form_id'], $form_a2['form_id'], $form_b2['form_id'], $form_h['form_id'], $form_r['form_id'], $form_t['form_id'], $form_o['form_id'], $form_x['form_id'], $form_p['form_id'], $form_link['form_id'], $form_bind['form_id'] ) as $cleanup_form ) {
     foreach ( asf3_entries( $cleanup_form ) as $entry_id ) {
         Submission_Store::delete_permanently( $entry_id, 0, true );
     }
@@ -1013,7 +1123,7 @@ probe(
                     'meta_query'     => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
                         array(
                             'key'     => Submission_Store::META_FORM_ID,
-                            'value'   => array( $form['form_id'], $form_v['form_id'], $form_m['form_id'], $form_s['form_id'], $form_a2['form_id'], $form_b2['form_id'], $form_h['form_id'], $form_r['form_id'], $form_t['form_id'], $form_o['form_id'], $form_x['form_id'], $form_p['form_id'] ),
+                            'value'   => array( $form['form_id'], $form_v['form_id'], $form_m['form_id'], $form_s['form_id'], $form_a2['form_id'], $form_b2['form_id'], $form_h['form_id'], $form_r['form_id'], $form_t['form_id'], $form_o['form_id'], $form_x['form_id'], $form_p['form_id'], $form_link['form_id'], $form_bind['form_id'] ),
                             'compare' => 'IN',
                         ),
                     ),

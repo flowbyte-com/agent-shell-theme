@@ -31,6 +31,33 @@
  * success response** when the first attempt succeeded, and refuse with a fresh
  * challenge when it did not.
  *
+ * ## What the stored source HMAC is, and what it is not
+ *
+ * The row records an HMAC of the source address that minted the token. That
+ * value is **accounting and rate-limiting**, not a binding between the token
+ * and the requester:
+ *
+ *   - it is the key of the per-source rate-limit bucket, so the mint and the
+ *     submission of one visitor are counted together and one visitor cannot
+ *     mint an unbounded supply of tokens by rotating addresses inside one
+ *     window;
+ *   - it is what the operator sees when a bucket is refused.
+ *
+ * It is deliberately **not** checked when a token is claimed. Two reasons:
+ *
+ *   1. **It would add nothing.** The token is not a secret — a client that
+ *      can fetch the page can read it — so binding it to an address protects
+ *      nothing that the honeypot, Turnstile and the rate limiter do not
+ *      already protect.
+ *   2. **It would break honest visitors.** A mobile network, a corporate
+ *      proxy or an IPv6 privacy address can change a visitor's address
+ *      between the page being rendered and the form being sent. A binding
+ *      would refuse their submission for a reason they cannot see or fix.
+ *
+ * The consequence is stated rather than implied: a token minted for one
+ * source may be presented from another. The token itself is the credential,
+ * and it is single-use either way.
+ *
  * ## Why a table and not a transient
  *
  * Claiming a transient is a read followed by a delete, and two concurrent
@@ -74,7 +101,10 @@ class Form_Challenges {
 	 *
 	 * @param string $form_id      The form's internal identifier.
 	 * @param int    $form_version The published version it was minted for.
-	 * @param string $subject_hash HMAC of the source address, or ''.
+	 * @param string $subject_hash HMAC of the source address, or ''. It is
+	 *                              recorded for rate-limit accounting; it does
+	 *                              **not** bind the token to the requester (see
+	 *                              the class docblock).
 	 * @param int    $ttl          Seconds until expiry.
 	 * @return string|\WP_Error The token, or an error.
 	 */

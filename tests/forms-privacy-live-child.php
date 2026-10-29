@@ -264,6 +264,86 @@ probe(
     )
 );
 
+// ══ pagination: an older match is not hidden by a thousand newer records ══
+//
+// The exporter used to read the newest thousand submissions and stop. A match
+// older than that was invisible to a subject-access request.
+
+$subject_p = 'subject@example.invalid';
+
+$old_match = asp3_entry( $form_a, array( 'name' => 'Old match', 'email' => $subject_p, 'note' => '' ) );
+
+// Backdate it so it is the oldest thing on the site.
+$when = gmdate( 'Y-m-d H:i:s', time() - 365 * DAY_IN_SECONDS );
+$wpdb->update( $wpdb->posts, array( 'post_date' => $when, 'post_date_gmt' => $when, 'post_modified' => $when, 'post_modified_gmt' => $when ), array( 'ID' => $old_match ) );
+clean_post_cache( $old_match );
+
+// Now 1001 nonmatching submissions, newer than it.
+for ( $i = 0; $i < 1001; $i++ ) {
+    asp3_entry( $form_a, array( 'name' => 'Nonmatch ' . $i, 'email' => 'other' . $i . '@example.invalid', 'note' => '' ) );
+}
+
+$export_p = Form_Privacy::export( $subject_p, 1 );
+$export_ids_p = array();
+
+foreach ( (array) $export_p['data'] as $item ) {
+    $export_ids_p[] = (int) str_replace( 'agentshell-entry-', '', (string) $item['item_id'] );
+}
+
+probe(
+    'pagination',
+    array(
+        'found' => in_array( $old_match, $export_ids_p, true ),
+        'count' => count( (array) $export_p['data'] ),
+    )
+);
+
+// ══ erasure: 120 matching submissions, no skipping, safe to repeat ═════════
+//
+// The previous implementation paginated the set it was deleting from, with an
+// offset that grew while the set shrank. 120 matching submissions over three
+// pages erased 70 of them.
+
+$bulk_ids = array();
+
+for ( $i = 0; $i < 120; $i++ ) {
+    $bulk_ids[] = asp3_entry( $form_a, array( 'name' => 'Bulk ' . $i, 'email' => $subject_p, 'note' => '' ) );
+}
+
+$erased_total = 0;
+
+for ( $page = 1; $page <= 5; $page++ ) {
+    $r = Form_Privacy::erase( $subject_p, $page );
+
+    if ( (bool) $r['items_removed'] ) {
+        $erased_total += 1;
+    }
+
+    if ( (bool) $r['done'] ) {
+        break;
+    }
+}
+
+$remaining_bulk = 0;
+
+foreach ( $bulk_ids as $id ) {
+    if ( ! asp3_gone( $id ) ) {
+        $remaining_bulk++;
+    }
+}
+
+$second_erase = Form_Privacy::erase( $subject_p, 1 );
+
+probe(
+    'bulk_erase',
+    array(
+        'total'        => count( $bulk_ids ),
+        'remaining'    => $remaining_bulk,
+        'second_removed' => (bool) $second_erase['items_removed'],
+        'second_done'  => (bool) $second_erase['done'],
+    )
+);
+
 // ══ cleanup ═════════════════════════════════════════════════════════════════
 
 foreach ( $mine['posts'] as $post_id ) {

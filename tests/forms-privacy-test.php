@@ -196,6 +196,34 @@ Agentshell_Test::run(
     }
 );
 
+// ══ stable pagination: an older match is not concealed ════════════════════
+
+Agentshell_Test::run(
+    'an export finds a match older than a thousand newer records',
+    function () use ( $p ) {
+        Agentshell_Test::assert_true( asp3r( $p, 'pagination', 'found' ), 'a match older than the scan window must be found' );
+        Agentshell_Test::assert_equals( 1, asp3r( $p, 'pagination', 'count' ), 'exactly the one older match is on the first page' );
+    }
+);
+
+// ══ deletion-safe erasure: no skipping, safe to repeat ═════════════════════
+
+Agentshell_Test::run(
+    'erasing 120 matching submissions leaves none behind',
+    function () use ( $p ) {
+        Agentshell_Test::assert_equals( 120, asp3r( $p, 'bulk_erase', 'total' ), 'the fixture created 120 matching submissions' );
+        Agentshell_Test::assert_equals( 0, asp3r( $p, 'bulk_erase', 'remaining' ), 'every one of them must be gone' );
+    }
+);
+
+Agentshell_Test::run(
+    'a repeated erasure is safe and complete',
+    function () use ( $p ) {
+        Agentshell_Test::assert_false( asp3r( $p, 'bulk_erase', 'second_removed' ), 'the second run removes nothing' );
+        Agentshell_Test::assert_true( asp3r( $p, 'bulk_erase', 'second_done' ), 'and it still completes' );
+    }
+);
+
 Agentshell_Test::run(
     'the suite left nothing behind',
     function () use ( $p ) {

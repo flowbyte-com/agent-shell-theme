@@ -107,9 +107,21 @@ class Form_Notifier {
 	 *
 	 * The retry worker is a cron job, so its work must be bounded: an
 	 * installation with a very large history must not turn one tick into an
-	 * unbounded scan. A record beyond this window is reached by the next run.
+	 * unbounded scan. A record beyond this window is reached by the next run —
+	 * because the window **rotates** (see `due_candidates()`), not because the
+	 * window happens to be empty.
 	 */
 	const MAX_SCAN = 2000;
+
+	/**
+	 * How many entries one page of the scan reads.
+	 */
+	const PAGE_SIZE = 200;
+
+	/**
+	 * The option holding the scan cursor, per kind.
+	 */
+	const CURSOR_OPTION = 'agentshell_forms_notification_cursor';
 
 	/**
 	 * The longest subject, in characters, after substitution.
@@ -385,11 +397,16 @@ class Form_Notifier {
 	/**
 	 * Take the notification, atomically.
 	 *
+	 * The return value is an **ownership bundle**, not just the record: it
+	 * carries the exact bytes this worker wrote, so that the settlement that
+	 * follows is guarded on *this* claim rather than on whatever the row
+	 * happens to say by then.
+	 *
 	 * @param int    $submission_id Entry id.
 	 * @param string $kind          Kind.
 	 * @param array  $record        The record as read.
 	 * @param array  $state         The row the record was read from.
-	 * @return array|null The claimed record, or null when somebody else owns it.
+	 * @return array|null The ownership bundle, or null when somebody else owns it.
 	 */
 	private static function claim( $submission_id, $kind, array $record, array $state ) {
 		$record['status']          = self::STATUS_CLAIMED;
@@ -402,7 +419,13 @@ class Form_Notifier {
 			return null;
 		}
 
-		return $record;
+		// The bytes this worker put in the row. `cas_notification()` wrote
+		// exactly this string, so it is the value the settlement must expect.
+		return array(
+			'record'  => $record,
+			'meta_id' => (int) ( $state['meta_id'] ?? 0 ),
+			'raw'     => (string) wp_json_encode( $record ),
+		);
 	}
 
 	/**
@@ -416,7 +439,10 @@ class Form_Notifier {
 	 * @param string $message_id    Message id, or ''.
 	 * @return array
 	 */
-	private static function settle( $submission_id, $kind, array $claimed, $status, $error, $message_id ) {
+	private static function settle( $submission_id, $kind, array $claim, $status, $error, $message_id ) {
+		// The record this worker claimed, and the bytes it claimed them with.
+		// Everything below settles **that** claim.
+		$claimed = isset( $claim['record'] ) && is_array( $claim['record'] ) ? $claim['record'] : array();
 		$attempts = (int) $claimed['attempts'];
 		$backoff  = self::backoff();
 
@@ -447,12 +473,23 @@ class Form_Notifier {
 			$claimed['next_attempt_at'] = gmdate( 'c', time() + $delay );
 		}
 
-		$state = Submission_Store::notification_state( $submission_id, $kind );
+		// The guard is the **claim's own bytes**, not a fresh read of the row.
+		//
+		// A fresh read would be a fresh expectation: if the claim expired and a
+		// second worker took the record over, the first worker's settlement
+		// would be guarded on the *second* worker's bytes, would therefore
+		// succeed, and would overwrite that worker's claim and settlement with
+		// its own — an older worker winning a race it had already lost.
+		//
+		// Guarding on the bytes this worker wrote is what makes the settlement
+		// belong to the claim: if anything moved the row since, the write does
+		// not land, and the outcome is `contended`.
+		$expected = array(
+			'meta_id' => (int) ( $claim['meta_id'] ?? 0 ),
+			'raw'     => (string) ( $claim['raw'] ?? '' ),
+		);
 
-		// The record we are settling is the one we claimed. If it has moved —
-		// the claim expired and a second worker took it over — this write must
-		// not overwrite that worker's claim. The CAS guard does exactly that.
-		$written = Submission_Store::cas_notification( $submission_id, $kind, $claimed, $state );
+		$written = Submission_Store::cas_notification( $submission_id, $kind, $claimed, $expected );
 
 		return array(
 			'kind'            => $kind,
@@ -627,6 +664,92 @@ class Form_Notifier {
 			'body'       => $body,
 			'headers'    => $headers,
 			'message_id' => $message_id,
+		);
+	}
+
+	/**
+	 * The notification settings a submission was accepted under.
+	 *
+	 * ## Why a submission carries a snapshot
+	 *
+	 * A notification is retried against the form **as it was when the
+	 * submission was accepted**, not as it is when the retry happens. If the
+	 * form is republished with a different recipient list in between, a retry
+	 * that read the current definition would mail an old submission to
+	 * somebody who was never asked to receive it — a visitor's message
+	 * delivered to an address the operator added afterwards, and never to the
+	 * address that was promised when it was sent.
+	 *
+	 * The snapshot holds exactly what composing a message needs: the form's
+	 * name, the field list (the labels a body template renders, and the types
+	 * that decide which field may supply a `Reply-To`), and the notification
+	 * settings. It is small, it is written once, and it is what the retry
+	 * worker composes from.
+	 *
+	 * @param array $definition The published definition.
+	 * @return array
+	 */
+	public static function snapshot( array $definition ) {
+		$settings = isset( $definition['settings']['notification'] ) && is_array( $definition['settings']['notification'] )
+			? $definition['settings']['notification']
+			: array();
+
+		$fields = array();
+
+		foreach ( (array) ( $definition['fields'] ?? array() ) as $field ) {
+			if ( ! is_array( $field ) || ! isset( $field['key'] ) ) {
+				continue;
+			}
+
+			$fields[] = array(
+				'key'   => (string) $field['key'],
+				'label' => isset( $field['label'] ) ? (string) $field['label'] : '',
+				'type'  => isset( $field['type'] ) ? (string) $field['type'] : 'text',
+			);
+		}
+
+		return array(
+			'name'         => isset( $definition['name'] ) ? (string) $definition['name'] : '',
+			'fields'       => $fields,
+			'notification' => $settings,
+		);
+	}
+
+	/**
+	 * Rebuild a definition view from a snapshot.
+	 *
+	 * The shape is the one `compose()` reads: a form name, a field list and
+	 * the notification settings.
+	 *
+	 * @param array $snapshot The snapshot.
+	 * @return array
+	 */
+	public static function definition_from_snapshot( array $snapshot ) {
+		$fields = array();
+
+		foreach ( (array) ( $snapshot['fields'] ?? array() ) as $field ) {
+			if ( ! is_array( $field ) || ! isset( $field['key'] ) ) {
+				continue;
+			}
+
+			$fields[] = array(
+				'key'      => (string) $field['key'],
+				'label'    => isset( $field['label'] ) ? (string) $field['label'] : '',
+				'type'     => isset( $field['type'] ) ? (string) $field['type'] : 'text',
+				'required' => false,
+				'settings' => array(),
+				'options'  => array(),
+			);
+		}
+
+		return array(
+			'name'     => isset( $snapshot['name'] ) ? (string) $snapshot['name'] : '',
+			'fields'   => $fields,
+			'settings' => array(
+				'notification' => isset( $snapshot['notification'] ) && is_array( $snapshot['notification'] )
+					? $snapshot['notification']
+					: array(),
+			),
 		);
 	}
 
@@ -932,35 +1055,31 @@ class Form_Notifier {
 	/**
 	 * Submissions whose record may need work.
 	 *
-	 * ## Why this is not a `meta_query` on the JSON
+	 * ## Why the window rotates
 	 *
-	 * The record is a JSON document, and its status is a value *inside* it. A
-	 * `meta_query` comparing the stored string to `"status":"pending"` is an
-	 * **exact** comparison, not a substring one: it matched nothing, so the
-	 * retry worker found no work and a failed notification was never retried
-	 * (measured: `run_due()` returned `attempted: 0` with a pending record in
-	 * the table). A `LIKE '%…%'` comparison would match, but it is a table scan
-	 * whose pattern depends on the serialisation of the document, and a record
-	 * written by another build is not a reason to miss it.
+	 * The scan is bounded — a cron tick must not become unbounded work — but a
+	 * fixed window of "the oldest N records" is a starvation bug. On an
+	 * installation with a long history the oldest N records were settled long
+	 * ago, they occupy the window forever, and a record that becomes due
+	 * behind them is never examined: the worker keeps finding the same settled
+	 * records and the pending one is never reached.
 	 *
-	 * The scan is therefore: entries that carry the record at all (an indexed
-	 * `EXISTS`), decoded in PHP, filtered by status and by due time. It is
-	 * **bounded** — at most `MAX_SCAN` entries per run — because the cron job
-	 * must not become unbounded work on a site with a million submissions, and
-	 * a record it does not reach this run is reached by the next one.
+	 * The window therefore **rotates**. Each run continues from the entry id
+	 * the previous run stopped at, wraps around to the beginning when it
+	 * reaches the end of the table, and examines at most `MAX_SCAN` records
+	 * either way. Every record is therefore examined within
+	 * `ceil(total / MAX_SCAN)` runs, and no run is unbounded.
+	 *
+	 * The cursor is a plugin option, so it survives between cron ticks and
+	 * between processes.
 	 *
 	 * @param string $kind Kind.
 	 * @param int    $max  Cap on returned ids.
 	 * @return array<int,int>
 	 */
 	private static function due_candidates( $kind, $max ) {
-		$key   = Submission_Store::notification_key( $kind );
-		$max   = max( 1, (int) $max );
-		$out   = array();
-		$now   = time();
-		$page  = 0;
-		$size  = 200;
-
+		$max      = max( 1, (int) $max );
+		$key      = Submission_Store::notification_key( $kind );
 		$statuses = array(
 			self::STATUS_PENDING,
 			self::STATUS_FAILED,
@@ -968,30 +1087,28 @@ class Form_Notifier {
 			self::STATUS_CLAIMED,
 		);
 
-		while ( count( $out ) < $max && $page < self::MAX_SCAN / $size ) {
-			$posts = get_posts(
-				array(
-					'post_type'      => Form_Post_Types::ENTRY,
-					'post_status'    => array( 'publish', 'draft', 'pending', 'private' ),
-					'posts_per_page' => $size,
-					'offset'         => $page * $size,
-					'orderby'        => 'date',
-					'order'          => 'ASC',
-					'fields'         => 'ids',
-					'meta_query'     => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
-						array(
-							'key'     => $key,
-							'compare' => 'EXISTS',
-						),
-					),
-				)
-			);
+		$found    = array();
+		$examined = 0;
+		$cursor   = self::cursor_value( $kind );
+		$last     = $cursor;
+		$wrapped  = false;
+		$now      = time();
 
-			if ( empty( $posts ) ) {
-				break;
-			}
+		while ( $examined < self::MAX_SCAN && count( $found ) < $max ) {
+			$page = self::scan_page( $key, $last, self::PAGE_SIZE );
 
-			foreach ( (array) $posts as $post_id ) {
+			$at_end = ( count( $page ) < self::PAGE_SIZE );
+
+			foreach ( $page as $post_id ) {
+				$examined++;
+				$last = (int) $post_id;
+
+				if ( $wrapped && $last >= $cursor ) {
+					// The wrap has come back to where this run started: the whole
+					// table has been covered.
+					break 2;
+				}
+
 				$state = Submission_Store::notification_state( (int) $post_id, $kind );
 
 				if ( null === $state['record'] ) {
@@ -1014,21 +1131,116 @@ class Form_Notifier {
 					}
 				}
 
-				$out[] = (int) $post_id;
+				$found[] = (int) $post_id;
 
-				if ( count( $out ) >= $max ) {
+				if ( count( $found ) >= $max ) {
 					break;
 				}
 			}
 
-			if ( count( $posts ) < $size ) {
+			if ( count( $found ) >= $max || $examined >= self::MAX_SCAN ) {
 				break;
 			}
 
-			$page++;
+			if ( $at_end ) {
+				// The end of the table. If this run started in the middle, wrap
+				// around to the beginning and finish the rotation.
+				if ( ! $wrapped && $cursor > 0 ) {
+					$wrapped = true;
+					$last    = 0;
+					continue;
+				}
+
+				break;
+			}
 		}
 
-		return $out;
+		self::set_cursor_value( $kind, $last );
+
+		return $found;
+	}
+
+	/**
+	 * One page of entries that carry a notification record.
+	 *
+	 * Ordered by id and filtered by id, so the scan can resume exactly where
+	 * the previous page stopped. The meta query is an `EXISTS` on the record's
+	 * own key, which is what keeps the page to the submissions that have one.
+	 *
+	 * @param string $key      The notification meta key.
+	 * @param int    $after_id Exclusive lower bound on the entry id.
+	 * @param int    $size     Page size.
+	 * @return array<int,int>
+	 */
+	private static function scan_page( $key, $after_id, $size ) {
+		global $wpdb;
+
+		// `WP_Query` has no native `ID >` operator: its `date_query` reads
+		// `after`/`before` as date strings, so handing it an entry id (as the
+		// earlier version of this code did) silently ignored the bound and
+		// returned the same first page on every run — the starvation bug this
+		// rotation exists to fix.
+		$bind = (int) $after_id;
+
+		$filter = static function ( $where ) use ( $wpdb, $bind ) {
+			if ( $bind > 0 ) {
+				$where .= $wpdb->prepare( ' AND ' . $wpdb->posts . '.ID > %d', $bind );
+			}
+
+			return $where;
+		};
+
+		add_filter( 'posts_where', $filter, 10 );
+
+		$args = array(
+			'post_type'      => Form_Post_Types::ENTRY,
+			'post_status'    => array( 'publish', 'draft', 'pending', 'private' ),
+			'posts_per_page' => (int) $size,
+			'orderby'        => 'ID',
+			'order'          => 'ASC',
+			'fields'         => 'ids',
+			'suppress_filters' => false,
+			'meta_query'     => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
+				array(
+					'key'     => $key,
+					'compare' => 'EXISTS',
+				),
+			),
+		);
+
+		$posts = get_posts( $args );
+
+		remove_filter( 'posts_where', $filter, 10 );
+
+		return array_map( 'intval', (array) $posts );
+	}
+
+	/**
+	 * The id the next run of this kind continues from.
+	 *
+	 * @param string $kind Kind.
+	 * @return int
+	 */
+	private static function cursor_value( $kind ) {
+		$stored = get_option( self::CURSOR_OPTION, array() );
+		$stored = is_array( $stored ) ? $stored : array();
+
+		return isset( $stored[ $kind ] ) ? (int) $stored[ $kind ] : 0;
+	}
+
+	/**
+	 * Remember where this kind's scan stopped.
+	 *
+	 * @param string $kind Kind.
+	 * @param int    $id   The last entry id examined.
+	 * @return void
+	 */
+	private static function set_cursor_value( $kind, $id ) {
+		$stored = get_option( self::CURSOR_OPTION, array() );
+		$stored = is_array( $stored ) ? $stored : array();
+		$stored[ $kind ] = (int) $id;
+
+		update_option( self::CURSOR_OPTION, $stored, false );
 	}
 
 	/**
@@ -1046,6 +1258,14 @@ class Form_Notifier {
 
 		if ( is_wp_error( $record ) ) {
 			return null;
+		}
+
+		// What the submission was accepted under. A form that has been
+		// republished since must not change who receives this message.
+		$snapshot = Submission_Store::notification_snapshot( (int) $submission_id );
+
+		if ( is_array( $snapshot ) && ! empty( $snapshot ) ) {
+			return self::definition_from_snapshot( $snapshot );
 		}
 
 		$post_id = Form_Definition::resolve_post_id( (string) $record['form_id'] );

@@ -167,7 +167,88 @@ class Submission_Handler {
 
 		if ( function_exists( 'add_filter' ) ) {
 			add_filter( 'rest_post_dispatch', array( __CLASS__, 'no_store' ), 10, 3 );
+
+			// The size of the request is decided before anything decodes it.
+			// `rest_pre_dispatch` runs before WordPress parses the JSON body
+			// (the parse happens when the route's parameters are validated,
+			// which is later), so an oversized request is refused here —
+			// before the decoder is invoked, and before the body is parsed
+			// into memory.
+			add_filter( 'rest_pre_dispatch', array( __CLASS__, 'pre_dispatch' ), 10, 3 );
 		}
+	}
+
+	/**
+	 * Refuse an oversized request before the body is decoded.
+	 *
+	 * @param mixed $result  The pre-dispatch result, or null.
+	 * @param mixed $server  The server (unused).
+	 * @param mixed $request The request.
+	 * @return mixed
+	 */
+	public static function pre_dispatch( $result, $server = null, $request = null ) {
+		unset( $server );
+
+		if ( null !== $result ) {
+			return $result;
+		}
+
+		if ( ! is_object( $request ) || ! method_exists( $request, 'get_body' ) ) {
+			return $result;
+		}
+
+		if ( ! self::is_submit_request( $request ) ) {
+			return $result;
+		}
+
+		$raw = (string) $request->get_body();
+
+		if ( strlen( $raw ) <= self::MAX_BODY_BYTES ) {
+			return $result;
+		}
+
+		self::log( '', 'too_large', array( 'body' ) );
+
+		return self::refuse(
+			'form_rejected',
+			__( 'This submission was not accepted.', 'agentshell-forms' ),
+			413
+		);
+	}
+
+	/**
+	 * Is this request for the submission route?
+	 *
+	 * The route is not matched yet when `rest_pre_dispatch` runs, so the path
+	 * is what the request is identified by.
+	 *
+	 * @param mixed $request The request.
+	 * @return bool
+	 */
+	private static function is_submit_request( $request ) {
+		$route = method_exists( $request, 'get_route' ) ? (string) $request->get_route() : '';
+
+		if ( '' === $route && method_exists( $request, 'get_uri' ) ) {
+			$uri  = (string) $request->get_uri();
+			$path = (string) wp_parse_url( $uri, PHP_URL_PATH );
+
+			$route = '' !== $path ? $path : $uri;
+		}
+
+		$needle = self::REST_NAMESPACE . self::ROUTE;
+
+		if ( '' === $route ) {
+			return false;
+		}
+
+		if ( $route === '/' . $needle ) {
+			return true;
+		}
+
+		// The tail, for a request whose path carries a subdirectory.
+		$length = strlen( $needle );
+
+		return strlen( $route ) > $length && substr( $route, -$length ) === $needle;
 	}
 
 	/**
@@ -214,18 +295,28 @@ class Submission_Handler {
 	 * @return \WP_REST_Response
 	 */
 	public static function handle( $request ) {
-		$body = self::json_body( $request );
+		// The size of the request is decided **before** the body is decoded.
+		//
+		// Decoding first meant that an oversized body was parsed in full —
+		// allocated, decoded, and only then measured — so the limit was a
+		// statement about what the server was willing to keep, not about what
+		// it was willing to spend. A body that is both oversized and malformed
+		// was answered `400` (it failed to parse) instead of `413` (it was
+		// too large), which is the wrong order of questions.
+		$raw = self::raw_body( $request );
+
+		if ( strlen( $raw ) > self::MAX_BODY_BYTES ) {
+			self::log( '', 'too_large', array( 'body' ) );
+
+			return self::refuse( 'form_rejected', __( 'This submission was not accepted.', 'agentshell-forms' ), 413 );
+		}
+
+		$body = self::json_body( $request, $raw );
 
 		if ( null === $body ) {
 			self::log( '', 'malformed', array( 'not_json' ) );
 
 			return self::refuse( 'form_rejected', __( 'This submission was not accepted.', 'agentshell-forms' ), 400 );
-		}
-
-		if ( strlen( self::raw_body( $request ) ) > self::MAX_BODY_BYTES ) {
-			self::log( '', 'too_large', array( 'body' ) );
-
-			return self::refuse( 'form_rejected', __( 'This submission was not accepted.', 'agentshell-forms' ), 413 );
 		}
 
 		$form_id = isset( $body['form_id'] ) && is_string( $body['form_id'] ) ? $body['form_id'] : '';
@@ -436,6 +527,16 @@ class Submission_Handler {
 			return $outcome;
 		}
 
+		// Belt and braces: the claim succeeded, so the token was unspent, but a
+		// submission for it may still exist from an earlier attempt whose link
+		// failed. One challenge may produce one submission, so an existing one
+		// is reconciled rather than duplicated.
+		$existing = self::reconcile_submission( $challenge );
+
+		if ( $existing > 0 ) {
+			return self::success_response( $definition, false );
+		}
+
 		$notification = null;
 		if ( ! empty( $definition['settings']['notification']['enabled'] ) ) {
 			$notification = Form_Notifier::initial_record( 'admin' );
@@ -476,6 +577,10 @@ class Submission_Handler {
 				'challenge'    => hash( 'sha256', $challenge ),
 				'notification' => $notification,
 				'confirmation' => $confirmation,
+				// What this submission was accepted under. A retry composes
+				// the message from this, so a form republished in the meantime
+				// cannot redirect it to a different recipient.
+				'notification_snapshot' => Form_Notifier::snapshot( $definition ),
 			)
 		);
 
@@ -526,14 +631,16 @@ class Submission_Handler {
 	 * @param mixed $request The request.
 	 * @return array|null
 	 */
-	private static function json_body( $request ) {
+	private static function json_body( $request, $raw = null ) {
 		if ( is_object( $request ) && method_exists( $request, 'get_json_params' ) ) {
 			$params = $request->get_json_params();
 
 			return is_array( $params ) ? $params : null;
 		}
 
-		$raw = self::raw_body( $request );
+		if ( null === $raw ) {
+			$raw = self::raw_body( $request );
+		}
 
 		if ( '' === $raw ) {
 			return null;
@@ -685,6 +792,23 @@ class Submission_Handler {
 				return self::success_response( $definition, false );
 
 			case 'pending':
+				// The challenge is claimed but the row does not point at a
+				// submission. That is what a **failed link** leaves behind:
+				// the submission was written, and the bookkeeping that ties it
+				// to the token was not.
+				//
+				// The submission is found by the hash of the token that
+				// produced it, linked, and the visitor is answered with the
+				// success they are owed. Without this, the retry would be told
+				// to wait, then handed a fresh token, and the fresh token
+				// would create a *second* copy of a message the site already
+				// holds.
+				$existing = self::reconcile_submission( $challenge );
+
+				if ( $existing > 0 ) {
+					return self::success_response( $definition, false );
+				}
+
 				return self::pending_response( $inspection, $form_id, $current, $definition );
 
 			case 'expired':
@@ -758,6 +882,35 @@ class Submission_Handler {
 	 * @param string $form_id    Form id.
 	 * @param int    $current    Version.
 	 * @param array  $definition Definition.
+	 * @return \WP_REST_Response
+	 */
+	private static function reconcile_submission( $challenge ) {
+		$challenge = (string) $challenge;
+
+		if ( '' === $challenge ) {
+			return 0;
+		}
+
+		$entry = Submission_Store::find_by_challenge( hash( 'sha256', $challenge ) );
+
+		if ( $entry < 1 ) {
+			return 0;
+		}
+
+		// The link is the repairable part: the submission is the part that
+		// matters, and it is already stored.
+		Form_Challenges::link( $challenge, $entry );
+
+		return $entry;
+	}
+
+	/**
+	 * Answer a submission that is already stored.
+	 *
+	 * @param array $inspection The challenge inspection.
+	 * @param string $form_id   The form identifier.
+	 * @param int    $current   The current published version.
+	 * @param array $definition The published definition.
 	 * @return \WP_REST_Response
 	 */
 	private static function pending_response( array $inspection, $form_id, $current, array $definition ) {

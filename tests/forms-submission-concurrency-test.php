@@ -160,6 +160,16 @@ function fsx_spawn( array $config, $label, $index, $mode, array $args ) {
 }
 
 /**
+ * Open one contender's barrier, without waiting for it.
+ *
+ * @param array $handle The handle.
+ * @return void
+ */
+function fsx_open( array $handle ) {
+    file_put_contents( $handle['base'] . '.go', '1' );
+}
+
+/**
  * Open the barrier and collect every report.
  *
  * @param array $handles Handles.
@@ -311,6 +321,7 @@ $quota_tokens  = (array) $prep['quota_tokens'];
 
 $notify_form  = (string) $prep['notify']['form_id'];
 $notify_entry = (int) $prep['notify_entry'];
+$notify_two   = (int) ( $prep['notify_entry_two'] ?? 0 );
 
 $mail_log = $tmp . '/as-fsx-mail-' . $run_id . '.log';
 @unlink( $mail_log );
@@ -355,6 +366,56 @@ for ( $i = 0; $i < 2; $i++ ) {
 $race_c = fsx_release( $handles );
 
 $mail_lines = is_file( $mail_log ) ? file( $mail_log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES ) : array();
+
+// ══ D — an older worker must not overwrite a newer worker's settlement ═════
+//
+// Worker A claims the notification and is slow in the transport. Its claim
+// expires, worker B takes the record over, sends and settles it. A then
+// finishes and tries to settle a record it no longer owns.
+//
+// A's settlement must not land. With a settlement that re-read the row and
+// used *that* as its expectation, A's write would be guarded on B's bytes,
+// would succeed, and would replace B's settlement with A's.
+//
+// The two workers are separate processes: the claim, the takeover and the
+// late settlement all happen in different operating-system processes with
+// their own MySQL connections.
+
+$handles = array();
+$handles[] = fsx_spawn( $config, 'slow', 0, 'notify_slow', array( $notify_two, $mail_log, '15000' ) );
+
+// A starts now: it must claim the record and then be slow inside the
+// transport, so that its claim can expire while it is still working.
+fsx_open( $handles[0] );
+
+// Wait until A really holds the claim, then let it expire.
+$deadline = microtime( true ) + 60;
+$claimed  = false;
+
+while ( microtime( true ) < $deadline ) {
+    $state = fsx_run_one( $config, 'verify_notification', array( $notify_two ) );
+
+    if ( isset( $state['notification']['status'] ) && 'claimed' === (string) $state['notification']['status'] ) {
+        $claimed = true;
+        break;
+    }
+
+    usleep( 100000 );
+}
+
+// The claim lives for two seconds (the child's filter), so two and a half
+// seconds later it is expired and B may take it over.
+sleep( 3 );
+
+$handles_b = array();
+$handles_b[] = fsx_spawn( $config, 'fast', 0, 'notify', array( $notify_two, $mail_log ) );
+
+$race_d = fsx_release( $handles_b );
+
+// A is still inside its transport; wait for it to finish and settle.
+$race_d_slow = fsx_release( $handles );
+
+$final = fsx_run_one( $config, 'verify_notification', array( $notify_two ) );
 
 // ══ verification ═════════════════════════════════════════════════════════════
 
@@ -469,6 +530,53 @@ Agentshell_Test::run(
 
         Agentshell_Test::assert_equals( 'accepted', (string) $settled[0]['entry']['status'], 'the record is settled as accepted' );
         Agentshell_Test::assert_equals( 1, (int) $settled[0]['entry']['attempts'], 'one attempt is counted, not two' );
+    }
+);
+
+Agentshell_Test::run(
+    'D: the older worker does not overwrite the newer worker\'s settlement',
+    function () use ( $race_d, $race_d_slow, $final ) {
+        $slow = fsx_reports( $race_d_slow );
+        $fast = fsx_reports( $race_d );
+
+
+
+        Agentshell_Test::assert_equals( 1, count( $slow ), 'the slow worker must report: ' . fsx_summary( $race_d_slow ) );
+        Agentshell_Test::assert_equals( 1, count( $fast ), 'the taking worker must report: ' . fsx_summary( $race_d ) );
+
+        $fast_report = $fast[0];
+
+        Agentshell_Test::assert_equals(
+            'accepted',
+            (string) ( $fast_report['outcome'] ?? '' ),
+            'the worker that took the record over sends and settles it: ' . fsx_summary( $race_d )
+        );
+
+        $slow_report = $slow[0];
+
+        Agentshell_Test::assert_equals(
+            'contended',
+            (string) ( $slow_report['outcome'] ?? '' ),
+            'the older worker finds the record it claimed has moved on, and its write does not land: ' . fsx_summary( $race_d_slow )
+        );
+
+        $record = (array) ( $final['notification'] ?? array() );
+
+        Agentshell_Test::assert_equals(
+            'accepted',
+            (string) ( $record['status'] ?? '' ),
+            'the record still holds the newer worker\'s settlement'
+        );
+        Agentshell_Test::assert_equals(
+            2,
+            (int) ( $record['attempts'] ?? 0 ),
+            'the attempts counted are the newer worker\'s: the older worker\'s settlement did not replace them'
+        );
+        Agentshell_Test::assert_equals(
+            (string) ( $fast_report['entry']['message_id'] ?? '' ),
+            (string) ( $record['message_id'] ?? '' ),
+            'the message id is the newer worker\'s'
+        );
     }
 );
 

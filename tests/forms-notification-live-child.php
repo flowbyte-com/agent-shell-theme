@@ -679,10 +679,234 @@ probe(
     )
 );
 
+// ══ a form republished under a different recipient list ═══════════════════
+//
+// A submission is notified under the settings it was accepted with. A form
+// that is republished with a different recipient list in between must not
+// redirect an old message: the person who was promised the message is the one
+// who receives it.
+
+$host_r = (string) wp_parse_url( home_url(), PHP_URL_HOST );
+$to_a   = 'desk-a@' . $host_r;
+$to_b   = 'desk-b@' . $host_r;
+
+$form_recipients = asn_real_form( 'Recipients', array( 'recipients' => array( $to_a ) ) );
+$definition_a    = isset( $form_recipients['definition'] ) ? $form_recipients['definition'] : array();
+
+$entry_recipients = 0;
+
+if ( ! empty( $definition_a ) ) {
+    $created_recipients = Submission_Store::create(
+        array(
+            'form_id'      => (string) $form_recipients['form_id'],
+            'form_name'    => 'Recipients fixture',
+            'form_version' => (int) $form_recipients['version'],
+            'fields'       => asn_values(),
+            'spam_status'  => 'clean',
+            'meta'         => array( 'received_at' => gmdate( 'c' ) ),
+            'challenge'    => '',
+            'notification' => Form_Notifier::initial_record( 'admin' ),
+            'confirmation' => null,
+            // What it was accepted under.
+            'notification_snapshot' => Form_Notifier::snapshot( $definition_a ),
+        )
+    );
+
+    if ( ! is_wp_error( $created_recipients ) ) {
+        $entry_recipients = (int) $created_recipients['post_id'];
+    }
+
+    // Republish the form with the other recipient.
+    $definition_b              = $definition_a;
+    $definition_b['settings']['notification']['recipients'] = array( $to_b );
+
+    $state_before = Form_Definition::get( (string) $form_recipients['form_id'] );
+    $updated      = Form_Definition::update_working(
+        (string) $form_recipients['form_id'],
+        $definition_b,
+        is_array( $state_before ) ? (int) $state_before['revision'] : 0,
+        1
+    );
+
+    if ( ! is_wp_error( $updated ) ) {
+        Form_Definition::publish(
+            (string) $form_recipients['form_id'],
+            (int) ( $updated['revision'] ?? 0 ),
+            1
+        );
+    }
+}
+
+asn_reset( 'ok' );
+$run_recipients = Form_Notifier::run_due( 'admin' );
+$mails_recipients = asn_mails();
+
+$sent_to = array();
+
+foreach ( $mails_recipients as $mail ) {
+    $sent_to[] = is_array( $mail['to'] ) ? implode( ',', $mail['to'] ) : (string) $mail['to'];
+}
+
+probe(
+    'republished',
+    array(
+        'entry'       => $entry_recipients,
+        'to_a'        => $to_a,
+        'to_b'        => $to_b,
+        'recipients'  => $sent_to,
+        'sent_to_a'   => in_array( $to_a, $sent_to, true ),
+        'sent_to_b'   => in_array( $to_b, $sent_to, true ),
+    )
+);
+
+// ══ the retry worker must not be starved by settled records ═══════════════
+//
+// The scan is bounded, so on an installation with a long history the window
+// fills with records that were settled long ago. If the window always started
+// at the oldest record, a notification that became due behind them would
+// never be examined at all.
+
+global $wpdb;
+
+$settled_count = 2001;
+$settled_ids   = array();
+$when          = gmdate( 'Y-m-d H:i:s', time() - 10 * DAY_IN_SECONDS );
+$settled_body  = wp_json_encode(
+    array(
+        'kind'            => 'admin',
+        'status'          => 'accepted',
+        'attempts'        => 1,
+        'next_attempt_at' => null,
+        'claimed_at'      => null,
+        'claimed_by'      => null,
+        'last_error'      => null,
+        'accepted_at'     => gmdate( 'c' ),
+        'message_id'      => '<settled@example.test>',
+    )
+);
+
+for ( $i = 0; $i < $settled_count; $i++ ) {
+    $wpdb->insert(
+        $wpdb->posts,
+        array(
+            'post_type'         => Form_Post_Types::ENTRY,
+            'post_status'       => 'publish',
+            'post_title'        => 'Settled notification ' . $i,
+            'post_content'      => '',
+            'post_author'       => 0,
+            'post_name'         => '',
+            'post_date'         => $when,
+            'post_date_gmt'     => $when,
+            'post_modified'     => $when,
+            'post_modified_gmt' => $when,
+            'post_parent'       => 0,
+            'guid'              => '',
+            'comment_status'    => 'closed',
+            'ping_status'       => 'closed',
+        )
+    );
+
+    $settled_id = (int) $wpdb->insert_id;
+
+    if ( $settled_id > 0 ) {
+        $wpdb->insert(
+            $wpdb->postmeta,
+            array(
+                'post_id'    => $settled_id,
+                'meta_key'   => Submission_Store::META_NOTIFICATION,
+                'meta_value' => $settled_body,
+            )
+        );
+
+        $settled_ids[] = $settled_id;
+    }
+}
+
+// The pending notification, behind all of them.
+$real_form = asn_real_form( 'Starvation' );
+$pending_id = 0;
+
+if ( ! empty( $real_form['form_id'] ) ) {
+    $created_pending = Submission_Store::create(
+        array(
+            'form_id'      => (string) $real_form['form_id'],
+            'form_name'    => 'Starvation fixture',
+            'form_version' => (int) $real_form['version'],
+            'fields'       => asn_values(),
+            'spam_status'  => 'clean',
+            'meta'         => array( 'received_at' => gmdate( 'c' ) ),
+            'challenge'    => '',
+            'notification' => Form_Notifier::initial_record( 'admin' ),
+            'confirmation' => null,
+        )
+    );
+
+    if ( ! is_wp_error( $created_pending ) ) {
+        $pending_id = (int) $created_pending['post_id'];
+    }
+}
+
+// The scan starts from the beginning, so the fixture is deterministic.
+delete_option( 'agentshell_forms_notification_cursor' );
+
+
+
+$starvation_runs   = array();
+$starvation_status = array();
+
+delete_option( 'agentshell_forms_notification_cursor' );
+
+$starvation_runs   = array();
+$starvation_status = array();
+
+for ( $run = 1; $run <= 3; $run++ ) {
+    $result = Form_Notifier::run_due( 'admin' );
+
+    $starvation_runs[] = (int) $result['attempted'];
+
+    $state = $pending_id > 0 ? Submission_Store::notification_state( $pending_id, 'admin' ) : array( 'record' => null );
+    $record = is_array( $state['record'] ) ? $state['record'] : array();
+
+    $starvation_status[] = (string) ( $record['status'] ?? '' );
+
+    if ( 'accepted' === (string) ( $record['status'] ?? '' ) ) {
+        break;
+    }
+}
+
+file_put_contents( '/tmp/opencode/starve.txt', 'after all runs: cursor=' . var_export( get_option( 'agentshell_forms_notification_cursor' ), true ) . ' pending_status=' . ( $pending_id > 0 ? Submission_Store::notification_state( $pending_id, 'admin' )['record']['status'] : 'none' ) . "\n", FILE_APPEND );
+
+delete_option( 'agentshell_forms_notification_cursor' );
+
+probe(
+    'starvation',
+    array(
+        'settled'    => count( $settled_ids ),
+        'pending_id' => $pending_id,
+        'runs'       => $starvation_runs,
+        'statuses'   => $starvation_status,
+        'processed'  => in_array( 'accepted', $starvation_status, true ),
+    )
+);
+
+// The settled records are fixtures, not submissions: they are removed here so
+// the suite leaves nothing behind.
+foreach ( $settled_ids as $settled_id ) {
+    wp_delete_post( (int) $settled_id, true );
+}
+
 // ══ cleanup ═════════════════════════════════════════════════════════════════
 
 foreach ( $mine['posts'] as $post_id ) {
     wp_delete_post( (int) $post_id, true );
+}
+
+if ( $pending_id > 0 ) {
+    wp_delete_post( (int) $pending_id, true );
+}
+
+if ( $entry_recipients > 0 ) {
+    wp_delete_post( (int) $entry_recipients, true );
 }
 
 probe(

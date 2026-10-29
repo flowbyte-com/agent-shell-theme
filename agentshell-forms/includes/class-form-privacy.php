@@ -107,8 +107,18 @@ class Form_Privacy {
 	 */
 	public static function export( $email_address, $page = 1 ) {
 		$page = max( 1, (int) $page );
-		$all  = Submission_Store::find_by_email( (string) $email_address, 1000 );
 
+		// The complete match set, not the newest thousand.
+		//
+		// The previous implementation asked the store for the newest 1,000
+		// submissions and sliced that. Two things were wrong with it: a match
+		// older than that window was invisible to a subject-access request,
+		// and the window was a *moving* one, so the same submission could
+		// appear on two pages or on none.
+		//
+		// The export does not delete anything, so the match set does not change
+		// while it is being read: slicing it by page is stable.
+		$all   = Submission_Store::find_by_email( (string) $email_address );
 		$slice = array_slice( $all, ( $page - 1 ) * self::PER_PAGE, self::PER_PAGE );
 		$data  = array();
 
@@ -176,9 +186,24 @@ class Form_Privacy {
 	 * @return array{items_removed:bool,items_retained:bool,messages:array<int,string>,done:bool}
 	 */
 	public static function erase( $email_address, $page = 1 ) {
-		$page  = max( 1, (int) $page );
-		$all   = Submission_Store::find_by_email( (string) $email_address, 1000 );
-		$slice = array_slice( $all, ( $page - 1 ) * self::PER_PAGE, self::PER_PAGE );
+		$page = max( 1, (int) $page );
+
+		// The traversal is **deletion-safe**: it always works on the first
+		// page of what is *left*, never on an offset into a shrinking set.
+		//
+		// The previous implementation took an offset that grew with the page
+		// number while the set it indexed into shrank by exactly what the
+		// previous page had deleted. Erasing 120 matching submissions over
+		// three pages therefore erased 70 of them: the third page asked for
+		// entries 101-150 of a set that now held 50, and answered "nothing
+		// left", while 50 submissions the subject had asked to erase were
+		// still on the site.
+		//
+		// Every call now removes the first page of the remaining matches, so
+		// the set shrinks under the traversal and nothing is skipped. A
+		// repeated call finds what is left and finishes it.
+		$all   = Submission_Store::find_by_email( (string) $email_address );
+		$slice = array_slice( $all, 0, self::PER_PAGE );
 
 		$removed  = 0;
 		$retained = 0;

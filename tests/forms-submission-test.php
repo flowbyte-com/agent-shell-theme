@@ -561,6 +561,85 @@ Agentshell_Test::run(
     }
 );
 
+// ══ a link that failed is reconciled, not duplicated ══════════════════════
+
+Agentshell_Test::run(
+    'a submission whose link failed is reconciled by the retry, and is not duplicated',
+    function () use ( $p ) {
+        Agentshell_Test::assert_equals( 200, asf3r( $p, 'link_failure', 'first_status' ), 'the first attempt is accepted' );
+        Agentshell_Test::assert_equals( 1, asf3r( $p, 'link_failure', 'first_entries' ), 'the submission is stored' );
+
+        // The retry is the visitor's second attempt with the same token: the
+        // response was lost, and the link never happened.
+        Agentshell_Test::assert_equals(
+            200,
+            asf3r( $p, 'link_failure', 'retry_status' ),
+            'the retry is answered with the success the visitor is owed, not with a fresh challenge'
+        );
+        Agentshell_Test::assert_true( asf3r( $p, 'link_failure', 'retry_ok' ), 'the retry says it succeeded' );
+        Agentshell_Test::assert_equals(
+            1,
+            asf3r( $p, 'link_failure', 'retry_entries' ),
+            'exactly one submission may exist for one challenge'
+        );
+        Agentshell_Test::assert_equals(
+            asf3r( $p, 'link_failure', 'stored_id' ),
+            asf3r( $p, 'link_failure', 'linked_now' ),
+            'the challenge is linked to the submission that was already stored'
+        );
+    }
+);
+
+// ══ the request size is decided before the body is decoded ════════════════
+
+Agentshell_Test::run(
+    'an oversized request is refused as too large, whatever its content',
+    function () use ( $p ) {
+        Agentshell_Test::assert_equals(
+            413,
+            asf3r( $p, 'body_size', 'malformed_oversized_status' ),
+            'a body that is both oversized and malformed is too large, not malformed: the size is decided first'
+        );
+        Agentshell_Test::assert_equals(
+            'form_rejected',
+            asf3r( $p, 'body_size', 'malformed_oversized_code' ),
+            'the refusal is the generic one'
+        );
+    }
+);
+
+// ══ the source hash is accounting, not a binding ═════════════════════════
+
+Agentshell_Test::run(
+    'a challenge is not bound to the address that minted it',
+    function () use ( $p ) {
+        Agentshell_Test::assert_equals( 200, asf3r( $p, 'source_binding', 'mint_status' ), 'the token is minted' );
+        Agentshell_Test::assert_equals(
+            200,
+            asf3r( $p, 'source_binding', 'submit_status' ),
+            'the token may be presented from another address: it is the credential, and it is single-use'
+        );
+        Agentshell_Test::assert_true( asf3r( $p, 'source_binding', 'submit_ok' ), 'the submission is accepted' );
+        Agentshell_Test::assert_true( asf3r( $p, 'source_binding', 'stored_present' ), 'the row records a source hash' );
+        Agentshell_Test::assert_true(
+            asf3r( $p, 'source_binding', 'stored_matches' ),
+            'the recorded hash is the HMAC of the address that minted the token — the rate-limit key, not a binding'
+        );
+    }
+);
+
+// ══ the submission carries what it was accepted under ═════════════════════
+
+Agentshell_Test::run(
+    'a submission records the notification settings it was accepted under',
+    function () use ( $p ) {
+        Agentshell_Test::assert_true( asf3r( $p, 'snapshot', 'has_snapshot' ), 'the snapshot is stored' );
+        Agentshell_Test::assert_true( asf3r( $p, 'snapshot', 'has_name' ), 'the snapshot names the form' );
+        Agentshell_Test::assert_true( asf3r( $p, 'snapshot', 'has_fields' ), 'the snapshot carries the field list' );
+        Agentshell_Test::assert_true( asf3r( $p, 'snapshot', 'has_settings' ), 'the snapshot carries the notification settings' );
+    }
+);
+
 // ══ cleanup ══════════════════════════════════════════════════════════════════
 
 Agentshell_Test::run(

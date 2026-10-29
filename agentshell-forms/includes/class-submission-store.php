@@ -89,6 +89,15 @@ class Submission_Store {
 	const META_CHALLENGE = '_agentshell_form_challenge';
 
 	/**
+	 * The notification settings the submission was accepted under.
+	 *
+	 * A retry composes the message from this, not from the form's current
+	 * published definition: a form republished with a different recipient list
+	 * must not receive an old submission.
+	 */
+	const META_NOTIFICATION_SNAPSHOT = '_agentshell_form_notification_snapshot';
+
+	/**
 	 * The option holding the site-wide retention default, in days.
 	 */
 	const OPTION_RETENTION_DAYS = 'agentshell_forms_retention_days';
@@ -97,6 +106,11 @@ class Submission_Store {
 	 * The default retention period when the site has not set one (§6.4).
 	 */
 	const DEFAULT_RETENTION_DAYS = 90;
+
+	/**
+	 * How many submissions one page of a scan reads.
+	 */
+	const SCAN_PAGE = 200;
 
 	/**
 	 * The largest stored payload, in bytes. A submission larger than this is
@@ -121,6 +135,7 @@ class Submission_Store {
 			self::META_NOTIFICATION_CONFIRMATION,
 			self::META_HASH,
 			self::META_CHALLENGE,
+			self::META_NOTIFICATION_SNAPSHOT,
 		);
 	}
 
@@ -204,6 +219,7 @@ class Submission_Store {
 		$form_name    = isset( $args['form_name'] ) ? (string) $args['form_name'] : '';
 		$notification = isset( $args['notification'] ) && is_array( $args['notification'] ) ? $args['notification'] : null;
 		$confirmation = isset( $args['confirmation'] ) && is_array( $args['confirmation'] ) ? $args['confirmation'] : null;
+		$snapshot     = isset( $args['notification_snapshot'] ) && is_array( $args['notification_snapshot'] ) ? $args['notification_snapshot'] : null;
 
 		if ( ! in_array( $spam, array( 'clean', 'spam', 'unverified' ), true ) ) {
 			$spam = 'clean';
@@ -244,6 +260,10 @@ class Submission_Store {
 
 		if ( null !== $confirmation ) {
 			$rows[ self::META_NOTIFICATION_CONFIRMATION ] = (string) wp_json_encode( $confirmation );
+		}
+
+		if ( null !== $snapshot ) {
+			$rows[ self::META_NOTIFICATION_SNAPSHOT ] = (string) wp_json_encode( $snapshot );
 		}
 
 		$tables = array( $wpdb->posts, $wpdb->postmeta );
@@ -416,6 +436,24 @@ class Submission_Store {
 			$raw,
 			(int) $post_id
 		);
+	}
+
+	/**
+	 * The notification settings a submission was accepted under.
+	 *
+	 * @param int $post_id Entry id.
+	 * @return array The snapshot, or an empty array.
+	 */
+	public static function notification_snapshot( $post_id ) {
+		$row = Form_DB::read_one( (int) $post_id, self::META_NOTIFICATION_SNAPSHOT );
+
+		if ( 'one' !== $row['status'] ) {
+			return array();
+		}
+
+		$decoded = json_decode( (string) $row['value'], true );
+
+		return is_array( $decoded ) ? $decoded : array();
 	}
 
 	/**
@@ -725,38 +763,125 @@ class Submission_Store {
 	 * @param int    $limit Maximum records to return.
 	 * @return array<int,array>
 	 */
-	public static function find_by_email( $email, $limit = 500 ) {
+	public static function find_by_email( $email, $limit = 0 ) {
 		$email = strtolower( trim( (string) $email ) );
 
 		if ( '' === $email ) {
 			return array();
 		}
 
+		$limit = (int) $limit;
+		$found = array();
+		$after = 0;
+
+		// The **whole** table is scanned, in bounded pages ordered by id.
+		//
+		// The previous implementation read the newest few hundred submissions
+		// and stopped. On an installation with more submissions than that, a
+		// match older than the window was invisible: a subject-access request
+		// answered "nothing held", and an erasure request answered the same,
+		// for a submission the site still had.
+		//
+		// The pages are ordered and keyed by id, so the scan is stable while
+		// it runs, and it is bounded per page rather than per table.
+		while ( true ) {
+			global $wpdb;
+
+			$bind = (int) $after;
+
+			$filter = static function ( $where ) use ( $wpdb, $bind ) {
+				if ( $bind > 0 ) {
+					$where .= $wpdb->prepare( ' AND ' . $wpdb->posts . '.ID > %d', $bind );
+				}
+
+				return $where;
+			};
+
+			add_filter( 'posts_where', $filter, 10 );
+
+			$args = array(
+				'post_type'        => Form_Post_Types::ENTRY,
+				'post_status'      => array( 'publish', 'draft', 'pending', 'private', 'trash' ),
+				'posts_per_page'   => self::SCAN_PAGE,
+				'orderby'          => 'ID',
+				'order'            => 'ASC',
+				'fields'           => 'ids',
+				'suppress_filters' => false,
+			);
+
+			$posts = get_posts( $args );
+
+			remove_filter( 'posts_where', $filter, 10 );
+
+			if ( empty( $posts ) ) {
+				break;
+			}
+
+			foreach ( (array) $posts as $post_id ) {
+				$after = (int) $post_id;
+
+				$record = self::get( (int) $post_id, true );
+
+				if ( is_wp_error( $record ) || ! is_array( $record['values'] ) ) {
+					continue;
+				}
+
+				if ( self::values_contain( $record['values'], $email ) ) {
+					$found[] = $record;
+				}
+			}
+
+			if ( count( $posts ) < self::SCAN_PAGE ) {
+				break;
+			}
+
+			if ( $limit > 0 && count( $found ) >= $limit ) {
+				break;
+			}
+		}
+
+		if ( $limit > 0 && count( $found ) > $limit ) {
+			$found = array_slice( $found, 0, $limit );
+		}
+
+		return $found;
+	}
+
+	/**
+	 * The submission a challenge produced, if there is one.
+	 *
+	 * A challenge whose link failed leaves a stored submission that the
+	 * challenge row does not point at. This is how that submission is found
+	 * again: by the hash of the token that produced it.
+	 *
+	 * @param string $challenge_hash The SHA-256 of the challenge token.
+	 * @return int The entry id, or 0.
+	 */
+	public static function find_by_challenge( $challenge_hash ) {
+		$challenge_hash = (string) $challenge_hash;
+
+		if ( '' === $challenge_hash ) {
+			return 0;
+		}
+
 		$posts = get_posts(
 			array(
 				'post_type'      => Form_Post_Types::ENTRY,
 				'post_status'    => array( 'publish', 'draft', 'pending', 'private', 'trash' ),
-				'posts_per_page' => max( 1, (int) $limit ),
-				'orderby'        => 'date',
-				'order'          => 'DESC',
+				'posts_per_page' => 1,
+				'orderby'        => 'ID',
+				'order'          => 'ASC',
+				'fields'         => 'ids',
+				'meta_query'     => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
+					array(
+						'key'   => self::META_CHALLENGE,
+						'value' => $challenge_hash,
+					),
+				),
 			)
 		);
 
-		$found = array();
-
-		foreach ( (array) $posts as $post ) {
-			$record = self::get( (int) $post->ID, true );
-
-			if ( is_wp_error( $record ) || ! is_array( $record['values'] ) ) {
-				continue;
-			}
-
-			if ( self::values_contain( $record['values'], $email ) ) {
-				$found[] = $record;
-			}
-		}
-
-		return $found;
+		return empty( $posts ) ? 0 : (int) $posts[0];
 	}
 
 	/**
