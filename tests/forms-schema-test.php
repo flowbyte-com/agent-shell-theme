@@ -1204,8 +1204,9 @@ Agentshell_Test::run(
         // The plugin registers no MCP tool. It renders for a visitor (Phase 2),
         // it accepts a submission and sends mail (Phase 3), and each of those
         // is a named, single place rather than something any file may do. A
-        // second shortcode, a second mail call site or a third REST route would
-        // be a public surface nobody decided to add.
+        // second shortcode, a second mail call site or a REST route outside the
+        // three named surfaces (mint, submission, builder) would be a public
+        // surface nobody decided to add.
         $shortcode_files = array();
         $mail_files      = array();
         $route_files     = array();
@@ -1257,14 +1258,14 @@ Agentshell_Test::run(
             'exactly one file sends mail'
         );
 
-        $expected_routes = array( 'class-form-challenge-endpoint.php', 'class-submission-handler.php' );
+        $expected_routes = array( 'class-form-challenge-endpoint.php', 'class-form-rest.php', 'class-submission-handler.php' );
         sort( $expected_routes );
         sort( $route_files );
 
         Agentshell_Test::assert_equals(
             $expected_routes,
             $route_files,
-            'exactly two files register a REST route: the mint and the submission'
+            'exactly three files register a REST route: the mint, the submission and the builder controller'
         );
     }
 );
