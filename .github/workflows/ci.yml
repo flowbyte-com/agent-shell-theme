@@ -94,6 +94,13 @@ jobs:
       - name: Documentation gates
         run: php tests/doc-consistency-test.php
 
+      # An external sync client that resolves a conflict by replacing a
+      # tracked file with a "[conflicted]" copy turns `git add -A` into a
+      # silent deletion. The guard refuses the tree before any of that can
+      # reach a build.
+      - name: Sync-conflict guard
+        run: php tools/check-sync-conflicts.php
+
       # The deployment is a build, not a copy of the working tree. The
       # independent review of PR #16 found the test-bed profile readable
       # over HTTP at its path inside the theme, with a database password in

@@ -154,6 +154,40 @@ class Form_REST {
 
 		register_rest_route(
 			self::REST_NAMESPACE,
+			'/forms/(?P<id>[a-z0-9]+)/rename',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'rename_form' ),
+				'permission_callback' => function () use ( $cap ) {
+					return current_user_can( $cap );
+				},
+				'args'                => array(
+					'id' => array(
+						'sanitize_callback' => 'sanitize_key',
+					),
+				),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/forms/(?P<id>[a-z0-9]+)/duplicate',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'duplicate_form' ),
+				'permission_callback' => function () use ( $cap ) {
+					return current_user_can( $cap );
+				},
+				'args'                => array(
+					'id' => array(
+						'sanitize_callback' => 'sanitize_key',
+					),
+				),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
 			'/forms/(?P<id>[a-z0-9]+)/preview',
 			array(
 				'methods'             => 'POST',
@@ -181,7 +215,17 @@ class Form_REST {
 
 		$forms = array();
 
-		foreach ( Form_Definition::list() as $post ) {
+		$posts = get_posts(
+			array(
+				'post_type'      => Form_Post_Types::FORM,
+				'post_status'    => array( 'publish', 'draft', 'pending', 'private' ),
+				'posts_per_page' => -1,
+				'orderby'        => 'title',
+				'order'          => 'ASC',
+			)
+		);
+
+		foreach ( (array) $posts as $post ) {
 			$state = Form_Definition::get_by_post_id( (int) $post->ID );
 
 			if ( ! is_array( $state ) ) {
@@ -190,7 +234,7 @@ class Form_REST {
 
 			$forms[] = array(
 				'form_id'    => (string) ( $state['form_id'] ?? '' ),
-				'name'       => (string) ( $state['name'] ?? '' ),
+				'name'       => self::name_of( $state ),
 				'slug'       => (string) ( $state['slug'] ?? '' ),
 				'version'    => (int) ( $state['version'] ?? 0 ),
 				'revision'   => (int) ( $state['revision'] ?? 0 ),
@@ -227,7 +271,7 @@ class Form_REST {
 		return new \WP_REST_Response(
 			array(
 				'form_id'   => (string) ( $state['form_id'] ?? '' ),
-				'name'      => (string) ( $state['name'] ?? '' ),
+				'name'      => self::name_of( $state ),
 				'slug'      => (string) ( $state['slug'] ?? '' ),
 				'version'   => (int) ( $state['version'] ?? 0 ),
 				'revision'  => (int) ( $state['revision'] ?? 0 ),
@@ -254,6 +298,26 @@ class Form_REST {
 		}
 
 		$definition = Form_Schema::defaults( Form_Definition::new_form_id(), Form_Definition::sanitise_slug( $name ), $name );
+
+		// The schema requires between one and two hundred fields, so a form
+		// cannot be *stored* with none. The builder therefore starts with one
+		// field the operator can rename, retype or remove — a form created
+		// from nothing, rather than a form that cannot be saved until the
+		// second click.
+		$definition['fields'] = array(
+			array(
+				'key'      => 'name',
+				'type'     => 'text',
+				'label'    => __( 'Name', 'agentshell-forms' ),
+				'required' => true,
+				'settings' => array(
+					'max_length'   => 120,
+					'min_length'   => 0,
+					'autocomplete' => 'name',
+				),
+				'options'  => array(),
+			),
+		);
 
 		$created = Form_Definition::create(
 			array(
@@ -348,23 +412,86 @@ class Form_REST {
 	 */
 	public static function discard_form( $request ) {
 		$form_id = (string) $request->get_param( 'id' );
+		$body    = self::json( $request );
+		$expected = isset( $body['expected_revision'] ) ? (int) $body['expected_revision'] : null;
 
-		$result = Form_Definition::discard( $form_id, get_current_user_id() );
+		$result = Form_Definition::discard( $form_id, get_current_user_id(), $expected );
 
 		if ( is_wp_error( $result ) ) {
 			return $result;
 		}
 
-		$state = Form_Definition::get_by_post_id( Form_Definition::resolve_post_id( $form_id ) );
+		// Use the server's answer, not a client-side guess: the next save must
+		// carry the revision the discard actually produced.
+		return new \WP_REST_Response(
+			array(
+				'form_id'   => $form_id,
+				'revision'  => (int) ( $result['revision'] ?? 0 ),
+				'working'   => is_array( $result['working'] ) ? $result['working'] : null,
+				'published' => is_array( $result['published'] ) ? $result['published'] : null,
+				'version'   => (int) ( $result['version'] ?? 0 ),
+				'discarded' => true,
+			),
+			200
+		);
+	}
+
+	/**
+	 * Rename a form.
+	 *
+	 * @param \WP_REST_Request $request The request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public static function rename_form( $request ) {
+		$form_id = (string) $request->get_param( 'id' );
+		$body    = self::json( $request );
+		$name    = isset( $body['name'] ) ? sanitize_text_field( (string) $body['name'] ) : '';
+		$expected = isset( $body['expected_revision'] ) ? (int) $body['expected_revision'] : 0;
+
+		$result = Form_Definition::rename( $form_id, $name, $expected, get_current_user_id() );
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
 
 		return new \WP_REST_Response(
 			array(
 				'form_id'  => $form_id,
-				'revision' => (int) ( $state['revision'] ?? 0 ),
-				'working'  => is_array( $state['working'] ) ? $state['working'] : null,
-				'discarded' => true,
+				'name'     => $name,
+				'revision' => (int) ( $result['revision'] ?? 0 ),
 			),
 			200
+		);
+	}
+
+	/**
+	 * Duplicate a form.
+	 *
+	 * @param \WP_REST_Request $request The request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public static function duplicate_form( $request ) {
+		$form_id = (string) $request->get_param( 'id' );
+		$body    = self::json( $request );
+		$name    = isset( $body['name'] ) ? sanitize_text_field( (string) $body['name'] ) : '';
+
+		if ( '' === $name ) {
+			$name = __( 'Untitled copy', 'agentshell-forms' );
+		}
+
+		$result = Form_Definition::duplicate( $form_id, $name, get_current_user_id() );
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		return new \WP_REST_Response(
+			array(
+				'form_id'  => (string) ( $result['form_id'] ?? '' ),
+				'name'     => $name,
+				'revision' => (int) ( $result['revision'] ?? 0 ),
+			),
+			201
 		);
 	}
 
@@ -427,6 +554,28 @@ class Form_REST {
 		}
 
 		return new \WP_REST_Response( array( 'trashed' => true ), 200 );
+	}
+
+	/**
+	 * A form's display name.
+	 *
+	 * The name lives in the post title and in the working definition. The
+	 * definition is authoritative when it has one; the title is the fallback
+	 * for a document written by an older build.
+	 *
+	 * @param array $state The state from `Form_Definition::read_state()`.
+	 * @return string
+	 */
+	private static function name_of( array $state ) {
+		$working = isset( $state['working'] ) && is_array( $state['working'] ) ? $state['working'] : array();
+
+		if ( ! empty( $working['name'] ) ) {
+			return (string) $working['name'];
+		}
+
+		$post = get_post( (int) ( $state['post_id'] ?? 0 ) );
+
+		return $post instanceof \WP_Post ? (string) $post->post_title : '';
 	}
 
 	/**

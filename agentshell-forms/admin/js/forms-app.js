@@ -2,7 +2,7 @@
  * The application layer for the AgentShell Forms builder.
  *
  * The only module that knows both the models and the DOM. It owns the draft,
- * drives the transport, and updates the view.
+ * the form list, the in-flight snapshot and the truthful status.
  *
  * @package AgentShell_Forms
  */
@@ -12,10 +12,19 @@
 function FormsApp( root, api, model ) {
     this.root = root;
     this.api = api;
-    this.model = model;
+    this.model = model || null;
     this.ui = null;
+    this.forms = [];
+    this.selected = model ? model.id : '';
+    this.selected_field = null;
+    this.tab = 'notification';
+    this.preview_html = '';
     this.previewed = false;
-    this.preview_dirty = false;
+    this.error = '';
+    this.status = 'saved';
+    this.busy = false;
+    this.inflight = null;
+    this.pending = null;
 }
 
 FormsApp.prototype.init = function () {
@@ -25,179 +34,696 @@ FormsApp.prototype.init = function () {
         this.ui = new AgentshellFormsUi.FormsUi( this.root );
     }
 
-    this.render();
-
     this.root.addEventListener( 'click', function ( event ) {
-        var target = event.target;
-
-        if ( ! target || ! target.getAttribute ) {
+        var target = event.target.closest ? event.target.closest( '[data-action]' ) : null;
+        if ( ! target ) {
             return;
         }
-
         var action = target.getAttribute( 'data-action' );
         var index = target.getAttribute( 'data-index' );
+        var palette = target.getAttribute( 'data-palette' );
+        var tab = target.getAttribute( 'data-tab' );
 
-        if ( action === 'move-up' ) {
-            self.move( parseInt( index, 10 ), -1 );
-        } else if ( action === 'move-down' ) {
-            self.move( parseInt( index, 10 ), 1 );
-        } else if ( action === 'remove' ) {
-            self.remove( parseInt( index, 10 ) );
-        } else if ( action === 'save' ) {
-            self.save();
-        } else if ( action === 'publish' ) {
-            self.publish();
-        } else if ( action === 'discard' ) {
-            self.discard();
-        } else if ( action === 'preview' ) {
-            self.preview();
+        self.handle_click( action, index, palette, tab, target );
+    } );
+
+    this.root.addEventListener( 'change', function ( event ) {
+        self.handle_change( event.target );
+    } );
+
+    this.root.addEventListener( 'input', function ( event ) {
+        self.handle_change( event.target, true );
+    } );
+
+    this.root.addEventListener( 'submit', function ( event ) {
+        if ( event.target && event.target.closest && event.target.closest( '[data-preview]' ) ) {
+            event.preventDefault();
         }
     } );
+
+    this.load_forms();
+};
+
+/* -------------------------------------------------------------------------
+ * State and rendering
+ * ---------------------------------------------------------------------- */
+
+FormsApp.prototype.state = function () {
+    var self = this;
+    var label = 'saved';
+
+    if ( this.model ) {
+        if ( this.model.dirty() ) {
+            label = this.previewed ? 'changes_since_preview' : 'unsaved';
+        } else if ( this.previewed ) {
+            label = 'previewing';
+        } else if ( this.model.version > 0 && this.model.published && AgentshellFormsModel.equal( this.model.working, this.model.published ) ) {
+            label = 'published';
+        }
+    }
+
+    if ( 'error' === this.status ) {
+        label = 'error';
+    } else if ( 'stale' === this.status ) {
+        label = 'stale';
+    } else if ( 'unknown' === this.status ) {
+        label = 'unknown';
+    } else if ( 'saved' !== this.status && 'unsaved' !== this.status ) {
+        label = this.status;
+    }
+
+    return {
+        forms: this.forms,
+        selected: this.selected,
+        model: this.model,
+        selected: this.selected_field,
+        selected_field: this.selected_field,
+        tab: this.tab,
+        preview_html: this.preview_html,
+        previewed: this.previewed,
+        error: this.error,
+        pending: this.pending,
+        status: this.status,
+        status_label: label,
+        busy: this.busy,
+    };
 };
 
 FormsApp.prototype.render = function () {
-    if ( this.ui ) {
-        this.ui.mount( this.model, this.api, null );
+    if ( ! this.ui ) {
+        return;
     }
 
-    this.update_status();
+    if ( ! this.model ) {
+        this.root.innerHTML = '';
+        this.root.appendChild( this.ui.render_list( this.state(), {} ) );
+        return;
+    }
+
+    var mount = this.ui.render_builder( this.state(), {} );
+    mount();
+
+    if ( this.selected_field !== null ) {
+        var inspector = this.root.querySelector( '[data-inspector]' );
+        if ( inspector ) {
+            inspector.setAttribute( 'data-field', String( this.selected_field ) );
+        }
+    }
 };
 
 FormsApp.prototype.update_status = function () {
-    var chip = this.root.querySelector( '.asf-builder__status' );
-
-    if ( ! chip ) {
-        return;
+    if ( this.ui ) {
+        this.ui.update_status( this.state() );
     }
-
-    var label;
-
-    if ( this.model.dirty() && this.previewed ) {
-        label = 'changes_since_preview';
-    } else if ( this.model.dirty() ) {
-        label = 'unsaved';
-    } else if ( this.previewed ) {
-        label = 'previewing';
-    } else {
-        label = 'saved';
-    }
-
-    chip.textContent = label;
-    chip.setAttribute( 'data-status', label );
 };
 
-FormsApp.prototype.move = function ( index, direction ) {
-    var result = this.model.move_field( index, direction );
-
-    if ( ! result.moved ) {
-        return;
-    }
-
-    this.model.working = result.working;
-    this.previewed = false;
-    this.preview_dirty = true;
-    this.render();
+FormsApp.prototype.fail = function ( message, status ) {
+    this.error = message || 'Something went wrong.';
+    this.status = status || 'error';
+    this.update_status();
 };
 
-FormsApp.prototype.remove = function ( index ) {
-    var result = this.model.remove_field( index );
-
-    if ( ! result.removed ) {
-        return;
+FormsApp.prototype.clear_error = function () {
+    this.error = '';
+    if ( [ 'error', 'stale', 'unknown' ].indexOf( this.status ) >= 0 ) {
+        this.status = 'saved';
     }
-
-    this.model.working = result.working;
-    this.previewed = false;
-    this.preview_dirty = true;
-    this.render();
+    this.update_status();
 };
 
-FormsApp.prototype.save = function () {
+/* -------------------------------------------------------------------------
+ * Forms
+ * ---------------------------------------------------------------------- */
+
+FormsApp.prototype.load_forms = function ( select_id, preserve_selection ) {
     var self = this;
-    var payload = this.model.to_payload();
 
-    this.api.save( this.model.id, payload.expected_revision, payload.definition ).then( function ( result ) {
-        if ( ! result || ! result.ok ) {
-            var message = result && result.body && result.body.message ? result.body.message : 'not saved';
-            self.set_status( 'not_saved_validation', message );
+    return this.api.list().then( function ( result ) {
+        if ( ! result || ! result.ok || ! result.body ) {
+            self.fail( 'The form list could not be loaded.' );
             return;
         }
 
-        self.model.reconcile_save( result.body.revision );
+        self.forms = result.body.forms || [];
+
+        var wanted = select_id || self.selected || ( self.forms.length ? self.forms[ 0 ].form_id : '' );
+
+        if ( wanted && self.forms.some( function ( form ) { return form.form_id === wanted; } ) ) {
+            return self.load_form( wanted, Boolean( preserve_selection ) );
+        }
+
+        self.model = null;
+        self.selected = '';
         self.render();
-    } ).catch( function () {
-        self.set_status( 'save_outcome_unknown', 'Save outcome could not be verified' );
     } );
 };
 
-FormsApp.prototype.publish = function () {
+FormsApp.prototype.load_form = function ( form_id, preserve_selection ) {
     var self = this;
 
-    if ( this.model.dirty() ) {
-        self.set_status( 'unsaved', 'Save before publishing' );
-        return;
-    }
-
-    this.api.publish( this.model.id, this.model.revision ).then( function ( result ) {
-        if ( ! result || ! result.ok ) {
-            self.set_status( 'not_saved_validation', result && result.body && result.body.message ? result.body.message : 'not published' );
+    return this.api.get( form_id ).then( function ( result ) {
+        if ( ! result || ! result.ok || ! result.body ) {
+            self.fail( 'That form could not be loaded.' );
             return;
         }
 
-        self.model.reconcile_publish( result.body.revision, result.body.version );
+        var body = result.body;
+
+        self.model = AgentshellFormsModel.make_form_model( {
+            id: body.form_id,
+            name: body.name,
+            slug: body.slug,
+            version: body.version,
+            revision: body.revision,
+            working: body.working,
+            published: body.published,
+        } );
+
+        self.selected = body.form_id;
+
+        if ( ! preserve_selection ) {
+            self.selected_field = null;
+        } else if ( self.selected_field !== null && ! self.model.field_at( self.selected_field ) ) {
+            self.selected_field = null;
+        }
+        self.preview_html = '';
+        self.previewed = false;
+        self.error = '';
+        self.status = 'saved';
         self.render();
+    } );
+};
+
+FormsApp.prototype.handle_click = function ( action, index, palette, tab, target ) {
+    var self = this;
+
+    if ( 'create' === action ) {
+        this.pending = { action: 'create', name: '', title: 'Name the form' };
+        this.render();
+        return;
+    }
+
+    if ( 'rename' === action ) {
+        if ( ! this.model ) { return; }
+        this.pending = { action: 'rename', name: this.model.name, title: 'Rename the form' };
+        this.render();
+        return;
+    }
+
+    if ( 'duplicate' === action ) {
+        if ( ! this.model ) { return; }
+        this.pending = { action: 'duplicate', name: this.model.name + ' (copy)', title: 'Name the copy' };
+        this.render();
+        return;
+    }
+
+    if ( 'trash' === action ) {
+        if ( ! this.model ) { return; }
+        this.pending = { action: 'trash', name: '', title: 'Move this form to the trash?' };
+        this.render();
+        return;
+    }
+
+    if ( 'confirm-cancel' === action ) {
+        this.pending = null;
+        this.render();
+        return;
+    }
+
+    if ( 'confirm-yes' === action ) {
+        var pending = this.pending;
+
+        if ( pending && [ 'create', 'rename', 'duplicate' ].indexOf( pending.action ) >= 0 ) {
+            var name_input = this.root.querySelector( '[data-confirm-name]' );
+            pending.name = name_input ? name_input.value : pending.name;
+        }
+
+        this.pending = null;
+        this.confirm_pending( pending );
+        return;
+    }
+
+    if ( 'add-field' === action && palette ) {
+        if ( ! this.model ) { return; }
+        var key = palette + '_' + ( this.model.fields().length + 1 );
+        this.selected_field = this.model.add_field( {
+            key: key,
+            type: palette,
+            label: palette.charAt( 0 ).toUpperCase() + palette.slice( 1 ) + ' ' + ( this.model.fields().length + 1 ),
+            required: false,
+        } );
+        this.previewed = false;
+        this.status = 'unsaved';
+        this.render();
+        return;
+    }
+
+    if ( 'select-field' === action ) {
+        this.selected_field = parseInt( index, 10 );
+        this.render();
+        return;
+    }
+
+    if ( 'move-up' === action || 'move-down' === action ) {
+        if ( ! this.model ) { return; }
+        var at = parseInt( index, 10 );
+        var moved = this.model.move_field( at, 'move-up' === action ? -1 : 1 );
+        if ( moved ) {
+            this.selected_field = 'move-up' === action ? at - 1 : at + 1;
+            this.previewed = false;
+            this.status = 'unsaved';
+            this.render();
+        }
+        return;
+    }
+
+    if ( 'remove' === action ) {
+        if ( ! this.model ) { return; }
+        var remove_at = parseInt( index, 10 );
+        if ( this.model.remove_field( remove_at ) ) {
+            this.selected_field = null;
+            this.previewed = false;
+            this.status = 'unsaved';
+            this.render();
+        }
+        return;
+    }
+
+    if ( 'add-option' === action ) {
+        if ( ! this.model || this.selected_field === null ) { return; }
+        var field = this.model.field_at( this.selected_field );
+        var options = ( field.options || [] ).slice();
+        options.push( { value: 'option_' + ( options.length + 1 ), label: 'Option ' + ( options.length + 1 ) } );
+        this.model.set_field( this.selected_field, { options: options } );
+        this.previewed = false;
+        this.status = 'unsaved';
+        this.render();
+        return;
+    }
+
+    if ( 'remove-option' === action ) {
+        if ( ! this.model || this.selected_field === null ) { return; }
+        var current = this.model.field_at( this.selected_field );
+        var remaining = ( current.options || [] ).slice();
+        remaining.splice( parseInt( target.getAttribute( 'data-option' ), 10 ), 1 );
+        this.model.set_field( this.selected_field, { options: remaining } );
+        this.previewed = false;
+        this.status = 'unsaved';
+        this.render();
+        return;
+    }
+
+    if ( 'set-tab' === action ) {
+        this.tab = tab;
+        this.render();
+        return;
+    }
+
+    if ( 'save' === action ) {
+        this.save();
+        return;
+    }
+
+    if ( 'publish' === action ) {
+        this.publish();
+        return;
+    }
+
+    if ( 'discard' === action ) {
+        this.discard();
+        return;
+    }
+
+    if ( 'preview' === action ) {
+        this.preview();
+        return;
+    }
+
+    if ( 'copy-shortcode' === action ) {
+        var input = this.root.querySelector( '[data-shortcode]' );
+        if ( input ) {
+            input.select();
+            try {
+                if ( navigator.clipboard && navigator.clipboard.writeText ) {
+                    navigator.clipboard.writeText( input.value );
+                } else {
+                    document.execCommand( 'copy' );
+                }
+                target.textContent = 'Copied';
+            } catch ( e ) {
+                target.textContent = 'Copy failed';
+            }
+        }
+    }
+};
+
+FormsApp.prototype.handle_change = function ( target, live ) {
+    if ( ! target || ! target.getAttribute ) {
+        return;
+    }
+
+    if ( target.getAttribute( 'data-form-select' ) ) {
+        this.selected = target.value;
+        this.load_form( target.value );
+        return;
+    }
+
+    var option_value = target.getAttribute( 'data-option-value' );
+    var option_label = target.getAttribute( 'data-option-label' );
+
+    if ( ( option_value !== null || option_label !== null ) && this.model && this.selected_field !== null ) {
+        var field = this.model.field_at( this.selected_field );
+        var options = ( field.options || [] ).slice();
+        var at = parseInt( option_value !== null ? option_value : option_label, 10 );
+        var option = Object.assign( {}, options[ at ] || {} );
+        if ( option_value !== null ) {
+            option.value = target.value;
+        } else {
+            option.label = target.value;
+        }
+        options[ at ] = option;
+        this.model.set_field( this.selected_field, { options: options } );
+        this.previewed = false;
+        this.status = 'unsaved';
+        this.update_status();
+        return;
+    }
+
+    var setting = target.getAttribute( 'data-setting' );
+
+    if ( ! setting || ! this.model ) {
+        return;
+    }
+
+    if ( setting.indexOf( '.' ) < 0 ) {
+        if ( this.selected_field === null ) {
+            return;
+        }
+        var patch = {};
+        if ( 'required' === setting ) {
+            patch.required = target.checked;
+        } else if ( [ 'label', 'key', 'description', 'placeholder' ].indexOf( setting ) >= 0 ) {
+            patch[ setting ] = target.value;
+        } else {
+            var settings = {};
+            settings[ setting ] = 'number' === target.type ? Number( target.value ) || 0 : target.value;
+            patch.settings = settings;
+        }
+        this.model.set_field( this.selected_field, patch );
+    } else {
+        var value = target.type === 'checkbox' ? target.checked : target.value;
+
+        if ( 'notification.recipients' === setting ) {
+            value = target.value.split( ',' ).map( function ( part ) {
+                return part.trim();
+            } ).filter( Boolean );
+        }
+
+        if ( 'spam.rate_limit.max' === setting || 'spam.rate_limit.window' === setting || 'spam.min_seconds' === setting || 'storage.retain_days' === setting ) {
+            value = Number( value ) || 0;
+        }
+
+        this.model.set_setting( setting, value );
+    }
+
+    this.previewed = false;
+    this.status = 'unsaved';
+    this.update_status();
+};
+
+/* -------------------------------------------------------------------------
+ * Save, publish, discard, preview
+ * ---------------------------------------------------------------------- */
+
+FormsApp.prototype.save = function () {
+    var self = this;
+
+    if ( ! this.model || this.busy ) {
+        return;
+    }
+
+    // The request is made with an immutable snapshot. If the operator edits
+    // while it is in flight, the response settles the snapshot that was
+    // actually saved — not the newer draft.
+    var snapshot = this.model.snapshot();
+    var form_id = this.model.id;
+
+    this.busy = true;
+    this.inflight = snapshot;
+    this.clear_error();
+    this.status = 'saving';
+    this.update_status();
+
+    this.api.save( form_id, snapshot.revision, snapshot.definition ).then( function ( result ) {
+        self.busy = false;
+        self.inflight = null;
+
+        if ( ! result || ! result.ok ) {
+            self.handle_failure( result, 'The changes were not saved.' );
+            return;
+        }
+
+        self.model.reconcile_save( snapshot, result.body.revision );
+        self.status = self.model.dirty() ? 'unsaved' : 'saved';
+        self.render();
+        self.load_forms( form_id, true );
+    } ).catch( function () {
+        self.busy = false;
+        self.inflight = null;
+        self.reconcile_unknown( 'Save outcome could not be verified.' );
+    } );
+};
+
+/**
+ * Perform the action the confirmation bar was asking about.
+ *
+ * @param {Object|null} pending The pending action.
+ * @return {void}
+ */
+FormsApp.prototype.confirm_pending = function ( pending ) {
+    var self = this;
+
+    if ( ! pending ) {
+        return;
+    }
+
+    if ( 'create' === pending.action ) {
+        if ( ! pending.name ) { return; }
+        this.clear_error();
+        this.api.create( pending.name ).then( function ( result ) {
+            if ( ! result || ! result.ok ) {
+                self.fail( ( result && result.body && result.body.message ) || 'The form could not be created.' );
+                return;
+            }
+            return self.load_forms( result.body.form_id );
+        } );
+        return;
+    }
+
+    if ( 'rename' === pending.action ) {
+        if ( ! pending.name ) { return; }
+        this.clear_error();
+        this.api.rename( this.model.id, pending.name, this.model.revision ).then( function ( result ) {
+            if ( ! result || ! result.ok ) {
+                self.handle_failure( result, 'The form could not be renamed.' );
+                return;
+            }
+            return self.load_forms( self.model.id );
+        } );
+        return;
+    }
+
+    if ( 'duplicate' === pending.action ) {
+        if ( ! pending.name ) { return; }
+        this.clear_error();
+        this.api.duplicate( this.model.id, pending.name ).then( function ( result ) {
+            if ( ! result || ! result.ok ) {
+                self.fail( ( result && result.body && result.body.message ) || 'The form could not be duplicated.' );
+                return;
+            }
+            return self.load_forms( result.body.form_id );
+        } );
+        return;
+    }
+
+    if ( 'trash' === pending.action ) {
+        this.clear_error();
+        this.api.trash( this.model.id ).then( function ( result ) {
+            if ( ! result || ! result.ok ) {
+                self.fail( ( result && result.body && result.body.message ) || 'The form could not be trashed.' );
+                return;
+            }
+            self.selected = '';
+            return self.load_forms();
+        } );
+        return;
+    }
+
+    if ( 'publish' === pending.action ) {
+        this.publish_confirmed();
+        return;
+    }
+
+    if ( 'discard' === pending.action ) {
+        this.discard_confirmed();
+        return;
+    }
+};
+
+FormsApp.prototype.publish = function () {
+    if ( ! this.model || this.busy ) {
+        return;
+    }
+
+    if ( this.model.dirty() ) {
+        this.fail( 'Save your changes before publishing.' );
+        return;
+    }
+
+    this.pending = { action: 'publish', name: '', title: 'Publish this form? Visitors will see it immediately.' };
+    this.render();
+};
+
+FormsApp.prototype.publish_confirmed = function () {
+    var self = this;
+
+    var snapshot = this.model.snapshot();
+    this.busy = true;
+    this.clear_error();
+    this.status = 'publishing';
+    this.update_status();
+
+    this.api.publish( this.model.id, snapshot.revision ).then( function ( result ) {
+        self.busy = false;
+
+        if ( ! result || ! result.ok ) {
+            self.handle_failure( result, 'The form was not published.' );
+            return;
+        }
+
+        self.model.reconcile_publish( snapshot, result.body.revision, result.body.version );
+        self.status = 'published';
+        self.render();
+        self.load_forms( self.model.id, true );
+    } ).catch( function () {
+        self.busy = false;
+        self.reconcile_unknown( 'Publish outcome could not be verified.' );
     } );
 };
 
 FormsApp.prototype.discard = function () {
+    if ( ! this.model || this.busy ) {
+        return;
+    }
+
+    this.pending = { action: 'discard', name: '', title: 'Discard your changes and restore the published definition?' };
+    this.render();
+};
+
+FormsApp.prototype.discard_confirmed = function () {
     var self = this;
 
-    this.api.discard( this.model.id ).then( function ( result ) {
+    this.busy = true;
+    this.clear_error();
+    this.status = 'discarding';
+    this.update_status();
+
+    this.api.discard( this.model.id, this.model.revision ).then( function ( result ) {
+        self.busy = false;
+
         if ( ! result || ! result.ok ) {
+            self.handle_failure( result, 'The changes were not discarded.' );
             return;
         }
 
-        self.model.discard();
+        self.model.reconcile_discard( result.body );
+        self.selected_field = null;
+        self.preview_html = '';
         self.previewed = false;
+        self.status = 'saved';
         self.render();
+        self.load_forms( self.model.id, true );
+    } ).catch( function () {
+        self.busy = false;
+        self.reconcile_unknown( 'Discard outcome could not be verified.' );
     } );
 };
 
 FormsApp.prototype.preview = function () {
     var self = this;
 
-    this.api.preview( this.model.id, this.model.working ).then( function ( result ) {
+    if ( ! this.model ) {
+        return;
+    }
+
+    // The preview is rendered from the draft as it is *now*: it is the draft
+    // version the operator is looking at, not a saved one.
+    var definition = AgentshellFormsModel.clone( this.model.working );
+    this.clear_error();
+
+    this.api.preview( this.model.id, definition ).then( function ( result ) {
         if ( ! result || ! result.ok ) {
+            self.fail( ( result && result.body && result.body.message ) || 'The preview could not be rendered.' );
             return;
         }
 
-        var panel = self.root.querySelector( '.asf-builder__preview-panel' );
-
-        if ( panel ) {
-            panel.innerHTML = result.body.html || '';
-        }
-
+        self.preview_html = result.body.html || '';
         self.previewed = true;
-        self.preview_dirty = false;
-        self.update_status();
+        self.render();
     } );
 };
 
-FormsApp.prototype.set_status = function ( status, message ) {
-    var chip = this.root.querySelector( '.asf-builder__status' );
+/* -------------------------------------------------------------------------
+ * Failure and uncertainty
+ * ---------------------------------------------------------------------- */
 
-    if ( chip ) {
-        chip.textContent = status;
-        chip.setAttribute( 'data-status', status );
+FormsApp.prototype.handle_failure = function ( result, fallback ) {
+    var body = result && result.body ? result.body : {};
+    var status = result ? result.status : 0;
+
+    if ( body && body.errors && typeof body.errors === 'object' ) {
+        var messages = [];
+        Object.keys( body.errors ).forEach( function ( key ) {
+            messages.push( key + ': ' + body.errors[ key ] );
+        } );
+        this.fail( messages.join( '; ') || fallback, 'validation' );
+        return;
     }
 
-    if ( message ) {
-        var region = this.root.querySelector( '.asf-builder__status-message' );
+    if ( 409 === status || 'form_revision_mismatch' === ( body.code || '' ) ) {
+        this.fail( ( body.message || 'Another editor saved a newer version of this form.' ) + ' Reload to see it.', 'stale' );
+        return;
+    }
 
-        if ( region ) {
-            region.textContent = message;
+    this.fail( body.message || fallback, 'error' );
+};
+
+FormsApp.prototype.reconcile_unknown = function ( message ) {
+    var self = this;
+
+    this.fail( message + ' Checking the server…', 'unknown' );
+
+    this.api.get( this.model.id ).then( function ( result ) {
+        if ( ! result || ! result.ok || ! result.body ) {
+            self.fail( message + ' The server could not be reached to verify it.', 'unknown' );
+            return;
         }
-    }
+
+        var body = result.body;
+
+        // Establish the truth from the server's revision and definition: if
+        // the revision advanced, the write landed.
+        if ( body.revision === self.model.revision ) {
+            self.fail( message + ' The change was not saved.', 'error' );
+            return;
+        }
+
+        self.model.reconcile_save( { definition: body.working, revision: body.revision }, body.revision );
+        self.status = self.model.dirty() ? 'unsaved' : 'saved';
+        self.error = '';
+        self.render();
+        self.load_forms( body.form_id );
+    } );
 };
 
 function bootstrap() {
@@ -216,63 +742,10 @@ function bootstrap() {
     }
 
     var api = new ApiCtor( mount.getAttribute( 'data-rest' ), mount.getAttribute( 'data-nonce' ) );
+    var app = new FormsApp( mount, api, null );
 
-    api.list().then( function ( result ) {
-        var forms = ( result && result.body && Array.isArray( result.body.forms ) ) ? result.body.forms : [];
-
-        if ( ! forms.length ) {
-            mount.innerHTML = '<p class="asf-builder__empty">No forms yet. Create one to begin.</p>'
-                + '<button type="button" class="button button-primary" data-action="create">Create a form</button>';
-
-            mount.addEventListener( 'click', function ( event ) {
-                if ( ! event.target || event.target.getAttribute( 'data-action' ) !== 'create' ) {
-                    return;
-                }
-
-                var name = window.prompt( 'Name the form' );
-
-                if ( ! name ) {
-                    return;
-                }
-
-                api.create( name ).then( function ( created ) {
-                    if ( created && created.ok && created.body && created.body.form_id ) {
-                        window.location.reload();
-                    }
-                } );
-            } );
-
-            return;
-        }
-
-        api.get( forms[ 0 ].form_id ).then( function ( result ) {
-            if ( ! result || ! result.ok || ! result.body ) {
-                return;
-            }
-
-            var body = result.body;
-            var make = ( typeof AgentshellFormsModel !== 'undefined' && AgentshellFormsModel.make_form_model )
-                ? AgentshellFormsModel.make_form_model
-                : null;
-
-            if ( ! make ) {
-                return;
-            }
-
-            var model = make( {
-                id: body.form_id,
-                name: body.name,
-                slug: body.slug,
-                version: body.version,
-                revision: body.revision,
-                working: body.working,
-                published: body.published,
-            } );
-
-            var app = new FormsApp( mount, api, model );
-            app.init();
-        } );
-    } );
+    mount.setAttribute( 'data-ready', '1' );
+    app.init();
 }
 
 if ( typeof document !== 'undefined' ) {

@@ -64,8 +64,21 @@ FormsApi.prototype.publish = function ( id, expected_revision ) {
     } );
 };
 
-FormsApi.prototype.discard = function ( id ) {
-    return this.request( 'POST', '/forms/' + encodeURIComponent( id ) + '/discard', {} );
+FormsApi.prototype.discard = function ( id, expected_revision ) {
+    return this.request( 'POST', '/forms/' + encodeURIComponent( id ) + '/discard', {
+        expected_revision: expected_revision,
+    } );
+};
+
+FormsApi.prototype.rename = function ( id, name, expected_revision ) {
+    return this.request( 'POST', '/forms/' + encodeURIComponent( id ) + '/rename', {
+        name: name,
+        expected_revision: expected_revision,
+    } );
+};
+
+FormsApi.prototype.duplicate = function ( id, name ) {
+    return this.request( 'POST', '/forms/' + encodeURIComponent( id ) + '/duplicate', { name: name } );
 };
 
 FormsApi.prototype.preview = function ( id, definition ) {

@@ -142,7 +142,7 @@ class Form_Admin {
 
 		echo '<div class="wrap">';
 		echo '<h1>' . esc_html__( 'AgentShell Forms', 'agentshell-forms' ) . '</h1>';
-		echo '<div id="agentshell-forms-builder" data-nonce="' . esc_attr( wp_create_nonce( 'wp_rest' ) ) . '" data-rest="' . esc_attr( rest_url( 'wp/v2/agentshell-forms/v1' ) ) . '"></div>';
+		echo '<div id="agentshell-forms-builder" data-nonce="' . esc_attr( wp_create_nonce( 'wp_rest' ) ) . '" data-rest="' . esc_attr( rest_url( 'wp/v2/agentshell-forms/v1' ) ) . '" data-rest-root="' . esc_attr( rest_url() ) . '"></div>';
 		echo '</div>';
 	}
 

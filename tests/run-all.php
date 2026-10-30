@@ -1204,6 +1204,13 @@ $suites = array(
         'path'     => __DIR__ . '/run-forms-builder-browser.php',
         'requires' => 'unit',
     ),
+    // The optimistic-concurrency guarantees the builder depends on: a stale
+    // discard refused, a current discard reporting its revision, a rename
+    // guarded the same way, and a duplicate that is a distinct form.
+    'forms-builder-storage' => array(
+        'path'     => __DIR__ . '/forms-builder-storage-test.php',
+        'requires' => 'destructive',
+    ),
 );
 
 // ── the environment, resolved once ───────────────────────────────────────────
