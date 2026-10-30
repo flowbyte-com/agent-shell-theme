@@ -19,6 +19,10 @@ FormsApi.prototype.request = function ( method, path, body ) {
     var init = {
         method: method,
         credentials: 'same-origin',
+        // The builder reads the current revision and then writes against it;
+        // a cached GET would hand it a stale revision and turn an honest save
+        // into a conflict.
+        cache: 'no-store',
         headers: { 'X-WP-Nonce': this.nonce, 'Accept': 'application/json' },
     };
 
