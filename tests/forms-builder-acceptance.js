@@ -567,6 +567,7 @@
                 // holds the attempted snapshot, the response never arrives.
                 // Reconciliation must recognise the landing, not report a
                 // failure and not duplicate anything.
+                ifr.contentWindow.fetch = ifr.contentWindow.__real_fetch;
                 var real_fetch2 = ifr.contentWindow.fetch;
                 var dropped = false;
                 ifr.contentWindow.fetch = function ( url, opts ) {
@@ -578,14 +579,11 @@
                             return Promise.reject( new TypeError( 'simulated lost response' ) );
                         } );
                     }
-                    if ( String( url ).indexOf( '/forms/' + form_id ) >= 0 && String( url ).indexOf( '/save' ) < 0 && dropped ) {
-                        // The reconciling GET must go through.
-                        return real_fetch2.apply( this, arguments );
-                    }
                     return real_fetch2.apply( this, arguments );
                 };
                 set( q( '[data-inspector] [data-setting="description"]' ), 'Lost response write' );
                 click( '[data-action="save"]' );
+                note( '12c-wait' );
                 return wait_for( function () { return [ 'saved', 'previewing', 'error', 'stale', 'unknown' ].indexOf( status() ) >= 0 || error_text() !== ''; }, 15000 );
             } )
             .then( function () {
@@ -611,6 +609,7 @@
                 set( q( '[data-inspector] [data-setting="description"]' ), 'My uncertain edit' );
                 // Force the next save's response to be lost, so reconcile runs
                 // against a server the other editor has already moved.
+                ifr.contentWindow.fetch = ifr.contentWindow.__real_fetch;
                 var real_fetch4 = ifr.contentWindow.fetch;
                 var dropped_once = false;
                 ifr.contentWindow.fetch = function ( url, opts ) {
@@ -631,6 +630,7 @@
                     return real_fetch4.apply( this, arguments );
                 };
                 click( '[data-action="save"]' );
+                note( '12d-wait' );
                 return wait_for( function () { return status() === 'stale' || error_text() !== ''; }, 15000 );
             } )
             .then( function () {
