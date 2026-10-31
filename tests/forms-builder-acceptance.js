@@ -679,7 +679,18 @@
                 second.contentDocument.querySelector( '[data-action="save"]' ).click();
                 return wait_for( function () {
                     return second.contentDocument.querySelector( '[data-status-chip]' ).getAttribute( 'data-status' ) === 'saved';
-                }, 10000 );
+                }, 20000 ).catch( function ( e ) {
+                    var chip = null, err = '', rev = '', sid = '';
+                    try {
+                        chip = second.contentDocument.querySelector( '[data-status-chip]' ).getAttribute( 'data-status' );
+                        var er = second.contentDocument.querySelector( '[data-error]' );
+                        err = er && ! er.hidden ? er.textContent.slice( 0, 300 ) : '';
+                        var hdr = second.contentDocument.querySelector( '[data-form-id]' );
+                        rev = hdr ? hdr.getAttribute( 'data-revision' ) : '';
+                        sid = hdr ? hdr.getAttribute( 'data-form-id' ) : '';
+                    } catch ( ee ) {}
+                    throw new Error( 'second-tab save unsettled: status=' + chip + ' error=' + err + ' rev=' + rev + ' form=' + sid );
+                } );
             } )
             .then( function () {
                 // Tab 1 still holds the older revision: its save is refused.
