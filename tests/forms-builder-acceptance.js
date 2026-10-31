@@ -649,6 +649,7 @@
                 doc().body.appendChild( second );
                 window.__second = second;
                 second.src = ADMIN;
+                note( '9b-second-load' );
                 return wait_for( function () {
                     return second.contentDocument && second.contentDocument.querySelector( '[data-form-select], [data-action="create"]' );
                 }, 15000 );
@@ -658,6 +659,7 @@
                 var select = second.contentDocument.querySelector( '[data-form-select]' );
                 select.value = form_id;
                 select.dispatchEvent( new second.contentWindow.Event( 'change', { bubbles: true } ) );
+                note( '9b-second-fields' );
                 // Confirm the second tab really loaded the intended form, not
                 // just any form: selector, header identity and fields agree.
                 return wait_for( function () {
@@ -671,6 +673,7 @@
             } )
             .then( function () {
                 // Tab 2 edits and saves first.
+                note( '9b-second-save' );
                 var second = window.__second;
                 second.contentDocument.querySelector( '[data-palette="text"]' ).click();
                 second.contentDocument.querySelector( '[data-action="save"]' ).click();
@@ -680,6 +683,7 @@
             } )
             .then( function () {
                 // Tab 1 still holds the older revision: its save is refused.
+                note( '9b-main-stale' );
                 click( '[data-action="save"]' );
                 return wait_for( function () { return status() === 'stale' || error_text() !== ''; }, 10000 );
             } )
@@ -695,6 +699,7 @@
                 // A stale editor reloads, as the interface tells them to, and
                 // waits for the intended form at the authoritative revision —
                 // not merely for any form whose name contains the token.
+                note( '9b-reload' );
                 return load( ADMIN ).then( function () {
                     return wait_for_form( form_id );
                 } );
