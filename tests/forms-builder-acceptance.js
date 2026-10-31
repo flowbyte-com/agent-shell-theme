@@ -615,7 +615,12 @@
                 ifr.contentWindow.fetch = ifr.contentWindow.__real_fetch;
                 var real_fetch4 = ifr.contentWindow.fetch;
                 var dropped_once = false;
+                ifr.contentWindow.__reqlog = [];
                 ifr.contentWindow.fetch = function ( url, opts ) {
+                    try {
+                        ifr.contentWindow.__reqlog.push( String( url ).slice( -80 ) + ':' + ( opts && opts.method ? opts.method : 'GET' ) );
+                        if ( ifr.contentWindow.__reqlog.length > 20 ) { ifr.contentWindow.__reqlog.shift(); }
+                    } catch ( e ) {}
                     if ( ! dropped_once && String( url ).indexOf( '/save' ) >= 0 ) {
                         dropped_once = true;
                         return real_fetch4.apply( this, arguments ).then( function () {
@@ -626,7 +631,11 @@
                 };
                 click( '[data-action="save"]' );
                 note( '12d-wait' );
-                return wait_for( function () { return status() === 'stale' || error_text() !== ''; }, 15000 );
+                return wait_for( function () { return status() === 'stale' || error_text() !== ''; }, 15000 ).catch( function ( e ) {
+                    var log = [];
+                    try { log = ifr.contentWindow.__reqlog || []; } catch ( ee ) {}
+                    throw new Error( 'timed out; requests=' + JSON.stringify( log ) + '; status=' + status() + '; error=' + error_text().slice( 0, 200 ) );
+                } );
             } )
             .then( function () {
                 ok( '12. reconcile: a concurrent write is reported as a conflict, not as success', status() === 'stale' || error_text().indexOf( 'newer' ) >= 0 || error_text().indexOf( 'Another editor' ) >= 0, status() + ' ' + error_text() );
