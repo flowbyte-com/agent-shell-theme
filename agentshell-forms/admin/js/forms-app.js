@@ -117,6 +117,16 @@ FormsApp.prototype.render = function () {
     if ( ! this.model ) {
         this.root.innerHTML = '';
         this.root.appendChild( this.ui.render_list( this.state(), {} ) );
+
+        // The create confirmation lives here too: with no form loaded there
+        // is no builder, so a pending create would otherwise have nowhere to
+        // be confirmed.
+        var pending_bar = this.ui.render_pending( this.state() );
+
+        if ( pending_bar ) {
+            this.root.appendChild( pending_bar );
+        }
+
         return;
     }
 

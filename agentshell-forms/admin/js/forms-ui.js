@@ -126,6 +126,35 @@ FormsUi.prototype.render_list = function ( state, handlers ) {
  * The builder
  * ---------------------------------------------------------------------- */
 
+FormsUi.prototype.render_pending = function ( state ) {
+    if ( ! state.pending ) {
+        return null;
+    }
+
+    var bar = this.el( 'div', {
+        class: 'asf-confirm',
+        'data-confirm': '1',
+        role: 'group',
+        'aria-label': state.pending.title || 'Confirm',
+    } );
+
+    bar.appendChild( this.el( 'p', { class: 'asf-confirm__title', text: state.pending.title || 'Confirm' } ) );
+
+    if ( [ 'create', 'rename', 'duplicate' ].indexOf( state.pending.action ) >= 0 ) {
+        bar.appendChild( this.el( 'input', {
+            type: 'text',
+            'data-confirm-name': '1',
+            value: state.pending.name || '',
+            'aria-label': 'Form name',
+        } ) );
+    }
+
+    bar.appendChild( this.el( 'button', { type: 'button', class: 'button button-primary', 'data-action': 'confirm-yes', text: 'Confirm' } ) );
+    bar.appendChild( this.el( 'button', { type: 'button', class: 'button', 'data-action': 'confirm-cancel', text: 'Cancel' } ) );
+
+    return bar;
+};
+
 FormsUi.prototype.render_builder = function ( state, handlers ) {
     var model = state.model;
     var fragment = document.createDocumentFragment();
@@ -159,29 +188,10 @@ FormsUi.prototype.render_builder = function ( state, handlers ) {
 
     fragment.appendChild( error );
 
-    if ( state.pending ) {
-        var bar = this.el( 'div', {
-            class: 'asf-confirm',
-            'data-confirm': '1',
-            role: 'group',
-            'aria-label': state.pending.title || 'Confirm',
-        } );
+    var pending_bar = this.render_pending( state );
 
-        bar.appendChild( this.el( 'p', { class: 'asf-confirm__title', text: state.pending.title || 'Confirm' } ) );
-
-        if ( [ 'create', 'rename', 'duplicate' ].indexOf( state.pending.action ) >= 0 ) {
-            bar.appendChild( this.el( 'input', {
-                type: 'text',
-                'data-confirm-name': '1',
-                value: state.pending.name || '',
-                'aria-label': 'Form name',
-            } ) );
-        }
-
-        bar.appendChild( this.el( 'button', { type: 'button', class: 'button button-primary', 'data-action': 'confirm-yes', text: 'Confirm' } ) );
-        bar.appendChild( this.el( 'button', { type: 'button', class: 'button', 'data-action': 'confirm-cancel', text: 'Cancel' } ) );
-
-        fragment.appendChild( bar );
+    if ( pending_bar ) {
+        fragment.appendChild( pending_bar );
     }
 
     var palette = this.el( 'div', { class: 'asf-palette', 'data-palette': '1', role: 'group', 'aria-label': 'Add a field' } );
