@@ -707,16 +707,103 @@ class Form_Definition {
 	}
 
 	/**
+	 * Rename a form.
+	 *
+	 * The name lives in two places — the definition and the post title — and
+	 * both are written under the same expected revision, so a rename is not a
+	 * way around the optimistic-concurrency guard.
+	 *
+	 * @param string $form_id           Internal identifier.
+	 * @param string $name              The new name.
+	 * @param int    $expected_revision The revision the editor read.
+	 * @param int    $actor_id          The actor.
+	 * @return array|\WP_Error
+	 */
+	public static function rename( $form_id, $name, $expected_revision, $actor_id = 0 ) {
+		$name = trim( (string) $name );
+
+		if ( '' === $name ) {
+			return new \WP_Error( 'form_name_invalid', __( 'A form needs a name.', 'agentshell-forms' ) );
+		}
+
+		$state = self::get( $form_id );
+
+		if ( is_wp_error( $state ) ) {
+			return $state;
+		}
+
+		if ( (int) $expected_revision !== (int) $state['revision'] ) {
+			return self::revision_mismatch( $state, (int) $expected_revision );
+		}
+
+		$definition = is_array( $state['working'] ) ? $state['working'] : array();
+		$definition['name'] = $name;
+
+		$result = self::update_working( $form_id, $definition, $expected_revision, $actor_id );
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		wp_update_post(
+			array(
+				'ID'         => (int) $state['post_id'],
+				'post_title' => $name,
+			)
+		);
+
+		return self::get( $form_id );
+	}
+
+	/**
+	 * Duplicate a form.
+	 *
+	 * The copy carries the working definition, a new identifier and a new slug;
+	 * it is never published, because a copy is not the original's publication
+	 * history.
+	 *
+	 * @param string $form_id  Internal identifier.
+	 * @param string $name     The copy's name.
+	 * @param int    $actor_id The actor.
+	 * @return array|\WP_Error
+	 */
+	public static function duplicate( $form_id, $name, $actor_id = 0 ) {
+		$state = self::get( $form_id );
+
+		if ( is_wp_error( $state ) ) {
+			return $state;
+		}
+
+		$definition = is_array( $state['working'] ) ? $state['working'] : array();
+
+		return self::create(
+			array(
+				'name'       => $name,
+				'definition' => $definition,
+			),
+			$actor_id
+		);
+	}
+
+	/**
 	 * Discard the working definition, reverting to the published one.
 	 *
 	 * @param string $form_id  The form's internal identifier.
 	 * @param int    $actor_id The actor, for the audit trail.
 	 * @return array|\WP_Error
 	 */
-	public static function discard( $form_id, $actor_id = 0 ) {
+	public static function discard( $form_id, $actor_id = 0, $expected_revision = null ) {
 		$state = self::get( $form_id );
 		if ( is_wp_error( $state ) ) {
 			return $state;
+		}
+
+		// A discard is a write like any other. Without this check a stale
+		// editor's Discard would throw away a revision somebody else saved
+		// after they loaded the page — the same failure the save and publish
+		// paths already refuse.
+		if ( null !== $expected_revision && (int) $expected_revision !== (int) $state['revision'] ) {
+			return self::revision_mismatch( $state, (int) $expected_revision );
 		}
 
 		if ( ! is_array( $state['published'] ) ) {
@@ -1324,6 +1411,10 @@ class Form_Definition {
 				(int) $state['revision']
 			),
 			array(
+				// REST turns an error without a status into a 500, which reads
+				// as "the server broke" rather than "somebody else saved
+				// first". The builder needs the second answer.
+				'status'            => 409,
 				'reason'            => 'revision_mismatch',
 				'expected_revision' => (int) $expected,
 				'actual_revision'   => (int) $state['revision'],

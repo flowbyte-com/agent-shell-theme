@@ -1,0 +1,76 @@
+/* AgentShell Forms — builder chrome. WordPress's own styles do the heavy lifting. */
+
+.asf-builder__header {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.asf-builder__status {
+    font-size: 0.85rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    background: #f0f0f1;
+    color: #1d2327;
+}
+
+.asf-builder__status[data-status="unsaved"],
+.asf-builder__status[data-status="changes_since_preview"] {
+    background: #fcf0d7;
+    color: #6b4a00;
+}
+
+.asf-builder__status[data-status="saved"],
+.asf-builder__status[data-status="published"] {
+    background: #e7f5ea;
+    color: #1a6b30;
+}
+
+.asf-builder__fields {
+    list-style: none;
+    margin: 0 0 1rem 0;
+    padding: 0;
+}
+
+.asf-builder__field {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #dcdcde;
+    border-radius: 4px;
+    margin-bottom: 0.5rem;
+    background: #fff;
+}
+
+.asf-builder__field-label {
+    font-weight: 600;
+    flex: 1 1 auto;
+}
+
+.asf-builder__field-type {
+    font-size: 0.8rem;
+    color: #646970;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.asf-builder__actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+.asf-builder__preview-panel {
+    border: 1px dashed #dcdcde;
+    padding: 1rem;
+    min-height: 4rem;
+    background: #fafafa;
+}
+
+.asf-builder__status-message {
+    margin-top: 0.5rem;
+    color: #b32d2e;
+}
