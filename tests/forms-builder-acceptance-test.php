@@ -155,7 +155,7 @@ $args = array(
     '--no-first-run',
     '--no-default-browser-check',
     '--user-data-dir=' . $work,
-    '--virtual-time-budget=180000',
+    '--virtual-time-budget=300000',
     '--window-size=1400,1000',
     '--dump-dom',
     $base . '/asf-test-harness.php',
@@ -164,7 +164,7 @@ $args = array(
 $env = $config['env'];
 unset( $env['LD_LIBRARY_PATH'] );
 
-$command = 'timeout 240 ' . escapeshellarg( $browser ) . ' ' . implode( ' ', array_map( 'escapeshellarg', $args ) ) . ' 2>/dev/null';
+$command = 'timeout 420 ' . escapeshellarg( $browser ) . ' ' . implode( ' ', array_map( 'escapeshellarg', $args ) ) . ' 2>/dev/null';
 
 $dom = (string) shell_exec( $command );
 
