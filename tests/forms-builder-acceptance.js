@@ -203,6 +203,17 @@
         return JSON.parse( JSON.stringify( body.working || { fields: [] } ) );
     }
 
+    function select_field_by_key( key ) {
+        var items = qa( '[data-field-index]' );
+        for ( var i = 0; i < items.length; i++ ) {
+            if ( items[ i ].getAttribute( 'data-field-key' ) === key ) {
+                items[ i ].querySelector( '[data-action="select-field"]' ).click();
+                return true;
+            }
+        }
+        throw new Error( 'no field with key ' + key );
+    }
+
     function select_form( id ) {
         var select = q( '[data-form-select]' );
         select.value = id;
@@ -408,7 +419,8 @@
                 note( '10-inflight' );
                 // 10. Edit while a save is in flight. The edit happens in the
                 // same tick as the click, so the request is certainly pending.
-                var real_fetch = ifr.contentWindow.fetch;
+                if ( ! ifr.contentWindow.__real_fetch ) { ifr.contentWindow.__real_fetch = ifr.contentWindow.fetch; }
+                var real_fetch = ifr.contentWindow.__real_fetch;
                 ifr.contentWindow.__save_bodies = [];
                 var __orig_fetch = ifr.contentWindow.fetch;
                 ifr.contentWindow.fetch = function ( url, opts ) {
@@ -431,8 +443,9 @@
             } )
             .then( function () {
                 // Change a label and save; while the request is in flight, edit
-                // again. The newer edit must not be marked saved.
-                click( '[data-field-index="1"] [data-action="select-field"]' );
+                // again. The newer edit must not be marked saved. Fields are
+                // addressed by key: positions shift after reorder.
+                select_field_by_key( 'email' );
                 set( q( '[data-inspector] [data-setting="label"]' ), 'Email (slow save)' );
                 click( '[data-action="save"]' );
                 set( q( '[data-inspector] [data-setting="description"]' ), 'Edited while saving' );
@@ -520,7 +533,7 @@
             } )
             .then( function () {
                 // 12b. A lost response: the save is not reported as successful.
-                var real_fetch = ifr.contentWindow.fetch;
+                var real_fetch = ifr.contentWindow.__real_fetch || ifr.contentWindow.fetch;
                 var failed = false;
                 ifr.contentWindow.fetch = function ( url, opts ) {
                     if ( ! failed && String( url ).indexOf( '/save' ) >= 0 ) {
