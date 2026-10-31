@@ -51,6 +51,77 @@ function equal( a, b ) {
     return JSON.stringify( a ) === JSON.stringify( b );
 }
 
+/**
+ * Canonicalise a value for comparison: object keys sorted recursively, so
+ * key order never decides equality. The server normalises definitions
+ * (filling defaults, appending keys), which reorders keys relative to the
+ * snapshot the builder sent; a strict string comparison would then call a
+ * landed write a conflict.
+ *
+ * @param {*} value Any JSON value.
+ * @return {*} The canonicalised value.
+ */
+function canonical( value ) {
+    if ( value === null || typeof value !== 'object' ) {
+        return value;
+    }
+
+    if ( Array.isArray( value ) ) {
+        return value.map( canonical );
+    }
+
+    var out = {};
+
+    Object.keys( value ).sort().forEach( function ( key ) {
+        out[ key ] = canonical( value[ key ] );
+    } );
+
+    return out;
+}
+
+function canonical_equal( a, b ) {
+    return JSON.stringify( canonical( a ) ) === JSON.stringify( canonical( b ) );
+}
+
+/**
+ * Normalise a definition the way the server does before storing it, for
+ * comparison purposes only: every field carries the same keys so a missing
+ * key is never mistaken for a different value. The server fills
+ * description, placeholder, required, options and settings on write; the
+ * builder only sends keys the operator touched.
+ *
+ * @param {Object} definition A working definition.
+ * @return {Object} The comparable shape: fields and settings, canonicalised.
+ */
+function comparable_shape( definition ) {
+    definition = definition && typeof definition === 'object' ? definition : {};
+
+    var fields = Array.isArray( definition.fields ) ? definition.fields : [];
+
+    return {
+        name: typeof definition.name === 'string' ? definition.name : '',
+        fields: fields.map( function ( field ) {
+            field = field && typeof field === 'object' ? field : {};
+
+            return {
+                key: typeof field.key === 'string' ? field.key : '',
+                type: typeof field.type === 'string' ? field.type : 'text',
+                label: typeof field.label === 'string' ? field.label : '',
+                required: true === field.required,
+                description: typeof field.description === 'string' ? field.description : '',
+                placeholder: typeof field.placeholder === 'string' ? field.placeholder : '',
+                settings: field.settings && typeof field.settings === 'object' ? field.settings : {},
+                options: Array.isArray( field.options ) ? field.options : [],
+            };
+        } ),
+        settings: definition.settings && typeof definition.settings === 'object' ? definition.settings : {},
+    };
+}
+
+function definitions_match( a, b ) {
+    return canonical_equal( comparable_shape( a ), comparable_shape( b ) );
+}
+
 function default_field_settings() {
     return {};
 }
@@ -290,18 +361,18 @@ function decide_unknown_outcome( operation, attempted, base_revision, server ) {
     var server_working = server.working && typeof server.working === 'object' ? server.working : {};
     var server_revision = typeof server.revision === 'number' ? server.revision : 0;
     if ( 'discard' === operation ) {
-        if ( equal( server_working, server.published || {} ) ) {
+        if ( definitions_match( server_working, server.published || {} ) ) {
             return 'landed';
         }
         return server_revision === base_revision ? 'not_saved' : 'conflict';
     }
     if ( 'publish' === operation ) {
-        if ( equal( server.published || {}, attempted || {} ) ) {
+        if ( definitions_match( server.published || {}, attempted || {} ) ) {
             return 'landed';
         }
         return server_revision === base_revision ? 'not_saved' : 'conflict';
     }
-    if ( equal( server_working, attempted || {} ) ) {
+    if ( definitions_match( server_working, attempted || {} ) ) {
         return 'landed';
     }
     return server_revision === base_revision ? 'not_saved' : 'conflict';
@@ -334,6 +405,10 @@ if ( typeof module !== 'undefined' && module.exports ) {
         field_to_definition: field_to_definition,
         clone: clone,
         equal: equal,
+        canonical: canonical,
+        canonical_equal: canonical_equal,
+        comparable_shape: comparable_shape,
+        definitions_match: definitions_match,
         status_label: status_label,
         decide_unknown_outcome: decide_unknown_outcome,
         move_field: move_field,
@@ -347,6 +422,10 @@ if ( typeof module !== 'undefined' && module.exports ) {
         field_to_definition: field_to_definition,
         clone: clone,
         equal: equal,
+        canonical: canonical,
+        canonical_equal: canonical_equal,
+        comparable_shape: comparable_shape,
+        definitions_match: definitions_match,
         status_label: status_label,
         decide_unknown_outcome: decide_unknown_outcome,
         move_field: move_field,

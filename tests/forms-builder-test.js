@@ -137,3 +137,21 @@ assert.strictEqual( model.decide_unknown_outcome( 'discard', null, 5, { working:
 assert.strictEqual( model.decide_unknown_outcome( 'discard', null, 5, { working: attempted, revision: 5, published: { fields: [] } } ), 'not_saved', 'discard: same revision means not saved' );
 
 console.log( 'forms builder uncertain outcomes: all assertions passed' );
+
+// ── unknown outcomes survive server normalisation ──────────────────────────
+// The server fills field defaults on write (description, placeholder,
+// required, options, settings) and key order is not significant. A landed
+// write must still be recognised.
+var attempted_sparse = { name: 'F', fields: [ { key: 'a', type: 'text', label: 'A' } ] };
+var server_normalised = { name: 'F', fields: [ { key: 'a', type: 'text', label: 'A', required: false, description: '', placeholder: '', settings: {}, options: [] } ] };
+assert.strictEqual( model.decide_unknown_outcome( 'save', attempted_sparse, 5, { working: server_normalised, revision: 6 } ), 'landed', 'normalisation differences are not a conflict' );
+
+// Key order never decides.
+var reordered = { name: 'F', fields: [ { label: 'A', key: 'a', required: false, type: 'text' } ] };
+assert.strictEqual( model.decide_unknown_outcome( 'save', attempted_sparse, 5, { working: reordered, revision: 6 } ), 'landed', 'key order is irrelevant' );
+
+// Genuinely different content with a moved revision is still a conflict.
+var other_content = { name: 'F', fields: [ { key: 'a', type: 'text', label: 'A' }, { key: 'b', type: 'text', label: 'B' } ] };
+assert.strictEqual( model.decide_unknown_outcome( 'save', attempted_sparse, 5, { working: other_content, revision: 6 } ), 'conflict', 'different content with a moved revision is a conflict' );
+
+console.log( 'forms builder normalisation: all assertions passed' );
