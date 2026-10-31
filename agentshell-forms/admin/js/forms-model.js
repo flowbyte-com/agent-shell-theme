@@ -270,6 +270,43 @@ function index_of_length( list ) {
     return list.length;
 }
 
+/**
+ * Decide an uncertain outcome from the attempted snapshot and the
+ * authoritative server state.
+ *
+ * A revision that moved is not proof: it may be another editor's save. Only
+ * content equality proves the attempted write landed. Newer unsaved edits
+ * are never part of this decision - the caller keeps working untouched and
+ * only moves the saved pointer.
+ *
+ * @param {string} operation 'save', 'publish' or 'discard'.
+ * @param {Object} attempted The definition the uncertain request carried.
+ * @param {number} base_revision The revision the request was made against.
+ * @param {Object} server The authoritative GET body.
+ * @return {string} 'landed', 'not_saved' or 'conflict'.
+ */
+function decide_unknown_outcome( operation, attempted, base_revision, server ) {
+    server = server && typeof server === 'object' ? server : {};
+    var server_working = server.working && typeof server.working === 'object' ? server.working : {};
+    var server_revision = typeof server.revision === 'number' ? server.revision : 0;
+    if ( 'discard' === operation ) {
+        if ( equal( server_working, server.published || {} ) ) {
+            return 'landed';
+        }
+        return server_revision === base_revision ? 'not_saved' : 'conflict';
+    }
+    if ( 'publish' === operation ) {
+        if ( equal( server.published || {}, attempted || {} ) ) {
+            return 'landed';
+        }
+        return server_revision === base_revision ? 'not_saved' : 'conflict';
+    }
+    if ( equal( server_working, attempted || {} ) ) {
+        return 'landed';
+    }
+    return server_revision === base_revision ? 'not_saved' : 'conflict';
+}
+
 function status_label( model, previewed ) {
     if ( model.dirty() ) {
         return previewed ? 'changes_since_preview' : 'unsaved';
@@ -298,6 +335,7 @@ if ( typeof module !== 'undefined' && module.exports ) {
         clone: clone,
         equal: equal,
         status_label: status_label,
+        decide_unknown_outcome: decide_unknown_outcome,
         move_field: move_field,
         TYPES: TYPES,
         TYPE_SETTINGS: TYPE_SETTINGS,
@@ -310,6 +348,7 @@ if ( typeof module !== 'undefined' && module.exports ) {
         clone: clone,
         equal: equal,
         status_label: status_label,
+        decide_unknown_outcome: decide_unknown_outcome,
         move_field: move_field,
         TYPES: TYPES,
         TYPE_SETTINGS: TYPE_SETTINGS,

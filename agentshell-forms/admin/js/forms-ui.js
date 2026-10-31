@@ -95,7 +95,7 @@ FormsUi.prototype.render_list = function ( state, handlers ) {
 
         state.forms.forEach( function ( form ) {
             select.appendChild(
-                this.el( 'option', { value: form.form_id, selected: form.form_id === state.selected }, [
+                this.el( 'option', { value: form.form_id, selected: form.form_id === state.selected_form }, [
                     form.name + ( form.status ? ' — ' + form.status : '' ),
                 ] )
             );
@@ -132,7 +132,11 @@ FormsUi.prototype.render_builder = function ( state, handlers ) {
 
     fragment.appendChild( this.render_list( state, handlers ) );
 
-    var header = this.el( 'div', { class: 'asf-builder__header' }, [
+    var header = this.el( 'div', {
+        class: 'asf-builder__header',
+        'data-form-id': model.id || '',
+        'data-revision': String( model.revision || 0 ),
+    }, [
         this.el( 'h2', { text: model.name || 'Untitled form', 'data-form-name': '1' } ),
         this.el( 'span', {
             class: 'asf-builder__status',
@@ -200,7 +204,7 @@ FormsUi.prototype.render_builder = function ( state, handlers ) {
 
     model.fields().forEach( function ( field, index ) {
         var item = this.el( 'li', {
-            class: 'asf-builder__field' + ( index === state.selected ? ' asf-builder__field--selected' : '' ),
+            class: 'asf-builder__field' + ( index === state.selected_field ? ' asf-builder__field--selected' : '' ),
             'data-field-index': String( index ),
             'data-field-key': field.key,
         }, [
@@ -225,8 +229,8 @@ FormsUi.prototype.render_builder = function ( state, handlers ) {
 
     fragment.appendChild( fields );
 
-    if ( state.selected !== null && model.field_at( state.selected ) ) {
-        fragment.appendChild( this.render_inspector( model, state.selected, handlers ) );
+    if ( state.selected_field !== null && model.field_at( state.selected_field ) ) {
+        fragment.appendChild( this.render_inspector( model, state.selected_field, handlers ) );
     }
 
     fragment.appendChild( this.render_settings( model, state.tab || 'notification', handlers ) );

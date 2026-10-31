@@ -9,21 +9,18 @@
  * edits during an in-flight save, discards, recovers from validation and
  * network failures, manages several forms and inserts the shortcode.
  *
- * ## Status: not registered in CI yet
+ * ## Status: registered in CI as `forms-builder-acceptance` (destructive).
  *
- * The harness runs and reports **29 assertions** covering create, fields,
- * settings, options, reorder, preview, save/persist, publish/shortcode,
- * unpublished-edit, in-flight save, discard, validation recovery and network
- * recovery. It does **not** yet complete the multi-form management step
- * (rename/duplicate/trash after a two-editor conflict): the rename is sent
- * with a revision the client believes is current and the server answers 409,
- * so the step times out.
+ * The harness runs the full builder workflow against the real admin page,
+ * real REST endpoints and the real database: create, fields, settings,
+ * options, reorder, preview, save/persist, publish, shortcode page,
+ * unpublished edit, in-flight save, discard, validation recovery, network
+ * recovery, two-editor conflict, multi-form selection, rename, duplicate,
+ * trash and insertion.
  *
- * The suite is deliberately **not registered** in `tests/run-all.php` until
- * that step is finished: a harness that hangs CI is worse than one that is
- * honestly marked incomplete. The storage half of the same guarantees —
- * stale discard, discard reconciliation, rename CAS, duplicate — is covered
- * by `tests/forms-builder-storage-test.php`, which *is* registered.
+ * The browser run is bounded (`timeout 240` around Chrome plus a
+ * virtual-time budget): a timeout produces no report, and no report is a
+ * failure, never a pass. Cleanup runs regardless of the result.
  */
 
 require_once __DIR__ . '/bootstrap.php';

@@ -15,7 +15,7 @@ function FormsApp( root, api, model ) {
     this.model = model || null;
     this.ui = null;
     this.forms = [];
-    this.selected = model ? model.id : '';
+    this.selected_form = model ? model.id : '';
     this.selected_field = null;
     this.tab = 'notification';
     this.preview_html = '';
@@ -94,9 +94,9 @@ FormsApp.prototype.state = function () {
 
     return {
         forms: this.forms,
-        selected: this.selected,
+        selected_form: this.selected_form,
+        selected: this.selected_form,
         model: this.model,
-        selected: this.selected_field,
         selected_field: this.selected_field,
         tab: this.tab,
         preview_html: this.preview_html,
@@ -155,6 +155,26 @@ FormsApp.prototype.clear_error = function () {
  * Forms
  * ---------------------------------------------------------------------- */
 
+FormsApp.prototype.refresh_forms_list = function ( select_id ) {
+    var self = this;
+
+    return this.api.list().then( function ( result ) {
+        if ( ! result || ! result.ok || ! result.body ) {
+            self.fail( 'The form list could not be loaded.' );
+            return;
+        }
+
+        self.forms = result.body.forms || [];
+
+        if ( select_id && ! self.forms.some( function ( form ) { return form.form_id === select_id; } ) ) {
+            self.fail( 'The form is no longer listed.' );
+            return;
+        }
+
+        self.render();
+    } );
+};
+
 FormsApp.prototype.load_forms = function ( select_id, preserve_selection ) {
     var self = this;
 
@@ -166,14 +186,14 @@ FormsApp.prototype.load_forms = function ( select_id, preserve_selection ) {
 
         self.forms = result.body.forms || [];
 
-        var wanted = select_id || self.selected || ( self.forms.length ? self.forms[ 0 ].form_id : '' );
+        var wanted = select_id || self.selected_form || ( self.forms.length ? self.forms[ 0 ].form_id : '' );
 
         if ( wanted && self.forms.some( function ( form ) { return form.form_id === wanted; } ) ) {
             return self.load_form( wanted, Boolean( preserve_selection ) );
         }
 
         self.model = null;
-        self.selected = '';
+        self.selected_form = '';
         self.render();
     } );
 };
@@ -199,7 +219,7 @@ FormsApp.prototype.load_form = function ( form_id, preserve_selection ) {
             published: body.published,
         } );
 
-        self.selected = body.form_id;
+        self.selected_form = body.form_id;
 
         if ( ! preserve_selection ) {
             self.selected_field = null;
@@ -383,7 +403,7 @@ FormsApp.prototype.handle_change = function ( target, live ) {
     }
 
     if ( target.getAttribute( 'data-form-select' ) ) {
-        this.selected = target.value;
+        this.selected_form = target.value;
         this.load_form( target.value );
         return;
     }
@@ -479,18 +499,25 @@ FormsApp.prototype.save = function () {
         self.inflight = null;
 
         if ( ! result || ! result.ok ) {
-            self.handle_failure( result, 'The changes were not saved.' );
+            self.handle_failure( result, 'The changes were not saved.', { form_id: form_id, expected_revision: snapshot.revision } );
             return;
         }
 
+        // Reconcile the snapshot that was actually saved. Newer edits made
+        // while the request was in flight stay unsaved: reconcile_save sets
+        // saved to the snapshot, so dirty() remains true when working has
+        // moved on. The model itself is never replaced here — replacing it
+        // with a fresh GET would discard those newer edits. Only the list is
+        // refreshed.
         self.model.reconcile_save( snapshot, result.body.revision );
         self.status = self.model.dirty() ? 'unsaved' : 'saved';
         self.render();
-        self.load_forms( form_id, true );
+        self.refresh_forms_list( form_id );
     } ).catch( function () {
+        var attempted = self.inflight;
         self.busy = false;
         self.inflight = null;
-        self.reconcile_unknown( 'Save outcome could not be verified.' );
+        self.reconcile_unknown( 'Save outcome could not be verified.', attempted, 'save' );
     } );
 };
 
@@ -522,13 +549,24 @@ FormsApp.prototype.confirm_pending = function ( pending ) {
 
     if ( 'rename' === pending.action ) {
         if ( ! pending.name ) { return; }
+        var rename_id = this.model.id;
+        var rename_rev = this.model.revision;
         this.clear_error();
-        this.api.rename( this.model.id, pending.name, this.model.revision ).then( function ( result ) {
+        this.api.rename( rename_id, pending.name, rename_rev ).then( function ( result ) {
             if ( ! result || ! result.ok ) {
-                self.handle_failure( result, 'The form could not be renamed.' );
+                self.handle_failure( result, 'The form could not be renamed.', { form_id: rename_id, expected_revision: rename_rev } );
                 return;
             }
-            return self.load_forms( self.model.id );
+            // The rename touches the name, not the fields: keep the working
+            // draft (including any edits made since) and record the new
+            // revision the server produced.
+            self.model.name = result.body.name;
+            self.model.working.name = result.body.name;
+            self.model.saved.name = result.body.name;
+            self.model.revision = result.body.revision;
+            self.model.saved_revision = result.body.revision;
+            self.render();
+            self.refresh_forms_list( rename_id );
         } );
         return;
     }
@@ -553,7 +591,7 @@ FormsApp.prototype.confirm_pending = function ( pending ) {
                 self.fail( ( result && result.body && result.body.message ) || 'The form could not be trashed.' );
                 return;
             }
-            self.selected = '';
+            self.selected_form = '';
             return self.load_forms();
         } );
         return;
@@ -597,17 +635,18 @@ FormsApp.prototype.publish_confirmed = function () {
         self.busy = false;
 
         if ( ! result || ! result.ok ) {
-            self.handle_failure( result, 'The form was not published.' );
+            self.handle_failure( result, 'The form was not published.', { form_id: self.model.id, expected_revision: snapshot.revision } );
             return;
         }
 
         self.model.reconcile_publish( snapshot, result.body.revision, result.body.version );
         self.status = 'published';
         self.render();
-        self.load_forms( self.model.id, true );
+        self.refresh_forms_list( self.model.id );
     } ).catch( function () {
+        var attempted_pub = self.model ? self.model.snapshot() : null;
         self.busy = false;
-        self.reconcile_unknown( 'Publish outcome could not be verified.' );
+        self.reconcile_unknown( 'Publish outcome could not be verified.', attempted_pub, 'publish' );
     } );
 };
 
@@ -628,11 +667,13 @@ FormsApp.prototype.discard_confirmed = function () {
     this.status = 'discarding';
     this.update_status();
 
+    var discard_snapshot = this.model.snapshot();
+
     this.api.discard( this.model.id, this.model.revision ).then( function ( result ) {
         self.busy = false;
 
         if ( ! result || ! result.ok ) {
-            self.handle_failure( result, 'The changes were not discarded.' );
+            self.handle_failure( result, 'The changes were not discarded.', { form_id: self.model.id, expected_revision: discard_snapshot.revision } );
             return;
         }
 
@@ -642,10 +683,10 @@ FormsApp.prototype.discard_confirmed = function () {
         self.previewed = false;
         self.status = 'saved';
         self.render();
-        self.load_forms( self.model.id, true );
+        self.refresh_forms_list( self.model.id );
     } ).catch( function () {
         self.busy = false;
-        self.reconcile_unknown( 'Discard outcome could not be verified.' );
+        self.reconcile_unknown( 'Discard outcome could not be verified.', discard_snapshot, 'discard' );
     } );
 };
 
@@ -677,7 +718,21 @@ FormsApp.prototype.preview = function () {
  * Failure and uncertainty
  * ---------------------------------------------------------------------- */
 
-FormsApp.prototype.handle_failure = function ( result, fallback ) {
+FormsApp.prototype.describe_request = function ( context ) {
+    context = context && typeof context === 'object' ? context : {};
+
+    var target = context.form_id || ( this.model ? this.model.id : '' );
+    var expected = ( context.expected_revision !== undefined && context.expected_revision !== null )
+        ? context.expected_revision
+        : ( this.model ? this.model.revision : '' );
+
+    return ' [form ' + target
+        + ' expected_rev=' + expected
+        + ' selected=' + ( this.selected_form || '' )
+        + ' target=' + target + ']';
+};
+
+FormsApp.prototype.handle_failure = function ( result, fallback, context ) {
     var body = result && result.body ? result.body : {};
     var status = result ? result.status : 0;
 
@@ -691,38 +746,158 @@ FormsApp.prototype.handle_failure = function ( result, fallback ) {
     }
 
     if ( 409 === status || 'form_revision_mismatch' === ( body.code || '' ) ) {
-        this.fail( ( body.message || 'Another editor saved a newer version of this form.' ) + ' Reload to see it.', 'stale' );
+        // Instrument the conflict: the expected revision this editor sent,
+        // the authoritative revision the server reports, which form is
+        // selected, and which form the request targeted. A harness can read
+        // these apart: a genuine stale write, a load that has not completed,
+        // a wait satisfied by the wrong form, or a storage defect each leave
+        // a different signature here. WP_Error data arrives nested under
+        // `data`, so both shapes are read.
+        var errdata = ( body.data && typeof body.data === 'object' ) ? body.data : {};
+        var exp = ( body.expected_revision !== undefined ? body.expected_revision
+            : ( errdata.expected_revision !== undefined ? errdata.expected_revision
+            : ( context && context.expected_revision ) ) );
+        var auth = ( body.actual_revision !== undefined ? body.actual_revision
+            : ( errdata.actual_revision !== undefined ? errdata.actual_revision
+            : ( body.revision !== undefined ? body.revision : '?' ) ) );
+        var detail = ' [expected=' + exp
+            + ' authoritative=' + auth
+            + ' selected=' + ( this.selected_form || '' )
+            + ' target=' + ( ( context && context.form_id ) || ( this.model ? this.model.id : '' ) ) + ']';
+
+        this.fail( ( body.message || 'Another editor saved a newer version of this form.' ) + detail + ' Reload to see it.', 'stale' );
         return;
     }
 
-    this.fail( body.message || fallback, 'error' );
+    this.fail( ( body.message || fallback ) + this.describe_request( context ), 'error' );
 };
 
-FormsApp.prototype.reconcile_unknown = function ( message ) {
+FormsApp.prototype.reconcile_unknown = function ( message, snapshot, operation ) {
     var self = this;
+
+    operation = operation || 'save';
+    snapshot = snapshot && typeof snapshot === 'object' ? snapshot : null;
+
+    if ( ! snapshot && self.model ) {
+        snapshot = self.model.snapshot();
+    }
+
+    if ( ! snapshot || ! self.model ) {
+        self.fail( message + ' The server could not be reached to verify it.', 'unknown' );
+        return;
+    }
+
+    var attempted = AgentshellFormsModel.clone( snapshot.definition );
+    var base_revision = snapshot.revision;
+    var form_id = self.model.id;
 
     this.fail( message + ' Checking the server…', 'unknown' );
 
-    this.api.get( this.model.id ).then( function ( result ) {
+    this.api.get( form_id ).then( function ( result ) {
         if ( ! result || ! result.ok || ! result.body ) {
             self.fail( message + ' The server could not be reached to verify it.', 'unknown' );
             return;
         }
 
         var body = result.body;
+        var server_working = body.working || {};
+        var server_revision = body.revision;
 
-        // Establish the truth from the server's revision and definition: if
-        // the revision advanced, the write landed.
-        if ( body.revision === self.model.revision ) {
+        if ( 'discard' === operation ) {
+            // A discard landed exactly when the server holds the published
+            // definition as working.
+            if ( 'landed' === AgentshellFormsModel.decide_unknown_outcome( 'discard', attempted, base_revision, body ) ) {
+                self.model.reconcile_discard( body );
+                self.selected_field = null;
+                self.preview_html = '';
+                self.previewed = false;
+                self.status = 'saved';
+                self.error = '';
+                self.render();
+                self.refresh_forms_list( form_id );
+                return;
+            }
+
             self.fail( message + ' The change was not saved.', 'error' );
             return;
         }
 
-        self.model.reconcile_save( { definition: body.working, revision: body.revision }, body.revision );
-        self.status = self.model.dirty() ? 'unsaved' : 'saved';
-        self.error = '';
-        self.render();
-        self.load_forms( body.form_id );
+        if ( 'publish' === operation ) {
+            if ( 'landed' === AgentshellFormsModel.decide_unknown_outcome( 'publish', attempted, base_revision, body ) ) {
+                self.model.reconcile_publish( { definition: attempted, revision: base_revision }, server_revision, body.version );
+                self.status = self.model.dirty() ? 'unsaved' : 'published';
+                self.error = '';
+                self.render();
+                self.refresh_forms_list( form_id );
+                return;
+            }
+
+            var pub_outcome = AgentshellFormsModel.decide_unknown_outcome( 'publish', attempted, base_revision, body );
+
+            if ( 'not_saved' === pub_outcome ) {
+                self.fail( message + ' The change was not saved.', 'error' );
+                return;
+            }
+
+            // Someone else moved the form: keep this editor's working draft,
+            // rebase the saved pointer on the server truth, and report the
+            // conflict rather than mistaking their save for ours.
+            self.model.saved = AgentshellFormsModel.clone( server_working );
+            self.model.revision = server_revision;
+            self.model.saved_revision = server_revision;
+            if ( body.published ) {
+                self.model.published = AgentshellFormsModel.clone( body.published );
+            }
+            if ( body.version !== undefined ) {
+                self.model.version = body.version;
+            }
+            self.fail(
+                message + ' Another editor saved a newer version [expected=' + base_revision
+                    + ' authoritative=' + server_revision
+                    + ' selected=' + ( self.selected_form || '' )
+                    + ' target=' + form_id + ']. Reload to see it.',
+                'stale'
+            );
+            return;
+        }
+
+        // Save (the default): the write landed exactly when the server holds
+        // the attempted definition. A moved revision alone proves nothing.
+        if ( 'landed' === AgentshellFormsModel.decide_unknown_outcome( 'save', attempted, base_revision, { working: server_working, revision: server_revision } ) ) {
+            self.model.reconcile_save( { definition: attempted, revision: base_revision }, server_revision );
+            self.status = self.model.dirty() ? 'unsaved' : 'saved';
+            self.error = '';
+            self.render();
+            self.refresh_forms_list( form_id );
+            return;
+        }
+
+        var save_outcome = AgentshellFormsModel.decide_unknown_outcome( 'save', attempted, base_revision, { working: server_working, revision: server_revision } );
+
+        if ( 'not_saved' === save_outcome ) {
+            self.fail( message + ' The change was not saved.', 'error' );
+            return;
+        }
+
+        // The revision moved but the content is not ours: another editor's
+        // save, not ours. Rebase the saved pointer, keep the working draft
+        // (including newer unsaved edits), and report the conflict.
+        self.model.saved = AgentshellFormsModel.clone( server_working );
+        self.model.revision = server_revision;
+        self.model.saved_revision = server_revision;
+        if ( body.published ) {
+            self.model.published = AgentshellFormsModel.clone( body.published );
+        }
+        if ( body.version !== undefined ) {
+            self.model.version = body.version;
+        }
+        self.fail(
+            message + ' Another editor saved a newer version [expected=' + base_revision
+                + ' authoritative=' + server_revision
+                + ' selected=' + ( self.selected_form || '' )
+                + ' target=' + form_id + ']. Reload to see it.',
+            'stale'
+        );
     } );
 };
 

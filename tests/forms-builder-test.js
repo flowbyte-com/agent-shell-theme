@@ -114,3 +114,26 @@ assert.strictEqual( m7.working.settings.spam.rate_limit.max, 9 );
 assert.strictEqual( m7.dirty(), true, 'a settings edit makes the draft dirty' );
 
 console.log( 'forms builder models: all assertions passed' );
+
+// ── uncertain outcomes: revision movement alone never proves a write ───────
+var attempted = { fields: [ { key: 'a' } ] };
+var other = { fields: [ { key: 'a' }, { key: 'b' } ] };
+
+// Save: the server holding the attempted definition means it landed, even
+// with newer local edits present (the caller keeps working untouched).
+assert.strictEqual( model.decide_unknown_outcome( 'save', attempted, 5, { working: attempted, revision: 6 } ), 'landed', 'save: identical content means landed' );
+// Same revision, different content: the write never landed.
+assert.strictEqual( model.decide_unknown_outcome( 'save', attempted, 5, { working: { fields: [] }, revision: 5 } ), 'not_saved', 'save: same revision means not saved' );
+// Moved revision, different content: another editor's save, not ours.
+assert.strictEqual( model.decide_unknown_outcome( 'save', attempted, 5, { working: other, revision: 6 } ), 'conflict', 'save: moved revision with other content is a conflict' );
+
+// Publish: only the published document proves it.
+assert.strictEqual( model.decide_unknown_outcome( 'publish', attempted, 5, { working: attempted, revision: 6, published: attempted, version: 2 } ), 'landed', 'publish: matching published means landed' );
+assert.strictEqual( model.decide_unknown_outcome( 'publish', attempted, 5, { working: attempted, revision: 5, published: { fields: [] }, version: 1 } ), 'not_saved', 'publish: same revision means not saved' );
+assert.strictEqual( model.decide_unknown_outcome( 'publish', attempted, 5, { working: other, revision: 6, published: other, version: 2 } ), 'conflict', 'publish: other published content is a conflict' );
+
+// Discard: landed exactly when working equals published.
+assert.strictEqual( model.decide_unknown_outcome( 'discard', null, 5, { working: { fields: [] }, revision: 6, published: { fields: [] } } ), 'landed', 'discard: working==published means landed' );
+assert.strictEqual( model.decide_unknown_outcome( 'discard', null, 5, { working: attempted, revision: 5, published: { fields: [] } } ), 'not_saved', 'discard: same revision means not saved' );
+
+console.log( 'forms builder uncertain outcomes: all assertions passed' );

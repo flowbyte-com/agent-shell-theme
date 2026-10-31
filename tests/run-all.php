@@ -1211,6 +1211,16 @@ $suites = array(
         'path'     => __DIR__ . '/forms-builder-storage-test.php',
         'requires' => 'destructive',
     ),
+    // The full builder workflow in a real browser against a real WordPress:
+    // create, fields, settings, reorder, preview, save, publish, shortcode
+    // page, unpublished edit, in-flight save, discard, validation and network
+    // recovery, two-editor conflict, multi-form selection, rename, duplicate,
+    // trash and insertion. Destructive: it writes forms and pages. The browser
+    // run is bounded (timeout 240); a timeout fails, never passes green.
+    'forms-builder-acceptance' => array(
+        'path'     => __DIR__ . '/forms-builder-acceptance-test.php',
+        'requires' => 'destructive',
+    ),
 );
 
 // ── the environment, resolved once ───────────────────────────────────────────
