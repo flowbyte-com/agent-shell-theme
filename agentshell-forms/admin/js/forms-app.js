@@ -25,6 +25,7 @@ function FormsApp( root, api, model ) {
     this.busy = false;
     this.inflight = null;
     this.pending = null;
+    this._load_generation = 0;
 }
 
 FormsApp.prototype.init = function () {
@@ -187,8 +188,16 @@ FormsApp.prototype.refresh_forms_list = function ( select_id ) {
 
 FormsApp.prototype.load_forms = function ( select_id, preserve_selection ) {
     var self = this;
+    var generation = ++self._load_generation;
 
     return this.api.list().then( function ( result ) {
+        // A newer load started while this one was in flight (the initial
+        // auto-load racing an explicit selection, a fast double switch).
+        // The stale response must not replace the model: last writer wins.
+        if ( generation !== self._load_generation ) {
+            return;
+        }
+
         if ( ! result || ! result.ok || ! result.body ) {
             self.fail( 'The form list could not be loaded.' );
             return;
@@ -210,8 +219,13 @@ FormsApp.prototype.load_forms = function ( select_id, preserve_selection ) {
 
 FormsApp.prototype.load_form = function ( form_id, preserve_selection ) {
     var self = this;
+    var generation = ++self._load_generation;
 
     return this.api.get( form_id ).then( function ( result ) {
+        if ( generation !== self._load_generation ) {
+            return;
+        }
+
         if ( ! result || ! result.ok || ! result.body ) {
             self.fail( 'That form could not be loaded.' );
             return;
@@ -497,6 +511,7 @@ FormsApp.prototype.save = function () {
     // actually saved — not the newer draft.
     var snapshot = this.model.snapshot();
     var form_id = this.model.id;
+    var saved_model = this.model;
 
     this.busy = true;
     this.inflight = snapshot;
@@ -519,14 +534,30 @@ FormsApp.prototype.save = function () {
         // moved on. The model itself is never replaced here — replacing it
         // with a fresh GET would discard those newer edits. Only the list is
         // refreshed.
+        //
+        // The operator may have switched forms while the request was in
+        // flight. Reconciling another form's model with this snapshot would
+        // corrupt it; the landed write is picked up when that form loads.
+        if ( ! self.model || self.model !== saved_model ) {
+            self.refresh_forms_list( form_id );
+            return;
+        }
+
         self.model.reconcile_save( snapshot, result.body.revision );
         self.status = self.model.dirty() ? 'unsaved' : 'saved';
         self.render();
         self.refresh_forms_list( form_id );
     } ).catch( function () {
         var attempted = self.inflight;
+        var failed_model = self.model;
         self.busy = false;
         self.inflight = null;
+
+        if ( ! failed_model || failed_model !== saved_model ) {
+            self.refresh_forms_list( form_id );
+            return;
+        }
+
         self.reconcile_unknown( 'Save outcome could not be verified.', attempted, 'save' );
     } );
 };
@@ -638,26 +669,39 @@ FormsApp.prototype.publish_confirmed = function () {
     var self = this;
 
     var snapshot = this.model.snapshot();
+    var publish_id = this.model.id;
+    var publish_model = this.model;
     this.busy = true;
     this.clear_error();
     this.status = 'publishing';
     this.update_status();
 
-    this.api.publish( this.model.id, snapshot.revision ).then( function ( result ) {
+    this.api.publish( publish_id, snapshot.revision ).then( function ( result ) {
         self.busy = false;
 
         if ( ! result || ! result.ok ) {
-            self.handle_failure( result, 'The form was not published.', { form_id: self.model.id, expected_revision: snapshot.revision } );
+            self.handle_failure( result, 'The form was not published.', { form_id: publish_id, expected_revision: snapshot.revision } );
+            return;
+        }
+
+        if ( ! self.model || self.model !== publish_model ) {
+            self.refresh_forms_list( publish_id );
             return;
         }
 
         self.model.reconcile_publish( snapshot, result.body.revision, result.body.version );
         self.status = 'published';
         self.render();
-        self.refresh_forms_list( self.model.id );
+        self.refresh_forms_list( publish_id );
     } ).catch( function () {
-        var attempted_pub = self.model ? self.model.snapshot() : null;
+        var attempted_pub = publish_model ? publish_model.snapshot() : null;
         self.busy = false;
+
+        if ( ! self.model || self.model !== publish_model ) {
+            self.refresh_forms_list( publish_id );
+            return;
+        }
+
         self.reconcile_unknown( 'Publish outcome could not be verified.', attempted_pub, 'publish' );
     } );
 };
@@ -680,12 +724,19 @@ FormsApp.prototype.discard_confirmed = function () {
     this.update_status();
 
     var discard_snapshot = this.model.snapshot();
+    var discard_id = this.model.id;
+    var discard_model = this.model;
 
-    this.api.discard( this.model.id, this.model.revision ).then( function ( result ) {
+    this.api.discard( discard_id, this.model.revision ).then( function ( result ) {
         self.busy = false;
 
         if ( ! result || ! result.ok ) {
-            self.handle_failure( result, 'The changes were not discarded.', { form_id: self.model.id, expected_revision: discard_snapshot.revision } );
+            self.handle_failure( result, 'The changes were not discarded.', { form_id: discard_id, expected_revision: discard_snapshot.revision } );
+            return;
+        }
+
+        if ( ! self.model || self.model !== discard_model ) {
+            self.refresh_forms_list( discard_id );
             return;
         }
 
@@ -695,9 +746,15 @@ FormsApp.prototype.discard_confirmed = function () {
         self.previewed = false;
         self.status = 'saved';
         self.render();
-        self.refresh_forms_list( self.model.id );
+        self.refresh_forms_list( discard_id );
     } ).catch( function () {
         self.busy = false;
+
+        if ( ! self.model || self.model !== discard_model ) {
+            self.refresh_forms_list( discard_id );
+            return;
+        }
+
         self.reconcile_unknown( 'Discard outcome could not be verified.', discard_snapshot, 'discard' );
     } );
 };
@@ -802,12 +859,20 @@ FormsApp.prototype.reconcile_unknown = function ( message, snapshot, operation )
     var attempted = AgentshellFormsModel.clone( snapshot.definition );
     var base_revision = snapshot.revision;
     var form_id = self.model.id;
+    var reconcile_model = self.model;
 
     this.fail( message + ' Checking the server…', 'unknown' );
 
     this.api.get( form_id ).then( function ( result ) {
         if ( ! result || ! result.ok || ! result.body ) {
             self.fail( message + ' The server could not be reached to verify it.', 'unknown' );
+            return;
+        }
+
+        // The operator may have switched forms while the verifying read was
+        // in flight. Never reconcile another form's model with this outcome.
+        if ( ! self.model || self.model !== reconcile_model ) {
+            self.refresh_forms_list( form_id );
             return;
         }
 

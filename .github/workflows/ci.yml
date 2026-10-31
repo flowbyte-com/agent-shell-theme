@@ -214,6 +214,19 @@ jobs:
           AGENTSHELL_REQUIRE_BROWSER: '1'
         run: node tests/forms-builder-browser-test.js
 
+      # Forms builder models (Node): dirty computation, status vocabulary,
+      # snapshot reconciliation, unknown-outcome adjudication and its
+      # normalisation tolerance. Pure functions, no database.
+      - name: Forms builder models (Node)
+        run: node tests/forms-builder-test.js
+
+      # Forms builder app (Node): the real FormsApp with a stubbed transport —
+      # stale loads dropped, in-flight saves reconciled against their
+      # snapshot, post-switch resolutions kept off the other model, and
+      # uncertain outcomes that never mistake another editor's save.
+      - name: Forms builder app (Node)
+        run: node tests/forms-builder-app-test.js
+
       # The widget runtime's behavioural half needs the JavaScript the
       # theme actually emits, which only PHP can produce. It is generated
       # here (through the same bootstrap the PHP suite uses) and handed to
