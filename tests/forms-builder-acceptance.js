@@ -607,24 +607,19 @@
             } )
             .then( function () {
                 set( q( '[data-inspector] [data-setting="description"]' ), 'My uncertain edit' );
-                // Force the next save's response to be lost, so reconcile runs
-                // against a server the other editor has already moved.
+                // The server has already moved for someone else (the setup
+                // save above). Losing this save's response forces reconcile
+                // to run against that moved server: it must report a
+                // conflict, never mistake their save for ours. No nested
+                // requests inside the wrapper: it only drops the response.
                 ifr.contentWindow.fetch = ifr.contentWindow.__real_fetch;
                 var real_fetch4 = ifr.contentWindow.fetch;
                 var dropped_once = false;
                 ifr.contentWindow.fetch = function ( url, opts ) {
                     if ( ! dropped_once && String( url ).indexOf( '/save' ) >= 0 ) {
                         dropped_once = true;
-                        var p = real_fetch4.apply( this, arguments );
-                        // A second editor saves before we reconcile.
-                        return p.then( function ( resp ) {
-                            return api( '/forms/' + form_id ).then( function ( cur ) {
-                                var theirs = model_clone_working( cur.body );
-                                theirs.fields.push( { key: 'second_editor', type: 'text', label: 'Second', required: false, settings: {}, options: [] } );
-                                return api( '/forms/' + form_id + '/save', { method: 'POST', body: { expected_revision: cur.body.revision, definition: theirs } } );
-                            } ).then( function () {
-                                return Promise.reject( new TypeError( 'simulated lost response during conflict' ) );
-                            } );
+                        return real_fetch4.apply( this, arguments ).then( function () {
+                            return Promise.reject( new TypeError( 'simulated lost response during conflict' ) );
                         } );
                     }
                     return real_fetch4.apply( this, arguments );
