@@ -550,19 +550,21 @@ FormsApp.prototype.confirm_pending = function ( pending ) {
     if ( 'rename' === pending.action ) {
         if ( ! pending.name ) { return; }
         var rename_id = this.model.id;
-        var rename_rev = this.model.revision;
+        var rename_snapshot = this.model.snapshot();
         this.clear_error();
-        this.api.rename( rename_id, pending.name, rename_rev ).then( function ( result ) {
+        this.api.rename( rename_id, pending.name, rename_snapshot.revision ).then( function ( result ) {
             if ( ! result || ! result.ok ) {
-                self.handle_failure( result, 'The form could not be renamed.', { form_id: rename_id, expected_revision: rename_rev } );
+                self.handle_failure( result, 'The form could not be renamed.', { form_id: rename_id, expected_revision: rename_snapshot.revision } );
                 return;
             }
-            // The rename touches the name, not the fields: keep the working
-            // draft (including any edits made since) and record the new
-            // revision the server produced.
+            // The rename touches the name, not the fields: the saved copy
+            // becomes the snapshot that was actually renamed (with the new
+            // name), while working keeps any newer edits made in flight.
+            var renamed = AgentshellFormsModel.clone( rename_snapshot.definition );
+            renamed.name = result.body.name;
+            self.model.saved = renamed;
             self.model.name = result.body.name;
             self.model.working.name = result.body.name;
-            self.model.saved.name = result.body.name;
             self.model.revision = result.body.revision;
             self.model.saved_revision = result.body.revision;
             self.render();
