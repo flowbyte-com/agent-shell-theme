@@ -210,6 +210,7 @@
     }
 
     function note( step ) {
+        window.__step = step;
         try {
             fetch( '/asf-progress.php?step=' + encodeURIComponent( step ), { credentials: 'omit' } );
         } catch ( e ) {}
@@ -221,6 +222,14 @@
         var form_id = '';
         var page_url = '';
         var page_id = 0;
+
+        window.__step = 'init';
+        function at_step( name ) {
+            window.__step = name;
+            try {
+                note( name );
+            } catch ( e ) {}
+        }
 
         return load( ADMIN )
             .then( function () {
@@ -400,8 +409,15 @@
                 // 10. Edit while a save is in flight. The edit happens in the
                 // same tick as the click, so the request is certainly pending.
                 var real_fetch = ifr.contentWindow.fetch;
+                ifr.contentWindow.__save_bodies = [];
+                var __orig_fetch = ifr.contentWindow.fetch;
                 ifr.contentWindow.fetch = function ( url, opts ) {
-                    var promise = real_fetch.apply( this, arguments );
+                    try {
+                        if ( String( url ).indexOf( '/save' ) >= 0 && opts && opts.body ) {
+                            ifr.contentWindow.__save_bodies.push( String( opts.body ).slice( 0, 400 ) );
+                        }
+                    } catch ( e ) {}
+                    var promise = __orig_fetch.apply( this, arguments );
                     if ( String( url ).indexOf( '/save' ) >= 0 && ifr.contentWindow.__slow_save ) {
                         return promise.then( function ( response ) {
                             return new Promise( function ( resolve ) {
@@ -456,11 +472,14 @@
                 return api( '/forms/' + form_id );
             } )
             .then( function ( response ) {
+                at_step( '10-verify-second-save' );
                 var email2 = ( response.body.working.fields || [] ).filter( function ( f ) { return f.key === 'email'; } )[ 0 ];
+                var sent_bodies = [];
+                try { sent_bodies = ifr.contentWindow.__save_bodies || []; } catch ( e ) {}
                 ok(
                     '10. in-flight save: a subsequent save persists the newer edit',
                     !! email2 && email2.description === 'Edited while saving',
-                    JSON.stringify( email2 )
+                    'server=' + JSON.stringify( email2 ) + ' sent=' + JSON.stringify( sent_bodies )
                 );
 
                 note( '11-discard' );
@@ -771,7 +790,7 @@
                 finish();
             } )
             .catch( function ( e ) {
-                failures.push( { name: 'the scenario threw', detail: e && e.message ? e.message : String( e ) } );
+                failures.push( { name: 'the scenario threw at step ' + ( window.__step || '?' ), detail: e && e.message ? e.message : String( e ) } );
                 document.title = JSON.stringify( { total: total, failures: failures, token: token } );
             } );
     }
