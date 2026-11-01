@@ -1687,12 +1687,11 @@ drifts must fail the build, not mislead an agent.
 
 ### 8.2 The proposed tools
 
-> **Nothing in this section is committed.** These are *proposals* for the
-> agent surface, written so the shape can be reviewed. The names are
-> **provisional** and may change; the tool count in `AGENTS.md` §2 is
-> **unchanged** until a phase actually ships these tools, and the tool-count
-> test keeps it honest (§8.1). No tool in this list exists, and this
-> documentation PR adds none.
+> **Implemented in Phase 5.** The twelve tools below ship with the
+> posture §8.2a describes: the seven form tools and the metadata-only
+> listing work, and the four entry tools are registered and refuse under
+> the default `off` policy. The normative surface is `AGENTS.md` §2, and
+> this section remains the design record of what was decided and why.
 
 The agent surface is deliberately small, and the table names the **capability
 first** — the authoritative list of the existing tool surface is in
