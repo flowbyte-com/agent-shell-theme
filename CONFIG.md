@@ -91,30 +91,40 @@ git clone <REPO_URL> <REPO_PATH>
 cd <REPO_PATH>
 ```
 
-For development, link the repository into the WordPress install rather than
-copying it, so edits take effect immediately and nothing is edited in two
-places.
+The repository keeps the WordPress components under `wordpress/`; a site wants
+them where WordPress looks. Link them rather than copying, so edits take effect
+immediately and nothing is edited in two places.
 
-**Theme** — the linked directory name becomes the WordPress theme slug, so keep
-it exactly `agent-shell-theme`:
+**One command** does all four links, refuses to overwrite anything that already
+exists, and changes nothing else:
 
 ```bash
-ln -s <REPO_PATH> "<SITE_PATH>/app/public/wp-content/themes/agent-shell-theme"
+tools/install-localwp.sh --wp-content "<SITE_PATH>/app/public/wp-content"
 ```
 
-**Plugins** — both are required (`agentshell-mcp` for the tool surface,
-`agentshell-blocks` for the widget registry tools):
+Add `--dry-run` to see what it would link without creating anything. The script
+is idempotent and prints exactly what it linked.
+
+**By hand**, if you prefer — the theme, then the two required plugins
+(`agentshell-mcp` for the tool surface, `agentshell-blocks` for the widget
+registry tools), and optionally `agentshell-forms`:
 
 ```bash
-ln -s <REPO_PATH>/agentshell-mcp    "<SITE_PATH>/app/public/wp-content/plugins/agentshell-mcp"
-ln -s <REPO_PATH>/agentshell-blocks "<SITE_PATH>/app/public/wp-content/plugins/agentshell-blocks"
+WP_CONTENT="<SITE_PATH>/app/public/wp-content"
+ln -s "<REPO_PATH>/wordpress/themes/agentshell"   "$WP_CONTENT/themes/agentshell"
+ln -s "<REPO_PATH>/wordpress/plugins/agentshell-mcp"    "$WP_CONTENT/plugins/agentshell-mcp"
+ln -s "<REPO_PATH>/wordpress/plugins/agentshell-blocks" "$WP_CONTENT/plugins/agentshell-blocks"
+ln -s "<REPO_PATH>/wordpress/plugins/agentshell-forms"  "$WP_CONTENT/plugins/agentshell-forms"
 ```
 
 Verify the links resolve:
 
 ```bash
-ls -l "<SITE_PATH>/app/public/wp-content/themes/" "<SITE_PATH>/app/public/wp-content/plugins/"
+ls -l "$WP_CONTENT/themes/" "$WP_CONTENT/plugins/"
 ```
+
+The theme directory name (`agentshell`) is what WordPress shows and activates;
+it is the name in the theme's `style.css`, not a property of this repository.
 
 ### 3.1 What a development install serves, and what a deployment ships
 
@@ -134,17 +144,31 @@ bash tools/check-release-archive.sh --archive /tmp/agentshell-dist/agentshell-*.
 ```
 
 `tools/package-release.sh` builds from a *revision's tree*, not from the
-working directory, so a deployment is the code that was reviewed. It ships
-the theme, both plugins and the theme's assets, and it excludes:
+working directory, so a deployment is the code that was reviewed. It stages
+the theme (from `wordpress/themes/agentshell/`) and the three plugins (from
+`wordpress/plugins/`) into the layout a server expects:
+
+```
+agentshell/                  the theme
+agentshell/agentshell-mcp/   a plugin, activatable by that name
+agentshell/agentshell-blocks/
+agentshell/agentshell-forms/
+agentshell/LICENSE
+```
+
+It excludes:
 
 | Excluded | Why |
 |---|---|
 | `tests/` | the test suite and every fixture it carries |
 | `.git/`, `.worktrees/` | git's own directory and other checkouts |
 | `.github/` | the CI workflow and its scripts |
-| `tools/`, `docs/_archive/`, `skills/`, `configurator/` | repository tooling, not the product |
+| `tools/`, `docs/`, `skills/` | repository tooling and design records, not the product |
 | `agentshell-mcp-daemon/` | the daemon runs on the operator's machine, not on the server |
 | any file that looks like a private key | refused outright, not merely skipped |
+
+The configurator **does** ship: it is a production feature the theme enqueues
+for administrators, not development material.
 
 `tools/check-release-archive.sh` re-checks the built archive against that
 list, and also works against a directory (`--tree`), so an installation that
@@ -213,6 +237,8 @@ In the WordPress admin at `https://<SITE_DOMAIN>/wp-admin/`:
 
 - **Appearance → Themes** — activate **AgentShell**.
 - **Plugins** — activate **agentshell-mcp** and **agentshell-blocks**.
+  **agentshell-forms** is optional: activate it only if the site serves forms.
+  A site that leaves it inactive renders exactly as it did before.
 
 Optional but recommended: assign a menu to the navigation location and set a
 Site Logo, so the header zone renders with real content.
@@ -592,7 +618,7 @@ changing anything else:
 # Resolves through the symlink to your checkout; a real directory stops here.
 readlink -f "<SITE_PATH>/app/public/wp-content/plugins/agentshell-mcp"
 grep -n "array() === \$schema\['properties'\]" \
-  "<REPO_PATH>/agentshell-mcp/includes/tools/class-base-tool.php"
+  "<REPO_PATH>/wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php"
 ```
 
 The second command should print a match. If it does not, the running copy is
@@ -647,7 +673,7 @@ tail -n 50 <SITE_PATH>/logs/php/*.log
 - [ ] Repository cloned to `<REPO_PATH>`
 - [ ] Theme + both plugins symlinked into `wp-content/` (§3)
 - [ ] `php` on `PATH` (§4)
-- [ ] Theme and both plugins activated (§5)
+- [ ] Theme and the required plugins activated (§5; forms is optional)
 - [ ] Application Password created for a `manage_options` user (§6)
 - [ ] LocalWP certificate trusted; `tls_verify=0` (§7)
 - [ ] `~/.agentshell-mcp.json` created and `chmod 600` (§8)

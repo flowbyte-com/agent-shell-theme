@@ -14,11 +14,54 @@ A WordPress theme built for human–agent collaboration. The shell is static and
 - **Browser configurator** — logged-in users get a live-editing panel for design tokens, zones, CSS/JS.
 - **Two skills** — `agentshell-image-to-theme` (theme to a reference image) and `agentshell-widget-builder` (build a custom widget).
 
+## Where things live
+
+The checkout is one repository with three kinds of thing in it. Only the first
+is loaded by WordPress.
+
+```
+wordpress/
+  themes/agentshell/          the theme WordPress activates
+  plugins/agentshell-mcp/     the MCP tool surface
+  plugins/agentshell-blocks/  the widget registry tools
+  plugins/agentshell-forms/   forms: builder, submissions, zone block
+tests/                        the test suite
+tools/                        release packaging, install helper, sync guard
+docs/                         design records
+skills/                       agent skills
+agentshell-mcp-daemon/        the MCP daemon (a CLI app, not a plugin)
+```
+
+`agentshell-mcp-daemon/` is the odd one out on purpose: it runs on the
+operator's machine and speaks MCP over stdio to an agent, then talks HTTP to
+the site. It is never uploaded to WordPress.
+
 ## Setup for humans
 
-1. Upload `agentshell/` to `wp-content/themes/`.
-2. Activate in **Appearance → Themes**.
-3. Upload `agentshell-mcp/` to `wp-content/plugins/`. Activate it.
+### Option A — link a local site to this checkout (recommended)
+
+A LocalWP (or any) site does not need a copy of this repository; it needs the
+four directories in the places WordPress looks. One script makes the links and
+touches nothing else:
+
+```bash
+tools/install-localwp.sh --wp-content "/path/to/site/app/public/wp-content"
+tools/install-localwp.sh --wp-content "..." --dry-run   # see first, change nothing
+```
+
+It links the theme and the three plugins, refuses to overwrite anything that
+already exists, never deletes, and prints exactly what it linked. It does not
+activate anything — whether a site runs the forms plugin is your decision.
+The script is idempotent, so running it twice is safe. It is excluded from
+release archives: it is a development tool.
+
+### Option B — copy the components in
+
+1. Copy `wordpress/themes/agentshell/` to `wp-content/themes/agentshell/`.
+2. Copy `wordpress/plugins/agentshell-mcp/`, `agentshell-blocks/` and
+   (optionally) `agentshell-forms/` to `wp-content/plugins/`.
+3. Activate the theme in **Appearance → Themes**, and the plugins in
+   **Plugins**. Activate `agentshell-forms` only if the site serves forms.
 4. Assign a menu to **Primary Navigation** and set a Site Logo if desired.
 5. Create an Application Password for the agent user.
 6. Install the daemon: copy `agentshell-mcp-daemon/` somewhere permanent, then create `~/.agentshell-mcp.json` (mode `0600`):
@@ -101,7 +144,23 @@ bash tools/package-release.sh --out dist                                   # bui
 bash tools/check-release-archive.sh --archive dist/agentshell-*.tar.gz      # check
 ```
 
-The archive carries the theme, its plugins, the assets, the licence and the configuration defaults — about 1.4 MB — and refuses the Git history, the worktrees, the tests, the tooling and anything that looks like a credential. The two scripts share one list of exclusions, so an exclusion forgotten in one fails the build.
+The archive carries the theme, the three plugins, the assets, the licence and the configuration defaults — about 1.4 MB — and refuses the Git history, the worktrees, the tests, the tooling and anything that looks like a credential. The two scripts share one list of exclusions, so an exclusion forgotten in one fails the build.
+
+**The archive layout is not the repository layout.** The packager stages
+`wordpress/themes/agentshell/` as the archive's theme root and each
+`wordpress/plugins/<name>/` as `<name>/` beside it, so what a server receives
+is exactly the shape WordPress expects:
+
+```
+agentshell/                  the theme (style.css, functions.php, …)
+agentshell/agentshell-mcp/   a plugin, activatable by that name
+agentshell/agentshell-blocks/
+agentshell/agentshell-forms/
+agentshell/LICENSE
+```
+
+That is the distribution contract these scripts have always had; the `wordpress/`
+directory is a repository convenience and never appears in a release.
 
 **`agentshell-forms` ships in the archive but is not activated by the theme.** It is included so a site that wants forms has the engine available — the `agentshell_form` zone block, the `[agentshell_form]` shortcode and the widget all come from it — and it is left inactive until an operator activates it, because a form engine is a decision rather than a default. A site that never activates it renders exactly what it rendered before: a form block on such a site produces no markup and causes no error. The deployment checklist and the full contract are in [`AGENTS.md` §3](AGENTS.md).
 

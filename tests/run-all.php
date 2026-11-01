@@ -1221,6 +1221,15 @@ $suites = array(
         'path'     => __DIR__ . '/forms-builder-acceptance-test.php',
         'requires' => 'destructive',
     ),
+    // The LocalWP installation helper: the four links it creates, the dry
+    // run that creates nothing, idempotency, and the conflicts it refuses
+    // (an existing directory, a foreign link, a path that is not wp-content)
+    // without deleting or overwriting anything. Fixtures live in the system
+    // temp directory; no real WordPress site is touched.
+    'install-helper' => array(
+        'path'     => __DIR__ . '/install-helper-test.php',
+        'requires' => 'unit',
+    ),
     // The `agentshell_form` zone block (Phase 6): the six-type vocabulary
     // across the validator, the doctor and both zone tools; the immutable-id
     // rule; composition and all nine header/footer areas; the three-slot
