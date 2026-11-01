@@ -1152,13 +1152,15 @@ Agentshell_Test::run(
 
         // Symbols only. The plugin's docblocks talk about AgentShell on purpose —
         // independence is a property of what the code *calls*, not of what it
-        // explains.
+        // explains. The one deliberate exception is the tool-registration
+        // hook name, pinned by the test below: naming a hook is not calling
+        // a plugin, and when the MCP plugin is absent the filter never fires
+        // and the tools simply never register.
         $forbidden = array(
             'AgentShell_MCP',
             'AgentShell_Blocks',
             'agentshell_config',
             'agentshell_get_config',
-            'agentshell_mcp_register_tools',
             'get_template_directory',
             'get_stylesheet_directory',
             'wp_get_theme(',
@@ -1266,6 +1268,66 @@ Agentshell_Test::run(
             $expected_routes,
             $route_files,
             'exactly three files register a REST route: the mint, the submission and the builder controller'
+        );
+    }
+);
+
+Agentshell_Test::run(
+    'forms independence: the only AgentShell coupling is the priority-15 tool registration',
+    function () {
+        $root  = dirname( __DIR__ ) . '/agentshell-forms';
+        $files = array();
+
+        $walk = function ( $dir ) use ( &$walk, &$files ) {
+            foreach ( (array) scandir( $dir ) as $item ) {
+                if ( '.' === $item || '..' === $item ) {
+                    continue;
+                }
+                $path = $dir . '/' . $item;
+                if ( is_dir( $path ) ) {
+                    $walk( $path );
+                    continue;
+                }
+                if ( 'php' === strtolower( (string) pathinfo( $path, PATHINFO_EXTENSION ) ) ) {
+                    $files[] = $path;
+                }
+            }
+        };
+        $walk( $root );
+
+        // The registration hook may be named in exactly one file: the
+        // bootstrap. A hook name is not a dependency — when the MCP plugin
+        // is absent the filter never fires — but a second reference would
+        // be a second coupling nobody decided to add.
+        $referencing = array();
+        foreach ( $files as $file ) {
+            $source = (string) file_get_contents( $file );
+            if ( false !== strpos( $source, 'agentshell_mcp_register_tools' ) ) {
+                $referencing[] = basename( $file );
+            }
+        }
+
+        sort( $referencing );
+
+        Agentshell_Test::assert_equals(
+            array( 'agentshell-forms.php' ),
+            $referencing,
+            'only the bootstrap may name the tool-registration hook'
+        );
+
+        $bootstrap = (string) file_get_contents( $root . '/agentshell-forms.php' );
+
+        Agentshell_Test::assert_true(
+            1 === preg_match( "/add_filter\s*\(\s*'agentshell_mcp_register_tools'.*?,\\s*15\s*\)/s", $bootstrap ),
+            'the registration runs at priority 15, after the MCP and blocks plugins, so it can never shadow an established tool'
+        );
+
+        preg_match_all( '/new\s+AgentShell_Forms\\\\Tools\\\\([A-Za-z0-9_]+)\s*\(/', $bootstrap, $m );
+
+        Agentshell_Test::assert_equals(
+            12,
+            count( $m[1] ),
+            'the bootstrap registers exactly the twelve documented tools'
         );
     }
 );

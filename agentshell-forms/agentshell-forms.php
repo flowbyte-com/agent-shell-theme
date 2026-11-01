@@ -16,7 +16,7 @@
  *
  * ## What this plugin is, and what it is not
  *
- * This is **Phases 1, 2 and 3** of the forms system described in
+ * This is **Phases 1–5** of the forms system described in
  * `docs/AGENTSHELL-FORMS-DESIGN.md` (§13.2). Phase 1 is the plugin
  * foundation: the authoritative schema, the two post types, the storage
  * invariants, the validation and the concurrency controls. Phase 2 is
@@ -26,12 +26,14 @@
  * functional submissions: the public submission pipeline, server-side
  * validation, the challenge claim, rate limits, the honeypot, Turnstile,
  * storage, administrator notifications with retries, retention, the privacy
- * exporter and eraser, and the submission screens.
+ * exporter and eraser, and the submission screens. Phase 4 is the visual
+ * builder: the administrative REST controller, the four JavaScript modules
+ * and the browser suite. Phase 5 is the agent tool surface: the twelve MCP
+ * tools, the two permission domains, the personal-data policy switch and
+ * the audit rows.
  *
  * It deliberately does **not** contain:
  *
- *   - a visual form builder (Phase 4);
- *   - any MCP tool (Phase 5) — the documented tool count is unchanged;
  *   - any AgentShell zone integration (Phase 6).
  *
  * ## The one dependency direction
@@ -117,6 +119,8 @@ require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-submission-handler.ph
 require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-privacy.php';
 require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-admin.php';
 require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-rest.php';
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-policy.php';
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-tools.php';
 
 // The documented PHP API (§4.3). Loaded last, because it is the only global
 // surface and it delegates to the classes above.
@@ -277,3 +281,50 @@ add_action( 'rest_api_init', array( 'AgentShell_Forms\\Submission_Handler', 'reg
 if ( function_exists( 'add_action' ) ) {
 	add_action( 'rest_api_init', array( 'AgentShell_Forms\\Form_REST', 'register' ) );
 }
+
+/**
+ * The agent tool surface (Phase 5).
+ *
+ * The twelve tools register through the existing
+ * `agentshell_mcp_register_tools` filter at priority 15 — after the MCP
+ * plugin (priority 5) and `agentshell-blocks` (priority 10). Because the
+ * registry keeps the first registration of each name, a later priority
+ * means this plugin can never shadow an established tool: on a collision
+ * the established implementation wins and the forms one is unreachable.
+ * That is the safe failure direction. The class files are required inside
+ * the callback so a non-agent request pays nothing for them.
+ */
+add_filter(
+	'agentshell_mcp_register_tools',
+	function ( $tools ) {
+		require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/tools/class-base-tool.php';
+		require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/tools/class-list-forms.php';
+		require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/tools/class-get-form.php';
+		require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/tools/class-create-form.php';
+		require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/tools/class-update-form.php';
+		require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/tools/class-validate-form.php';
+		require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/tools/class-publish-form.php';
+		require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/tools/class-discard-form-changes.php';
+		require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/tools/class-list-submissions.php';
+		require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/tools/class-get-submission.php';
+		require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/tools/class-export-submissions.php';
+		require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/tools/class-trash-submission.php';
+		require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/tools/class-delete-submission.php';
+
+		$tools[] = new AgentShell_Forms\Tools\List_Forms();
+		$tools[] = new AgentShell_Forms\Tools\Get_Form();
+		$tools[] = new AgentShell_Forms\Tools\Create_Form();
+		$tools[] = new AgentShell_Forms\Tools\Update_Form();
+		$tools[] = new AgentShell_Forms\Tools\Validate_Form();
+		$tools[] = new AgentShell_Forms\Tools\Publish_Form();
+		$tools[] = new AgentShell_Forms\Tools\Discard_Form_Changes();
+		$tools[] = new AgentShell_Forms\Tools\List_Submissions();
+		$tools[] = new AgentShell_Forms\Tools\Get_Submission();
+		$tools[] = new AgentShell_Forms\Tools\Export_Submissions();
+		$tools[] = new AgentShell_Forms\Tools\Trash_Submission();
+		$tools[] = new AgentShell_Forms\Tools\Delete_Submission();
+
+		return $tools;
+	},
+	15
+);

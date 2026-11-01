@@ -1221,6 +1221,24 @@ $suites = array(
         'path'     => __DIR__ . '/forms-builder-acceptance-test.php',
         'requires' => 'destructive',
     ),
+    // The agent tool surface (Phase 5): the twelve tools' schemas, the
+    // policy defaults and allowlist, the refusal codes before any storage,
+    // the authority matrix, and the tripwires that no tool grants a
+    // capability, writes an option or mentions a secret. No database needed.
+    'forms-tools' => array(
+        'path'     => __DIR__ . '/forms-tools-test.php',
+        'requires' => 'unit',
+    ),
+    // The personal-data authority matrix against a real WordPress: the
+    // default-off refusals, the manage_options proof, the acknowledgement
+    // and confirmation gates, the authorised reads, exports, trashes and
+    // deletions, the compare-and-swap races through the tools, the audit
+    // rows, and the cleanup. Destructive: it writes forms, submissions,
+    // users and options, and removes every one of them before it exits.
+    'forms-personal-data' => array(
+        'path'     => __DIR__ . '/forms-personal-data-test.php',
+        'requires' => 'destructive',
+    ),
 );
 
 // ── the environment, resolved once ───────────────────────────────────────────
