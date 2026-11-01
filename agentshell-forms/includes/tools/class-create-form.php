@@ -23,7 +23,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 class Create_Form extends Base {
 	public function get_name() { return 'agentshell_create_form'; }
-	public function get_description() { return 'Create a new draft form with a name and, optionally, a slug, a description, a first set of fields and settings. Returns the new form\'s summary.'; }
+	public function get_description() { return 'Create a new draft form with a name and, optionally, a slug, a description, a first set of fields and settings. Omitting fields starts the form with a single Name field, as the builder does — a stored form always carries at least one field. Returns the new form\'s summary.'; }
 	public function get_input_schema() {
 		return array(
 			'type'       => 'object',
@@ -58,6 +58,27 @@ class Create_Form extends Base {
 			if ( isset( $arguments[ $key ] ) && is_array( $arguments[ $key ] ) ) {
 				$args[ $key ] = $arguments[ $key ];
 			}
+		}
+
+		if ( empty( $args['fields'] ) ) {
+			// The schema requires between one and two hundred fields, so a
+			// form cannot be *stored* with none. The builder's REST
+			// controller starts with this same field; the tool does the same
+			// rather than refusing a form created from only a name.
+			$args['fields'] = array(
+				array(
+					'key'      => 'name',
+					'type'     => 'text',
+					'label'    => 'Name',
+					'required' => true,
+					'settings' => array(
+						'max_length'   => 120,
+						'min_length'   => 0,
+						'autocomplete' => 'name',
+					),
+					'options'  => array(),
+				),
+			);
 		}
 
 		$state = \AgentShell_Forms\Form_Definition::create( $args, \AgentShell_Forms\Form_Tools::actor_id() );
