@@ -116,6 +116,7 @@ require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-notifier.php';
 require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-submission-handler.php';
 require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-privacy.php';
 require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-admin.php';
+require_once AGENTSHELL_FORMS_PLUGIN_DIR . 'includes/class-form-rest.php';
 
 // The documented PHP API (§4.3). Loaded last, because it is the only global
 // surface and it delegates to the classes above.
@@ -272,3 +273,7 @@ add_action( 'rest_api_init', array( 'AgentShell_Forms\\Submission_Handler', 'reg
  */
 \AgentShell_Forms\Form_Admin::register();
 \AgentShell_Forms\Form_Privacy::register();
+
+if ( function_exists( 'add_action' ) ) {
+	add_action( 'rest_api_init', array( 'AgentShell_Forms\\Form_REST', 'register' ) );
+}

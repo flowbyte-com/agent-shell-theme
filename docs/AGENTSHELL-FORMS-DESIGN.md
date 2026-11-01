@@ -3352,7 +3352,9 @@ no submission to record it on. A page rendered from an older published
 version is refused as stale, keeps the visitor's answers, and is never
 reinterpreted against the newer schema.
 
-#### Phase 4 — The visual builder
+#### Phase 4 — The visual builder (implemented)
+
+**Status.** Implemented, on `feat/forms-phase-4`. The admin REST controller is `class-form-rest.php` (eight routes, all behind `manage_agentshell_forms`), the four modules are `admin/js/forms-model.js`, `forms-api.js`, `forms-ui.js`, `forms-app.js`, the page is registered by `Form_Admin::render_builder()` and `Form_Admin::enqueue_builder()`, and the stylesheet is `admin/css/forms-admin.css`. The models are pure and Node-testable (`tests/forms-builder-test.js`, 15 assertions); the interface is exercised in a real browser (`tests/forms-builder-browser-test.js`, 15 assertions). The builder reuses the Phase 1 store, the Phase 2 renderer and the Phase 3 schema: no second definition format and no independent renderer.
 
 **Scope.** The admin pages; the four modules; the field list and inspector;
 the settings tabs; the preview; the status chip; the insertion affordances.

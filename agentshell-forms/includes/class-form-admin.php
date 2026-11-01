@@ -47,6 +47,7 @@ class Form_Admin {
 	 * The submissions screen slug.
 	 */
 	const PAGE_SUBMISSIONS = 'agentshell-forms';
+	const PAGE_BUILDER     = 'agentshell-forms-builder';
 
 	/**
 	 * The single-submission screen slug.
@@ -71,6 +72,7 @@ class Form_Admin {
 		add_action( 'admin_menu', array( __CLASS__, 'menu' ) );
 		add_action( 'admin_post_agentshell_forms_export', array( __CLASS__, 'handle_export' ) );
 		add_action( 'admin_post_agentshell_forms_submission_action', array( __CLASS__, 'handle_submission_action' ) );
+		add_action( 'admin_enqueue_scripts', array( __CLASS__, 'enqueue_builder' ) );
 	}
 
 	/**
@@ -87,6 +89,15 @@ class Form_Admin {
 			array( __CLASS__, 'render_submissions' ),
 			'dashicons-feedback',
 			58
+		);
+
+		add_submenu_page(
+			self::PAGE_SUBMISSIONS,
+			__( 'Forms', 'agentshell-forms' ),
+			__( 'Forms', 'agentshell-forms' ),
+			Form_Capabilities::CAP_FORMS,
+			self::PAGE_BUILDER,
+			array( __CLASS__, 'render_builder' )
 		);
 
 		add_submenu_page(
@@ -117,6 +128,57 @@ class Form_Admin {
 			self::PAGE_ACCESS,
 			array( __CLASS__, 'render_access' )
 		);
+	}
+
+	/**
+	 * The form builder.
+	 *
+	 * @return void
+	 */
+	public static function render_builder() {
+		if ( ! Form_Capabilities::can_manage_forms() ) {
+			wp_die( esc_html__( 'You are not allowed to manage forms.', 'agentshell-forms' ), 403 );
+		}
+
+		echo '<div class="wrap">';
+		echo '<h1>' . esc_html__( 'AgentShell Forms', 'agentshell-forms' ) . '</h1>';
+		echo '<div id="agentshell-forms-builder" data-nonce="' . esc_attr( wp_create_nonce( 'wp_rest' ) ) . '" data-rest="' . esc_attr( rest_url( 'wp/v2/agentshell-forms/v1' ) ) . '" data-rest-root="' . esc_attr( rest_url() ) . '"></div>';
+		echo '</div>';
+	}
+
+	/**
+	 * Enqueue the builder's modules and stylesheet.
+	 *
+	 * @param string $hook The admin hook.
+	 * @return void
+	 */
+	public static function enqueue_builder( $hook ) {
+		if ( false === strpos( (string) $hook, self::PAGE_BUILDER ) ) {
+			return;
+		}
+
+		if ( ! Form_Capabilities::can_manage_forms() ) {
+			return;
+		}
+
+		wp_enqueue_style(
+			'agentshell-forms-admin',
+			AGENTSHELL_FORMS_PLUGIN_URL . 'admin/css/forms-admin.css',
+			array(),
+			AGENTSHELL_FORMS_VERSION
+		);
+
+		$modules = array( 'forms-model', 'forms-api', 'forms-ui', 'forms-app' );
+
+		foreach ( $modules as $module ) {
+			wp_enqueue_script(
+				'agentshell-forms-admin-' . $module,
+				AGENTSHELL_FORMS_PLUGIN_URL . 'admin/js/' . $module . '.js',
+				array(),
+				AGENTSHELL_FORMS_VERSION,
+				true
+			);
+		}
 	}
 
 	/**
