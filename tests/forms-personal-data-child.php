@@ -37,6 +37,10 @@ define( 'ABSPATH', rtrim( $wp_root, '/' ) . '/' );
 define( 'WP_USE_THEMES', false );
 require_once ABSPATH . 'wp-load.php';
 
+// User administration lives in an admin include that a plain wp-load does
+// not load — the precedent of the capabilities and submission children.
+require_once ABSPATH . 'wp-admin/includes/user.php';
+
 require_once dirname( __DIR__ ) . '/agentshell-forms/agentshell-forms.php';
 
 $tools_dir = dirname( __DIR__ ) . '/agentshell-forms/includes/tools/';
