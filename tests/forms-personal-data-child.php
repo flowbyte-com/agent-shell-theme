@@ -368,6 +368,8 @@ wp_set_current_user( $b );
 
 $tcreate = tool( 'agentshell_create_form' )->execute( array( 'name' => 'Second ' . $token ) );
 $tcreate_ok   = is_array( $tcreate ) && true === ( $tcreate['ok'] ?? false );
+$tcreate_code = is_array( $tcreate ) ? (string) ( $tcreate['code'] ?? '' ) : 'not-a-result';
+$tcreate_msg  = is_array( $tcreate ) ? (string) ( $tcreate['message'] ?? '' ) : '';
 $tform        = $tcreate_ok ? (string) ( $tcreate['form']['form_id'] ?? '' ) : '';
 $tform_post   = $tcreate_ok ? (int) ( $tcreate['form']['post_id'] ?? 0 ) : 0;
 if ( $tform_post > 0 ) {
@@ -420,6 +422,8 @@ probe(
 	'form_tools',
 	array(
 		'create_ok'        => $tcreate_ok,
+		'create_code'      => $tcreate_code,
+		'create_msg'       => $tcreate_msg,
 		'get_ok'           => $tget_ok,
 		'get_valid'        => $tget_ok && true === ( $tget['validation']['ok'] ?? false ),
 		'stale_update'     => code_of( $stale_update ),

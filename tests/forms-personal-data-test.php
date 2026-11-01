@@ -174,7 +174,7 @@ Agentshell_Test::run(
 Agentshell_Test::run(
 	'the form tools work end to end and refuse stale revisions',
 	function () use ( $p ) {
-		Agentshell_Test::assert_true( asfpd( $p, 'form_tools', 'create_ok' ), 'create succeeds' );
+		Agentshell_Test::assert_true( asfpd( $p, 'form_tools', 'create_ok' ), 'create succeeds: ' . asfpd( $p, 'form_tools', 'create_code' ) . ' — ' . asfpd( $p, 'form_tools', 'create_msg' ) );
 		Agentshell_Test::assert_true( asfpd( $p, 'form_tools', 'get_ok' ), 'get succeeds' );
 		Agentshell_Test::assert_true( asfpd( $p, 'form_tools', 'get_valid' ), 'a created form validates' );
 		Agentshell_Test::assert_equals( 'form_revision_mismatch', asfpd( $p, 'form_tools', 'stale_update' ), 'a stale update is refused' );
