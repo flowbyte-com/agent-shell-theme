@@ -32,7 +32,7 @@
 require_once __DIR__ . '/mutation-sandbox.php';
 
 /** Paths are relative to the repository root, and identical in the sandbox. */
-$CLASS_REL = 'agentshell-mcp/includes/class-screenshot.php';
+$CLASS_REL = 'wordpress/plugins/agentshell-mcp/includes/class-screenshot.php';
 $SUITE_REL = 'tests/browser-isolation-test.php';
 $TRUST_REL = 'tests/browser-trust-test.php';
 

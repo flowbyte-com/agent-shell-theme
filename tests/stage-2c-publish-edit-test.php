@@ -58,7 +58,7 @@ foreach ( array(
     'tools/class-publish-edit.php',
     'tools/class-publish-edit-reconcile.php',
 ) as $inc ) {
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/' . $inc;
 }
 
 use AgentShell_MCP\Content_Journal;

@@ -68,7 +68,7 @@ foreach ( array(
     'class-published-claim.php',
     'class-published-shadow.php',
 ) as $inc ) {
-    require_once $theme_root . '/agentshell-mcp/includes/' . $inc;
+    require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/' . $inc;
 }
 foreach ( array(
     'class-base-tool.php',
@@ -76,7 +76,7 @@ foreach ( array(
     'class-publish-edit.php',
     'class-publish-edit-reconcile.php',
 ) as $inc ) {
-    require_once $theme_root . '/agentshell-mcp/includes/tools/' . $inc;
+    require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/' . $inc;
 }
 
 use AgentShell_MCP\Content_Journal;

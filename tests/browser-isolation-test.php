@@ -24,7 +24,7 @@
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/fake-browser.php';
 
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot.php';
 
 use AgentShell_MCP\Screenshot;
 
@@ -219,7 +219,7 @@ class Browser_Isolation_Test_Case {
         file_put_contents( $this->home . '/sentinel.txt', 'pre-existing browser profile' );
 
         $this->browser       = agentshell_fake_browser_path( $this->dir );
-        $this->class_file    = dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php';
+        $this->class_file    = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot.php';
         $this->child         = $this->dir . '/child.php';
         $this->cleanup_child = $this->dir . '/cleanup-child.php';
         file_put_contents( $this->child, agentshell_isolation_child_source() );

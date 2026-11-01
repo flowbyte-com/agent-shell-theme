@@ -157,9 +157,9 @@ switch ( $mode ) {
         // No constants: the uninstall must remove nothing at all.
         $before = site_state();
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
-            define( 'WP_UNINSTALL_PLUGIN', 'agentshell-forms/agentshell-forms.php' );
+            define( 'WP_UNINSTALL_PLUGIN', 'wordpress/plugins/agentshell-forms/agentshell-forms.php' );
         }
-        $ran = include dirname( __DIR__ ) . '/agentshell-forms/uninstall.php';
+        $ran = include dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/uninstall.php';
         $out['include_returned'] = $ran;
         $out['before'] = $before;
         $out['after']  = site_state();
@@ -170,12 +170,12 @@ switch ( $mode ) {
         // operator's content stays.
         $before = site_state();
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
-            define( 'WP_UNINSTALL_PLUGIN', 'agentshell-forms/agentshell-forms.php' );
+            define( 'WP_UNINSTALL_PLUGIN', 'wordpress/plugins/agentshell-forms/agentshell-forms.php' );
         }
         if ( ! defined( 'AGENTSHELL_FORMS_REMOVE_DATA_ON_UNINSTALL' ) ) {
             define( 'AGENTSHELL_FORMS_REMOVE_DATA_ON_UNINSTALL', true );
         }
-        include dirname( __DIR__ ) . '/agentshell-forms/uninstall.php';
+        include dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/uninstall.php';
         $out['before'] = $before;
         $out['after']  = site_state();
         break;
@@ -186,12 +186,12 @@ switch ( $mode ) {
         // nothing at all.
         $before = site_state();
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
-            define( 'WP_UNINSTALL_PLUGIN', 'agentshell-forms/agentshell-forms.php' );
+            define( 'WP_UNINSTALL_PLUGIN', 'wordpress/plugins/agentshell-forms/agentshell-forms.php' );
         }
         if ( ! defined( 'AGENTSHELL_FORMS_REMOVE_FORMS_ON_UNINSTALL' ) ) {
             define( 'AGENTSHELL_FORMS_REMOVE_FORMS_ON_UNINSTALL', true );
         }
-        include dirname( __DIR__ ) . '/agentshell-forms/uninstall.php';
+        include dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/uninstall.php';
         $out['before'] = $before;
         $out['after']  = site_state();
         break;
@@ -200,7 +200,7 @@ switch ( $mode ) {
         // Bookkeeping AND content: the explicitly destructive decision.
         $before = site_state();
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
-            define( 'WP_UNINSTALL_PLUGIN', 'agentshell-forms/agentshell-forms.php' );
+            define( 'WP_UNINSTALL_PLUGIN', 'wordpress/plugins/agentshell-forms/agentshell-forms.php' );
         }
         if ( ! defined( 'AGENTSHELL_FORMS_REMOVE_DATA_ON_UNINSTALL' ) ) {
             define( 'AGENTSHELL_FORMS_REMOVE_DATA_ON_UNINSTALL', true );
@@ -208,7 +208,7 @@ switch ( $mode ) {
         if ( ! defined( 'AGENTSHELL_FORMS_REMOVE_FORMS_ON_UNINSTALL' ) ) {
             define( 'AGENTSHELL_FORMS_REMOVE_FORMS_ON_UNINSTALL', true );
         }
-        include dirname( __DIR__ ) . '/agentshell-forms/uninstall.php';
+        include dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/uninstall.php';
         $out['before'] = $before;
         $out['after']  = site_state();
         break;

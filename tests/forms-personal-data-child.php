@@ -41,9 +41,9 @@ require_once ABSPATH . 'wp-load.php';
 // not load — the precedent of the capabilities and submission children.
 require_once ABSPATH . 'wp-admin/includes/user.php';
 
-require_once dirname( __DIR__ ) . '/agentshell-forms/agentshell-forms.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/agentshell-forms.php';
 
-$tools_dir = dirname( __DIR__ ) . '/agentshell-forms/includes/tools/';
+$tools_dir = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/tools/';
 require_once $tools_dir . 'class-base-tool.php';
 foreach ( array(
 	'class-list-forms.php',

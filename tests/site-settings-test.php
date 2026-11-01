@@ -22,7 +22,7 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-site-settings.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-site-settings.php';
 
 use AgentShell_MCP\Site_Settings;
 

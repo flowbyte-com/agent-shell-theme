@@ -235,7 +235,7 @@ jobs:
         run: |
           php -r '
             require "tests/bootstrap.php";
-            require "functions.php";
+            require "wordpress/themes/agentshell/functions.php";
             file_put_contents( "/tmp/agentshell-widget-runtime.js", agentshell_widget_runtime_js() );
           '
           node tests/widget-init-test.js /tmp/agentshell-widget-runtime.js

@@ -13,7 +13,7 @@
 
 'use strict';
 
-var nav_model = require( '../assets/theme.js' ).nav_model;
+var nav_model = require( '../wordpress/themes/agentshell/assets/theme.js' ).nav_model;
 var model = nav_model();
 
 var passed = 0, failed = 0;

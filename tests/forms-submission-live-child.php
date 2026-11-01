@@ -23,7 +23,7 @@ define( 'ABSPATH', rtrim( $wp_root, '/' ) . '/' );
 define( 'WP_USE_THEMES', false );
 require_once ABSPATH . 'wp-load.php';
 
-require_once dirname( __DIR__ ) . '/agentshell-forms/agentshell-forms.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/agentshell-forms.php';
 
 use AgentShell_Forms\Form_Admin;
 use AgentShell_Forms\Form_Capabilities;

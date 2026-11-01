@@ -16,8 +16,8 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/tools/class-base-tool.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/tools/class-register-navigation.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/tools/class-register-navigation.php';
 
 echo "navigation management tests\n";
 

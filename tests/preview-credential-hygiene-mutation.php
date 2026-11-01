@@ -33,7 +33,7 @@
 require_once __DIR__ . '/mutation-sandbox.php';
 
 /** Paths are relative to the repository root, and identical in the sandbox. */
-$THEME_REL = 'functions.php';
+$THEME_REL = 'wordpress/themes/agentshell/functions.php';
 $SUITE_REL = 'tests/preview-credential-hygiene-test.php';
 
 $original = file_get_contents( agentshell_repo_root() . '/' . $THEME_REL );

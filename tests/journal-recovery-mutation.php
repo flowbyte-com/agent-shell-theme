@@ -44,13 +44,13 @@ require_once __DIR__ . '/mutation-sandbox.php';
 
 $SUITE_REL = 'tests/journal-recovery-test.php';
 
-$RECOVERY_REL = 'agentshell-mcp/includes/class-content-recovery.php';
-$JOURNAL_REL  = 'agentshell-mcp/includes/class-content-journal.php';
-$TX_REL       = 'agentshell-mcp/includes/class-transactions.php';
-$LOCK_REL     = 'agentshell-mcp/includes/class-recovery-advisory-lock.php';
-$TOOL_REL     = 'agentshell-mcp/includes/tools/class-recover-transaction.php';
-$GETJOURNAL_REL = 'agentshell-mcp/includes/tools/class-get-journal.php';
-$UPDATE_DRAFT_REL = 'agentshell-mcp/includes/tools/class-update-draft.php';
+$RECOVERY_REL = 'wordpress/plugins/agentshell-mcp/includes/class-content-recovery.php';
+$JOURNAL_REL  = 'wordpress/plugins/agentshell-mcp/includes/class-content-journal.php';
+$TX_REL       = 'wordpress/plugins/agentshell-mcp/includes/class-transactions.php';
+$LOCK_REL     = 'wordpress/plugins/agentshell-mcp/includes/class-recovery-advisory-lock.php';
+$TOOL_REL     = 'wordpress/plugins/agentshell-mcp/includes/tools/class-recover-transaction.php';
+$GETJOURNAL_REL = 'wordpress/plugins/agentshell-mcp/includes/tools/class-get-journal.php';
+$UPDATE_DRAFT_REL = 'wordpress/plugins/agentshell-mcp/includes/tools/class-update-draft.php';
 
 $mutants = array(
 
@@ -403,7 +403,7 @@ $mutants = array(
         // current rollback execute() ignores it, but a future implementation
         // might honour it. Killed by the schema-shape test, which asserts
         // the properties list is empty.
-        'agentshell-mcp/includes/tools/class-rollback-transaction.php',
+        'wordpress/plugins/agentshell-mcp/includes/tools/class-rollback-transaction.php',
         "        return array(\n            'type'       => 'object',\n            'properties' => array(),\n        );",
         "        return array(\n            'type'       => 'object',\n            'properties' => array(\n                'force' => array( 'type' => 'boolean' ),\n            ),\n        );",
     ),

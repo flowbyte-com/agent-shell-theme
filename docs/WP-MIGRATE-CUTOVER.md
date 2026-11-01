@@ -12,6 +12,15 @@ mechanism it describes — a symlink switch at the origin and a DNS change
 
 **Date:** 2026-10-24.
 
+> **Layout note (added later).** This plan was written when the checkout root
+> *was* the theme directory. The repository now groups the WordPress
+> components under `wordpress/` — see `AGENTS.md` §1. Read every
+> `<checkout>/agentshell-mcp`, `<checkout>/agentshell-blocks` and
+> `<checkout>/functions.php` below as living under `wordpress/plugins/` and
+> `wordpress/themes/agentshell/` respectively. The migration itself is
+> unaffected: it consumes a **release archive**, whose layout did not change.
+
+
 ---
 
 ## 1. Who does what

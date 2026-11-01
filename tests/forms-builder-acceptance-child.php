@@ -24,7 +24,7 @@ define( 'ABSPATH', rtrim( $wp_root, '/' ) . '/' );
 define( 'WP_USE_THEMES', false );
 require_once ABSPATH . 'wp-load.php';
 
-require_once dirname( __DIR__ ) . '/agentshell-forms/agentshell-forms.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/agentshell-forms.php';
 
 use AgentShell_Forms\Form_Definition;
 use AgentShell_Forms\Form_Post_Types;
@@ -98,11 +98,11 @@ if ( ! is_dir( $plugin_dir ) ) {
 $link = $plugin_dir . '/agentshell-forms';
 
 if ( ! file_exists( $link ) ) {
-    @symlink( dirname( __DIR__ ) . '/agentshell-forms', $link );
+    @symlink( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms', $link );
 }
 
 $active = (array) get_option( 'active_plugins', array() );
-$entry  = 'agentshell-forms/agentshell-forms.php';
+$entry  = 'wordpress/plugins/agentshell-forms/agentshell-forms.php';
 
 if ( ! in_array( $entry, $active, true ) ) {
     $active[] = $entry;

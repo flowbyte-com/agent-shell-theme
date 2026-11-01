@@ -26,7 +26,7 @@ require_once __DIR__ . '/fake-browser.php';
 // The class under test, loaded directly. bootstrap.php does not pull in the
 // plugin, and the parent process needs the real Screenshot for lock_path() and
 // the source-contract assertions.
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot.php';
 
 use AgentShell_MCP\Screenshot;
 
@@ -182,7 +182,7 @@ class Screenshot_Test_Case {
         mkdir( $this->shots, 0700, true );
 
         $this->browser    = agentshell_fake_browser_path( $this->dir );
-        $this->class_file = dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php';
+        $this->class_file = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot.php';
         $this->child      = $this->dir . '/child.php';
         file_put_contents( $this->child, agentshell_capture_child_source() );
 
@@ -579,7 +579,7 @@ Agentshell_Test::run( 'lock: a symlink at the lock path is refused', function ()
 
 /** 9d. The process kill must never signal PHP's own process or group. */
 Agentshell_Test::run( 'kill: the process tree walk never targets PHP itself', function () {
-    $src = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php' );
+    $src = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot.php' );
     $code = Screenshot_Test_Helpers::code_without_comments( $src );
 
     // A negated pid is only safe when the target leads its own group. The
@@ -625,7 +625,7 @@ Agentshell_Test::run( 'kill: the worker survives killing its own capture tree', 
 
 /** 10. The lock must be cross-process, not PHP process-local state. */
 Agentshell_Test::run( 'lock: uses flock (cross-process), not a PHP static', function () {
-    $src = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php' );
+    $src = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot.php' );
 
     Agentshell_Test::assert_true( false !== strpos( $src, 'flock(' ), 'capture locking must use flock()' );
     Agentshell_Test::assert_true( false !== strpos( $src, 'LOCK_NB' ), 'the lock must be non-blocking' );
@@ -640,7 +640,7 @@ Agentshell_Test::run( 'lock: uses flock (cross-process), not a PHP static', func
 
 /** 11. The timeout must be bounded and cannot be disabled by configuration. */
 Agentshell_Test::run( 'timeout: the deadline is clamped and always enforced', function () {
-    $src = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php' );
+    $src = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot.php' );
     Agentshell_Test::assert_true(
         false !== strpos( $src, 'max( 1, min( 300, $seconds ) )' ),
         'the configured timeout must be clamped to 1-300s'
@@ -659,8 +659,8 @@ Agentshell_Test::run( 'timeout: the deadline is clamped and always enforced', fu
 /** 12. Unsafe browser flags must not be reintroduced. */
 Agentshell_Test::run( 'security: no --no-sandbox and no certificate bypass', function () {
     foreach ( array(
-        dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php',
-        dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-screenshot.php',
+        dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot.php',
+        dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-screenshot.php',
     ) as $file ) {
         $src = file_get_contents( $file );
         $code = Screenshot_Test_Helpers::code_without_comments( $src );
@@ -677,7 +677,7 @@ Agentshell_Test::run( 'security: no --no-sandbox and no certificate bypass', fun
 
 /** 13. Arguments must reach the browser as argv, not via a shell string. */
 Agentshell_Test::run( 'security: the URL is passed as an argv element, never shell-concatenated', function () {
-    $src  = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php' );
+    $src  = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot.php' );
     $code = Screenshot_Test_Helpers::code_without_comments( $src );
 
     Agentshell_Test::assert_true(
@@ -842,7 +842,7 @@ Agentshell_Test::run( 'capture: the PNG dimensions are read from the header, not
 
 /** 14. SSRF protection must remain effective. */
 Agentshell_Test::run( 'security: the request policy is enforced before the browser is launched', function () {
-    $src  = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-screenshot.php' );
+    $src  = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-screenshot.php' );
     $code = Screenshot_Test_Helpers::code_without_comments( $src );
 
     // The guard is no longer a host comparison in the tool: it is the
@@ -869,7 +869,7 @@ Agentshell_Test::run( 'security: the request policy is enforced before the brows
 
 /** 15. The capture itself must not fall back to a path that cannot enforce the policy. */
 Agentshell_Test::run( 'security: the capture fails closed rather than falling back to the window path', function () {
-    $src  = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php' );
+    $src  = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot.php' );
     $code = Screenshot_Test_Helpers::code_without_comments( $src );
 
     // The window path is still here — the capture lock, the deadline and

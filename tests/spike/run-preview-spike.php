@@ -136,7 +136,7 @@ if ( ! file_exists( $mu_dst ) || md5_file( $mu_src ) !== md5_file( $mu_dst ) ) {
 // test can assert the original's template (not the shadow's) was selected.
 $tpl_src_marker = "STAGE2C_SPIKE_TEMPLATE_{$orig_id}";
 $tpl_src = __DIR__ . '/page-11.php';
-$tpl_dst = $WP_ROOT . '/wp-content/themes/agent-shell-theme/' . $orig_template;
+$tpl_dst = get_template_directory() . '/' . $orig_template;
 if ( ! file_exists( $tpl_dst ) || md5_file( $tpl_src ) !== md5_file( $tpl_dst )
     || strpos( file_get_contents( $tpl_dst ), $tpl_src_marker ) === false ) {
     // Read the source template, replace the hardcoded marker with the dynamic one,

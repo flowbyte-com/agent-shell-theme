@@ -68,9 +68,9 @@ if ( ! defined( 'HOUR_IN_SECONDS' ) ) { define( 'HOUR_IN_SECONDS', 3600 ); }
 if ( ! defined( 'MB_IN_BYTES' ) ) { define( 'MB_IN_BYTES', 1048576 ); }
 if ( ! defined( 'AGENTSHELL_REST_TOKEN' ) ) { define( 'AGENTSHELL_REST_TOKEN', 'published-preview-hygiene-token' ); }
 
-require_once dirname( __DIR__ ) . '/functions.php';
+require_once dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php';
 foreach ( array( 'class-store.php', 'class-content-write-guard.php', 'class-content-journal.php', 'class-recovery-advisory-lock.php', 'class-content-recovery.php', 'class-transactions.php', 'class-post-preview.php' ) as $inc ) {
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/' . $inc;
 }
 
 // The theme's canonical-redirect guard parses the query with core's
@@ -379,7 +379,7 @@ Agentshell_Test::run( 'the post and transaction previews are still recognised', 
 // ── 7. The wiring: the scrub must actually run for this request ────────────
 
 Agentshell_Test::run( 'the scrub is wired to template_redirect after the credential gates', function () {
-    $src = file_get_contents( dirname( __DIR__ ) . '/functions.php' );
+    $src = file_get_contents( dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php' );
     Agentshell_Test::assert_true(
         (bool) preg_match( "/add_action\(\s*'template_redirect',\s*'agentshell_scrub_preview_credentials_from_request',\s*1\s*\)/", $src ),
         'the scrub must run on template_redirect at priority 1'

@@ -222,7 +222,11 @@ $tpl_src     = '<?php' . "\n"
     . '        <span class="permalink"><?php the_permalink(); ?></span>' . "\n"
     . '    </footer>' . "\n"
     . '</article>' . "\n";
-$tpl_dst = $WP_ROOT . '/wp-content/themes/agent-shell-theme/' . $orig_template;
+// The active theme's own directory, not a hard-coded name: the repository
+// groups the theme under wordpress/themes/agentshell and installs it under
+// its own directory name, so the path a site uses is a fact about the site,
+// not about the checkout.
+$tpl_dst = get_template_directory() . '/' . $orig_template;
 
 // Housekeeping guard: the test bed's theme dir is a symlink into the
 // worktree, so a template file written here is checked in to the

@@ -14,7 +14,7 @@ if ( '' === $out ) {
     exit( 1 );
 }
 
-$assets = dirname( __DIR__ ) . '/agentshell-forms/admin/';
+$assets = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/admin/';
 
 $model = (string) file_get_contents( $assets . 'js/forms-model.js' );
 $api   = (string) file_get_contents( $assets . 'js/forms-api.js' );

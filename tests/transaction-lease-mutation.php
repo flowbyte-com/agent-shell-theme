@@ -35,7 +35,7 @@
 
 require_once __DIR__ . '/mutation-sandbox.php';
 
-$TARGET_REL = 'agentshell-mcp/includes/class-transactions.php';
+$TARGET_REL = 'wordpress/plugins/agentshell-mcp/includes/class-transactions.php';
 $SUITE_REL  = 'tests/transaction-lease-test.php';
 
 $original = file_get_contents( agentshell_repo_root() . '/' . $TARGET_REL );

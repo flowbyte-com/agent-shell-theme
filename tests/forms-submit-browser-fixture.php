@@ -27,7 +27,7 @@ require_once __DIR__ . '/forms-render-fixtures.php';
 
 use AgentShell_Forms\Form_Renderer;
 
-$assets = dirname( __DIR__ ) . '/agentshell-forms/assets/';
+$assets = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/assets/';
 
 $definition = agentshell_forms_fixture_definition();
 

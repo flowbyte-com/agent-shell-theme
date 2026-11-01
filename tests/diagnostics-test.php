@@ -29,12 +29,12 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once dirname( __DIR__ ) . '/functions.php';
+require_once dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php';
 
 foreach ( array( 'class-store.php', 'class-doctor.php', 'class-transactions.php', 'class-json-rpc.php', 'class-server.php', 'class-content.php' ) as $inc ) {
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/' . $inc;
 }
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
 
 use AgentShell_MCP\Doctor;
 
@@ -181,7 +181,7 @@ Agentshell_Test::run(
     function () {
         agentshell_test_reset();
 
-        $source = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/class-content.php' );
+        $source = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-content.php' );
         Agentshell_Test::assert_true(
             is_string( $source ) && false !== strpos( $source, "'updated_fields'" ),
             'the update record must carry updated_fields'

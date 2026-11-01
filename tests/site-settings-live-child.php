@@ -33,12 +33,12 @@ define( 'WP_USE_THEMES', false );
 require_once ABSPATH . 'wp-load.php';
 
 $theme_root = get_template_directory();
-require_once $theme_root . '/agentshell-mcp/includes/class-site-settings.php';
-require_once $theme_root . '/agentshell-mcp/includes/class-transactions.php';
-require_once $theme_root . '/agentshell-mcp/includes/class-store.php';
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-base-tool.php';
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-set-site-settings.php';
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-get-site-settings.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/class-site-settings.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/class-transactions.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/class-store.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-set-site-settings.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-get-site-settings.php';
 
 use AgentShell_MCP\Site_Settings;
 use AgentShell_MCP\Transaction_Manager as Tx;

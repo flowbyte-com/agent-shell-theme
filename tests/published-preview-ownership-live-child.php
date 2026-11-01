@@ -74,14 +74,14 @@ foreach ( array(
     'class-screenshot.php',
     'class-screenshot-store.php',
 ) as $inc ) {
-    require_once $theme_root . '/agentshell-mcp/includes/' . $inc;
+    require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/' . $inc;
 }
 foreach ( array(
     'class-base-tool.php',
     'class-edit-published.php',
     'class-screenshot.php',
 ) as $inc ) {
-    require_once $theme_root . '/agentshell-mcp/includes/tools/' . $inc;
+    require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/' . $inc;
 }
 
 use AgentShell_MCP\Transaction_Manager as Tx;

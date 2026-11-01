@@ -57,13 +57,13 @@ foreach ( array(
     'class-recovery-advisory-lock.php',
     'class-content-recovery.php',
 ) as $inc ) {
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/' . $inc;
 }
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-base-tool.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-get-journal.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-recover-transaction.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-rollback-transaction.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-commit-transaction.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-get-journal.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-recover-transaction.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-rollback-transaction.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-commit-transaction.php';
 
 use AgentShell_MCP\Content_Journal;
 use AgentShell_MCP\Content_Recovery;
@@ -4117,7 +4117,7 @@ Agentshell_Test::run(
 
 // ── Update_Draft tool: refusal and idempotency tests ──────────────────────
 
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-update-draft.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-update-draft.php';
 use AgentShell_MCP\Tools\Update_Draft;
 
 Agentshell_Test::run(
@@ -5977,7 +5977,7 @@ Agentshell_Test::run(
 
 // ── Claim_Existing_Draft tool: Stage 2b first-touch tests ──────────────────
 
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-claim-existing-draft.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-claim-existing-draft.php';
 use AgentShell_MCP\Tools\Claim_Existing_Draft;
 
 /**

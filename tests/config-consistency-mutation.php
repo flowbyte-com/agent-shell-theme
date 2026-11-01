@@ -39,14 +39,14 @@
 
 require_once __DIR__ . '/mutation-sandbox.php';
 
-$THEME_REL = 'functions.php';
+$THEME_REL = 'wordpress/themes/agentshell/functions.php';
 $SUITE_REL = 'tests/config-consistency-test.php';
 
-$BASE_REL   = 'agentshell-mcp/includes/tools/class-base-tool.php';
-$TX_REL     = 'agentshell-mcp/includes/class-transactions.php';
-$DOCTOR_REL = 'agentshell-mcp/includes/class-doctor.php';
-$SHELL_REL  = 'template-parts/shell-render.php';
-$BLOCKS_REL = 'agentshell-blocks/includes/class-widget-registry.php';
+$BASE_REL   = 'wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
+$TX_REL     = 'wordpress/plugins/agentshell-mcp/includes/class-transactions.php';
+$DOCTOR_REL = 'wordpress/plugins/agentshell-mcp/includes/class-doctor.php';
+$SHELL_REL  = 'wordpress/themes/agentshell/template-parts/shell-render.php';
+$BLOCKS_REL = 'wordpress/plugins/agentshell-blocks/includes/class-widget-registry.php';
 
 $mutants = array(
 

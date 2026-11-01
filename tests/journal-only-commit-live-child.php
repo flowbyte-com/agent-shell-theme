@@ -51,7 +51,7 @@ foreach ( array(
     'class-content-journal.php',
     'class-content-recovery.php',
 ) as $inc ) {
-    require_once $theme_root . '/agentshell-mcp/includes/' . $inc;
+    require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/' . $inc;
 }
 
 use AgentShell_MCP\Content_Journal;

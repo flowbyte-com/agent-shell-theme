@@ -28,11 +28,11 @@
 
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/agentshell-nav-stubs.php';
-require_once __DIR__ . '/../functions.php';
-require_once __DIR__ . '/../template-parts/shell-render.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/tools/class-base-tool.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/tools/class-update-zone-slots.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-doctor.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/functions.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/template-parts/shell-render.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/tools/class-update-zone-slots.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-doctor.php';
 
 echo "navigation block tests\n";
 

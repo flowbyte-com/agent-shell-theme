@@ -54,7 +54,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     define( 'ABSPATH', __DIR__ );
 }
 
-require_once __DIR__ . '/../agentshell-mcp/includes/class-cdp.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-cdp.php';
 
 use AgentShell_MCP\CDP;
 

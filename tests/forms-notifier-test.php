@@ -52,7 +52,7 @@ if ( ! function_exists( 'is_email' ) ) {
     }
 }
 
-require_once dirname( __DIR__ ) . '/agentshell-forms/includes/class-form-notifier.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/class-form-notifier.php';
 
 use AgentShell_Forms\Form_Notifier;
 

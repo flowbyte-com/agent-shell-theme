@@ -57,7 +57,7 @@ foreach ( array(
     'class-content-journal.php',
     'class-content-recovery.php',
 ) as $inc ) {
-    require_once $theme_root . '/agentshell-mcp/includes/' . $inc;
+    require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/' . $inc;
 }
 
 use AgentShell_MCP\Content_Journal;
@@ -341,8 +341,8 @@ $f['recover'] += array(
 // answer "there is no transaction any more" as an outcome rather than an error.
 // The in-memory $tx is deliberately not reused: it is stale, and passing a
 // stale row would test the guard rather than the repeat.
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-base-tool.php';
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-recover-transaction.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-recover-transaction.php';
 $again = ( new \AgentShell_MCP\Tools\Recover_Transaction() )->execute( array( 'confirm' => true ) );
 $f['recover']['repeat_status']  = $again['status'];
 $f['recover']['repeat_outcome'] = $again['operations'][0]['outcome'] ?? '';
@@ -609,7 +609,7 @@ delete_option( Tx::KEY );
 //     between wp_insert_post and mark_applied; mark_applied's CAS fails,
 //     the post is preserved, and commit/rollback both refuse to discard
 //     the partial-applied evidence.
-require_once $theme_root . '/agentshell-mcp/includes/class-content-write-guard.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/class-content-write-guard.php';
 use AgentShell_MCP\Content_Write_Guard;
 
 // F-successful-commit: the live, journaled happy path.
@@ -668,8 +668,8 @@ $marker_present = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$
 $wpdb->query( 'COMMIT' );
 
 // Now commit. The post should be retained; the row should be gone.
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-base-tool.php';
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-commit-transaction.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-commit-transaction.php';
 $commit11 = ( new \AgentShell_MCP\Tools\Commit_Transaction() )->execute( array() );
 $f['create_draft_commit'] = array(
     'row_present'      => $row_present,
@@ -716,7 +716,7 @@ jr_apply_create( $tx12, $intent12['id'], $post12, array(
     'post_content_length' => strlen( (string) $p12->post_content ),
     'op_meta_value'       => (string) $intent12['id'],
 ) );
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-rollback-transaction.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-rollback-transaction.php';
 $rollback12 = ( new \AgentShell_MCP\Tools\Rollback_Transaction() )->execute( array() );
 $f['create_draft_rollback'] = array(
     'rows_before'       => 1, // we just created it; the test merely pins the contract
@@ -1009,7 +1009,7 @@ $cas_result  = Content_Journal::mark_applied( $tx16_caller, $intent16['id'], $po
 // A subsequent commit must refuse — the op is in a state that does
 // not admit commit (the post exists but the journal has not been
 // updated; the recovery engine is the only path forward).
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-commit-transaction.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-commit-transaction.php';
 $commit16_threw = false;
 $commit16_msg   = '';
 try {
@@ -1062,7 +1062,7 @@ if ( is_array( $orphan_journal )
     && 0 === strpos( (string) ( $orphan_journal['label'] ?? '' ), 'live ' ) ) {
     delete_option( Tx::KEY );
 }
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-update-draft.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-update-draft.php';
 use AgentShell_MCP\Tools\Update_Draft;
 
 // 12a — DOCUMENTED GAP, NOT A TEST.
@@ -1332,7 +1332,7 @@ $f['update_retry'] = array(
 // connection when it sees the connection close). Then a second acquire
 // on the same post id must succeed. This is the load-bearing test the
 // previous plan's add_option lock could not provide.
-require_once $theme_root . '/agentshell-mcp/includes/class-recovery-advisory-lock.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/class-recovery-advisory-lock.php';
 use AgentShell_MCP\Recovery_Advisory_Lock;
 
 $lock_probe_target = 99001; // synthetic post id, real lock name
@@ -1911,9 +1911,9 @@ $f['stage2a_create_only_unchanged'] = array(
 // We add: rollback path, commit path (with explicit recover), external
 // conflict, and unrelated content untouched.
 
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-claim-existing-draft.php';
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-recover-transaction.php';
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-commit-transaction.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-claim-existing-draft.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-recover-transaction.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-commit-transaction.php';
 
 use AgentShell_MCP\Tools\Claim_Existing_Draft;
 
@@ -2508,7 +2508,7 @@ $f['stage2b5_mixed_unrelated'] = array(
 // not invoke Chrome. The proof is the URL/credential pair plus the
 // post's current state, which is what the screenshot tool would
 // render.
-require_once $theme_root . '/agentshell-mcp/includes/class-post-preview.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/class-post-preview.php';
 use AgentShell_MCP\Post_Preview;
 
 $tx17 = Tx::instance()->begin( 'live 2b screenshot preview' );
@@ -2640,7 +2640,7 @@ $f['stage2b_screenshot_preview'] = array(
 // Two sub-tests cover (a)-(c) on transaction A (open → screenshot →
 // commit) and (e) on transaction B (open → rollback). Both are
 // cleaned up by the fixture tracker at the end of the script.
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-screenshot.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-screenshot.php';
 require_once __DIR__ . '/fake-browser.php';
 use AgentShell_MCP\Tools\Screenshot;
 

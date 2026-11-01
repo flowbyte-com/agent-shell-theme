@@ -150,7 +150,7 @@ Agentshell_Test::run(
         );
         $daemon_version = $m[1];
 
-        $plugin_source = (string) file_get_contents( __DIR__ . '/../agentshell-mcp/agentshell-mcp.php' );
+        $plugin_source = (string) file_get_contents( __DIR__ . '/../wordpress/plugins/agentshell-mcp/agentshell-mcp.php' );
         Agentshell_Test::assert_true(
             1 === preg_match( "/define\(\s*'AGENTSHELL_MCP_VERSION',\s*'([^']+)'\s*\)/", $plugin_source, $pm ),
             'the plugin must declare its version'
@@ -173,7 +173,7 @@ Agentshell_Test::run(
             'the daemon must declare the protocol version it speaks'
         );
 
-        $server_source = (string) file_get_contents( __DIR__ . '/../agentshell-mcp/includes/class-server.php' );
+        $server_source = (string) file_get_contents( __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-server.php' );
         Agentshell_Test::assert_true(
             1 === preg_match( "/const\s+PROTOCOL_VERSION\s*=\s*'([^']+)'/", $server_source, $sm ),
             'the server must declare the protocol version it speaks'

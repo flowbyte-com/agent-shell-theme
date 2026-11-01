@@ -34,7 +34,7 @@
 # Usage
 # -----
 #   tools/check-release-archive.sh --archive dist/agentshell-abc123.tar.gz
-#   tools/check-release-archive.sh --tree /var/www/wp-content/themes/agent-shell-theme
+#   tools/check-release-archive.sh --tree /var/www/wp-content/themes/agentshell
 
 set -euo pipefail
 

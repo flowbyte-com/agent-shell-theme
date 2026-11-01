@@ -31,8 +31,8 @@
 require_once __DIR__ . '/mutation-sandbox.php';
 
 /** Paths are relative to the repository root, and identical in the sandbox. */
-$CDP_REL    = 'agentshell-mcp/includes/class-screenshot-cdp.php';
-$POLICY_REL = 'agentshell-mcp/includes/class-browser-request-policy.php';
+$CDP_REL    = 'wordpress/plugins/agentshell-mcp/includes/class-screenshot-cdp.php';
+$POLICY_REL = 'wordpress/plugins/agentshell-mcp/includes/class-browser-request-policy.php';
 $SUITE_REL  = 'tests/screenshot-interception-test.php';
 
 $cdp_source    = file_get_contents( agentshell_repo_root() . '/' . $CDP_REL );

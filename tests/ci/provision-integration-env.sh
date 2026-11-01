@@ -238,9 +238,13 @@ fi
 
 # ── 3. the AgentShell theme and plugins ────────────────────────────────────
 say "linking the theme and plugins from the checkout under test"
-ln -sfn "$CI_REPO" "$CI_WP_DIR/wp-content/themes/agent-shell-theme"
-ln -sfn "$CI_REPO/agentshell-mcp"   "$CI_WP_DIR/wp-content/plugins/agentshell-mcp"
-ln -sfn "$CI_REPO/agentshell-blocks" "$CI_WP_DIR/wp-content/plugins/agentshell-blocks"
+# The repository groups the WordPress components under wordpress/; a site
+# wants them where WordPress looks. These links are the same mapping the
+# LocalWP helper performs, so a green integration run exercises the layout a
+# developer installs.
+ln -sfn "$CI_REPO/wordpress/themes/agentshell" "$CI_WP_DIR/wp-content/themes/agentshell"
+ln -sfn "$CI_REPO/wordpress/plugins/agentshell-mcp"   "$CI_WP_DIR/wp-content/plugins/agentshell-mcp"
+ln -sfn "$CI_REPO/wordpress/plugins/agentshell-blocks" "$CI_WP_DIR/wp-content/plugins/agentshell-blocks"
 
 # The forms plugin is standalone: it depends on nothing in AgentShell and must
 # work on plain WordPress. It is linked *and* activated so the forms suites run
@@ -253,10 +257,10 @@ ln -sfn "$CI_REPO/agentshell-blocks" "$CI_WP_DIR/wp-content/plugins/agentshell-b
 # active plugins — the suite that owns that surface is
 # `tests/forms-lifecycle-test.php`, which activates, deactivates and uninstalls
 # the plugin itself and restores the bed when it is done.
-ln -sfn "$CI_REPO/agentshell-forms" "$CI_WP_DIR/wp-content/plugins/agentshell-forms"
+ln -sfn "$CI_REPO/wordpress/plugins/agentshell-forms" "$CI_WP_DIR/wp-content/plugins/agentshell-forms"
 
 wp_cli plugin activate agentshell-mcp agentshell-blocks agentshell-forms --path="$CI_WP_DIR" --allow-root >/dev/null
-wp_cli theme activate agent-shell-theme --path="$CI_WP_DIR" --allow-root >/dev/null
+wp_cli theme activate agentshell --path="$CI_WP_DIR" --allow-root >/dev/null
 
 # Pretty permalinks are not cosmetic here: the harness's HTTP identity
 # handshake fetches /wp-json/agentshell-test/v1/identity, and WordPress only

@@ -279,12 +279,20 @@ function admin_url( $path = '/' ) {
     return 'https://example.test/wp-admin/' . ltrim( $path, '/' );
 }
 
+/**
+ * WordPress's own accessor, pointed at the theme in this repository.
+ *
+ * The theme lives at wordpress/themes/agentshell; `dirname( __DIR__ )` is the
+ * repository root, which is where the theme used to live and is not the same
+ * directory any more. Returning the theme's real path here keeps every suite
+ * that asks WordPress where the theme is honest about it.
+ */
 function get_template_directory() {
-    return dirname( __DIR__ );
+    return dirname( __DIR__ ) . '/wordpress/themes/agentshell';
 }
 
 function get_template_directory_uri() {
-    return 'file://' . dirname( __DIR__ );
+    return 'file://' . get_template_directory();
 }
 
 function file_exists_stub( $path ) {

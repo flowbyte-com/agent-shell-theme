@@ -66,32 +66,26 @@ die() { printf '[package] FAILED: %s\n' "$*" >&2; exit 1; }
 
 # ── what ships ─────────────────────────────────────────────────────────────
 #
-# Everything the site needs to run, and nothing else. Each entry is a path
-# relative to the repository root; the list is the contract that
-# tools/check-release-archive.sh re-checks against the built archive.
-INCLUDE=(
-    # The licence travels with the work. The GNU Affero General Public
-    # License v3 requires that a copy of the licence accompanies every
-    # copy of the work, and the release archive is a copy of the work.
-    "LICENSE"
-    "style.css"
-    "functions.php"
-    "index.php"
-    "front-page.php"
-    "singular.php"
-    "header.php"
-    "footer.php"
-    "default-config.json"
-    "template-parts"
-    "widgets"
-    "assets"
-    # The configurator is a production feature, not a development tool: the
-    # theme enqueues it for administrators on every front-end page. It was
-    # missing from this list, so a distribution built from the archive shipped
-    # a configurator trigger with no panel behind it. The exclusion list named
-    # it as development material; both lists are corrected, and the checker
-    # now refuses an archive that has lost it.
-    "configurator"
+# Everything the site needs to run, and nothing else.
+#
+# ## Two source roots, one distribution layout
+#
+# The repository groups the WordPress components under `wordpress/` so a
+# developer can tell the theme from the plugins, but a *deployment* has the
+# layout WordPress expects: one theme directory and three plugin directories
+# beside each other in `wp-content`. The packaging therefore stages two
+# source roots into one archive root:
+#
+#   wordpress/themes/agentshell/  ->  agentshell/
+#   wordpress/plugins/<plugin>/   ->  agentshell/<plugin>/
+#
+# The distribution contract is unchanged by the move — an archive built
+# before and after the reorganisation has the same paths inside it — which
+# is what lets tools/check-release-archive.sh keep checking one list.
+THEME_SRC="wordpress/themes/agentshell"
+PLUGIN_SRC="wordpress/plugins"
+
+PLUGINS=(
     "agentshell-mcp"
     "agentshell-blocks"
     # The forms plugin ships with the theme but is not activated by it: a
@@ -100,6 +94,14 @@ INCLUDE=(
     # the zone block, the shortcode and the widget available to a site that
     # chooses to switch it on.
     "agentshell-forms"
+)
+
+# Root-level files that ship beside the theme inside the archive.
+INCLUDE=(
+    # The licence travels with the work. The GNU Affero General Public
+    # License v3 requires that a copy of the licence accompanies every
+    # copy of the work, and the release archive is a copy of the work.
+    "LICENSE"
 )
 
 # ── what must never ship ──────────────────────────────────────────────────
@@ -121,6 +123,27 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 STAGE="$TMP/agentshell"
 mkdir -p "$STAGE"
+
+# The theme subtree becomes the archive root. `git archive <rev>:<path>`
+# writes the subtree's *contents* with paths relative to it, so the theme
+# lands at agentshell/style.css exactly as it always has.
+if git cat-file -e "$REV:$THEME_SRC" 2>/dev/null; then
+    git archive "$REV:$THEME_SRC" | tar -x -C "$STAGE"
+else
+    say "not in $REV, skipped: $THEME_SRC"
+fi
+
+# Each plugin subtree becomes one directory inside the archive, named after
+# the plugin — the name WordPress uses to activate it.
+for plugin in "${PLUGINS[@]}"; do
+    source_dir="$PLUGIN_SRC/$plugin"
+    if git cat-file -e "$REV:$source_dir" 2>/dev/null; then
+        mkdir -p "$STAGE/$plugin"
+        git archive "$REV:$source_dir" | tar -x -C "$STAGE/$plugin"
+    else
+        say "not in $REV, skipped: $source_dir"
+    fi
+done
 
 for entry in "${INCLUDE[@]}"; do
     if git cat-file -e "$REV:$entry" 2>/dev/null; then

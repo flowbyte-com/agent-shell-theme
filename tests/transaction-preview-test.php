@@ -106,7 +106,7 @@ if ( ! function_exists( 'nocache_headers' ) ) {
 $GLOBALS['wp_version'] = '6.5';
 
 require_once __DIR__ . '/fake-browser.php';
-require_once dirname( __DIR__ ) . '/functions.php';
+require_once dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php';
 // Earlier suites in run-all.php have already loaded most of the plugin; each
 // one is a plain require_once, so a shared file would be declared twice.
 foreach ( array(
@@ -116,10 +116,10 @@ foreach ( array(
     'class-screenshot.php', 'class-screenshot-store.php', 'class-json-rpc.php',
     'class-server.php',
 ) as $inc ) {
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/' . $inc;
 }
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-base-tool.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-screenshot.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-screenshot.php';
 
 use AgentShell_MCP\Transaction_Manager as Tx;
 
@@ -586,7 +586,7 @@ PHP;
         $file = tempnam( sys_get_temp_dir(), 'txp-nosecret-' );
         file_put_contents( $file, $script );
         $out = shell_exec( escapeshellcmd( PHP_BINARY ) . ' ' . escapeshellarg( $file ) . ' '
-            . escapeshellarg( dirname( __DIR__ ) . '/agentshell-mcp/includes/class-transactions.php' ) . ' 2>&1' );
+            . escapeshellarg( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-transactions.php' ) . ' 2>&1' );
         @unlink( $file );
         Agentshell_Test::assert_true(
             str_contains( (string) $out, 'REFUSED' ),

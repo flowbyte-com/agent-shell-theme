@@ -30,7 +30,7 @@
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/fake-browser.php';
 
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot.php';
 
 use AgentShell_MCP\Screenshot;
 
@@ -204,7 +204,7 @@ function agentshell_trust_run( array $op, $suffix ) {
 
     $argv_json = json_encode( array_values( array(
         $script,
-        dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php',
+        dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot.php',
         $work,
         json_encode( $op ),
     ) ) );

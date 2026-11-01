@@ -35,13 +35,13 @@ if ( ! defined( 'AGENTSHELL_FORMS_SCHEMA_VERSION' ) ) {
 	define( 'AGENTSHELL_FORMS_SCHEMA_VERSION', 1 );
 }
 
-require_once dirname( __DIR__ ) . '/agentshell-forms/includes/class-form-policy.php';
-require_once dirname( __DIR__ ) . '/agentshell-forms/includes/class-form-capabilities.php';
-require_once dirname( __DIR__ ) . '/agentshell-forms/includes/class-form-audit.php';
-require_once dirname( __DIR__ ) . '/agentshell-forms/includes/class-form-tools.php';
-require_once dirname( __DIR__ ) . '/agentshell-forms/includes/tools/class-base-tool.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/class-form-policy.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/class-form-capabilities.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/class-form-audit.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/class-form-tools.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/tools/class-base-tool.php';
 
-$tools_dir = dirname( __DIR__ ) . '/agentshell-forms/includes/tools/';
+$tools_dir = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/tools/';
 
 $tool_files = array(
 	'class-list-forms.php'           => 'agentshell_list_forms',

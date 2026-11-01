@@ -40,8 +40,8 @@ require_once __DIR__ . '/mutation-sandbox.php';
 
 $SUITE_REL = 'tests/content-write-test.php';
 
-$GUARD_REL = 'agentshell-mcp/includes/class-content-write-guard.php';
-$CONTENT_REL = 'agentshell-mcp/includes/class-content.php';
+$GUARD_REL = 'wordpress/plugins/agentshell-mcp/includes/class-content-write-guard.php';
+$CONTENT_REL = 'wordpress/plugins/agentshell-mcp/includes/class-content.php';
 
 $mutants = array(
 

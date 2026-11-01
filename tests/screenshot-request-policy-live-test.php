@@ -57,10 +57,10 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-cdp.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-screenshot.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-screenshot-cdp.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-browser-request-policy.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-cdp.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-screenshot.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-screenshot-cdp.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-browser-request-policy.php';
 
 use AgentShell_MCP\Browser_Request_Policy;
 use AgentShell_MCP\Screenshot;

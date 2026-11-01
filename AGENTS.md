@@ -41,6 +41,21 @@ Shell (header.php, footer.php, style.css) — immutable
 
 No other document is allowed to redefine these three statements.
 
+**Repository layout (normative paths).** The checkout is not the theme directory. The WordPress components live under `wordpress/`, and everything else in the repository is development material that never ships:
+
+```
+wordpress/themes/agentshell/       the theme WordPress activates
+wordpress/plugins/agentshell-mcp/      the tool surface
+wordpress/plugins/agentshell-blocks/   the widget registry tools
+wordpress/plugins/agentshell-forms/    forms engine, builder and zone block
+tests/  tools/  docs/  skills/  .github/   development material, never shipped
+agentshell-mcp-daemon/             the MCP daemon: a CLI component, not a plugin
+```
+
+Theme-internal filenames elsewhere in this file (`header.php`, `style.css`, `template-parts/shell-render.php`, `widgets/*.php`) are relative to `wordpress/themes/agentshell/`. Plugin-internal paths are relative to their directory under `wordpress/plugins/`. The runtime is layout-independent — WordPress resolves the theme through `get_template_directory()` and plugins through `plugin_dir_path( __FILE__ )` — so these paths describe the *checkout*, not how WordPress finds anything.
+
+A release archive is a third layout and keeps the shape WordPress installs: the theme at the archive root and each plugin in a directory named after it. `tools/package-release.sh` performs that staging; `tools/install-localwp.sh` links a checkout into a site's `wp-content` without copying it.
+
 ---
 
 ## 2. MCP tools (authoritative count: **81**)
@@ -202,7 +217,7 @@ The widget registry an agent sees is the result of this merge, in order:
 
 A config entry with the same id **overrides** the file-based entry. Removal is asymmetric: `agentshell_remove_widget` only removes config-registered widgets; file-based widgets must be disabled via `agentshell_disable_widget`.
 
-This merge is implemented by `agentshell_get_widget_registry()` in the theme and by the tool classes in `agentshell-mcp/includes/tools/` and `agentshell-blocks/includes/tools/`. Do not describe the registry as "wp_options-only" anywhere.
+This merge is implemented by `agentshell_get_widget_registry()` in the theme and by the tool classes in `wordpress/plugins/agentshell-mcp/includes/tools/` and `wordpress/plugins/agentshell-blocks/includes/tools/`. Do not describe the registry as "wp_options-only" anywhere.
 
 ### 4.2 Data-* hydration (the only allowed widget payload)
 
@@ -464,10 +479,13 @@ Four properties of this are load-bearing:
 
 ## 7. Files agents must not modify
 
+Paths in this list are relative to `wordpress/themes/agentshell/` for theme files
+and to `wordpress/plugins/` for plugin directories — see §1 for the layout.
+
 - `header.php`, `footer.php`
 - `style.css` Sections 3 and 4 (the FSE layout / zone styling layer)
 - `template-parts/shell-render.php`, `template-parts/widgets.php`
-- `agentshell-mcp/`, `agentshell-blocks/` plugin directories
+- the `agentshell-mcp/`, `agentshell-blocks/` and `agentshell-forms/` plugin directories under `wordpress/plugins/`
 - `agentshell-mcp-daemon/` daemon
 
 These files are part of the system contract. Style changes belong in CSS variables (`agentshell_set_*` tools), in `custom_css`/`custom_js` config values, in registered widgets, or in `wp_options` (via tools). File edits are for the theme author and require a human review.
@@ -484,7 +502,7 @@ Every other markdown in this repository is a pointer, an archive, a non-normativ
 | `CONFIG.md` | **Non-normative setup guide** | End-to-end installation and connection walkthrough for humans: LocalWP, development symlinks, activation, Application Passwords, daemon config, Claude Code registration, verification, troubleshooting. Defines no contract; every contract is cited by section to this file. |
 | `CLAUDE.md` | Pointer | Claude Code orientation; "AGENTS.md is authoritative" stated up front. |
 | `AGENT-PROMT-EXAMPLE.md` | **Archive / deprecated** | v1 prompt fragments. The legacy "Unbreakable Grid Protocol" wording it contains is captured above in Section 5; the file itself is not normative. |
-| `agentshell-mcp/README.md` | Pointer | Plugin install + auth + capability hint; points to this file for the tool list. |
+| `wordpress/plugins/agentshell-mcp/README.md` | Pointer | Plugin install + auth + capability hint; points to this file for the tool list. |
 | `agentshell-mcp-daemon/README.md` | Pointer | Daemon config + transport, and the version-compatibility policy (protocol version, product version, and the refusal on an incompatible pairing). |
 | `skills/agentshell/SKILL.md` | Pointer | Namespaced skills index; delegates to this file for the tool surface. |
 | `skills/agentshell/image-to-theme/SKILL.md` | Skill | A single task contract: theme the site to a reference image. No tool definitions, no duplicate architecture. |

@@ -36,7 +36,9 @@ var fs = require( 'fs' );
 var os = require( 'os' );
 var path = require( 'path' );
 
-var ROOT = path.join( __dirname, '..' );
+// The theme's directory, not the repository root: the stylesheet this suite
+// measures moved into wordpress/themes/agentshell with the rest of the theme.
+var ROOT = path.join( __dirname, '..', 'wordpress', 'themes', 'agentshell' );
 var passed = 0, failed = 0;
 
 function ok( cond, msg ) {

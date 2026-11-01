@@ -40,7 +40,7 @@ if ( '' === $out ) {
 	exit( 1 );
 }
 
-$assets = dirname( __DIR__ ) . '/agentshell-forms/assets/';
+$assets = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/assets/';
 
 $definition_a = agentshell_forms_fixture_definition();
 $definition_b = agentshell_forms_fixture_second_definition();

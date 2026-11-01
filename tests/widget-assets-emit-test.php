@@ -20,7 +20,7 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../functions.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/functions.php';
 
 echo "widget-assets-emit regression tests\n";
 

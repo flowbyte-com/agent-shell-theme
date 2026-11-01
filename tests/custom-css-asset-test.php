@@ -25,7 +25,7 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once dirname( __DIR__ ) . '/functions.php';
+require_once dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php';
 
 echo "custom stylesheet asset tests\n";
 
@@ -466,9 +466,9 @@ Agentshell_Test::run(
 Agentshell_Test::run(
     'the doctor does not report a staged stylesheet as a missing asset',
     function () {
-        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-doctor.php';
-        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-store.php';
-        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-custom-css-asset.php';
+        require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-doctor.php';
+        require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-store.php';
+        require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-custom-css-asset.php';
 
         // The doctor reads the WordPress version; the unit bootstrap does
         // not define one, and the check would otherwise warn about it.
@@ -516,9 +516,9 @@ Agentshell_Test::run(
 Agentshell_Test::run(
     'the doctor still reports a committed stylesheet that was never materialised',
     function () {
-        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-doctor.php';
-        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-store.php';
-        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-custom-css-asset.php';
+        require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-doctor.php';
+        require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-store.php';
+        require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-custom-css-asset.php';
 
         // The doctor reads the WordPress version; the unit bootstrap does
         // not define one, and the check would otherwise warn about it.

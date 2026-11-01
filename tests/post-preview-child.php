@@ -40,7 +40,7 @@ if ( 'route' === $mode ) {
         exit( 2 );
     }
 
-    require_once dirname( __DIR__ ) . '/functions.php';
+    require_once dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php';
 
     // The plain front-end request these constants are supposed to spoil.
     $_SERVER['REQUEST_METHOD'] = 'GET';
@@ -53,8 +53,8 @@ if ( 'route' === $mode ) {
 if ( 'no-secret' === $mode ) {
     // Deliberately neither AGENTSHELL_REST_TOKEN (bootstrap defines it empty)
     // nor AUTH_SALT, so preview_secret() has nothing to sign with.
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-transactions.php';
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-post-preview.php';
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-transactions.php';
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-post-preview.php';
 
     $results = array();
 

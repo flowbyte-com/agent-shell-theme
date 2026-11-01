@@ -89,11 +89,11 @@ function wp_reset_postdata() { $GLOBALS['_agentshell_test_post_reset'] = true; }
 // bootstrap.php: a second copy here would drift, and the point of the fixture is
 // that suites cannot assert against their own private idea of WordPress.
 
-require_once dirname( __DIR__ ) . '/functions.php';
+require_once dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php';
 foreach ( array(
     'class-store.php', 'class-transactions.php', 'class-post-preview.php',
 ) as $inc ) {
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/' . $inc;
 }
 
 use AgentShell_MCP\Post_Preview;
@@ -966,7 +966,7 @@ Agentshell_Test::run( 'combined: the transaction credential does not substitute 
 // ═════════════════════════════════════════════════════════════════════════════
 
 Agentshell_Test::run( 'tool: the screenshot schema advertises post_id as an integer', function () {
-    $file = dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-screenshot.php';
+    $file = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-screenshot.php';
     Agentshell_Test::assert_true( file_exists( $file ) );
     $src = file_get_contents( $file );
     Agentshell_Test::assert_true(
@@ -987,7 +987,7 @@ Agentshell_Test::run( 'tool: the post-preview block runs before the SSRF host ch
     // Ordering matters: the tool replaces `url` with the minted preview link,
     // so a host check reading the caller's original url would validate the
     // wrong thing. This pins the order in the source.
-    $src = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-screenshot.php' );
+    $src = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-screenshot.php' );
     $mint = strpos( $src, 'Post_Preview::preview_args' );
     $guard = strpos( $src, 'does not match this site' );
     Agentshell_Test::assert_true( false !== $mint && false !== $guard, 'both blocks must exist' );
@@ -995,7 +995,7 @@ Agentshell_Test::run( 'tool: the post-preview block runs before the SSRF host ch
 } );
 
 Agentshell_Test::run( 'tool: the plugin loads the credential authority', function () {
-    $src = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/agentshell-mcp.php' );
+    $src = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/agentshell-mcp.php' );
     Agentshell_Test::assert_true(
         str_contains( $src, "includes/class-post-preview.php" ),
         'class-post-preview.php must be required by the plugin entrypoint'
@@ -1003,7 +1003,7 @@ Agentshell_Test::run( 'tool: the plugin loads the credential authority', functio
 } );
 
 Agentshell_Test::run( 'tool: the theme gates are wired to the right hooks and priorities', function () {
-    $src = file_get_contents( dirname( __DIR__ ) . '/functions.php' );
+    $src = file_get_contents( dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php' );
     // init priority 0: the main query runs after init, so a later check is too late.
     Agentshell_Test::assert_true(
         (bool) preg_match( "/add_action\(\s*'init',\s*'agentshell_authorize_post_preview',\s*0\s*\)/", $src ),

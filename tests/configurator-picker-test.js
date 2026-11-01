@@ -17,7 +17,7 @@
 
 'use strict';
 
-var picker = require( '../configurator/configurator-picker.js' );
+var picker = require( '../wordpress/themes/agentshell/configurator/configurator-picker.js' );
 
 var passed = 0, failed = 0;
 

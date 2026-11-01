@@ -28,13 +28,13 @@ if ( ! function_exists( 'sanitize_text_field' ) ) { function sanitize_text_field
 $GLOBALS['_agentshell_test_login'] = 'owner';
 $GLOBALS['wp_version']              = '6.5';
 
-require_once dirname( __DIR__ ) . '/functions.php';
+require_once dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php';
 foreach ( array(
     'class-store.php', 'class-doctor.php', 'class-content-write-guard.php',
     'class-content-journal.php', 'class-recovery-advisory-lock.php',
     'class-content-recovery.php', 'class-transactions.php',
 ) as $inc ) {
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/' . $inc;
 }
 
 use AgentShell_MCP\Transaction_Manager as Tx;

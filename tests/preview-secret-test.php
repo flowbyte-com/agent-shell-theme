@@ -51,7 +51,7 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../functions.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/functions.php';
 
 echo "preview secret (one rule, everywhere)\n";
 
@@ -73,9 +73,9 @@ function preview_secret_in_process( array $defines, $body ) {
     // The theme's stylesheet printer uses wp_unslash(), which the shared
     // bootstrap does not provide (each suite that needs it declares it).
     $php .= 'if ( ! function_exists( \'wp_unslash\' ) ) { function wp_unslash( $v ) { return is_string( $v ) ? stripslashes( $v ) : $v; } }' . "\n";
-    $php .= 'require_once ' . var_export( dirname( __DIR__ ) . '/agentshell-mcp/includes/class-store.php', true ) . ";\n";
-    $php .= 'require_once ' . var_export( dirname( __DIR__ ) . '/agentshell-mcp/includes/class-transactions.php', true ) . ";\n";
-    $php .= 'require_once ' . var_export( dirname( __DIR__ ) . '/functions.php', true ) . ";\n";
+    $php .= 'require_once ' . var_export( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-store.php', true ) . ";\n";
+    $php .= 'require_once ' . var_export( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-transactions.php', true ) . ";\n";
+    $php .= 'require_once ' . var_export( dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php', true ) . ";\n";
     // The body returns its result; the harness prints it as JSON.
     $php .= "\n" . '$__preview_secret_result = ( function () {' . "\n" . $body . "\n} )();\n";
     $php .= 'echo json_encode( $__preview_secret_result );' . "\n";
@@ -222,7 +222,7 @@ PHP
 Agentshell_Test::run(
     'the theme and the plugin ask the same question for the secret',
     function () {
-        $source = (string) file_get_contents( dirname( __DIR__ ) . '/functions.php' );
+        $source = (string) file_get_contents( dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php' );
         Agentshell_Test::assert_true(
             false !== strpos( $source, 'agentshell_preview_secret()' ),
             'the theme asks one function for the secret'
@@ -235,7 +235,7 @@ Agentshell_Test::run(
             'the theme no longer asks only whether the constant is defined'
         );
 
-        $tool = (string) file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-screenshot.php' );
+        $tool = (string) file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-screenshot.php' );
         Agentshell_Test::assert_true(
             false !== strpos( $tool, 'Transaction_Manager::preview_secret()' ),
             'the tool asks the owner of the rule for the secret'
@@ -246,8 +246,8 @@ Agentshell_Test::run(
         );
         // The theme's helper must *be* the owner's answer when the plugin
         // is loaded, or the two would drift apart again.
-        require_once __DIR__ . '/../agentshell-mcp/includes/class-store.php';
-        require_once __DIR__ . '/../agentshell-mcp/includes/class-transactions.php';
+        require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-store.php';
+        require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-transactions.php';
         Agentshell_Test::assert_equals(
             (string) \AgentShell_MCP\Transaction_Manager::preview_secret(),
             (string) agentshell_preview_secret(),

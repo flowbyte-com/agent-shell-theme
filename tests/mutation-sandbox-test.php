@@ -50,9 +50,9 @@ Agentshell_Test::run( 'sandbox: it is a usable stand-in for the checkout', funct
     // Suites resolve their sources through dirname( __DIR__ ), so a copied
     // tree is a drop-in — but only if the copy actually holds what they load.
     $required = array(
-        'agentshell-mcp/includes/class-screenshot.php',
-        'functions.php',
-        'template-parts/shell-render.php',
+        'wordpress/plugins/agentshell-mcp/includes/class-screenshot.php',
+        'wordpress/themes/agentshell/functions.php',
+        'wordpress/themes/agentshell/template-parts/shell-render.php',
         'tests/bootstrap.php',
         'tests/browser-isolation-test.php',
         'tests/browser-trust-test.php',
@@ -74,7 +74,7 @@ Agentshell_Test::run( 'sandbox: it is a usable stand-in for the checkout', funct
 Agentshell_Test::run( 'sandbox: writing to it cannot change the checkout', function () use ( $sandbox, $root ) {
     // The property the whole refactor exists to provide. Mutate the copy the
     // way a harness does, and prove the production file is untouched.
-    $target = 'agentshell-mcp/includes/class-screenshot.php';
+    $target = 'wordpress/plugins/agentshell-mcp/includes/class-screenshot.php';
     $real   = $root . '/' . $target;
 
     $real_before = hash_file( 'sha256', $real );

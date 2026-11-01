@@ -115,7 +115,7 @@ if ( ! defined( 'AGENTSHELL_FORMS_VERSION' ) ) {
 }
 
 if ( ! defined( 'AGENTSHELL_FORMS_PLUGIN_DIR' ) ) {
-	define( 'AGENTSHELL_FORMS_PLUGIN_DIR', dirname( __DIR__ ) . '/agentshell-forms/' );
+	define( 'AGENTSHELL_FORMS_PLUGIN_DIR', dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/' );
 }
 
 if ( ! defined( 'AGENTSHELL_FORMS_PLUGIN_URL' ) ) {
@@ -126,7 +126,7 @@ if ( ! defined( 'AGENTSHELL_FORMS_SCHEMA_VERSION' ) ) {
 	define( 'AGENTSHELL_FORMS_SCHEMA_VERSION', 1 );
 }
 
-$agentshell_forms_fixture_dir = dirname( __DIR__ ) . '/agentshell-forms/includes/';
+$agentshell_forms_fixture_dir = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/';
 
 require_once $agentshell_forms_fixture_dir . 'class-form-field-types.php';
 require_once $agentshell_forms_fixture_dir . 'class-form-schema.php';

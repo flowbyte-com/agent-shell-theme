@@ -29,7 +29,7 @@ define( 'WP_USE_THEMES', false );
 require_once ABSPATH . 'wp-load.php';
 
 $theme_root = get_template_directory();
-require_once $theme_root . '/agentshell-mcp/includes/class-content.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/class-content.php';
 
 use AgentShell_MCP\Content_Primitives;
 use AgentShell_MCP\Content_Write_Guard;
@@ -273,9 +273,9 @@ try {
 // The primitives are what the tools call, but "the primitive works" is not
 // "the tool an agent actually invokes works": a tool that bypassed the guard,
 // or dropped the atomicity block, would still pass everything above.
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-base-tool.php';
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-create-page.php';
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-update-content.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-create-page.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-update-content.php';
 
 $title = $token . '-tool';
 try {

@@ -20,7 +20,7 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-cdp.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-cdp.php';
 
 use AgentShell_MCP\CDP;
 
