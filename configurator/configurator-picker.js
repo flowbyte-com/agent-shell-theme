@@ -58,10 +58,33 @@
         var core = Array.isArray( cfg.core_components ) ? cfg.core_components : [];
         var widgets = Array.isArray( cfg.available_widgets ) ? cfg.available_widgets : [];
         var areas = Array.isArray( cfg.available_widget_areas ) ? cfg.available_widget_areas : [];
+        var forms = Array.isArray( cfg.available_forms ) ? cfg.available_forms : [];
 
         function item( type, id, label, detail ) {
             return { type: type, id: id, label: label, detail: detail || '' };
         }
+
+        // One entry per form, keyed by its immutable id. A duplicate would
+        // make the picker offer the same form twice with no way to tell the
+        // entries apart; a stale label would name a form the site no longer
+        // has. The server sends the published catalog, so both are already
+        // impossible there — this is the belt to that braces, and it keeps
+        // the picker honest if the catalog is ever assembled differently.
+        //
+        // The id pattern is the same one the block validator enforces: an
+        // entry whose id could not be stored would produce a component the
+        // save refuses, so it is not offered at all.
+        var form_items = [];
+        var seen_forms = {};
+        var form_id_pattern = /^[a-f0-9]{32}$/;
+        forms.forEach( function ( form ) {
+            if ( ! form || typeof form.id !== 'string' || ! form_id_pattern.test( form.id ) ) { return; }
+            if ( seen_forms[ form.id ] ) { return; }
+            seen_forms[ form.id ] = true;
+            var label = form.name || form.id;
+            var detail = form.slug ? 'shortcode ' + form.slug : '';
+            form_items.push( item( 'agentshell_form', form.id, label, detail ) );
+        } );
 
         return [
             {
@@ -87,6 +110,19 @@
                 items: areas.map( function ( a ) {
                     return item( 'wp_widget_area', a.id, a.name || a.id, '' );
                 } ),
+            },
+            {
+                id: 'agentshell_form',
+                label: 'Forms',
+                // Two different empty states, because they are two different
+                // situations: the plugin can be absent (nothing to do here but
+                // install it) or present with nothing published (a form must
+                // be created and published first). "No forms" for both would
+                // send the operator looking in the wrong place.
+                empty: cfg.forms_available === false
+                    ? 'Forms need the AgentShell Forms plugin, which is not active on this site.'
+                    : 'No published forms yet. Create and publish one under AgentShell Forms, then it appears here.',
+                items: form_items,
             },
             {
                 id: 'other',

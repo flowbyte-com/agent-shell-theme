@@ -101,7 +101,9 @@ bash tools/package-release.sh --out dist                                   # bui
 bash tools/check-release-archive.sh --archive dist/agentshell-*.tar.gz      # check
 ```
 
-The archive carries the theme, both plugins, the assets, the licence and the configuration defaults — about 1.4 MB — and refuses the Git history, the worktrees, the tests, the tooling and anything that looks like a credential. The two scripts share one list of exclusions, so an exclusion forgotten in one fails the build.
+The archive carries the theme, its plugins, the assets, the licence and the configuration defaults — about 1.4 MB — and refuses the Git history, the worktrees, the tests, the tooling and anything that looks like a credential. The two scripts share one list of exclusions, so an exclusion forgotten in one fails the build.
+
+**`agentshell-forms` ships in the archive but is not activated by the theme.** It is included so a site that wants forms has the engine available — the `agentshell_form` zone block, the `[agentshell_form]` shortcode and the widget all come from it — and it is left inactive until an operator activates it, because a form engine is a decision rather than a default. A site that never activates it renders exactly what it rendered before: a form block on such a site produces no markup and causes no error. The deployment checklist and the full contract are in [`AGENTS.md` §3](AGENTS.md).
 
 **Never copy the working tree to a server.** A checkout is 62 MB, 59 MiB of which is Git history and other checkouts — and the published history contains a revoked database password, so a copied `.git` is a credential on a public machine. The measurements, and what else was found, are in [`docs/RELEASE-SIZE-AUDIT.md`](docs/RELEASE-SIZE-AUDIT.md).
 

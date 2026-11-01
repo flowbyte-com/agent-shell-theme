@@ -1871,6 +1871,98 @@ function agentshell_nav_block_is_extended( array $block ) {
 }
 
 /**
+ * The pattern a form block's identifier must match.
+ *
+ * The identifier is the form's immutable internal id — 32 lowercase hex
+ * characters — never its WordPress post id and never its display name. The
+ * post id can be renumbered by an import and the name can be edited; the
+ * internal id is the one handle a stored reference may rely on.
+ *
+ * @return string
+ */
+function agentshell_form_block_id_pattern() {
+    return '/^[a-f0-9]{32}$/';
+}
+
+/**
+ * Whether a block is the form block type.
+ *
+ * @param array $block
+ * @return bool
+ */
+function agentshell_form_block_is_form( array $block ) {
+    return 'agentshell_form' === ( $block['type'] ?? '' );
+}
+
+/**
+ * Validate a form block.
+ *
+ * Every entry point that can store a block — the configuration validator,
+ * the doctor, both zone tools, the import gate and the configurator's own
+ * save — asks this one function, so they cannot accept different things.
+ * The rules are deliberately narrow: a form block carries an identifier and
+ * nothing else. A display name stored beside it would go stale the moment
+ * the form is renamed, and a stored definition would be a second copy of
+ * the form.
+ *
+ * Returns every problem rather than the first. An empty array means valid.
+ *
+ * @param array $block
+ * @return array<int, array{code:string, message:string}>
+ */
+function agentshell_form_block_issues( array $block ) {
+    $issues = array();
+
+    if ( ! agentshell_form_block_is_form( $block ) ) {
+        return $issues;
+    }
+
+    $id = $block['id'] ?? null;
+
+    if ( null === $id || '' === $id ) {
+        return array(
+            array(
+                'code'    => 'form_block_missing_id',
+                'message' => 'A form block requires an id: the form\'s 32-character internal identifier.',
+            ),
+        );
+    }
+
+    if ( ! is_string( $id ) ) {
+        return array(
+            array(
+                'code'    => 'form_block_id_not_string',
+                'message' => 'A form block\'s id must be a string.',
+            ),
+        );
+    }
+
+    if ( ! preg_match( agentshell_form_block_id_pattern(), $id ) ) {
+        return array(
+            array(
+                'code'    => 'form_block_id_invalid',
+                'message' => 'A form block\'s id must be the form\'s 32-character lowercase hexadecimal internal id, not its post id or its name.',
+            ),
+        );
+    }
+
+    // The post id and the name are refused as *extra* fields rather than
+    // silently ignored: a caller that stored a post id believing it was the
+    // identifier would otherwise get a block that renders a different form
+    // than it named, or none at all.
+    foreach ( array( 'post_id', 'name', 'slug' ) as $stale ) {
+        if ( isset( $block[ $stale ] ) ) {
+            $issues[] = array(
+                'code'    => 'form_block_stale_field',
+                'message' => "A form block may not carry '{$stale}': the immutable internal id is the only reference it stores.",
+            );
+        }
+    }
+
+    return $issues;
+}
+
+/**
  * Validate the navigation fields of one block.
  *
  * Returns every problem rather than the first, because an agent that sent a
@@ -3603,7 +3695,7 @@ function agentshell_validate_config( $config ) {
     );
     $allowed_zone_ids = array( 'header', 'main', 'footer' );
     $allowed_block_types = array(
-        'wp_loop', 'wp_core', 'widget', 'json_block', 'wp_widget_area',
+        'wp_loop', 'wp_core', 'widget', 'json_block', 'wp_widget_area', 'agentshell_form',
     );
     $allowed_wp_core_ids = array(
         'site_title', 'nav_menu', 'search_form', 'site_logo', 'site_tagline',
@@ -3685,6 +3777,14 @@ function agentshell_validate_config( $config ) {
                     if ( $block['type'] === 'wp_core' && isset( $block['id'] ) && ! in_array( $block['id'], $allowed_wp_core_ids, true ) ) {
                         return new WP_Error( 'invalid_wp_core_id', "Unknown wp_core id: {$block['id']}" );
                     }
+                    // Form blocks: the reference rules live in one theme
+                    // function, which the doctor and both zone tools ask as
+                    // well, so no entry point can accept a block another
+                    // rejects.
+                    $form_issues = agentshell_form_block_issues( (array) $block );
+                    if ( ! empty( $form_issues ) ) {
+                        return new WP_Error( $form_issues[0]['code'], $form_issues[0]['message'] );
+                    }
                     $nav_issues = agentshell_nav_block_issues( (array) $block );
                     if ( ! empty( $nav_issues ) ) {
                         return new WP_Error( $nav_issues[0]['code'], $nav_issues[0]['message'] );
@@ -3714,6 +3814,12 @@ function agentshell_validate_config( $config ) {
                         }
                         if ( $block['type'] === 'wp_core' && isset( $block['id'] ) && ! in_array( $block['id'], $allowed_wp_core_ids, true ) ) {
                             return new WP_Error( 'invalid_wp_core_id', "Unknown wp_core id: {$block['id']}" );
+                        }
+                        // Form blocks: the same single rule set the
+                        // composition path uses above.
+                        $form_issues = agentshell_form_block_issues( (array) $block );
+                        if ( ! empty( $form_issues ) ) {
+                            return new WP_Error( $form_issues[0]['code'], $form_issues[0]['message'] );
                         }
                         // Navigation blocks: selection, mode and label are
                         // validated by the same helper the doctor uses, so the
@@ -4248,6 +4354,28 @@ function agentshell_build_config_response( array $config ) {
         );
     }
 
+    // Forms a placement picker may offer.
+    //
+    // The plugin owns the answer and this asks for it, so the theme never
+    // reads the plugin's storage: a site without the plugin degrades to an
+    // empty list, and a caller cannot reach a draft, a submission or a form
+    // credential through this key. Published forms only — a form with no
+    // published definition renders nothing, so offering it would let an
+    // operator add a component they cannot see.
+    $available_forms = array();
+    if ( function_exists( 'agentshell_forms_published_catalog' ) ) {
+        foreach ( (array) agentshell_forms_published_catalog() as $form ) {
+            if ( ! is_array( $form ) || empty( $form['form_id'] ) ) {
+                continue;
+            }
+            $available_forms[] = array(
+                'id'   => (string) $form['form_id'],
+                'name' => isset( $form['name'] ) ? (string) $form['name'] : (string) $form['form_id'],
+                'slug' => isset( $form['slug'] ) ? (string) $form['slug'] : '',
+            );
+        }
+    }
+
     $custom_css = (string) ( $config['custom_css'] ?? '' );
     $custom_js  = (string) ( $config['custom_js']  ?? '' );
 
@@ -4266,6 +4394,11 @@ function agentshell_build_config_response( array $config ) {
         'available_widgets'     => $available_widgets,
         'core_components'       => $core_components,
         'available_widget_areas'=> $available_widget_areas,
+        'available_forms'       => $available_forms,
+        'forms_available'       => function_exists( 'agentshell_forms_published_catalog' ),
+        'forms_builder_url'     => function_exists( 'agentshell_forms_published_catalog' ) && function_exists( 'admin_url' )
+            ? admin_url( 'admin.php?page=agentshell-forms-builder' )
+            : '',
         'available_menus'       => $available_menus,
         'available_menu_locations' => $available_menu_locations,
         'navigation_dependencies'  => agentshell_navigation_dependencies( $config ),

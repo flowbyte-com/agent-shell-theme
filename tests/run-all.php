@@ -1221,6 +1221,33 @@ $suites = array(
         'path'     => __DIR__ . '/forms-builder-acceptance-test.php',
         'requires' => 'destructive',
     ),
+    // The `agentshell_form` zone block (Phase 6): the six-type vocabulary
+    // across the validator, the doctor and both zone tools; the immutable-id
+    // rule; composition and all nine header/footer areas; the three-slot
+    // aliases; and the renderer's delegation to the plugin with a
+    // `function_exists()` guard. No database needed.
+    'forms-zone-block' => array(
+        'path'     => __DIR__ . '/forms-zone-block-test.php',
+        'requires' => 'unit',
+    ),
+    // The same block against a real WordPress: a published form renders
+    // inside a real zone, a draft and a trashed form render nothing to a
+    // visitor, the catalog offers published forms only, and the
+    // configuration response stays backward compatible. Destructive: it
+    // creates and deletes forms.
+    'forms-zone-block-live' => array(
+        'path'     => __DIR__ . '/forms-zone-block-live-test.php',
+        'requires' => 'destructive',
+    ),
+    // The release archive: the forms plugin ships complete (every file its
+    // bootstrap requires is asserted from the bootstrap itself), the checker
+    // accepts a complete package and refuses one with the plugin removed, a
+    // runtime class removed, or the test suite leaked in. Builds a real
+    // archive from the committed tree in a temp directory.
+    'forms-packaging' => array(
+        'path'     => __DIR__ . '/forms-packaging-test.php',
+        'requires' => 'unit',
+    ),
     // The agent tool surface (Phase 5): the twelve tools' schemas, the
     // policy defaults and allowlist, the refusal codes before any storage,
     // the authority matrix, and the tripwires that no tool grants a
