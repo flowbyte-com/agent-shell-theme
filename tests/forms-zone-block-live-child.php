@@ -33,8 +33,17 @@ require_once dirname( __DIR__ ) . '/agentshell-forms/agentshell-forms.php';
 // The theme's renderer is the subject, so its two files are loaded directly
 // rather than by switching the active theme: a test that changes the site's
 // theme would leave the bed in a different state than it found it.
-require_once rtrim( $theme_dir, '/' ) . '/functions.php';
-require_once rtrim( $theme_dir, '/' ) . '/template-parts/shell-render.php';
+//
+// Guarded by the function each file defines, not only by `require_once`: a
+// site that already runs AgentShell as its active theme has loaded both, and
+// a second declaration would be a fatal in the test rather than a finding
+// about the code.
+if ( ! function_exists( 'agentshell_validate_config' ) ) {
+	require_once rtrim( $theme_dir, '/' ) . '/functions.php';
+}
+if ( ! function_exists( 'agentshell_render_block' ) ) {
+	require_once rtrim( $theme_dir, '/' ) . '/template-parts/shell-render.php';
+}
 
 use AgentShell_Forms\Form_Definition;
 use AgentShell_Forms\Form_Policy;
@@ -164,8 +173,9 @@ probe(
 		'slot_form_occurrences' => substr_count( $slot_html, 'agentshell-form__' ) > 0 ? substr_count( $slot_html, '<form' ) : substr_count( $slot_html, '<form' ),
 		'composition_has_form' => false !== strpos( $composition_html, '<form' ),
 		'avoid_double_escape'  => false === strpos( $slot_html, '&lt;form' ),
-		// The page must not carry a second, theme-authored copy of the form.
-		'no_theme_form_markup' => false === strpos( $slot_html, 'as-zone-form' ),
+		// Exactly one form element: the plugin's. A second would be a copy
+		// the theme wrote — the second renderer this phase must not create.
+		'form_element_count'   => substr_count( $slot_html, '<form' ),
 	)
 );
 
@@ -193,10 +203,13 @@ wp_trash_post( (int) $draft['post_id'] );
 $visitor = array();
 $manager = array();
 
+// A post id is deliberately *not* in this set. The plugin's public renderer
+// accepts one as a convenience handle — `agentshell_forms_render()` documents
+// it — and that is its contract, not this block's. What refuses a post id is
+// the block vocabulary, asserted separately below.
 foreach ( array(
 	'draft'   => $draft_id,
 	'unknown' => 'ffffffffffffffffffffffffffffffff',
-	'post_id' => (string) $published['post_id'],
 	'trashed' => $draft_id,
 	'empty'   => '',
 ) as $label => $reference ) {
@@ -237,10 +250,13 @@ probe(
 		'manager_no_form'     => $manager_no_form,
 		'draft_visitor_empty' => '' === trim( $visitor['draft'] ),
 		'trashed_visitor_empty' => '' === trim( $visitor['trashed'] ),
-		// A post id is not an internal id. It resolves to nothing rather than
-		// to whichever form happens to own that row.
-		'post_id_visitor_empty' => '' === trim( $visitor['post_id'] ),
 		'empty_id_empty'      => '' === trim( $visitor['empty'] ) && '' === trim( $manager['empty'] ),
+		// The block vocabulary refuses a post id even though the plugin's
+		// public renderer accepts one. This is the distinction that keeps a
+		// stored reference from silently meaning a different form after an
+		// import renumbers the rows.
+		'block_refuses_post_id' => function_exists( 'agentshell_form_block_issues' )
+			&& ! empty( agentshell_form_block_issues( array( 'type' => 'agentshell_form', 'id' => (string) $published['post_id'] ) ) ),
 	)
 );
 

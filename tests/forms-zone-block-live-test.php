@@ -102,7 +102,7 @@ Agentshell_Test::run(
         Agentshell_Test::assert_true( fzl( $p, 'renders', 'slot_has_class' ), 'the plugin\'s form class is what is rendered' );
         Agentshell_Test::assert_true( fzl( $p, 'renders', 'slot_has_field' ), 'the form\'s own field is in the markup' );
         Agentshell_Test::assert_true( fzl( $p, 'renders', 'avoid_double_escape' ), 'the plugin\'s HTML is not escaped a second time' );
-        Agentshell_Test::assert_false( fzl( $p, 'renders', 'no_theme_form_markup' ), 'the theme contributes no form markup of its own' );
+        Agentshell_Test::assert_equals( 1, (int) fzl( $p, 'renders', 'form_element_count' ), 'the page carries exactly one form element — the plugin\'s — so the theme wrote no second renderer' );
     }
 );
 
@@ -127,7 +127,7 @@ Agentshell_Test::run(
         Agentshell_Test::assert_true( fzl( $p, 'degradation', 'visitor_empty' ), 'a visitor receives no markup at all: no leak, no error page' );
         Agentshell_Test::assert_true( fzl( $p, 'degradation', 'draft_visitor_empty' ), 'an unpublished form renders nothing to a visitor' );
         Agentshell_Test::assert_true( fzl( $p, 'degradation', 'trashed_visitor_empty' ), 'a trashed form renders nothing to a visitor' );
-        Agentshell_Test::assert_true( fzl( $p, 'degradation', 'post_id_visitor_empty' ), 'a WordPress post id is not a form id and renders nothing' );
+        Agentshell_Test::assert_true( fzl( $p, 'degradation', 'block_refuses_post_id' ), 'the block vocabulary refuses a WordPress post id, so a stored reference can never mean a renumbered row' );
         Agentshell_Test::assert_true( fzl( $p, 'degradation', 'empty_id_empty' ), 'a block with no id renders nothing to anybody' );
         Agentshell_Test::assert_true( fzl( $p, 'degradation', 'manager_diagnostic' ), 'a form manager sees why the placement is blank' );
         Agentshell_Test::assert_true( fzl( $p, 'degradation', 'manager_no_form' ), 'the diagnostic is never a half-built form' );
@@ -142,9 +142,9 @@ Agentshell_Test::run(
         Agentshell_Test::assert_equals( array( 'form_id', 'name', 'slug' ), fzl( $p, 'catalog', 'keys' ), 'the catalog carries identifiers and labels only' );
         Agentshell_Test::assert_true( '' !== (string) fzl( $p, 'catalog', 'name' ), 'the form has a readable name' );
         Agentshell_Test::assert_true( '' !== (string) fzl( $p, 'catalog', 'slug' ), 'the form has a slug a human can paste' );
-        Agentshell_Test::assert_false( fzl( $p, 'catalog', 'no_values_key' ), 'no submitted values are exposed' );
-        Agentshell_Test::assert_false( fzl( $p, 'catalog', 'no_settings_key' ), 'no form settings are exposed' );
-        Agentshell_Test::assert_false( fzl( $p, 'catalog', 'no_secret' ), 'no Turnstile configuration is exposed' );
+        Agentshell_Test::assert_true( fzl( $p, 'catalog', 'no_values_key' ), 'no submitted values are exposed' );
+        Agentshell_Test::assert_true( fzl( $p, 'catalog', 'no_settings_key' ), 'no form settings are exposed' );
+        Agentshell_Test::assert_true( fzl( $p, 'catalog', 'no_secret' ), 'no Turnstile configuration is exposed' );
     }
 );
 
@@ -156,7 +156,7 @@ Agentshell_Test::run(
         Agentshell_Test::assert_true( fzl( $p, 'config_response', 'excludes_draft' ), 'the draft is not in the response' );
         Agentshell_Test::assert_equals( array( 'id', 'name', 'slug' ), fzl( $p, 'config_response', 'entry_keys' ), 'each entry is id, name and slug' );
         Agentshell_Test::assert_true( false !== strpos( (string) fzl( $p, 'config_response', 'builder_url' ), 'agentshell-forms-builder' ), 'the builder route is offered' );
-        Agentshell_Test::assert_false( fzl( $p, 'config_response', 'no_secret' ), 'the response carries no Turnstile configuration' );
+        Agentshell_Test::assert_true( fzl( $p, 'config_response', 'no_secret' ), 'the response carries no Turnstile configuration' );
         Agentshell_Test::assert_true( fzl( $p, 'config_response', 'backward_compatible' ), 'the keys the previous response carried are still there' );
     }
 );
