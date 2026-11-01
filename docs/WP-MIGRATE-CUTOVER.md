@@ -118,7 +118,7 @@ nothing else.
 
 ```console
 # 1. Build and check the release archive.
-$ cd /home/v/projects/agent-shell-theme
+$ cd /home/v/projects/agentshell
 $ bash tools/package-release.sh --out dist
 $ bash tools/check-release-archive.sh --archive dist/agentshell-*.tar.gz
 [check] the deployment is clean: nothing forbidden is present, nothing required is missing
@@ -375,7 +375,9 @@ To go back to following the checkout:
 
 ```console
 $ cd "/home/v/Local Sites/agentshell-demo/app/public/wp-content/themes"
-$ rm -rf agent-shell-theme && ln -s /home/v/projects/agent-shell-theme agent-shell-theme
+$ rm -rf agent-shell-theme && ln -s /home/v/projects/agentshell agent-shell-theme
+# The WordPress theme directory keeps its historical name; only the
+# checkout path it points at changed.
 ```
 
 ---

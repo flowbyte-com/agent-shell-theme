@@ -2,6 +2,10 @@
 
 > **Pointer document.** The canonical agent contract is [`AGENTS.md`](./AGENTS.md). This file is human-facing orientation only — setup, screenshots loop, and a quick tour. If anything here disagrees with `AGENTS.md`, `AGENTS.md` wins.
 
+**Repository:** `flowbyte-com/agentshell` — a WordPress platform: one theme, three
+plugins and an MCP daemon. A checkout lives at `~/projects/agentshell` by
+convention; nothing depends on that path.
+
 A WordPress theme built for human–agent collaboration. The shell is static and immutable; agents work through the MCP daemon (JSON-RPC over stdio) to style the theme, arrange zones, and publish content.
 
 ## What AgentShell gives you

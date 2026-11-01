@@ -50,7 +50,7 @@ Placeholders used throughout:
 ```
 <SITE_DOMAIN>     e.g. your-site.local      (LocalWP site domain)
 <SITE_PATH>       e.g. ~/local/your-site    (LocalWP site root)
-<REPO_PATH>       e.g. ~/projects/agent-shell-theme
+<REPO_PATH>       e.g. ~/projects/agentshell
 <WP_USER>         WordPress user login the agent authenticates as
 ```
 
