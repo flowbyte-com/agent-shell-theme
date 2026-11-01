@@ -9,7 +9,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
  */
 class Update_Zone_Composition extends Base_Tool {
     public function get_name() { return 'agentshell_update_zone_composition'; }
-    public function get_description() { return 'Set or replace the ordered composition array for a zone. Accepts an array of block objects: { "type": "wp_loop" }, { "type": "widget", "id": "widget-id" }, { "type": "json_block", "content": "..." }, { "type": "wp_widget_area", "id": "widget-area-id" }.'; }
+    public function get_description() { return 'Set or replace the ordered composition array for a zone. Accepts an array of block objects: { "type": "wp_loop" }, { "type": "widget", "id": "widget-id" }, { "type": "json_block", "content": "..." }, { "type": "wp_widget_area", "id": "widget-area-id" }, { "type": "agentshell_form", "id": "32-character-lowercase-hex-form-id" }.'; }
     public function get_input_schema() {
         return array(
             'type'       => 'object',
@@ -20,7 +20,7 @@ class Update_Zone_Composition extends Base_Tool {
                     'items' => array(
                         'type'       => 'object',
                         'properties' => array(
-                            'type'    => array( 'type' => 'string', 'enum' => array( 'wp_loop', 'wp_core', 'widget', 'json_block', 'wp_widget_area' ) ),
+                            'type'    => array( 'type' => 'string', 'enum' => array( 'wp_loop', 'wp_core', 'widget', 'json_block', 'wp_widget_area', 'agentshell_form' ) ),
                             'id'      => array( 'type' => 'string' ),
                             'content' => array( 'type' => 'string' ),
                         ),
@@ -48,7 +48,7 @@ class Update_Zone_Composition extends Base_Tool {
         }
 
         // Validate each block
-        $valid_types = array( 'wp_loop', 'wp_core', 'widget', 'json_block', 'wp_widget_area' );
+        $valid_types = array( 'wp_loop', 'wp_core', 'widget', 'json_block', 'wp_widget_area', 'agentshell_form' );
         foreach ( $composition as $i => $block ) {
             $type = $block['type'] ?? '';
             if ( ! in_array( $type, $valid_types, true ) ) {
@@ -59,6 +59,19 @@ class Update_Zone_Composition extends Base_Tool {
             }
             if ( $type === 'wp_widget_area' && empty( $block['id'] ) ) {
                 throw new \InvalidArgumentException( "composition[$i]: wp_widget_area block requires 'id' field." );
+            }
+            // Form blocks store the immutable internal id and nothing else.
+            // The rule set is the theme's one function, so the tool, the
+            // doctor and the configurator cannot accept different blocks.
+            if ( $type === 'agentshell_form' ) {
+                if ( function_exists( 'agentshell_form_block_issues' ) ) {
+                    $issues = agentshell_form_block_issues( (array) $block );
+                    if ( ! empty( $issues ) ) {
+                        throw new \InvalidArgumentException( "composition[$i]: " . $issues[0]['message'] );
+                    }
+                } elseif ( empty( $block['id'] ) || ! is_string( $block['id'] ) || ! preg_match( '/^[a-f0-9]{32}$/', $block['id'] ) ) {
+                    throw new \InvalidArgumentException( "composition[$i]: agentshell_form block requires 'id': the form's 32-character lowercase hexadecimal internal id." );
+                }
             }
         }
 

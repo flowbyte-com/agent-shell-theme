@@ -328,6 +328,11 @@
                 var a = areas.filter( function ( x ) { return x.id === block.id; } )[ 0 ];
                 return a ? a.name : ( 'Widget area ' + ( block.id || '' ) );
             }
+            if ( block.type === 'agentshell_form' ) {
+                var forms = config().available_forms || [];
+                var f = forms.filter( function ( x ) { return x.id === block.id; } )[ 0 ];
+                return f ? f.name : 'Form unavailable';
+            }
             if ( block.type === 'wp_loop' ) { return 'Content loop'; }
             if ( block.type === 'json_block' ) { return 'HTML block'; }
             return block.type;
@@ -427,6 +432,8 @@
                 box.appendChild( choice_field( zone_id, area_id, block, 'Widget', config().available_widgets || [], 'id' ) );
             } else if ( block.type === 'wp_widget_area' ) {
                 box.appendChild( choice_field( zone_id, area_id, block, 'Widget area', config().available_widget_areas || [], 'id' ) );
+            } else if ( block.type === 'agentshell_form' ) {
+                box.appendChild( form_field( zone_id, area_id, block ) );
             } else if ( block.type === 'json_block' ) {
                 box.appendChild( text_area_field( zone_id, area_id, block, 'content', 'HTML', 6 ) );
             } else if ( block.type === 'wp_loop' ) {
@@ -570,6 +577,54 @@
                 select.appendChild( h( 'option', { value: block[ field ], text: block[ field ] + ' (unavailable)', selected: true } ) );
             }
             return field_row( label, select );
+        }
+
+        /**
+         * A form placement: which published form this block shows.
+         *
+         * The stored value is the form's immutable internal id, so the
+         * select offers the published catalog by id and labels each entry
+         * with the name a human recognises. A stored id that is no longer in
+         * the catalog is shown as its own, selected entry marked
+         * "unavailable" — never silently replaced with the first form and
+         * never dropped, because dropping it would rewrite the operator's
+         * configuration behind their back.
+         *
+         * The builder is a link, not an embed: the configurator edits zones,
+         * and the forms plugin owns form editing.
+         */
+        function form_field( zone_id, area_id, block ) {
+            var choices = ( config().available_forms || [] ).map( function ( form ) {
+                return { id: form.id, name: form.slug ? form.name + ' (' + form.slug + ')' : form.name };
+            } );
+
+            var row = choice_field( zone_id, area_id, block, 'Form', choices, 'id' );
+            var note = h( 'p', { class: 'as-cfg__muted' } );
+
+            if ( ! block.id ) {
+                note.textContent = 'Choose a published form for this component.';
+                row.appendChild( note );
+                return row;
+            }
+
+            var found = ( config().available_forms || [] ).filter( function ( f ) { return f.id === block.id; } )[ 0 ];
+
+            if ( ! found ) {
+                note.textContent = 'This form is no longer published or no longer exists, so this component renders nothing. Choose another form, or publish it again under AgentShell Forms.';
+            } else {
+                note.textContent = 'Shows the form "' + found.name + '". Its published version is what visitors see.';
+            }
+
+            row.appendChild( note );
+
+            var url = config().forms_builder_url;
+            if ( url ) {
+                row.appendChild( h( 'p', { class: 'as-cfg__muted' }, [
+                    h( 'a', { href: url, class: 'as-cfg__link', text: 'Open the form builder' } ),
+                ] ) );
+            }
+
+            return row;
         }
 
         function text_area_field( zone_id, area_id, block, field, label, rows ) {

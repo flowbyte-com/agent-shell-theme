@@ -163,6 +163,7 @@ function main() {
         var locked = run_scenario( browser, harness, profile, 'locked' );
         var refusal = run_scenario( browser, harness, profile, 'refusal' );
         var picker = run_scenario( browser, harness, profile, 'picker' );
+        var forms = run_scenario( browser, harness, profile, 'forms' );
         var workflow = run_scenario( browser, harness, profile, 'workflow' );
         var blocked = run_scenario( browser, harness, profile, 'blocked' );
         // Same-account session isolation and the honest failure paths.
@@ -177,7 +178,7 @@ function main() {
         var previewurlnetwork = run_scenario( browser, harness, profile, 'previewurlnetwork' );
         var history = run_scenario( browser, harness, profile, 'history' );
         var live = run_scenario( browser, harness, profile, 'live' );
-        var scenarios = [ plain, locked, refusal, picker, workflow, blocked, session, unbound,
+        var scenarios = [ plain, locked, refusal, picker, forms, workflow, blocked, session, unbound,
             commitlost, commitlostrefresh, refreshaftercommit, commitfail,
             previewstagefail, previewnetwork, previewurlnetwork, history, live ];
         report = {

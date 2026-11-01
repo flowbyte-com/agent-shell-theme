@@ -3437,6 +3437,10 @@ count equals the registry's.
 
 #### Phase 6 — The AgentShell integration and release packaging
 
+> **Implemented.** The `agentshell_form` block type, the picker's Forms group,
+> the inspector branch and the release packaging described below all ship; the
+> normative contract is `AGENTS.md` §3 and §2 is unchanged (no tool was added).
+
 **Scope.** The `agentshell_form` zone block type; the picker's Forms group;
 the inspector's branch; the release include list; the checker's required
 list; the documentation pointer map.

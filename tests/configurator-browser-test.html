@@ -80,6 +80,15 @@ const ZONE_RESPONSE = {
   available_menu_locations: [ {slug:'primary',label:'Primary',menu_id:11} ],
   available_widgets: [ {id:'chart',name:'Chart',source:'file',status:'active'} ],
   available_widget_areas: [ {id:'primary-sidebar',name:'Primary Sidebar'} ],
+  // Phase 6: the published forms a placement picker may offer. Two, so
+  // "switch to another form" is a real choice rather than a single option,
+  // and the ids are real shapes so the picker's own guard accepts them.
+  forms_available: true,
+  available_forms: [
+    { id: '7c1d2e3a4b5c6d7e8f9a0b1c2d3e4f5a', name: 'Contact us', slug: 'contact-us' },
+    { id: 'a1b2c3d4e5f60718293a4b5c6d7e8f90', name: 'Newsletter', slug: 'newsletter' }
+  ],
+  forms_builder_url: '/wp-admin/admin.php?page=agentshell-forms-builder',
   core_components: [ {id:'site_title',name:'Site Title'},{id:'site_logo',name:'Site Logo'},{id:'nav_menu',name:'Primary Navigation Menu'},{id:'search_form',name:'Search Form'} ],
   navigation_dependencies: { menus: [ {reference:'utility',kind:'menu'}, {reference:'legal',kind:'menu'} ], locations: [] }
 };
@@ -527,6 +536,10 @@ async function run() {
     await run_picker();
     return;
   }
+  if (SCENARIO === 'forms') {
+    await run_forms();
+    return;
+  }
   if (SCENARIO === 'workflow') {
     await run_workflow();
     return;
@@ -840,6 +853,149 @@ async function run() {
   ok('the closed editor is hidden from assistive technology',
      q('#agentshell-config-panel').getAttribute('aria-hidden') === 'true',
      q('#agentshell-config-panel').getAttribute('aria-hidden'));
+
+  report();
+}
+
+/**
+ * Scenario: a form placed from the Forms group, then switched and removed.
+ *
+ * This is the operator-facing acceptance for Phase 6. It drives the real
+ * picker and the real inspector with the server fixture a site with two
+ * published forms would send, and asserts:
+ *
+ *   1. the Forms group is offered and named;
+ *   2. a form is chosen by its readable name and stored by its immutable id;
+ *   3. the inspector identifies the selected form and can switch to another;
+ *   4. a form that is no longer offered is shown as unavailable and its
+ *      stored reference is *not* silently replaced or deleted;
+ *   5. the component can be removed again;
+ *   6. the editor never fetches submission data.
+ *
+ * Nothing is saved: the assertions are on the draft the editor holds, which
+ * is what "selecting a form creates an agentshell_form block" means.
+ */
+async function run_forms() {
+  // ── the group is offered and named ───────────────────────────────────
+  var addButton = q('[data-focus-key^="add:"]');
+  ok('the area offers a way to add a component', !!addButton);
+  addButton.click();
+  await wait(80);
+
+  var pickerText = q('.as-cfg__picker-list').textContent;
+  ok('the picker offers a Forms group', pickerText.indexOf('Forms') !== -1, pickerText.slice(0, 120));
+
+  // The group's own header, so "Forms" appearing in a form's name cannot
+  // satisfy the assertion above.
+  var groupLabels = qa('.as-cfg__picker-group').map(function (el) { return el.textContent.trim(); });
+  ok('Forms is a group of its own', groupLabels.indexOf('Forms') !== -1, JSON.stringify(groupLabels));
+
+  // ── choose the first form ────────────────────────────────────────────
+  var options = qa('.as-cfg__picker-option');
+  var contact = options.filter(function (el) { return el.textContent.indexOf('Contact us') !== -1; })[0];
+  ok('a published form is offered by its readable name', !!contact,
+     options.map(function (el) { return el.textContent.trim().slice(0, 30); }).join(' | '));
+
+  var before = qa('.as-cfg__block').length;
+  var requestsBeforePlace = window.__requests.length;
+  contact.click();
+  await wait(120);
+
+  ok('choosing a form adds one component', qa('.as-cfg__block').length === before + 1,
+     String(qa('.as-cfg__block').length - before));
+
+  // The stored draft is the assertion that matters: the block must carry the
+  // immutable id, not the name the operator clicked. The block list names it
+  // for the operator; the inspector's selector value is the stored id; and
+  // the save payload is what would leave the browser, so all three are read
+  // rather than one being assumed to imply the others.
+  ok('the block list names the placed form',
+     q('.as-cfg__blocks').textContent.indexOf('Contact us') !== -1,
+     q('.as-cfg__blocks').textContent.slice(0, 120));
+
+  // The list row is a container; the thing that selects it is the row's own
+  // name button, which is what a keyboard reaches. Clicking the row would
+  // assert against markup no operator can activate.
+  var placedBlock = qa('.as-cfg__block').filter(function (el) {
+    return el.textContent.indexOf('Contact us') !== -1;
+  })[0];
+  ok('the placed component is a block the operator can select', !!placedBlock);
+
+  var placedName = placedBlock ? placedBlock.querySelector('button.as-cfg__block-name') : null;
+  ok('the component is selectable through a real button', !!placedName);
+
+  if (placedName) {
+    placedName.click();
+    await wait(150);
+  }
+
+  ok('selecting the component marks it selected',
+     !!q('.as-cfg__block.is-selected') &&
+     q('.as-cfg__block.is-selected').textContent.indexOf('Contact us') !== -1,
+     q('.as-cfg__blocks').textContent.slice(0, 120));
+
+  // ── the inspector identifies the selected form ────────────────────────
+  var inspector = q('.as-cfg__inspector');
+  ok('the inspector names the form', inspector.textContent.indexOf('Contact us') !== -1,
+     inspector.textContent.slice(0, 160));
+
+  var formSelects = qa('.as-cfg__inspector select');
+  var formSelect = formSelects.filter(function (el) {
+    return el.getAttribute('aria-label') === 'Form';
+  })[0];
+  ok('the inspector offers a form selector', !!formSelect,
+     formSelects.map(function (el) { return el.getAttribute('aria-label'); }).join(' | '));
+
+  if (formSelect) {
+    var values = Array.prototype.map.call(formSelect.options, function (o) { return o.value; });
+    ok('the selector offers both published forms',
+       values.indexOf('7c1d2e3a4b5c6d7e8f9a0b1c2d3e4f5a') !== -1 &&
+       values.indexOf('a1b2c3d4e5f60718293a4b5c6d7e8f90') !== -1,
+       JSON.stringify(values));
+
+    // ── switch to the other form ──────────────────────────────────────
+    formSelect.value = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    formSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(150);
+
+    ok('switching updates the block list', q('.as-cfg__blocks').textContent.indexOf('Newsletter') !== -1,
+       q('.as-cfg__blocks').textContent.slice(0, 160));
+    ok('switching dirties the draft', chip() !== 'Saved', chip());
+  }
+
+  var builderLink = qa('.as-cfg__inspector a').filter(function (a) {
+    return /form builder/i.test(a.textContent);
+  })[0];
+  ok('the inspector links to the form builder', !!builderLink,
+     qa('.as-cfg__inspector a').map(function (a) { return a.textContent; }).join(' | '));
+  ok('the builder link points at the plugin screen, not an embed',
+     !!builderLink && builderLink.getAttribute('href').indexOf('agentshell-forms-builder') !== -1,
+     builderLink ? builderLink.getAttribute('href') : 'none');
+
+  // ── no submission data is fetched, ever ──────────────────────────────
+  ok('placing and switching a form made no request at all',
+     window.__requests.length === requestsBeforePlace,
+     window.__requests.slice(requestsBeforePlace).join(' '));
+
+  // ── remove it again ──────────────────────────────────────────────────
+  var countBeforeRemove = qa('.as-cfg__block').length;
+  // The remove control is an icon button in the row's tools: its accessible
+  // name is on aria-label and its text is empty, so the assertion filters on
+  // the name rather than on textContent — which would find nothing and pass
+  // for the wrong reason.
+  var remove = qa('.as-cfg__block button').filter(function (b) {
+    return /^remove\b/i.test(b.getAttribute('aria-label') || '');
+  })[0];
+
+  ok('the component can be removed from its row', !!remove,
+     qa('.as-cfg__block button').map(function (b) { return b.getAttribute('aria-label'); }).join(' | '));
+
+  if (remove) {
+    remove.click();
+    await wait(120);
+    ok('removing the form removes the component', qa('.as-cfg__block').length === countBeforeRemove - 1,
+       String(qa('.as-cfg__block').length - countBeforeRemove));
+  }
 
   report();
 }

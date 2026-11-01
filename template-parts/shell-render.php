@@ -76,6 +76,39 @@ function agentshell_render_block( array $block ) {
                 . agentshell_render_core_component( $id, $block )
                 . '</div>';
 
+        case 'agentshell_form':
+            // A form placed in a zone. The plugin owns the markup, the
+            // published-only rule and the escaping; the theme contributes the
+            // reference and nothing else.
+            //
+            // The guard is `function_exists()` rather than a plugin-active
+            // check because the plugin's public function is the whole
+            // contract: a site without the plugin degrades to "no form" and
+            // never to a fatal error on a page a visitor is reading.
+            //
+            // The returned HTML is already escaped by the renderer, so it is
+            // returned unchanged — not passed through wp_kses_post (which is
+            // for untrusted input and would strip the form's own markup) and
+            // not escaped again.
+            $form_id = $block['id'] ?? '';
+            if ( ! is_string( $form_id ) || '' === $form_id ) {
+                return '';
+            }
+            if ( ! function_exists( 'agentshell_forms_render' ) ) {
+                return '';
+            }
+            return agentshell_forms_render(
+                $form_id,
+                array(
+                    'context' => 'zone',
+                    // The operator places a form inside a zone they are
+                    // already composing; the form's own name as a heading is
+                    // theirs to add deliberately, not something a placement
+                    // forces on the page.
+                    'title'   => 'hide',
+                )
+            );
+
         default:
             return '';
     }

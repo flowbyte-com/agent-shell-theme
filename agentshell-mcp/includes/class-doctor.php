@@ -14,7 +14,7 @@ class Doctor {
     const ALLOWED_TYPO   = array( 'fontFamily', 'mono', 'baseSize', 'scale' );
     const ALLOWED_LAYOUT = array( 'radius', 'headerHeight', 'footerHeight', 'borderWidth', 'borderStyle' );
     const ALLOWED_ZONES  = array( 'header', 'main', 'footer' );
-    const ALLOWED_BLOCKS = array( 'wp_loop', 'wp_core', 'widget', 'json_block', 'wp_widget_area' );
+    const ALLOWED_BLOCKS = array( 'wp_loop', 'wp_core', 'widget', 'json_block', 'wp_widget_area', 'agentshell_form' );
     const ALLOWED_CORE   = array( 'site_title', 'site_tagline', 'site_logo', 'nav_menu', 'search_form' );
     const ALLOWED_LIBS   = array( 'd3', 'mathjs' );
 
@@ -362,6 +362,58 @@ class Doctor {
                                 array( 'zone' => $id, 'block' => $i )
                             );
                         }
+                    }
+                }
+                if ( 'agentshell_form' === $type ) {
+                    // The reference rules live in the theme and the doctor
+                    // asks rather than re-implementing them, so the import
+                    // gate cannot accept a block the renderer would reject.
+                    if ( function_exists( 'agentshell_form_block_issues' ) ) {
+                        foreach ( agentshell_form_block_issues( $block ) as $issue ) {
+                            self::err(
+                                $errors,
+                                strtoupper( $issue['code'] ),
+                                "Zone {$id} block #{$i}: " . $issue['message'],
+                                array( 'zone' => $id, 'block' => $i )
+                            );
+                        }
+                    } elseif ( empty( $block['id'] ) ) {
+                        // The plugin-without-theme fallback: the tool still
+                        // has to refuse a reference-less block, even where
+                        // the theme's helper is absent.
+                        self::err( $errors, 'FORM_REFERENCE_MISSING_ID', "Zone {$id} block #{$i}: agentshell_form requires an id.", array( 'zone' => $id, 'block' => $i ) );
+                    }
+                    // A form that does not resolve on *this* site is a
+                    // warning, not an error: the configuration is valid and
+                    // the site is missing a dependency or has not published
+                    // the form yet — exactly the case an imported manifest
+                    // describes, and the case a draft form creates.
+                    if ( function_exists( 'agentshell_forms_published_catalog' ) ) {
+                        $catalog = agentshell_forms_published_catalog();
+                        $known   = array();
+                        foreach ( (array) $catalog as $entry ) {
+                            if ( isset( $entry['form_id'] ) ) {
+                                $known[ (string) $entry['form_id'] ] = true;
+                            }
+                        }
+                        if ( empty( $known ) || ! isset( $known[ (string) $block['id'] ] ) ) {
+                            self::warn(
+                                $warnings,
+                                'FORM_REFERENCE_UNAVAILABLE',
+                                "Zone {$id} block #{$i}: form '{$block['id']}' is not a published form on this site — it renders nothing until it is.",
+                                array( 'zone' => $id, 'form_id' => $block['id'] )
+                            );
+                        }
+                    } elseif ( function_exists( 'agentshell_forms_render' ) ) {
+                        // The plugin is present but older than this build:
+                        // it can render, so the block is not broken, but the
+                        // doctor cannot confirm the reference.
+                        self::warn(
+                            $warnings,
+                            'FORM_REFERENCE_UNVERIFIED',
+                            "Zone {$id} block #{$i}: the forms plugin cannot list its published forms, so the reference was not verified.",
+                            array( 'zone' => $id, 'form_id' => $block['id'] )
+                        );
                     }
                 }
                 if ( 'widget' === $type ) {

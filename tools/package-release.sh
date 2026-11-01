@@ -94,6 +94,12 @@ INCLUDE=(
     "configurator"
     "agentshell-mcp"
     "agentshell-blocks"
+    # The forms plugin ships with the theme but is not activated by it: a
+    # site that does not use forms should not have a form engine running,
+    # and activation is the operator's decision. Shipping it is what makes
+    # the zone block, the shortcode and the widget available to a site that
+    # chooses to switch it on.
+    "agentshell-forms"
 )
 
 # ── what must never ship ──────────────────────────────────────────────────

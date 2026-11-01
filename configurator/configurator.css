@@ -226,6 +226,13 @@ body.config-panel-open {
     color: var(--configurator-muted);
 }
 
+/* A route out of the configurator — to the form builder, for instance.
+ * Underlined so it reads as a link without relying on colour alone. */
+.as-cfg__link {
+    color: var(--theme-accent, #3b82f6);
+    text-decoration: underline;
+}
+
 .as-cfg__sr {
     position: absolute;
     width: 1px;

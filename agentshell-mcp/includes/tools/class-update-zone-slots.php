@@ -41,7 +41,8 @@ class Update_Zone_Slots extends Base_Tool {
             . 'top-left, top-center, top-right, middle-left, middle-center, middle-right, bottom-left, bottom-center, bottom-right. '
             . 'Each area is an array of blocks in render order. The historical keys left/center/right are accepted and mean the middle row. '
             . 'Optional slot_align (per area: start|center|end|stretch) and row_align (per row: start|center|end) control alignment. '
-            . 'Areas not named are emptied — send the whole grid you want.';
+            . 'Areas not named are emptied — send the whole grid you want. '
+            . 'A block may be { "type": "agentshell_form", "id": "32-character-lowercase-hex-form-id" }.';
     }
 
     public function get_input_schema() {
@@ -193,7 +194,7 @@ class Update_Zone_Slots extends Base_Tool {
      * tool accepts cannot be one the doctor later rejects.
      */
     private function validate_blocks( array $items, $where ) {
-        $valid_types = array( 'wp_core', 'wp_loop', 'widget', 'json_block', 'wp_widget_area' );
+        $valid_types = array( 'wp_core', 'wp_loop', 'widget', 'json_block', 'wp_widget_area', 'agentshell_form' );
         $out         = array();
 
         foreach ( $items as $i => $block ) {
@@ -224,6 +225,19 @@ class Update_Zone_Slots extends Base_Tool {
                 $nav_issues = agentshell_nav_block_issues( $block );
                 if ( ! empty( $nav_issues ) ) {
                     throw new \InvalidArgumentException( "{$where}[{$i}]: " . $nav_issues[0]['message'] );
+                }
+            }
+            // Form blocks store the immutable internal id and nothing else.
+            // Same helper as the composition tool, the doctor and the
+            // configuration validator.
+            if ( $type === 'agentshell_form' ) {
+                if ( function_exists( 'agentshell_form_block_issues' ) ) {
+                    $form_issues = agentshell_form_block_issues( $block );
+                    if ( ! empty( $form_issues ) ) {
+                        throw new \InvalidArgumentException( "{$where}[{$i}]: " . $form_issues[0]['message'] );
+                    }
+                } elseif ( empty( $block['id'] ) || ! is_string( $block['id'] ) || ! preg_match( '/^[a-f0-9]{32}$/', $block['id'] ) ) {
+                    throw new \InvalidArgumentException( "{$where}[{$i}]: agentshell_form block requires 'id': the form's 32-character lowercase hexadecimal internal id." );
                 }
             }
             $out[] = $block;

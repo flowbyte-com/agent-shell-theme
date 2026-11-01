@@ -99,6 +99,33 @@ REQUIRED=(
     "agentshell-mcp/includes/tools/class-inspect.php"
     "agentshell-blocks/agentshell-blocks.php"
     "agentshell-blocks/includes/tools/class-get-widget.php"
+    # The forms plugin: the bootstrap activates the plugin, the classes are
+    # the storage and the renderer it requires, the assets are what a visitor
+    # sees, and the admin files are the builder an operator works in. A
+    # distribution that carried the bootstrap and nothing else would activate
+    # a plugin that fatals on its first require.
+    #
+    # The list is the *essential* subset, named so a missing category fails
+    # here rather than at a site. Completeness — every file the bootstrap
+    # requires — is asserted by tests/forms-packaging-test.php, which derives
+    # the list from the bootstrap instead of repeating it.
+    "agentshell-forms/agentshell-forms.php"
+    "agentshell-forms/uninstall.php"
+    "agentshell-forms/includes/functions.php"
+    "agentshell-forms/includes/class-form-definition.php"
+    "agentshell-forms/includes/class-form-schema.php"
+    "agentshell-forms/includes/class-form-renderer.php"
+    "agentshell-forms/includes/class-form-capabilities.php"
+    "agentshell-forms/includes/class-form-policy.php"
+    "agentshell-forms/includes/class-form-rest.php"
+    "agentshell-forms/includes/class-submission-store.php"
+    "agentshell-forms/includes/tools/class-base-tool.php"
+    "agentshell-forms/includes/tools/class-list-forms.php"
+    "agentshell-forms/assets/forms.css"
+    "agentshell-forms/assets/forms.js"
+    "agentshell-forms/admin/js/forms-app.js"
+    "agentshell-forms/admin/js/forms-model.js"
+    "agentshell-forms/admin/css/forms-admin.css"
 )
 
 WORK="$(mktemp -d)"

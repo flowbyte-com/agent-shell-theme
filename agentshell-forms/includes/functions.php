@@ -138,3 +138,81 @@ function agentshell_forms_render( $form_id, array $args = array() ) {
 
 	return \AgentShell_Forms\Form_Renderer::render( $form_id, $args );
 }
+
+/**
+ * The forms a placement picker may offer: published, usable, and nothing else.
+ *
+ * ## Why this is a function of the plugin, not of its storage
+ *
+ * A theme that renders a form needs three facts and no more: the immutable
+ * identifier to store, the name a human recognises, and the slug that human
+ * reads in a shortcode. Everything else a form carries — its draft
+ * definition, its settings, its notification recipients, its Turnstile
+ * configuration — is private to the plugin and to the operator. This
+ * function is therefore the *only* surface another component is given, so a
+ * caller cannot reach a private definition by reaching for a helper that
+ * happened to return one.
+ *
+ * ## Only published forms
+ *
+ * A form with no published definition renders nothing on the front end, so
+ * offering it as a placement would produce a component the operator can add
+ * and cannot see. Drafts are deliberately absent: preparing a form is a
+ * builder task, and the builder is where a draft is worked on.
+ *
+ * The release order is the operator's order — by name, then by slug — so the
+ * list a picker shows does not shuffle between page loads.
+ *
+ * @return array<int,array{form_id:string,name:string,slug:string}>
+ */
+function agentshell_forms_published_catalog() {
+	if ( ! function_exists( 'get_posts' ) ) {
+		return array();
+	}
+
+	$posts = get_posts(
+		array(
+			'post_type'              => \AgentShell_Forms\Form_Post_Types::FORM,
+			'post_status'            => array( 'publish', 'draft', 'private' ),
+			'numberposts'            => 200,
+			'orderby'                => 'title',
+			'order'                  => 'ASC',
+			'suppress_filters'       => false,
+			'no_found_rows'          => true,
+			'update_post_meta_cache' => true,
+		)
+	);
+
+	$catalog = array();
+
+	foreach ( is_array( $posts ) ? $posts : array() as $post ) {
+		if ( ! is_object( $post ) || ! isset( $post->ID ) ) {
+			continue;
+		}
+
+		$form_id = (string) get_post_meta( (int) $post->ID, \AgentShell_Forms\Form_Post_Types::META_FORM_ID, true );
+
+		if ( '' === $form_id || ! preg_match( \AgentShell_Forms\Form_Schema::FORM_ID_PATTERN, $form_id ) ) {
+			continue;
+		}
+
+		// "Published" means a published *definition* exists. The post's own
+		// status answers "has this form ever been published", which is a
+		// different question and is not the one a placement turns on.
+		$state = \AgentShell_Forms\Form_Definition::get_by_post_id( (int) $post->ID );
+
+		if ( is_wp_error( $state ) || ! is_array( $state['published'] ) ) {
+			continue;
+		}
+
+		$catalog[] = array(
+			'form_id' => $form_id,
+			'name'    => isset( $post->post_title ) && '' !== (string) $post->post_title
+				? (string) $post->post_title
+				: $form_id,
+			'slug'    => (string) ( $state['slug'] ?? '' ),
+		);
+	}
+
+	return $catalog;
+}
