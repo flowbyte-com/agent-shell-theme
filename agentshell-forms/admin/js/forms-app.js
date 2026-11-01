@@ -26,6 +26,7 @@ function FormsApp( root, api, model ) {
     this.inflight = null;
     this.pending = null;
     this._load_generation = 0;
+    this._preview_generation = 0;
 }
 
 FormsApp.prototype.init = function () {
@@ -577,10 +578,18 @@ FormsApp.prototype.confirm_pending = function ( pending ) {
 
     if ( 'create' === pending.action ) {
         if ( ! pending.name ) { return; }
+        var create_model = this.model;
         this.clear_error();
         this.api.create( pending.name ).then( function ( result ) {
             if ( ! result || ! result.ok ) {
                 self.fail( ( result && result.body && result.body.message ) || 'The form could not be created.' );
+                return;
+            }
+            // A form switch while the create was in flight means the operator
+            // already moved on; auto-loading the new form would yank them
+            // away from where they went.
+            if ( self.model !== create_model ) {
+                self.refresh_forms_list();
                 return;
             }
             return self.load_forms( result.body.form_id );
@@ -591,11 +600,19 @@ FormsApp.prototype.confirm_pending = function ( pending ) {
     if ( 'rename' === pending.action ) {
         if ( ! pending.name ) { return; }
         var rename_id = this.model.id;
+        var rename_model = this.model;
         var rename_snapshot = this.model.snapshot();
         this.clear_error();
         this.api.rename( rename_id, pending.name, rename_snapshot.revision ).then( function ( result ) {
             if ( ! result || ! result.ok ) {
                 self.handle_failure( result, 'The form could not be renamed.', { form_id: rename_id, expected_revision: rename_snapshot.revision } );
+                return;
+            }
+            // A form switch while the rename was in flight means the operator
+            // is looking at another form: renaming that form's model with
+            // this result would corrupt its name, working copy and revision.
+            if ( ! self.model || self.model !== rename_model ) {
+                self.refresh_forms_list( rename_id );
                 return;
             }
             // The rename touches the name, not the fields: the saved copy
@@ -616,10 +633,18 @@ FormsApp.prototype.confirm_pending = function ( pending ) {
 
     if ( 'duplicate' === pending.action ) {
         if ( ! pending.name ) { return; }
+        var duplicate_model = this.model;
+        var duplicate_id = this.model.id;
         this.clear_error();
-        this.api.duplicate( this.model.id, pending.name ).then( function ( result ) {
+        this.api.duplicate( duplicate_id, pending.name ).then( function ( result ) {
             if ( ! result || ! result.ok ) {
                 self.fail( ( result && result.body && result.body.message ) || 'The form could not be duplicated.' );
+                return;
+            }
+            // Same stale-navigation guard as create: only auto-open the copy
+            // when the operator is still on the form they duplicated from.
+            if ( self.model !== duplicate_model ) {
+                self.refresh_forms_list();
                 return;
             }
             return self.load_forms( result.body.form_id );
@@ -628,10 +653,18 @@ FormsApp.prototype.confirm_pending = function ( pending ) {
     }
 
     if ( 'trash' === pending.action ) {
+        var trash_model = this.model;
+        var trash_id = this.model.id;
         this.clear_error();
-        this.api.trash( this.model.id ).then( function ( result ) {
+        this.api.trash( trash_id ).then( function ( result ) {
             if ( ! result || ! result.ok ) {
                 self.fail( ( result && result.body && result.body.message ) || 'The form could not be trashed.' );
+                return;
+            }
+            // A form switch while the trash was in flight means the operator
+            // already moved on; clearing their selection would strand the UI.
+            if ( self.model !== trash_model ) {
+                self.refresh_forms_list();
                 return;
             }
             self.selected_form = '';
@@ -768,12 +801,27 @@ FormsApp.prototype.preview = function () {
 
     // The preview is rendered from the draft as it is *now*: it is the draft
     // version the operator is looking at, not a saved one.
+    var preview_model = this.model;
+    var preview_id = this.model.id;
+    var preview_generation = ++self._preview_generation;
     var definition = AgentshellFormsModel.clone( this.model.working );
     this.clear_error();
 
-    this.api.preview( this.model.id, definition ).then( function ( result ) {
+    this.api.preview( preview_id, definition ).then( function ( result ) {
         if ( ! result || ! result.ok ) {
             self.fail( ( result && result.body && result.body.message ) || 'The preview could not be rendered.' );
+            return;
+        }
+
+        // A form switch while the preview was in flight means the operator
+        // is looking at another form: this HTML belongs to the old one.
+        if ( ! self.model || self.model !== preview_model ) {
+            return;
+        }
+
+        // A newer preview was requested after this one; the older response
+        // must not replace it.
+        if ( preview_generation !== self._preview_generation ) {
             return;
         }
 

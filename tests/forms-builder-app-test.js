@@ -279,6 +279,104 @@ async function test_selection_identity() {
     console.log( 'ok - form selection and field selection are unambiguous' );
 }
 
+
+async function test_rename_after_form_switch() {
+    var rename_gate = deferred();
+    var rename_calls = 0;
+    var api = {
+        list: function () { return Promise.resolve( { ok: true, body: { forms: [ { form_id: 'a' }, { form_id: 'b' } ] } } ); },
+        get: function () { return Promise.resolve( { ok: false, body: null } ); },
+        rename: function ( id, name, expected_revision ) {
+            rename_calls++;
+            assert.strictEqual( id, 'a', 'the rename targets the form it was requested on' );
+            return rename_gate.promise;
+        },
+    };
+    var model_a = make_model( 'a', 1, [ field( 'x' ) ] );
+    var model_b = make_model( 'b', 3, [ field( 'y' ) ] );
+    var app = make_app( model_a, api );
+    app.selected_form = 'a';
+
+    app.confirm_pending( { action: 'rename', name: 'A renamed' } );
+
+    // The operator switches forms while the rename is in flight.
+    app.model = model_b;
+    app.selected_form = 'b';
+
+    rename_gate.resolve( { ok: true, body: { name: 'A renamed', revision: 2 } } );
+    await new Promise( function ( resolve ) { setTimeout( resolve, 10 ); } );
+
+    assert.strictEqual( rename_calls, 1, 'exactly one rename request is sent' );
+    assert.strictEqual( model_b.name, 'Name b', 'the other form keeps its name' );
+    assert.deepStrictEqual(
+        model_b.working.fields.map( function ( f ) { return f.key; } ),
+        [ 'y' ],
+        'the other form keeps its working draft'
+    );
+    assert.strictEqual( model_b.revision, 3, 'the other form keeps its revision' );
+    assert.strictEqual( model_a.name, 'Name a', 'the renamed form is untouched in memory' );
+    assert.strictEqual( model_a.revision, 1, 'the renamed form keeps its revision' );
+    assert.strictEqual( app.selected_form, 'b', 'selection stays where the operator put it' );
+
+    console.log( 'ok - a rename that resolves after a form switch never touches the other model' );
+}
+
+async function test_preview_after_form_switch() {
+    var preview_gate = deferred();
+    var api = {
+        list: function () { return Promise.resolve( { ok: true, body: { forms: [] } } ); },
+        get: function () { return Promise.resolve( { ok: false, body: null } ); },
+        preview: function () { return preview_gate.promise; },
+    };
+    var model_a = make_model( 'a', 1, [ field( 'x' ) ] );
+    var model_b = make_model( 'b', 2, [ field( 'y' ) ] );
+    var app = make_app( model_a, api );
+    app.selected_form = 'a';
+
+    app.preview();
+
+    // The operator switches forms while the preview is in flight.
+    app.model = model_b;
+    app.selected_form = 'b';
+
+    preview_gate.resolve( { ok: true, body: { html: '<p>A preview</p>' } } );
+    await new Promise( function ( resolve ) { setTimeout( resolve, 10 ); } );
+
+    assert.strictEqual( app.preview_html, '', 'form B never displays form A preview HTML' );
+    assert.strictEqual( app.previewed, false, 'form B is not marked as previewed' );
+
+    console.log( 'ok - a preview that resolves after a form switch is dropped' );
+}
+
+async function test_preview_superseded() {
+    var first_gate = deferred();
+    var second_gate = deferred();
+    var calls = 0;
+    var api = {
+        list: function () { return Promise.resolve( { ok: true, body: { forms: [] } } ); },
+        get: function () { return Promise.resolve( { ok: false, body: null } ); },
+        preview: function () {
+            calls++;
+            return calls === 1 ? first_gate.promise : second_gate.promise;
+        },
+    };
+    var app = make_app( make_model( 'a', 1, [ field( 'x' ) ] ), api );
+    app.selected_form = 'a';
+
+    app.preview();
+    app.preview();
+
+    second_gate.resolve( { ok: true, body: { html: '<p>newer</p>' } } );
+    await new Promise( function ( resolve ) { setTimeout( resolve, 10 ); } );
+    assert.strictEqual( app.preview_html, '<p>newer</p>', 'the newer preview is shown' );
+
+    first_gate.resolve( { ok: true, body: { html: '<p>older</p>' } } );
+    await new Promise( function ( resolve ) { setTimeout( resolve, 10 ); } );
+    assert.strictEqual( app.preview_html, '<p>newer</p>', 'the older response must not replace the newer preview' );
+
+    console.log( 'ok - an older preview response never replaces a newer preview' );
+}
+
 ( async function main() {
     await test_stale_load_dropped();
     await test_inflight_save_preserves_edits();
@@ -286,6 +384,9 @@ async function test_selection_identity() {
     await test_reconcile_conflict_preserves_edits();
     await test_reconcile_landed_despite_normalisation();
     await test_selection_identity();
+    await test_rename_after_form_switch();
+    await test_preview_after_form_switch();
+    await test_preview_superseded();
     console.log( 'forms builder app: all assertions passed' );
 } )().catch( function ( error ) {
     console.error( 'FAIL ' + ( error && error.message ? error.message : error ) );
