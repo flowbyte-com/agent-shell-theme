@@ -157,8 +157,8 @@ function cw_refuse( callable $fn ) {
     return null;
 }
 
-require_once __DIR__ . '/../agentshell-mcp/includes/class-content-write-guard.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-content.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-content-write-guard.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-content.php';
 
 use AgentShell_MCP\Content_Primitives;
 use AgentShell_MCP\Content_Write_Guard;

@@ -13,8 +13,8 @@ require_once __DIR__ . '/bootstrap.php';
 
 $GLOBALS['_agentshell_test_login'] = 'owner';
 
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-content-write-guard.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-store.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-content-write-guard.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-store.php';
 
 use AgentShell_MCP\Store;
 

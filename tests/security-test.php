@@ -30,8 +30,8 @@ require_once __DIR__ . '/bootstrap.php';
 // Simpler: just include the relevant function definitions by sourcing
 // functions.php after stubbing add_action/add_filter as no-ops.
 
-require_once __DIR__ . '/../functions.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-auth.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/functions.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-auth.php';
 
 echo "Security regression tests — capability boundary\n";
 

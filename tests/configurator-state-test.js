@@ -7,7 +7,7 @@
 
 'use strict';
 
-var make = require( '../configurator/configurator-state.js' ).make_state_model;
+var make = require( '../wordpress/themes/agentshell/configurator/configurator-state.js' ).make_state_model;
 
 var passed = 0, failed = 0;
 
@@ -191,7 +191,7 @@ console.log( 'configurator state-model tests' );
 })();
 
 // ── Nine-area zone model ────────────────────────────────────────────────────
-var makeZone = require( '../configurator/configurator-state.js' ).make_zone_model;
+var makeZone = require( '../wordpress/themes/agentshell/configurator/configurator-state.js' ).make_zone_model;
 
 // The area list the server sends, in render order.
 var AREAS = [

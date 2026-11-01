@@ -73,10 +73,10 @@ foreach ( array(
     'class-content-journal.php',
     'class-content-recovery.php',
 ) as $inc ) {
-    require_once $theme_root . '/agentshell-mcp/includes/' . $inc;
+    require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/' . $inc;
 }
 foreach ( array( 'class-base-tool.php', 'class-create-draft.php' ) as $inc ) {
-    require_once $theme_root . '/agentshell-mcp/includes/tools/' . $inc;
+    require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/' . $inc;
 }
 
 use AgentShell_MCP\Content_Journal;

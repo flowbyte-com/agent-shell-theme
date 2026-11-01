@@ -35,10 +35,10 @@ if ( ! function_exists( 'wp_parse_url' ) ) {
     function wp_parse_url( $url, $component = -1 ) { return parse_url( $url, $component ); }
 }
 
-require_once dirname( __DIR__ ) . '/agentshell-forms/includes/class-form-post-types.php';
-require_once dirname( __DIR__ ) . '/agentshell-forms/includes/class-form-field-types.php';
-require_once dirname( __DIR__ ) . '/agentshell-forms/includes/class-form-schema.php';
-require_once dirname( __DIR__ ) . '/agentshell-forms/includes/functions.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/class-form-post-types.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/class-form-field-types.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/class-form-schema.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/functions.php';
 
 if ( ! defined( 'AGENTSHELL_FORMS_SCHEMA_VERSION' ) ) {
     define( 'AGENTSHELL_FORMS_SCHEMA_VERSION', 1 );
@@ -1128,7 +1128,7 @@ Agentshell_Test::run(
 Agentshell_Test::run(
     'forms independence: the plugin depends on nothing in AgentShell',
     function () {
-        $root = dirname( __DIR__ ) . '/agentshell-forms';
+        $root = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms';
         $files = array();
 
         $walk = function ( $dir ) use ( &$walk, &$files ) {
@@ -1275,7 +1275,7 @@ Agentshell_Test::run(
 Agentshell_Test::run(
     'forms independence: the only AgentShell coupling is the priority-15 tool registration',
     function () {
-        $root  = dirname( __DIR__ ) . '/agentshell-forms';
+        $root  = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms';
         $files = array();
 
         $walk = function ( $dir ) use ( &$walk, &$files ) {

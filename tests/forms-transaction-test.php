@@ -31,7 +31,7 @@
 
 require_once __DIR__ . '/bootstrap.php';
 
-require_once dirname( __DIR__ ) . '/agentshell-forms/includes/class-form-db.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/class-form-db.php';
 
 use AgentShell_Forms\Form_DB;
 

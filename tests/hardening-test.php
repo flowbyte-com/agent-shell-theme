@@ -16,8 +16,8 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../functions.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-json-rpc.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/functions.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-json-rpc.php';
 
 echo "Hardening regression tests — sinks + body limits\n";
 

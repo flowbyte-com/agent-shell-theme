@@ -74,7 +74,7 @@ if ( ! function_exists( 'wp_create_nonce' ) ) {
     function wp_create_nonce( $action = -1 ) { return 'nonce-' . md5( (string) $action ); }
 }
 
-require_once dirname( __DIR__ ) . '/functions.php';
+require_once dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php';
 
 /**
  * Run the theme's enqueue callback as a given user, and report what it sent.
@@ -200,7 +200,9 @@ Agentshell_Test::run(
             7,
             array( 'edit_theme_options' => true )
         );
-        $root = dirname( __DIR__ );
+        // The theme's directory, not the repository root: the configurator's
+        // files are theme files, and that is what the URL is built from.
+        $root = get_template_directory();
         foreach ( array_merge( $result['scripts'], $result['styles'] ) as $handle => $asset ) {
             if ( 0 !== strpos( $handle, 'agentshell-configurator' ) ) {
                 continue;
@@ -295,7 +297,7 @@ function agentshell_configurator_render_footer_as( $user_id, array $caps ) {
     $GLOBALS['_agentshell_test_user_caps'] = $caps;
 
     ob_start();
-    include dirname( __DIR__ ) . '/footer.php';
+    include dirname( __DIR__ ) . '/wordpress/themes/agentshell/footer.php';
     return (string) ob_get_clean();
 }
 

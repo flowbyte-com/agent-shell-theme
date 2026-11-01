@@ -84,9 +84,9 @@ function tool_count_documented() {
 Agentshell_Test::run(
     'the documented tool count equals the number the plugins register',
     function () {
-        $mcp    = tool_names_in( dirname( __DIR__ ) . '/agentshell-mcp/agentshell-mcp.php', 'AgentShell_MCP', dirname( __DIR__ ) . '/agentshell-mcp' );
-        $blocks = tool_names_in( dirname( __DIR__ ) . '/agentshell-blocks/agentshell-blocks.php', 'AgentShell_Blocks', dirname( __DIR__ ) . '/agentshell-blocks' );
-        $forms  = tool_names_in( dirname( __DIR__ ) . '/agentshell-forms/agentshell-forms.php', 'AgentShell_Forms', dirname( __DIR__ ) . '/agentshell-forms' );
+        $mcp    = tool_names_in( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/agentshell-mcp.php', 'AgentShell_MCP', dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp' );
+        $blocks = tool_names_in( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-blocks/agentshell-blocks.php', 'AgentShell_Blocks', dirname( __DIR__ ) . '/wordpress/plugins/agentshell-blocks' );
+        $forms  = tool_names_in( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/agentshell-forms.php', 'AgentShell_Forms', dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms' );
         // The registry is keyed by tool name and keeps the first
         // registration of each name, so the number an agent sees is the
         // number of DISTINCT names — not the number of registrations.
@@ -114,9 +114,9 @@ Agentshell_Test::run(
 Agentshell_Test::run(
     'no two plugins publish the same tool name',
     function () {
-        $mcp    = tool_names_in( dirname( __DIR__ ) . '/agentshell-mcp/agentshell-mcp.php', 'AgentShell_MCP', dirname( __DIR__ ) . '/agentshell-mcp' );
-        $blocks = tool_names_in( dirname( __DIR__ ) . '/agentshell-blocks/agentshell-blocks.php', 'AgentShell_Blocks', dirname( __DIR__ ) . '/agentshell-blocks' );
-        $forms  = tool_names_in( dirname( __DIR__ ) . '/agentshell-forms/agentshell-forms.php', 'AgentShell_Forms', dirname( __DIR__ ) . '/agentshell-forms' );
+        $mcp    = tool_names_in( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/agentshell-mcp.php', 'AgentShell_MCP', dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp' );
+        $blocks = tool_names_in( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-blocks/agentshell-blocks.php', 'AgentShell_Blocks', dirname( __DIR__ ) . '/wordpress/plugins/agentshell-blocks' );
+        $forms  = tool_names_in( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/agentshell-forms.php', 'AgentShell_Forms', dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms' );
         foreach ( array(
             array( 'agentshell-mcp and agentshell-blocks', $mcp, $blocks ),
             array( 'agentshell-mcp and agentshell-forms', $mcp, $forms ),
@@ -135,7 +135,7 @@ Agentshell_Test::run(
 Agentshell_Test::run(
     'the plugin README states the same count',
     function () {
-        $readme = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/README.md' );
+        $readme = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/README.md' );
         Agentshell_Test::assert_true( is_string( $readme ), 'the README must be readable' );
         Agentshell_Test::assert_true(
             false !== strpos( $readme, '**' . tool_count_documented() . ' `agentshell_*` MCP tools**' ),
@@ -147,7 +147,7 @@ Agentshell_Test::run(
 Agentshell_Test::run(
     'the custom CSS tool is registered and reachable by name',
     function () {
-        $plugin = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/agentshell-mcp.php' );
+        $plugin = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/agentshell-mcp.php' );
         Agentshell_Test::assert_true(
             false !== strpos( $plugin, 'new AgentShell_MCP\\Tools\\Set_Custom_Css()' ),
             'the tool must be registered'
@@ -157,8 +157,8 @@ Agentshell_Test::run(
             'the tool class must be loaded'
         );
 
-        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-base-tool.php';
-        require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-set-custom-css.php';
+        require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
+        require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-set-custom-css.php';
 
         $tool = new \AgentShell_MCP\Tools\Set_Custom_Css();
         Agentshell_Test::assert_equals(
@@ -192,7 +192,7 @@ Agentshell_Test::run(
             'agentshell_delete_submission'    => 'Delete_Submission',
         );
 
-        $plugin = file_get_contents( dirname( __DIR__ ) . '/agentshell-forms/agentshell-forms.php' );
+        $plugin = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/agentshell-forms.php' );
         Agentshell_Test::assert_true( is_string( $plugin ), 'the forms bootstrap must be readable' );
 
         // Registration is a literal `new` line per tool — the same lines
@@ -205,7 +205,7 @@ Agentshell_Test::run(
             );
         }
 
-        $registered = tool_names_in( dirname( __DIR__ ) . '/agentshell-forms/agentshell-forms.php', 'AgentShell_Forms', dirname( __DIR__ ) . '/agentshell-forms' );
+        $registered = tool_names_in( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/agentshell-forms.php', 'AgentShell_Forms', dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms' );
 
         $want = array_keys( $expected );
         sort( $want );
@@ -218,8 +218,8 @@ Agentshell_Test::run(
             'the forms plugin must publish exactly the twelve documented tools'
         );
 
-        require_once dirname( __DIR__ ) . '/agentshell-forms/includes/tools/class-base-tool.php';
-        require_once dirname( __DIR__ ) . '/agentshell-forms/includes/tools/class-list-forms.php';
+        require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/tools/class-base-tool.php';
+        require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/tools/class-list-forms.php';
 
         $tool = new \AgentShell_Forms\Tools\List_Forms();
         Agentshell_Test::assert_equals(

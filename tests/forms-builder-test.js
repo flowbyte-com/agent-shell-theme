@@ -2,7 +2,7 @@
 
 var assert = require( 'assert' );
 
-var model = require( '../agentshell-forms/admin/js/forms-model' );
+var model = require( '../wordpress/plugins/agentshell-forms/admin/js/forms-model' );
 
 function make( saved ) {
     return model.make_form_model( saved || {} );

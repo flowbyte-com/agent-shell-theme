@@ -54,28 +54,28 @@ if ( ! function_exists( 'sanitize_key' ) ) { function sanitize_key( $k ) { retur
 $GLOBALS['_agentshell_test_login'] = 'agent';
 $GLOBALS['wp_version']              = '6.5';
 
-require_once dirname( __DIR__ ) . '/functions.php';
+require_once dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php';
 foreach ( array(
     'class-store.php', 'class-doctor.php', 'class-content-write-guard.php',
     'class-content-journal.php', 'class-recovery-advisory-lock.php',
     'class-content-recovery.php',
     'class-transactions.php',
 ) as $inc ) {
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/' . $inc;
 }
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
 foreach ( array(
     'class-register-widget.php', 'class-enable-widget.php', 'class-disable-widget.php',
     'class-remove-widget.php', 'class-list-widgets.php', 'class-get-config.php',
     'class-list-zones.php', 'class-inspect.php', 'class-update-zone-composition.php',
 ) as $inc ) {
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/' . $inc;
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/' . $inc;
 }
-require_once dirname( __DIR__ ) . '/agentshell-blocks/includes/class-widget-registry.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-blocks/includes/class-widget-registry.php';
 // agentshell_get_zone_config() is the resolver the shell itself uses, so the
 // preview assertions go through it too — asserting only on the theme helper
 // would leave the function that actually builds a page unexamined.
-require_once dirname( __DIR__ ) . '/template-parts/shell-render.php';
+require_once dirname( __DIR__ ) . '/wordpress/themes/agentshell/template-parts/shell-render.php';
 
 use AgentShell_MCP\Transaction_Manager as Tx;
 use AgentShell_Blocks\Widget_Registry as BlocksRegistry;

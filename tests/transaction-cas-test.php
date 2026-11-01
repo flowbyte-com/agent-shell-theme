@@ -71,9 +71,9 @@ $GLOBALS['_agentshell_test_login']  = 'agent';
 $GLOBALS['wp_version']              = '6.5';
 
 foreach ( array( 'class-store.php', 'class-doctor.php', 'class-content-write-guard.php', 'class-transactions.php' ) as $inc ) {
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/' . $inc;
 }
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
 
 use AgentShell_MCP\Store;
 use AgentShell_MCP\Transaction_Manager as Tx;

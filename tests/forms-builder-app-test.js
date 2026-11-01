@@ -9,9 +9,9 @@
 
 var assert = require( 'assert' );
 
-global.AgentshellFormsModel = require( '../agentshell-forms/admin/js/forms-model' );
+global.AgentshellFormsModel = require( '../wordpress/plugins/agentshell-forms/admin/js/forms-model' );
 
-var FormsApp = require( '../agentshell-forms/admin/js/forms-app' ).FormsApp;
+var FormsApp = require( '../wordpress/plugins/agentshell-forms/admin/js/forms-app' ).FormsApp;
 
 function deferred() {
     var d = {};

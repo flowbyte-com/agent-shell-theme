@@ -61,10 +61,10 @@ function fp_run( $command ) {
  * go stale: a require with no file in the archive fails this test by
  * construction.
  *
- * @return array<int,string> Repository-relative paths.
+ * @return array<int,string> Paths inside the release archive.
  */
 function fp_required_by_bootstrap() {
-    $bootstrap = file_get_contents( dirname( __DIR__ ) . '/agentshell-forms/agentshell-forms.php' );
+    $bootstrap = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/agentshell-forms.php' );
 
     if ( ! is_string( $bootstrap ) ) {
         return array();
@@ -74,6 +74,9 @@ function fp_required_by_bootstrap() {
 
     $paths = array();
     foreach ( (array) ( $matches[1] ?? array() ) as $relative ) {
+        // The archive keeps the distribution layout: the plugin directory is
+        // named after the plugin, at the archive root, exactly as a site
+        // installs it.
         $paths[] = 'agentshell-forms/' . $relative;
     }
 
@@ -182,6 +185,8 @@ Agentshell_Test::run(
 Agentshell_Test::run(
 	'the archive carries the assets and the builder an operator needs',
 	function () use ( $root ) {
+		// Archive-relative: the packager stages wordpress/plugins/<name> back
+		// to <name> at the archive root.
 		$expected = array(
 			// The visitor-facing form: without these the form renders unstyled
 			// or, worse, submits without its script.
@@ -214,6 +219,7 @@ Agentshell_Test::run(
 Agentshell_Test::run(
 	'the archive still carries the theme, the MCP plugin and the blocks plugin',
 	function () use ( $root ) {
+		// Archive-relative, like the two lists above.
 		$expected = array(
 			'style.css',
 			'functions.php',
@@ -368,7 +374,22 @@ Agentshell_Test::run(
 			'the checker requires the forms plugin'
 		);
 
-		foreach ( array( 'agentshell-mcp', 'agentshell-blocks', 'configurator', 'widgets' ) as $still_included ) {
+		// The packager stages two source roots: the theme subtree becomes the
+		// archive root, and each plugin subtree becomes one directory inside
+		// it. `configurator` and `widgets` are theme directories, so they are
+		// covered by the theme root rather than listed individually — and the
+		// archive assertions above are what prove they actually ship.
+		Agentshell_Test::assert_true(
+			false !== strpos( $package, 'THEME_SRC="wordpress/themes/agentshell"' ),
+			'the packager stages the theme from its repository location'
+		);
+
+		Agentshell_Test::assert_true(
+			false !== strpos( $package, 'PLUGIN_SRC="wordpress/plugins"' ),
+			'the packager stages the plugins from their repository location'
+		);
+
+		foreach ( array( 'agentshell-mcp', 'agentshell-blocks' ) as $still_included ) {
 			Agentshell_Test::assert_true(
 				false !== strpos( $package, '"' . $still_included . '"' ),
 				'the packager still includes ' . $still_included
@@ -385,7 +406,12 @@ Agentshell_Test::run(
 		// theme, which is the operator's decision and not the theme's.
 		$offenders = array();
 
-		$files = array( 'functions.php', 'header.php', 'footer.php', 'template-parts/shell-render.php' );
+		$files = array(
+			'wordpress/themes/agentshell/functions.php',
+			'wordpress/themes/agentshell/header.php',
+			'wordpress/themes/agentshell/footer.php',
+			'wordpress/themes/agentshell/template-parts/shell-render.php',
+		);
 		foreach ( $files as $relative ) {
 			$source = @file_get_contents( $repo . '/' . $relative );
 			if ( ! is_string( $source ) ) {

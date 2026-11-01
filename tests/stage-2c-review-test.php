@@ -63,13 +63,13 @@ if ( ! defined( 'LOGGED_IN_KEY' ) ) { define( 'LOGGED_IN_KEY', '' ); }
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/agentshell-test-bed.php';
 
-require_once __DIR__ . '/../agentshell-mcp/includes/class-content-journal.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-store.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-transactions.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-published-shadow.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-post-preview.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-published-preview-overlay.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-published-claim.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-content-journal.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-store.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-transactions.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-published-shadow.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-post-preview.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-published-preview-overlay.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-published-claim.php';
 
 use AgentShell_MCP\Published_Shadow;
 use AgentShell_MCP\Post_Preview;

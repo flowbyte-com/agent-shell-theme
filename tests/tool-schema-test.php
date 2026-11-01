@@ -22,8 +22,8 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/tools/class-base-tool.php';
-require_once __DIR__ . '/../agentshell-blocks/includes/tools/class-base-tool.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-blocks/includes/tools/class-base-tool.php';
 
 echo "tool inputSchema serialization tests\n";
 

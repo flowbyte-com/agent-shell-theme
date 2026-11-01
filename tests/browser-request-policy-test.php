@@ -36,7 +36,7 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-browser-request-policy.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-browser-request-policy.php';
 
 use AgentShell_MCP\Browser_Request_Policy;
 

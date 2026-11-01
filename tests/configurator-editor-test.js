@@ -16,9 +16,9 @@
 
 'use strict';
 
-var state = require( '../configurator/configurator-state.js' );
-var api_module = require( '../configurator/configurator-api.js' );
-var ui = require( '../configurator/configurator-ui.js' );
+var state = require( '../wordpress/themes/agentshell/configurator/configurator-state.js' );
+var api_module = require( '../wordpress/themes/agentshell/configurator/configurator-api.js' );
+var ui = require( '../wordpress/themes/agentshell/configurator/configurator-ui.js' );
 
 var make_editor = state.make_editor_model;
 var make_api = api_module.make_api;

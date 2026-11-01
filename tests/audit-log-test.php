@@ -17,7 +17,7 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-audit-log.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-audit-log.php';
 
 echo "audit log retention tests\n";
 

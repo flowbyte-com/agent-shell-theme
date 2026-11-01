@@ -95,16 +95,16 @@ if ( ! class_exists( '\AgentShell_MCP\Store' ) ) {
     eval( 'namespace AgentShell_MCP; class Store { public static function actor() { return $GLOBALS["_agentshell_test_login"]; } }' );
 }
 
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot-store.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-error-codes.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-json-rpc.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-auth.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-server.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-transport.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-base-tool.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-screenshot.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-get-screenshot.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot-store.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-error-codes.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-json-rpc.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-auth.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-server.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-transport.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-screenshot.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-get-screenshot.php';
 
 /**
  * A known-principal Auth.
@@ -239,7 +239,7 @@ class Plain_Text_Tool extends \AgentShell_MCP\Tools\Base_Tool {
  * value compiled in.
  */
 function privacy_ttl_hours_in_child( $configured ) {
-    $script = dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot-store.php';
+    $script = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot-store.php';
     $php = sprintf(
         'define("ABSPATH", %s); define("WP_CONTENT_DIR", %s); define("AGENTSHELL_SCREENSHOT_TTL_HOURS", %d); require %s; echo \\AgentShell_MCP\Screenshot_Store::ttl_hours();',
         var_export( __DIR__, true ),
@@ -263,7 +263,7 @@ function privacy_ttl_hours_in_child( $configured ) {
  * from a subdirectory one.
  */
 function privacy_base_dir_in_child( $abspath, $home = '' ) {
-    $script = dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot-store.php';
+    $script = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot-store.php';
     $php = sprintf(
         'define("ABSPATH", %s); define("WP_CONTENT_DIR", %s); function home_url($p="/"){return "https://example.test" . $p; } require %s; echo \\AgentShell_MCP\Screenshot_Store::base_dir(), "|", \\AgentShell_MCP\\Screenshot_Store::is_web_reachable(\\AgentShell_MCP\\Screenshot_Store::base_dir()) ? "reachable" : "outside";',
         var_export( $abspath, true ),
@@ -960,7 +960,7 @@ Agentshell_Test::run( 'legacy: the migration runs from an authenticated request,
     // transport authenticates, so a migration hooked there sees no current
     // user and silently never runs — which is exactly how it behaved the first
     // time it was wired up, and the live check is the only thing that caught it.
-    $transport_source = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/class-transport.php' );
+    $transport_source = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-transport.php' );
     Agentshell_Test::assert_true(
         false !== strpos( $transport_source, 'Screenshot_Store::maybe_migrate_legacy()' ),
         'the transport must trigger the migration once a principal exists'
@@ -975,7 +975,7 @@ Agentshell_Test::run( 'legacy: the migration runs from an authenticated request,
     );
 
     // register_hooks() schedules cron only; it must not attempt the migration.
-    $store_source = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/class-screenshot-store.php' );
+    $store_source = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-screenshot-store.php' );
     $fn = substr( $store_source, strpos( $store_source, 'function register_hooks' ) );
     $fn = substr( $fn, 0, strpos( $fn, 'function maybe_migrate_legacy' ) );
     Agentshell_Test::assert_false(
@@ -1347,7 +1347,7 @@ Agentshell_Test::run( 'tool: a malformed id is rejected as a bad argument, not a
 // ---------------------------------------------------------------------------
 
 Agentshell_Test::run( 'logs: image payloads are redacted from the audit log', function () {
-    $source = file_get_contents( dirname( __DIR__ ) . '/agentshell-mcp/includes/class-transport.php' );
+    $source = file_get_contents( dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-transport.php' );
     preg_match_all( "/'([a-z0-9_]+)'\s*=>\s*'\[REDACTED\]/", $source, $m );
 
     Agentshell_Test::assert_true(

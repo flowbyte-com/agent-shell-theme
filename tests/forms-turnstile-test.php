@@ -85,7 +85,7 @@ add_filter(
     }
 );
 
-require_once dirname( __DIR__ ) . '/agentshell-forms/includes/class-turnstile.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/includes/class-turnstile.php';
 
 use AgentShell_Forms\Form_Turnstile;
 

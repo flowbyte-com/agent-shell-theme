@@ -14,10 +14,10 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../functions.php';
-require_once __DIR__ . '/../template-parts/shell-render.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/tools/class-base-tool.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/tools/class-inject-json-block.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/functions.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/template-parts/shell-render.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/tools/class-inject-json-block.php';
 
 echo "inject-block regression tests\n";
 

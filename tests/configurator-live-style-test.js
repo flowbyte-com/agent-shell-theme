@@ -13,7 +13,7 @@
 'use strict';
 
 var path = require( 'path' );
-var live = require( path.join( __dirname, '..', 'configurator', 'configurator-live-style.js' ) );
+var live = require( path.join( __dirname, '..', 'wordpress', 'themes', 'agentshell', 'configurator', 'configurator-live-style.js' ) );
 
 var passed = 0;
 var failed = 0;

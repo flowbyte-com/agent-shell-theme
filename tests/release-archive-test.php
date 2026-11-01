@@ -136,6 +136,11 @@ Agentshell_Test::run(
         Agentshell_Test::assert_true( '' !== $head, 'the archive must carry the licence' );
 
         // The product is in it.
+        // Paths *inside the archive*, which are the layout a deployment has:
+        // the repository groups the components under wordpress/, and the
+        // packager stages them back into the one-directory-plus-plugins
+        // shape WordPress expects. These strings must therefore name the
+        // distribution layout, not the checkout layout.
         foreach ( array(
             'style.css',
             'functions.php',

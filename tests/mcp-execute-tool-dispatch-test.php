@@ -51,7 +51,7 @@ echo "MCP execute-tool dispatch regression (Section E)\n";
 // the plugin's heavier bootstrap (register_activation_hook, add_shortcode,
 // plugin_dir_path — none of which are stubbed in the unit-test bootstrap).
 function agentshell_section_e_load_blocks_filter() {
-    $path = dirname( __DIR__ ) . '/agentshell-blocks/agentshell-blocks.php';
+    $path = dirname( __DIR__ ) . '/wordpress/plugins/agentshell-blocks/agentshell-blocks.php';
     $src  = file_get_contents( $path );
     if ( ! is_string( $src ) ) {
         throw new RuntimeException( 'cannot read ' . $path );

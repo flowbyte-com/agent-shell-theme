@@ -51,7 +51,7 @@ foreach ( array(
     'class-published-claim.php',
     'class-published-shadow.php',
 ) as $inc ) {
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/' . $inc;
 }
 
 use AgentShell_MCP\Content_Journal;

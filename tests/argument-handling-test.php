@@ -33,14 +33,14 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once dirname( __DIR__ ) . '/functions.php';
+require_once dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php';
 
 foreach ( array( 'class-store.php', 'class-doctor.php', 'class-transactions.php', 'class-json-rpc.php', 'class-server.php', 'class-content.php' ) as $inc ) {
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/' . $inc;
 }
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-base-tool.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-create-page.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/tools/class-create-post.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-create-page.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/tools/class-create-post.php';
 
 use AgentShell_MCP\Doctor;
 use AgentShell_MCP\Server;

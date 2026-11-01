@@ -22,9 +22,9 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once dirname( __DIR__ ) . '/functions.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-store.php';
-require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-doctor.php';
+require_once dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-store.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-doctor.php';
 
 if ( ! function_exists( 'sanitize_key' ) ) {
     function sanitize_key( $k ) { return strtolower( preg_replace( '/[^a-z0-9_\-]/', '', (string) $k ) ); }

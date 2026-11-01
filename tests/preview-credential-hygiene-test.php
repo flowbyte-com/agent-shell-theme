@@ -69,9 +69,9 @@ if ( ! function_exists( 'status_header' ) ) {
 }
 if ( ! function_exists( 'wp_reset_postdata' ) ) { function wp_reset_postdata() { $GLOBALS['_agentshell_test_post_reset'] = true; } }
 
-require_once dirname( __DIR__ ) . '/functions.php';
+require_once dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php';
 foreach ( array( 'class-store.php', 'class-content-write-guard.php', 'class-content-journal.php', 'class-recovery-advisory-lock.php', 'class-content-recovery.php', 'class-transactions.php', 'class-post-preview.php' ) as $inc ) {
-    require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/' . $inc;
+    require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/' . $inc;
 }
 
 use AgentShell_MCP\Post_Preview;
@@ -635,7 +635,7 @@ Agentshell_Test::run( 'the transaction gate marks the response uncacheable and u
 // ── 6. Wiring ────────────────────────────────────────────────────────────────
 
 Agentshell_Test::run( 'the suppression and scrub are wired to the right hooks', function () {
-    $src = file_get_contents( dirname( __DIR__ ) . '/functions.php' );
+    $src = file_get_contents( dirname( __DIR__ ) . '/wordpress/themes/agentshell/functions.php' );
     Agentshell_Test::assert_true(
         (bool) preg_match( "/add_filter\(\s*'show_admin_bar',\s*'agentshell_suppress_preview_admin_bar'\s*\)/", $src ),
         'admin bar suppression must be registered on show_admin_bar'

@@ -14,7 +14,7 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../functions.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/functions.php';
 
 echo "Doctor regression tests\n";
 

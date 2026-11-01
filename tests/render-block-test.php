@@ -13,8 +13,8 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../functions.php';
-require_once __DIR__ . '/../template-parts/shell-render.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/functions.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/template-parts/shell-render.php';
 
 echo "render-block regression tests\n";
 

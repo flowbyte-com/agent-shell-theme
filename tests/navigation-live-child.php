@@ -30,8 +30,8 @@ define( 'WP_USE_THEMES', false );
 require_once ABSPATH . 'wp-load.php';
 
 $theme_root = get_template_directory();
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-base-tool.php';
-require_once $theme_root . '/agentshell-mcp/includes/tools/class-register-navigation.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once WP_PLUGIN_DIR . '/agentshell-mcp/includes/tools/class-register-navigation.php';
 
 use function AgentShell_MCP\Tools\agentshell_normalise_navigation_items;
 

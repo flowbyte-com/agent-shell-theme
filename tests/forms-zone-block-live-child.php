@@ -28,7 +28,7 @@ define( 'ABSPATH', rtrim( $wp_root, '/' ) . '/' );
 define( 'WP_USE_THEMES', false );
 require_once ABSPATH . 'wp-load.php';
 
-require_once dirname( __DIR__ ) . '/agentshell-forms/agentshell-forms.php';
+require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-forms/agentshell-forms.php';
 
 // The theme's renderer is the subject, so its two files are loaded directly
 // rather than by switching the active theme: a test that changes the site's

@@ -29,11 +29,11 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/tools/class-base-tool.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
 
 echo "draft-tools bootstrap regression test\n";
 
-$plugin_file = __DIR__ . '/../agentshell-mcp/agentshell-mcp.php';
+$plugin_file = __DIR__ . '/../wordpress/plugins/agentshell-mcp/agentshell-mcp.php';
 Agentshell_Test::assert_true( is_file( $plugin_file ), 'plugin file exists' );
 
 $src = file_get_contents( $plugin_file );
@@ -66,7 +66,7 @@ Agentshell_Test::run(
 Agentshell_Test::run(
     'Update_Draft class file declares namespace AgentShell_MCP\\Tools and class Update_Draft',
     function () {
-        $file = __DIR__ . '/../agentshell-mcp/includes/tools/class-update-draft.php';
+        $file = __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/tools/class-update-draft.php';
         Agentshell_Test::assert_true( is_file( $file ), 'class file exists on disk' );
         require_once $file;
         Agentshell_Test::assert_true( class_exists( 'AgentShell_MCP\\Tools\\Update_Draft' ), 'FQN is declared' );
@@ -78,7 +78,7 @@ Agentshell_Test::run(
 Agentshell_Test::run(
     'Claim_Existing_Draft class file declares namespace AgentShell_MCP\\Tools and class Claim_Existing_Draft',
     function () {
-        $file = __DIR__ . '/../agentshell-mcp/includes/tools/class-claim-existing-draft.php';
+        $file = __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/tools/class-claim-existing-draft.php';
         Agentshell_Test::assert_true( is_file( $file ), 'class file exists on disk' );
         require_once $file;
         Agentshell_Test::assert_true( class_exists( 'AgentShell_MCP\\Tools\\Claim_Existing_Draft' ), 'FQN is declared' );
@@ -128,7 +128,7 @@ Agentshell_Test::run(
         sort( $slugs );
         $missing = array();
         foreach ( $slugs as $slug ) {
-            $file = __DIR__ . "/../agentshell-mcp/includes/tools/class-{$slug}.php";
+            $file = __DIR__ . "/../wordpress/plugins/agentshell-mcp/includes/tools/class-{$slug}.php";
             if ( ! is_file( $file ) ) {
                 $missing[] = "class-{$slug}.php";
             }

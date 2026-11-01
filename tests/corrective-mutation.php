@@ -61,7 +61,7 @@ $cases = array(
     // ── F2: a frame length is validated before it becomes an offset ──────
     array(
         'label'  => 'F2: the CDP frame length is validated before it is used',
-        'target'  => 'agentshell-mcp/includes/class-cdp.php',
+        'target'  => 'wordpress/plugins/agentshell-mcp/includes/class-cdp.php',
         'suite'   => 'tests/cdp-test.php',
         'mutants' => array(
             'the safe-integer range check is removed' => array(
@@ -89,7 +89,7 @@ $cases = array(
     // ── F3: the stylesheet's temporary file cannot be hijacked ───────────
     array(
         'label'  => 'F3: the stylesheet is not written through a symlink',
-        'target'  => 'functions.php',
+        'target'  => 'wordpress/themes/agentshell/functions.php',
         'suite'   => 'tests/custom-css-asset-test.php',
         'mutants' => array(
             'the temporary file is created non-exclusively again' => array(
@@ -118,7 +118,7 @@ $cases = array(
     // ── F5: the doctor asks about the committed stylesheet ───────────────
     array(
         'label'  => 'F5: the doctor asks about the committed stylesheet',
-        'target'  => 'agentshell-mcp/includes/class-doctor.php',
+        'target'  => 'wordpress/plugins/agentshell-mcp/includes/class-doctor.php',
         'suite'   => 'tests/custom-css-asset-test.php',
         'mutants' => array(
             'the doctor asks about the staged stylesheet again' => array(

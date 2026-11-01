@@ -24,11 +24,11 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../functions.php';
-require_once __DIR__ . '/../template-parts/shell-render.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/tools/class-base-tool.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/tools/class-update-zone-slots.php';
-require_once __DIR__ . '/../agentshell-mcp/includes/class-doctor.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/functions.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/template-parts/shell-render.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/tools/class-base-tool.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/tools/class-update-zone-slots.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-doctor.php';
 
 echo "nine-area zone tests\n";
 
@@ -304,7 +304,7 @@ Agentshell_Test::run(
     function () {
         // The strongest compatibility evidence available offline: the file a
         // new site is seeded from, rendered through the new code path.
-        $seed = json_decode( (string) file_get_contents( dirname( __DIR__ ) . '/default-config.json' ), true );
+        $seed = json_decode( (string) file_get_contents( dirname( __DIR__ ) . '/wordpress/themes/agentshell/default-config.json' ), true );
         Agentshell_Test::assert_true( is_array( $seed ) );
 
         $header = null;
@@ -776,7 +776,7 @@ Agentshell_Test::run(
         // staged change against a legacy committed config really does rename
         // area keys. The diff must describe that honestly rather than hide it.
         if ( ! class_exists( '\AgentShell_MCP\Store' ) ) {
-            require_once dirname( __DIR__ ) . '/agentshell-mcp/includes/class-store.php';
+            require_once dirname( __DIR__ ) . '/wordpress/plugins/agentshell-mcp/includes/class-store.php';
         }
         $before = nine_area_legacy_config();
         $after  = agentshell_validate_config( $before );

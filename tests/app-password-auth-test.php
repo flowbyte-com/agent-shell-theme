@@ -30,7 +30,7 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../functions.php';
+require_once __DIR__ . '/../wordpress/themes/agentshell/functions.php';
 
 echo "application-password normalization tests\n";
 
@@ -95,7 +95,7 @@ function get_user_by( $field, $value ) {
 
 // The plugin's auth class, loaded directly. It guards on ABSPATH (defined by
 // the bootstrap) and depends on the stubs above.
-require_once __DIR__ . '/../agentshell-mcp/includes/class-auth.php';
+require_once __DIR__ . '/../wordpress/plugins/agentshell-mcp/includes/class-auth.php';
 
 // ─── fixtures ──────────────────────────────────────────────────
 
