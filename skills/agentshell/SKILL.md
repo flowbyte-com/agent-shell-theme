@@ -5,7 +5,7 @@ description: Namespace index for AgentShell skills. Routes work to the canonical
 
 # agentshell (skill index)
 
-> **Pointer file.** This skill is a routing index, not a contract. The canonical agent guide is [`AGENTS.md`](../../../AGENTS.md) at the theme root. Every tool name, every architecture diagram, and every working-pattern line lives there. This skill never duplicates them.
+> **Pointer file.** This skill is a routing index, not a contract. The canonical agent guide is [`AGENTS.md`](../../AGENTS.md) at the repository root. Every tool name, every architecture diagram, and every working-pattern line lives there. This skill never duplicates them.
 
 ## When to use this index
 

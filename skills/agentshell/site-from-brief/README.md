@@ -4,7 +4,9 @@
 
 ## What this skill does
 
-Guides an agent through taking a project brief, README, or set of documents and producing a finished AgentShell site — information architecture, navigation, design tokens, content pages, all in one transaction. It composes existing `agentshell_*` MCP tools; it does not add new tools.
+Guides an agent through taking a project brief, README, or set of documents and producing a finished AgentShell site — information architecture, navigation, design tokens, content pages. It composes existing `agentshell_*` MCP tools; it does not add new tools.
+
+The build runs in three phases and is then verified against the live site, because the tools do not share one lifecycle: the **configuration** is transactional, and the **content** and **navigation** are immediate writes that run with no transaction open. It is therefore not an atomic operation, and the skill says so rather than implying otherwise. See "What runs where" and "Partial-failure recovery" in [`SKILL.md`](./SKILL.md).
 
 ## When to reach for it
 
@@ -21,6 +23,7 @@ Guides an agent through taking a project brief, README, or set of documents and 
 - Map every README heading to a page.
 - Force the user to answer twenty design questions.
 - Write `<script type="application/json">` or call `fetch()`.
+- Claim the build is atomic, or present a configuration snapshot as a backup of the site.
 
 ## What it leans on
 

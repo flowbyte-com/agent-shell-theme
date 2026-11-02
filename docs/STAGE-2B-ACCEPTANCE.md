@@ -1,6 +1,14 @@
 # Stage 2b — Acceptance audit
 
-**Branch:** `stage/2b-existing-draft-editing`
+> **Status: audit record (historical evidence).** The Stage 2b work this audit
+> covers is implemented and merged into `main`. The figures below are the
+> audit's own, taken at the revisions named in its header — they are not a
+> current measurement, and they are not a claim about the repository today. The
+> normative contract for the journal, its recovery engine and the journalling
+> content tools is `AGENTS.md` §6.4; the regressions that replaced this audit's
+> spot checks are named there and in §6.5.
+
+**Branch (historical):** `stage/2b-existing-draft-editing`
 **HEAD at audit start:** `11bc3e3` (Phase 2 test infrastructure)
 **Stage 2b implementation checkpoint:** `15d837f`
 **Audit date:** 2026-10-16

@@ -1,10 +1,22 @@
 # Content transactions — design and investigation
 
 **Status: architecture review complete. Stage 0, the F3 partial-write fix
-(§5.1), and Stage 1a (the journal and its recovery engine, one operation type)
-are implemented; stages 1b–6 are proposals.**
+(§5.1), Stage 1a (the journal and its recovery engine) and Stage 1b (the
+content mutations that journal — `create_draft`, `update_draft`,
+`claim_existing_draft`) are implemented. Stage 2c, published-content editing,
+is implemented as well, and is tracked in
+[`docs/STAGE-2C-DESIGN.md`](STAGE-2C-DESIGN.md); the remainder of Stage 2 and
+Stages 3–6 are proposals.**
 Scope: AgentShell issue #8 (content tools do not participate in transactions)
 and issue #2 (no tool can delete content).
+
+> **Where the implemented behaviour actually lives.** The normative forms are
+> `AGENTS.md` §6.2 (the lease, Stage 0), §6.4 (the journal, its recovery
+> engine and the journalling content tools, Stages 1a and 1b) and §6.5
+> (published-content editing, Stage 2c). This file is the record of how those
+> decisions were reached — its stage descriptions are the plan as written
+> before the work, and its §3 decisions are the decisions as taken. Where this
+> file and `AGENTS.md` disagree, `AGENTS.md` is right.
 
 > **What this file is.** A *design record* under `AGENTS.md` §8 category (e): an
 > architectural investigation, the decision taken, and the evidence for it. The
@@ -28,8 +40,11 @@ and issue #2 (no tool can delete content).
 >    the semantics are stated explicitly in tool results. Inside a transaction,
 >    supported mutations must be tracked and unsupported ones must fail rather
 >    than silently bypass. **Recorded in `AGENTS.md` §6.1** — the current
->    contract is normative there; the inside-a-transaction rule is marked there as
->    proposed, because it is not built.
+>    contract is normative there. That rule is now **partly built**: the
+>    journalling content tools track their work, and every other content tool
+>    fails loudly rather than writing past an open transaction, but the
+>    journalled set is still narrow (see §6.4), and a content tool that does
+>    not journal still writes immediately outside a transaction.
 > 3. **A fifth `AGENTS.md` §8 category was approved**: non-normative design
 >    record. This file remains at this path. Also added there: rows for the
 >    design records that already existed unlisted.

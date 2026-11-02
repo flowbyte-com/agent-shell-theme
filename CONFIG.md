@@ -21,7 +21,7 @@ architecture diagram and the authoritative source-of-truth rules are in
 `AGENTS.md` §1. This guide only covers getting the pieces installed and
 connected.
 
-Four things must all be true for a connection to work:
+Five things must all be true for a connection to work:
 
 | # | Piece | Failure symptom |
 |---|---|---|
@@ -671,7 +671,7 @@ tail -n 50 <SITE_PATH>/logs/php/*.log
 
 - [ ] LocalWP site created; `https://<SITE_DOMAIN>/` responds
 - [ ] Repository cloned to `<REPO_PATH>`
-- [ ] Theme + both plugins symlinked into `wp-content/` (§3)
+- [ ] Theme + both required plugins symlinked into `wp-content/`, forms optional (§3)
 - [ ] `php` on `PATH` (§4)
 - [ ] Theme and the required plugins activated (§5; forms is optional)
 - [ ] Application Password created for a `manage_options` user (§6)

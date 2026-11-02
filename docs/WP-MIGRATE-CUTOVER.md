@@ -16,8 +16,9 @@ mechanism it describes — a symlink switch at the origin and a DNS change
 > *was* the theme directory. The repository now groups the WordPress
 > components under `wordpress/` — see `AGENTS.md` §1. Read every
 > `<checkout>/agentshell-mcp`, `<checkout>/agentshell-blocks` and
-> `<checkout>/functions.php` below as living under `wordpress/plugins/` and
-> `wordpress/themes/agentshell/` respectively. The migration itself is
+> `<checkout>/agentshell-forms` below as living under `wordpress/plugins/`, and
+> every `<checkout>/functions.php` as living under
+> `wordpress/themes/agentshell/`. The migration itself is
 > unaffected: it consumes a **release archive**, whose layout did not change.
 
 
@@ -137,21 +138,31 @@ $ cd "/home/v/Local Sites/agentshell-demo/app/public/wp-content/themes"
 $ rm agent-shell-theme
 $ cp -R /tmp/agentshell-release/agentshell agent-shell-theme
 # …and take the plugins out of the theme copy:
-$ rm -rf agent-shell-theme/agentshell-mcp agent-shell-theme/agentshell-blocks
+$ rm -rf agent-shell-theme/agentshell-mcp agent-shell-theme/agentshell-blocks \
+         agent-shell-theme/agentshell-forms
 
 $ cd ../plugins
 $ rm agentshell-mcp agentshell-blocks
 $ cp -R /tmp/agentshell-release/agentshell/agentshell-mcp .
 $ cp -R /tmp/agentshell-release/agentshell/agentshell-blocks .
 
+# The forms plugin is optional — a site that does not serve forms does not
+# need it. `rm -f` succeeds when the path is absent and refuses to remove
+# a real directory, so this step is safe to run either way.
+$ rm -f agentshell-forms
+$ cp -R /tmp/agentshell-release/agentshell/agentshell-forms .
+
 # 4. Prove it: nothing forbidden is left, and nothing is a symlink.
-$ find "../themes/agent-shell-theme" ../plugins/agentshell-mcp ../plugins/agentshell-blocks \
+$ find "../themes/agent-shell-theme" ../plugins/agentshell-mcp \
+     ../plugins/agentshell-blocks ../plugins/agentshell-forms \
      -name .git -o -name .worktrees -o -name tests -o -type l
    (nothing)
-$ du -sh "../themes/agent-shell-theme" ../plugins/agentshell-mcp ../plugins/agentshell-blocks
+$ du -sh "../themes/agent-shell-theme" ../plugins/agentshell-mcp \
+        ../plugins/agentshell-blocks ../plugins/agentshell-forms
 1.4M    …/themes/agent-shell-theme
 1.4M    …/plugins/agentshell-mcp
 56K     …/plugins/agentshell-blocks
+68K     …/plugins/agentshell-forms
 ```
 
 **The local showcase stops following the checkout after this step.**
@@ -177,7 +188,7 @@ The wizard's options matter:
 |---|---|---|
 | Format | **WPRESS** | the default; the free edition's own format |
 | **Exclude themes** | **off** | the theme must travel with the archive (§3.1) |
-| **Exclude plugins** | **off** | both plugins must travel with the archive |
+| **Exclude plugins** | **off** | all three plugins must travel with the archive |
 | **Exclude inactive themes/plugins** | off | `twentytwentyfive` and friends are inert; leaving them in costs a few hundred KB and no risk. Excluding them is also fine. |
 | **Exclude media** | off | there is no media, but leave it off so the step is not a surprise later |
 | Database tables | all | the showcase's database is the showcase |
@@ -196,8 +207,8 @@ $ unzip -l ~/Downloads/*.wpress | grep -E '\.git/|\.worktrees/|tests/'   # must 
 ```console
 # On flowbyte.com, by SFTP or SSH:
 $ cd wp-content/themes && mkdir -p agent-shell-theme
-$ cd wp-content/plugins  && mkdir -p agentshell-mcp agentshell-blocks
-# …upload the release archive's three directories…
+$ cd wp-content/plugins  && mkdir -p agentshell-mcp agentshell-blocks agentshell-forms
+# …upload the release archive's four directories…
 ```
 
 Upload the **release archive's** theme and plugin directories — not a
@@ -255,7 +266,7 @@ Check the replace pair before continuing:
 | 1 | **the showcase database** | the archive's database | every table, including `wp_options['agentshell_config']`, the nav menu, the pages and the users |
 | 2 | **media uploads** | the archive's `wp-content/uploads` | **there is none** — the showcase has 0 uploaded files, so there is nothing to lose and nothing to miss. The theme draws with CSS and inline SVG. |
 | 3 | **the AgentShell theme** | the archive's `themes/agent-shell-theme/` | from the **release archive**, not the checkout |
-| 4 | **both AgentShell plugins** | the archive's `plugins/agentshell-{mcp,blocks}/` | both must be present, or the tool surface is not 69 tools |
+| 4 | **all three AgentShell plugins** | the archive's `plugins/agentshell-{mcp,blocks,forms}/` | all three must be present, or the tool surface is not 81 tools |
 | 5 | **the site URL** | the import's find/replace | `http://agentshell-demo.local` → `https://flowbyte.com` |
 | 6 | **serialised data** | the import's replacement is serialisation-aware | `agentshell_config`, the menu structure and the widget settings are all serialised options; a blind string replacement would corrupt them, and this plugin's is not blind |
 | 7 | **permalinks** | re-save after the import | the rewrite rules are rebuilt from the new host |
@@ -380,7 +391,30 @@ $ rm -- agent-shell-theme
 $ ln -s /home/v/projects/agentshell/wordpress/themes/agentshell agent-shell-theme
 # The installed WordPress theme directory keeps its historical name.
 # Only a symlink may be replaced here; move or back up real directories manually.
+
+$ cd ../plugins
+$ for p in agentshell-mcp agentshell-blocks agentshell-forms; do
+>   test -L "$p" || { echo "Refusing to replace a real plugin directory: $p"; exit 1; }
+>   rm -- "$p"
+>   ln -s "/home/v/projects/agentshell/wordpress/plugins/$p" "$p"
+> done
 ```
+
+The plugins are restored as symlinks too — §3.1 replaced all three with real
+directories, so a rollback that restored only the theme would leave the site
+running a release build of the plugins against a checkout build of the theme.
+The theme directory keeps its historical `agent-shell-theme` name; the plugin
+directories keep theirs. The forms plugin's symlink is created whether or not
+the site activates it — activation is the operator's decision, and a symlink is
+not an activation.
+
+> **Operator note.** The showcase's plugin links currently point at the
+> repository's **previous** checkout path (`…/agent-shell-theme/agentshell-mcp`)
+> and are therefore dangling. The loop above re-points them at the current
+> path. `tools/install-localwp.sh` does the same thing, but it installs the
+> theme under the `agentshell` slug rather than the showcase's historical
+> `agent-shell-theme` directory, so it is not a drop-in replacement for these
+> three commands.
 
 ---
 
@@ -411,7 +445,8 @@ agentshell/
 ├── widgets/
 ├── assets/
 ├── agentshell-mcp/          ← the plugin
-└── agentshell-blocks/       ← the plugin
+├── agentshell-blocks/       ← the plugin
+└── agentshell-forms/        ← the plugin
 ```
 
 On the server:
@@ -419,10 +454,11 @@ On the server:
 ```
 wp-content/
 ├── themes/
-│   └── agent-shell-theme/   ← the archive's theme files (everything except the two plugin directories)
+│   └── agent-shell-theme/   ← the archive's theme files (everything except the three plugin directories)
 ├── plugins/
 │   ├── agentshell-mcp/      ← the archive's agentshell/agentshell-mcp/
-│   └── agentshell-blocks/   ← the archive's agentshell/agentshell-blocks/
+│   ├── agentshell-blocks/   ← the archive's agentshell/agentshell-blocks/
+│   └── agentshell-forms/    ← the archive's agentshell/agentshell-forms/
 └── uploads/
 ```
 
@@ -454,7 +490,7 @@ $ bash tools/check-release-archive.sh --archive dist/agentshell-*.tar.gz
 [check] the deployment is clean: nothing forbidden is present, nothing required is missing
 ```
 
-The checker asserts that the archive carries the theme, both plugins,
+The checker asserts that the archive carries the theme, all three plugins,
 the assets, the licence and the configuration defaults, and that it
 carries none of the excluded categories. A deployment that has passed
 it has everything WordPress needs to run AgentShell.
@@ -480,9 +516,9 @@ Run by the operator, on `flowbyte.com`, after the import.
 | V9 | no `.local` references anywhere | grep the page source and the database for `agentshell-demo.local` — **there must be none** |
 | V10 | the WordPress site URLs are correct | `https://flowbyte.com` in Settings → General, and in the database's `siteurl` and `home` |
 | V11 | no development files are exposed | `https://flowbyte.com/wp-content/themes/agent-shell-theme/.git` → 404; `…/tests/` → 404; `…/docs/` → 404; `…/tools/` → 404 |
-| V12 | the theme and plugin versions are the release's | the theme's `style.css` header and the two plugins' headers match the release archive |
+| V12 | the theme and plugin versions are the release's | the theme's `style.css` header and the three plugins' headers match the release archive |
 | V13 | public HTTPS operation | a valid certificate; `https://` works; `http://` redirects to `https://` |
-| V14 | MCP connectivity with new production credentials | the daemon, pointed at `https://flowbyte.com/wp-json/agentshell-mcp/v1/mcp`, answers `tools/list` with **69** tools |
+| V14 | MCP connectivity with new production credentials | the daemon, pointed at `https://flowbyte.com/wp-json/agentshell-mcp/v1/mcp`, answers `tools/list` with **81** tools |
 | V15 | a healthy AgentShell doctor | `agentshell_validate` reports no error |
 
 ### 8.2 Necessary public configuration, and optional MCP access
@@ -491,7 +527,7 @@ They are different things, and the difference matters.
 
 **Necessary for the public site to be correct:**
 
-* the theme and both plugins, from the release archive;
+* the theme and all three plugins, from the release archive;
 * the database, with the URL replaced;
 * the custom stylesheet, which is materialised from the database;
 * a valid TLS certificate.

@@ -5,9 +5,22 @@ Issues 1–2 were found while building
 later, driving a real site through the Fieldwork Studio evaluation end to end.
 All are recorded so they are not rediscovered.
 
-Issue 3 has since been **fixed**; it keeps its place here because the failure
-modes it documents are the ones worth remembering. The F3 prerequisite blocking
-issue 8 has been fixed too (§8a). Nothing else is fixed.
+Every issue keeps its place here, including the fixed ones, because the failure
+modes they document are the ones worth remembering. The table below is the
+current state, checked against the code rather than assumed:
+
+| # | Issue | State |
+|---|---|---|
+| 1 | The no-browser fallback recommends a step that cannot work | **Open.** The tip is still returned by `class-screenshot.php` when no browser is available. |
+| 2 | No MCP tool can delete or trash content | **Fixed** — `agentshell_trash_content` and `agentshell_restore_content` exist. |
+| 3 | `agentshell_register_navigation` fatals on every call | **Fixed.** |
+| 4 | Theme-side and tool-side config readers disagree | **Fixed** — one reader with an explicit committed/effective contract. |
+| 5 | Core WordPress blocks render completely unstyled | **Open.** `style.css` still carries no block layer beyond the separator rules. |
+| 6 | No MCP tool can write free-form CSS | **Fixed** — `agentshell_set_custom_css` exists. |
+| 7 | Screenshot viewport capped, with no full-page option | **Fixed** — `full_page: true` exists. The 4096px *viewport* cap remains, by design. |
+| 8 | Content tools do not participate in transactions at all | **Addressed in part.** The journal-aware subset (`create_draft`, `update_draft`, `claim_existing_draft`) and published-content editing (Stage 2c) now participate; the remaining content tools still refuse inside a transaction and still write immediately outside one, and content is still not transaction-staged (`AGENTS.md` §6.1). |
+
+The F3 prerequisite blocking issue 8 was fixed first, and is recorded at §8a.
 
 ---
 
