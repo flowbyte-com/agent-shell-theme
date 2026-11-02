@@ -135,7 +135,7 @@ The CSS Grid layout obeys three load-bearing rules — every grid container uses
 |---|---|---|
 | `agentshell-image-to-theme` | Theme the site to match a reference image | `skills/agentshell/image-to-theme/SKILL.md` |
 | `agentshell-widget-builder` | Build a custom widget from a user's description | `skills/agentshell/widget-builder/SKILL.md` |
-| `agentshell-site-from-brief` | Build a whole site from a project brief or README, in one transaction | `skills/agentshell/site-from-brief/SKILL.md` |
+| `agentshell-site-from-brief` | Build a whole site from a project brief or README — configuration transactionally, content and navigation by their own lifecycles | `skills/agentshell/site-from-brief/SKILL.md` |
 
 `skills/agentshell/SKILL.md` is the namespace index that routes to all three.
 
@@ -166,9 +166,13 @@ php tests/doc-links-test.php          # links, anchors, and §2's tool coverage
 
 **CI runs the same runner.** See the job table below.
 
+**One known gap in the runner, recorded and not repaired here.** The PHP runner detects a suite that reports no verdict at all, and a suite that stops before the end of its file — both are reported as `incomplete`, and both fail the run. It does **not** detect a nested Node/browser child that reports a well-formed but *empty* count. The PHP wrappers that drive those children parse the child's `N passed, M failed` line and add the numbers to the aggregate; a child that died before its first assertion can print `0 passed, 0 failed`, and the aggregate reads that as a suite that passed with nothing to assert.
+
+Most Node suites are *also* run as their own CI step, where a crash fails the step and the job — so CI has a direct signal for those. But a crash that happens only inside the aggregate run, or in a suite with no direct step of its own, is not caught by the aggregate. **Do not read a green aggregate run as proof that every nested browser suite actually ran.** This is a separate corrective assignment with its own regression test; it is tracked, not fixed, in this change.
+
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every pull request and on every push to `main`. It has four jobs, and none of them is allowed to fail quietly — there is no `continue-on-error` and no step that reports success when the tests did not.
+`.github/workflows/ci.yml` runs on every pull request and on every push to `main`. It has four jobs, and no job is allowed to fail quietly — there is no `continue-on-error`, and the `full-test-suite` gate reports a failure rather than being skipped when one of the other three did not succeed.
 
 | Job | What it runs | Needs a database |
 |---|---|---|
