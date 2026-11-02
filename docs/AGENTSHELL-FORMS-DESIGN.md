@@ -1,15 +1,33 @@
 # AgentShell Forms — Architecture and Implementation Plan
 
-**Status: design record.** Nothing in this document is implemented. It records
-an investigation, a recommendation and the evidence for it. Where it describes
-behaviour, that behaviour is *proposed*; where it describes the current
-system, it is *observed*. The two are marked separately throughout, and the
-current system is authoritative — not this file.
+> **Status: design record — and the plan it records has since been built.**
+>
+> This document records the investigation, the recommendation and the evidence
+> behind AgentShell's forms engine. **Phases 1–6 are implemented and merged.**
+> The normative contract is `AGENTS.md` §3 (the `agentshell_form` zone block),
+> the `agentshell-forms` plugin's own tool descriptions, and the plugin's
+> behaviour. Where this file and the running system disagree, the running
+> system is right and this file is out of date.
+>
+> **How to read it now that it is built.** The text below is unchanged, and it
+> was written as a *plan*. Each part has a different standing:
+>
+> | The text below | Its standing now |
+> |---|---|
+> | The architecture decisions (§1–§9): the plugin boundary, the schema, the storage invariants, the permission domains, the threat model | **The decisions as taken — and as implemented.** They were followed, not revised. |
+> | The phase plan (§10–§13): six PRs, their relative sizes, their dependency graph | **The original plan, as written before the work.** It records how the work was sequenced; it does not describe the repository's current state. |
+> | The requirements and acceptance criteria inside each phase | **Implemented**, and covered by the regressions named in `AGENTS.md` §8. |
+> | The items the plan explicitly deferred, and the "known limits" sections | **Still deferred.** Nothing in this file was quietly promoted to done. |
+> | The dates, the baseline revision, and the branch names | **Historical.** They describe the tree this investigation was written against, not the tree it shipped in. |
+>
+> The evidence — the measurements, the alternatives that were weighed and
+> rejected, the reasoning behind each decision — is preserved here exactly as
+> it was written, because it is the reason the system looks the way it does.
+> Only the *standing* of that text has changed.
 
 **Date:** 2026-10-27
-**Baseline:** `main` at `3e0cdf4` (the #22–#35 stack, integrated)
-**Scope:** architecture and a phased plan only. No code, no database tables,
-no endpoints, no credentials.
+**Baseline (historical):** `main` at `3e0cdf4` (the #22–#35 stack, integrated) — the tree this investigation was written against.
+**Scope at the time of writing:** architecture and a phased plan only. No code, no database tables, no endpoints, no credentials. **All six phases have since been built and merged.**
 
 ---
 

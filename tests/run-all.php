@@ -915,6 +915,16 @@ $suites = array(
         'path'     => __DIR__ . '/doc-consistency-test.php',
         'requires' => 'unit',
     ),
+    // The documentation *reference* gates: a markdown link that points at
+    // a file which is not there, an anchor that names no heading, and a
+    // registered tool that AGENTS.md §2 does not name. The layout move and
+    // the rename left three links to AGENTS.md itself pointing outside the
+    // repository, and four registered tools out of §2's "exhaustive" list
+    // while the count itself stayed correct. Non-destructive unit suite.
+    'doc-links' => array(
+        'path'     => __DIR__ . '/doc-links-test.php',
+        'requires' => 'unit',
+    ),
     // Site identity and reading settings: the bounded surface, its
     // validation, and the projection onto WordPress's own options.
     'site-settings' => array(

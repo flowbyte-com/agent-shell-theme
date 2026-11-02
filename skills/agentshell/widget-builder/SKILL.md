@@ -183,7 +183,7 @@ Be specific. Generic anchors like `/* agentshell-snapshot-source: hardcoded data
 Tools for composition (existing MCP tools only — `AGENTS.md` §2):
 
 - `agentshell_update_zone_composition` — for main zones (flat `composition[]` array).
-- `agentshell_update_zone_slots` — for header/footer zones (`slots: { left, center, right }`).
+- `agentshell_update_zone_slots` — for header/footer zones (the nine-area grid: `top-left` … `bottom-right`; the legacy `left` / `center` / `right` keys are accepted as aliases for the middle row).
 - `agentshell_register_widget` — registers the widget itself with `template`, `init_js`, `css`, optional `libs`.
 
 This skill does not propose any new tools. The above three are existing.

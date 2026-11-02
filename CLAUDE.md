@@ -55,15 +55,16 @@ Auth: `Authorization: Basic $(echo -n 'user:app_password' | base64)`, or `X-Agen
 |---|---|
 | `AGENTS.md` | **Authoritative agent guide** — full MCP tool reference, working pattern, hard rules. |
 | `wordpress/plugins/agentshell-mcp/agentshell-mcp.php` | MCP plugin entrypoint; filter-based tool registry. |
-| `wordpress/plugins/agentshell-mcp/includes/` | Core services: `class-store.php` (revisions / audit / snapshots / profiles), `class-transactions.php` (per-actor locks), `class-doctor.php` (validator), `class-content.php` (content primitives), `class-screenshot.php`, `class-screenshot-store.php` (private store, retention, per-actor authorisation), `tools/` (53 MCP tools). |
-| `wordpress/plugins/agentshell-blocks/agentshell-blocks.php` | Bilateral widget registry + 4 widget MCP tools. |
+| `wordpress/plugins/agentshell-mcp/includes/` | Core services: `class-store.php` (revisions / audit / snapshots / profiles), `class-transactions.php` (per-actor locks), `class-doctor.php` (validator), `class-content.php` (content primitives), `class-screenshot.php`, `class-screenshot-store.php` (private store, retention, per-actor authorisation), `tools/` (66 MCP tools). |
+| `wordpress/plugins/agentshell-blocks/agentshell-blocks.php` | Bilateral widget registry + 3 widget MCP tools. |
+| `wordpress/plugins/agentshell-forms/agentshell-forms.php` | The forms engine: schema, renderer, submission pipeline, builder, and 12 forms MCP tools. Theme-independent, and never activated by the theme. |
 | `agentshell-mcp-daemon/daemon.php` | PHP CLI proxy: stdio (MCP JSON-RPC) ↔ HTTP (WP REST). |
-| `functions.php` | Config helpers, `agentshell_inject_saved_styles` (CSS + structural prohibition), bilateral widget registry merge, REST auth, pre-approved library loader. |
-| `header.php` / `footer.php` | Static FSE shell. Do not edit. |
-| `style.css` | `:root` tokens (editable via MCP) + the immutable grid protocol (Sections 3 & 4). Do not edit Sections 3 & 4. |
-| `template-parts/shell-render.php` | `agentshell_render_zone()` / `agentshell_render_block()`. |
-| `template-parts/widgets.php` | Scoped widget CSS renderer. |
-| `widgets/` | Stable file widget definitions (`.index.json` + `*.php`). |
+| `wordpress/themes/agentshell/functions.php` | Config helpers, `agentshell_inject_saved_styles` (CSS + structural prohibition), bilateral widget registry merge, REST auth, pre-approved library loader. |
+| `wordpress/themes/agentshell/header.php` / `footer.php` | Static FSE shell. Do not edit. |
+| `wordpress/themes/agentshell/style.css` | `:root` tokens (editable via MCP) + the immutable grid protocol (Sections 3 & 4). Do not edit Sections 3 & 4. |
+| `wordpress/themes/agentshell/template-parts/shell-render.php` | `agentshell_render_zone()` / `agentshell_render_block()`. |
+| `wordpress/themes/agentshell/template-parts/widgets.php` | Scoped widget CSS renderer. |
+| `wordpress/themes/agentshell/widgets/` | Stable file widget definitions (`.index.json` + `*.php`). |
 
 ## Sidebar behaviour (v2 single-column default)
 

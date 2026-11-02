@@ -1,6 +1,6 @@
 # agentshell-mcp-daemon
 
-> **Pointer document.** The daemon is a transport; it does not define the agent contract. The canonical guide is [`AGENTS.md`](../../AGENTS.md).
+> **Pointer document.** The daemon is a transport; it does not define the agent contract. The canonical guide is [`AGENTS.md`](../AGENTS.md) at the repository root.
 
 PHP CLI daemon that proxies MCP clients (Claude Code, etc.) to the AgentShell MCP WordPress plugin.
 

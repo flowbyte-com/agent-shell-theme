@@ -1,15 +1,23 @@
 # Stage 2c — Transactional editing of published content (design)
 
-**Status: design proposal. Stage 2c is not implemented.**
-**Branch context:** `stage/2b-existing-draft-editing` (HEAD `d314ed4`); Stage 2b
-fully signed off.
+**Status: design record — and Stage 2c is implemented.**
+**Branch context (historical):** `stage/2b-existing-draft-editing` (HEAD
+`d314ed4`); Stage 2b fully signed off.
 **Date:** 2026-10-16.
 
-This document is a *design record* under `AGENTS.md` §8 category (e): an
-architectural investigation, a proposal, the decision taken, and the
-evidence for it. It cannot override `AGENTS.md`. Nothing in it is normative
-until it is implemented and the relevant section of `AGENTS.md` is updated
-to match.
+Stage 2c was built and merged. The three tools it introduces —
+`agentshell_edit_published`, `agentshell_publish_edit` and
+`agentshell_publish_edit_reconcile` — are registered on `main`, and the
+normative contract is [`AGENTS.md` §6.5](../AGENTS.md). §7 below carries the
+closeout: the five open decisions and how they were settled, and the M5
+audit's four findings, each recorded as a class-level contract.
+
+This document remains a *design record* under `AGENTS.md` §8 category (e): an
+architectural investigation, a proposal, the decision taken, and the evidence
+for it. It cannot override `AGENTS.md`; where the two disagree, `AGENTS.md` is
+right and this one is out of date. Its §8 (the implementation sequence) and
+its acceptance matrix (§5) are the plan as it was written before the work —
+they record how the feature was sequenced, not the state of the repository.
 
 The brief for Stage 2c is in the conversation that produced this document;
 the substantive constraints are summarised at the head of each section

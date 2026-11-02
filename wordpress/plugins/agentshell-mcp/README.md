@@ -1,6 +1,6 @@
 # agentshell-mcp (WordPress plugin)
 
-> **Pointer document.** The plugin ships **81 `agentshell_*` MCP tools** (66 in this plugin + 3 in `agentshell-blocks` + 12 in `agentshell-forms`). The full authoritative list is in [`AGENTS.md` §2](../../AGENTS.md). Older counts ("10 tools", "11 tools", "12 tools") in any document are deprecated. This README is install + auth only; it does not redefine the tool surface.
+> **Pointer document.** The plugin ships **81 `agentshell_*` MCP tools** (66 in this plugin + 3 in `agentshell-blocks` + 12 in `agentshell-forms`). The full authoritative list is in [`AGENTS.md` §2](../../../AGENTS.md). Older counts ("10 tools", "11 tools", "12 tools") in any document are deprecated. This README is install + auth only; it does not redefine the tool surface.
 
 ## Installation
 
@@ -99,4 +99,4 @@ bounded retention (30 days / 10000 rows; see
 
 - WordPress 6.0+
 - PHP 7.4+
-- AgentShell theme (recommended — tools work independently but the canonical contract is in the theme)
+- AgentShell theme (recommended — the tools work independently, but the canonical contract is `AGENTS.md` at the repository root)

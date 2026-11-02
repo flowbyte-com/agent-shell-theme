@@ -7,9 +7,13 @@ right and this one is out of date. The normative statements about the human
 editor are in `AGENTS.md` §3.1; the normative statements about transactions are
 in `AGENTS.md` §6.1–§6.2.
 
-**Status:** implemented on `feature/configurator-redesign`, which is stacked on
-`feature/configurator-packaging` (the release-packaging fix) and therefore on
-`feature/navigation-blocks` (the independent-menus work). Nothing is merged.
+**Status:** implemented and merged. The redesign shipped through PRs #31–#34
+(the Preview/Save/Discard semantics, the editor-session isolation and the
+uncertain-save reconciliation, the history management, and the live design
+layer). The normative statements about the human editor are in `AGENTS.md` §3.1;
+the transaction rules are in §6.1–§6.2. The branches this record names
+(`feature/configurator-redesign` and the two it was stacked on) are **historical
+context** — the work they carried is in `main`.
 
 ---
 
@@ -116,38 +120,38 @@ disclosure), the 3×3 map of the nine areas, the selected area's components
 and the component inspector. The action bar is pinned to the bottom of the
 dock.
 
-![The Layout context](../images/configurator/editor-layout.png)
+![The Layout context](images/configurator/editor-layout.png)
 
 **Appearance** — the settings that apply to the whole site, grouped by what
 they are: colours, typography, spacing, borders and shadows.
 
-![The Appearance context](../images/configurator/editor-appearance.png)
+![The Appearance context](images/configurator/editor-appearance.png)
 
 **History** — the open transaction, the snapshots and the revisions, with a
 restore on each.
 
-![The History context](../images/configurator/editor-history.png)
+![The History context](images/configurator/editor-history.png)
 
 **Advanced** — custom CSS and JavaScript in full-height editors, the menus
 the design depends on, and the configuration as JSON.
 
-![The Advanced context](../images/configurator/editor-advanced.png)
+![The Advanced context](images/configurator/editor-advanced.png)
 
 **The component picker**, open on the Header's middle-centre area. It is a
 dialog inside the dock, and it says where the component will land before the
 choice is made.
 
-![The component picker](../images/configurator/editor-picker.png)
+![The component picker](images/configurator/editor-picker.png)
 
 **At 390 × 844** the rail becomes a horizontal strip of tabs, the dock takes
 the whole width, and the action bar stays pinned.
 
-![The editor on a narrow viewport](../images/configurator/editor-mobile.png)
+![The editor on a narrow viewport](images/configurator/editor-mobile.png)
 
 The picker at 390 × 844. The dialog is bounded by the dock and the list
 scrolls.
 
-![The component picker on a narrow viewport](../images/configurator/editor-picker-mobile.png)
+![The component picker on a narrow viewport](images/configurator/editor-picker-mobile.png)
 
 These are captures of the real interface: the theme's stylesheet and its five
 modules, driven by the committed browser harness

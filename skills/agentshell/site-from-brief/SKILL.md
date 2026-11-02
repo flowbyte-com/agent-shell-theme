@@ -13,7 +13,7 @@ Before doing anything, read and obey `AGENTS.md` in full. In particular:
 
 - **Tool surface** (`AGENTS.md` §2). The skill uses only existing tools. It does not propose new ones.
 - **Working pattern** (`AGENTS.md` §6). All mutations run inside `agentshell_begin_transaction` … `agentshell_commit_transaction` (or `rollback_transaction`).
-- **Zone composition / slots** (`AGENTS.md` §3). Three zones (header / main / footer). Header and footer are tri-slot; main is vertical composition. Edit with the matching tool.
+- **Zone composition / slots** (`AGENTS.md` §3). Three zones (header / main / footer). Header and footer carry a nine-area slot grid — three rows of three, `top-left` … `bottom-right`; the legacy `left` / `center` / `right` keys are accepted as aliases for the middle row. Main is a vertical composition. Edit with the matching tool.
 - **Bilateral widget registry** (`AGENTS.md` §4.1). File widgets + config widgets, merged. File widgets are non-removable but disable-able.
 - **Data-* hydration** (`AGENTS.md` §4.2) / **no fetch** (`AGENTS.md` §4.4). Only relevant if the build registers widgets; the same laws apply.
 - **Unbreakable Grid protocol** (`AGENTS.md` §5). Never edit the grid. Custom CSS is `class`-based and may not set `position: fixed/absolute` on a zone container.

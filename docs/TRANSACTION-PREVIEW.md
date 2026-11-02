@@ -1,5 +1,12 @@
 # Transaction-aware preview
 
+> **Status: design record — implemented.** The preview credential model it
+> describes is the shipped behaviour; the normative statements are
+> [`AGENTS.md` §6.1a](../AGENTS.md) (the signing secret and the rules every
+> minting path follows) and §6.2 (the transaction lease that bounds the
+> credential's life). The "Verification" figures below are the ones recorded at
+> the time — historical evidence, not a current measurement.
+
 `agentshell_screenshot(transaction=true)` renders the design staged in the open
 transaction, for the caller, without publishing it.
 
@@ -65,6 +72,11 @@ the agent one retry; allowing it costs a visitor's privacy. So it fails closed.
 | `functions.php` | `agentshell_authorize_transaction_preview()`, `agentshell_config_for_render()` |
 | `agentshell-mcp/includes/tools/class-screenshot.php` | `transaction` argument, credential minting, URL scrubbing |
 | `tests/transaction-preview-test.php` | 39 regressions |
+
+The paths above are the ones in use when this was written. The theme and the
+plugins have since moved under `wordpress/`: `agentshell-mcp/includes/` is now
+`wordpress/plugins/agentshell-mcp/includes/`, and `functions.php` is now
+`wordpress/themes/agentshell/functions.php`. The test path is unchanged.
 
 Preserved untouched: the screenshot lock, hard timeout, Chrome sandbox, SSRF
 host check, private storage and inline MCP image delivery.
