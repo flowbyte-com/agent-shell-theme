@@ -375,9 +375,11 @@ To go back to following the checkout:
 
 ```console
 $ cd "/home/v/Local Sites/agentshell-demo/app/public/wp-content/themes"
-$ rm -rf agent-shell-theme && ln -s /home/v/projects/agentshell agent-shell-theme
-# The WordPress theme directory keeps its historical name; only the
-# checkout path it points at changed.
+$ test -L agent-shell-theme || { echo "Refusing to replace a real theme directory"; exit 1; }
+$ rm -- agent-shell-theme
+$ ln -s /home/v/projects/agentshell/wordpress/themes/agentshell agent-shell-theme
+# The installed WordPress theme directory keeps its historical name.
+# Only a symlink may be replaced here; move or back up real directories manually.
 ```
 
 ---
