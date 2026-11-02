@@ -151,6 +151,89 @@ function agentshell_suite_eligibility( $requirement, array $env ) {
 }
 
 /**
+ * Decide a suite's status from the sentinel it reported.
+ *
+ * The failure this exists to prevent
+ * ----------------------------------
+ * A suite that ran to the end of its file and reported `0 passed,
+ * 0 failed` was read as a **pass**. It had asserted nothing, and so had
+ * proved nothing — but the runner's own rule is that a suite which does
+ * not report a result is a failure of the run, not a silent omission.
+ * The empty verdict is the same defect wearing a well-formed costume:
+ * the sentinel was present, so the "no verdict" branch never ran, and
+ * the numbers in it were zero, so the "some failed" branch never ran
+ * either, and what was left was a green suite.
+ *
+ * A skipped suite is a different thing and is not caught by this rule: a
+ * suite that declared it could not run reports zero of everything, and
+ * that is the truth about it. The skip is honoured first, and only then
+ * is the emptiness judged.
+ *
+ * @param array|null $sentinel The parsed sentinel, or null when the
+ *                             suite reported none at all.
+ * @param int        $exit     The suite process's exit status.
+ * @return array{status:string,passed:int,failed:int,skipped:bool,reason:string}
+ *   `status` is one of: passed, failed, skipped, incomplete.
+ */
+function agentshell_suite_verdict( $sentinel, $exit = 0 ) {
+    $result = array(
+        'status'  => 'incomplete',
+        'passed'  => 0,
+        'failed'  => 0,
+        'skipped' => false,
+        'reason'  => '',
+    );
+
+    if ( null === $sentinel ) {
+        // No verdict at all. The suite died before it could report one —
+        // a fatal error, a killed child, or a suite that printed nothing
+        // at all. That is not a pass.
+        $result['status'] = ( 0 === (int) $exit ) ? 'incomplete' : 'failed';
+        $result['failed'] = 1;
+        $result['reason'] = ( 0 === (int) $exit )
+            ? 'the suite stopped without reporting a result'
+            : 'the suite exited with status ' . (int) $exit . ' without reporting a result';
+        return $result;
+    }
+
+    $result['passed']  = (int) ( $sentinel['passed'] ?? 0 );
+    $result['failed']  = (int) ( $sentinel['failed'] ?? 0 );
+    $result['skipped'] = ! empty( $sentinel['skipped'] );
+    $result['reason']  = (string) ( $sentinel['reason'] ?? '' );
+
+    if ( ! empty( $sentinel['completed'] ) ) {
+        if ( $result['skipped'] ) {
+            $result['status'] = 'skipped';
+        } elseif ( $result['failed'] > 0 ) {
+            $result['status'] = 'failed';
+        } elseif ( 0 === $result['passed'] && 0 === $result['failed'] ) {
+            // The suite ran to the end and asserted nothing. That is a
+            // failure of the run, not a pass: a suite that proves
+            // nothing is not a suite that passed.
+            $result['status'] = 'failed';
+            $result['failed'] = 1;
+            $result['reason'] = 'the suite completed without asserting anything — '
+                . 'a suite that proves nothing is not a suite that passed';
+        } else {
+            $result['status'] = 'passed';
+        }
+    } else {
+        // The suite did not run to the end of its file. It may have
+        // declared a skip on the way out — that is a skip. Otherwise it
+        // stopped for some reason it did not explain, which is a failure
+        // of the run: a suite that vanishes is not a suite that passed.
+        $result['status'] = $result['skipped'] ? 'skipped' : 'incomplete';
+        if ( ! $result['skipped'] ) {
+            $result['failed'] = max( 1, $result['failed'] );
+            $result['reason'] = 'the suite stopped before the end of its file without reporting a '
+                . 'result — it may have exited, or died';
+        }
+    }
+
+    return $result;
+}
+
+/**
  * Run one suite in its own process and read its verdict.
  *
  * @param string $name The suite's registry name.
@@ -207,42 +290,9 @@ function agentshell_run_suite_isolated( $name, $path ) {
         $result['output'] = str_replace( $m[0], '', $result['output'] );
     }
 
-    if ( null === $sentinel ) {
-        // No verdict at all. The suite died before it could report one —
-        // a fatal error, a killed child, or a suite that printed nothing
-        // at all. That is not a pass.
-        $result['status'] = ( 0 === $result['exit'] ) ? 'incomplete' : 'failed';
-        $result['failed'] = 1;
-        $result['reason'] = ( 0 === $result['exit'] )
-            ? 'the suite stopped without reporting a result'
-            : 'the suite exited with status ' . $result['exit'] . ' without reporting a result';
-        return $result;
-    }
-
-    $result['passed']  = (int) ( $sentinel['passed'] ?? 0 );
-    $result['failed']  = (int) ( $sentinel['failed'] ?? 0 );
-    $result['skipped'] = ! empty( $sentinel['skipped'] );
-    $result['reason']  = (string) ( $sentinel['reason'] ?? '' );
-
-    if ( ! empty( $sentinel['completed'] ) ) {
-        if ( $result['skipped'] ) {
-            $result['status'] = 'skipped';
-        } elseif ( $result['failed'] > 0 ) {
-            $result['status'] = 'failed';
-        } else {
-            $result['status'] = 'passed';
-        }
-    } else {
-        // The suite did not run to the end of its file. It may have
-        // declared a skip on the way out — that is a skip. Otherwise it
-        // stopped for some reason it did not explain, which is a failure
-        // of the run: a suite that vanishes is not a suite that passed.
-        $result['status'] = $result['skipped'] ? 'skipped' : 'incomplete';
-        if ( ! $result['skipped'] ) {
-            $result['failed'] = max( 1, $result['failed'] );
-            $result['reason'] = 'the suite stopped before the end of its file without reporting a '
-                . 'result — it may have exited, or died';
-        }
+    $verdict = agentshell_suite_verdict( $sentinel, $result['exit'] );
+    foreach ( array( 'status', 'passed', 'failed', 'skipped', 'reason' ) as $key ) {
+        $result[ $key ] = $verdict[ $key ];
     }
 
     return $result;

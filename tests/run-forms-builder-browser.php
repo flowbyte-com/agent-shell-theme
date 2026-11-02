@@ -21,6 +21,17 @@ echo (string) $output;
 
 $failed = preg_match( '/\b([1-9][0-9]*) failed\b/', (string) $output, $matches ) === 1;
 
+// The child's own count, when it reported one. A child that reported
+// 0 passed and 0 failed asserted nothing, and the marker check below
+// would still pass — "the page ran 0 builder assertions" contains the
+// marker. The emptiness is judged on the child's numbers, so it is
+// recorded as a failure of this suite. The counts are not added: this
+// shim asserts about the child rather than counting it.
+$counts = preg_match( '/(\d+)\s+passed,\s+(\d+)\s+failed/', (string) $output, $m )
+    ? array( (int) $m[1], (int) $m[2] )
+    : array( 0, 0 );
+agentshell_absorb_child_counts( $counts[0], $counts[1], (string) $output, false );
+
 Agentshell_Test::run(
     'forms builder browser: the page behaves as a visitor experiences it',
     function () use ( $failed, $output ) {

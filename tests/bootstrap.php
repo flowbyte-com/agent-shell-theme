@@ -1134,3 +1134,65 @@ class Agentshell_Test {
         return self::$failed === 0;
     }
 }
+
+/**
+ * Absorb a nested child suite's counts, and require that it asserted
+ * something.
+ *
+ * The failure this exists to prevent
+ * ----------------------------------
+ * A nested Node/browser child reports its verdict as a line of text —
+ * `N passed, M failed` — and the PHP shim that drives it parsed that
+ * line and added the two numbers to the aggregate. A child that died
+ * before its first assertion can still print a well-formed line, and
+ * `0 passed, 0 failed` is well-formed. Those two zeroes were added to
+ * the aggregate as zeroes, the shim finished with nothing to report,
+ * and the suite read as a **pass**.
+ *
+ * So a child that asserted nothing became a green suite: the exact
+ * failure the runner exists to prevent, in the one place the runner
+ * could not see it. A child that ran and proved nothing is not a pass.
+ *
+ * The emptiness is judged on the *child's* numbers, never on the
+ * shim's total. A shim that has assertions of its own would otherwise
+ * hide an empty child behind them.
+ *
+ * @param int    $passed The child's passed count.
+ * @param int    $failed The child's failed count.
+ * @param string $output The child's output, for the failure message.
+ * @param bool   $add    Whether to add the child's counts to this
+ *                       process's counters. A shim that asserts about
+ *                       the child rather than counting it passes false.
+ * @return int The effective failure count, for a shim that decides its
+ *             own exit status.
+ */
+function agentshell_absorb_child_counts( $passed, $failed, $output = '', $add = true ) {
+    $passed = (int) $passed;
+    $failed = (int) $failed;
+
+    if ( 0 === $passed && 0 === $failed ) {
+        // `run()` owns the counter increment, so nothing is added here:
+        // the failure this records is the one the aggregate will carry.
+        Agentshell_Test::run(
+            'the nested suite asserted something',
+            function () use ( $output ) {
+                Agentshell_Test::assert_true(
+                    false,
+                    'the nested suite asserted nothing: it reported 0 passed and 0 failed, '
+                    . 'or no count line at all. A suite that ran and proved nothing is a '
+                    . 'failure of the run, not a pass.'
+                    . ( '' !== trim( (string) $output )
+                        ? ' Its output was: ' . substr( trim( (string) $output ), -400 )
+                        : '' )
+                );
+            }
+        );
+        return 1;
+    }
+
+    if ( $add ) {
+        Agentshell_Test::$passed += $passed;
+        Agentshell_Test::$failed += $failed;
+    }
+    return $failed;
+}
