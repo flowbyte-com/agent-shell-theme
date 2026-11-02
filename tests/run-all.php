@@ -662,6 +662,16 @@ $suites = array(
         'path'     => __DIR__ . '/run-all-lifecycle-test.php',
         'requires' => 'unit',
     ),
+    // The verdict rule for a suite that reports nothing: a completed
+    // suite whose counts are 0 passed and 0 failed asserted nothing, and
+    // reading that as a pass is the false-green defect — the one place a
+    // nested Node/browser child could crash without the run noticing.
+    // The rule is in the runner and in every shim that parses a child's
+    // count line. Unit-only.
+    'runner-verdict' => array(
+        'path'     => __DIR__ . '/runner-verdict-test.php',
+        'requires' => 'unit',
+    ),
     'mutation-sandbox' => array(
         'path'     => __DIR__ . '/mutation-sandbox-test.php',
         'requires' => 'unit',

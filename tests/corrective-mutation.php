@@ -157,6 +157,45 @@ $cases = array(
             ),
         ),
     ),
+
+    // ── V1: a suite that proves nothing is not a suite that passed ────────
+    array(
+        'label'  => 'V1: a suite that asserted nothing does not read as a pass',
+        'target'  => 'tests/runner-dispatch.php',
+        'suite'   => 'tests/runner-verdict-test.php',
+        'mutants' => array(
+            'the empty verdict is a pass again' => array(
+                "        } elseif ( 0 === \$result['passed'] && 0 === \$result['failed'] ) {",
+                "        } elseif ( false ) {",
+            ),
+        ),
+    ),
+
+    // ── V2: the shims judge the child's count, not the aggregate's ───────
+    array(
+        'label'  => 'V2: the child-count helper refuses an empty child',
+        'target'  => 'tests/bootstrap.php',
+        'suite'   => 'tests/runner-verdict-test.php',
+        'mutants' => array(
+            'the helper adds an empty child count instead of failing' => array(
+                "    if ( 0 === \$passed && 0 === \$failed ) {",
+                "    if ( false ) {",
+            ),
+        ),
+    ),
+
+    // ── V3: no shim may parse a child's count without the guard ──────────
+    array(
+        'label'  => 'V3: every shim routes a child count through the guard',
+        'target'  => 'tests/run-nav-model.php',
+        'suite'   => 'tests/runner-verdict-test.php',
+        'mutants' => array(
+            'a shim adds the child count without the guard' => array(
+                "\$failed = agentshell_absorb_child_counts( (int) \$m[1], (int) \$m[2], (string) \$output );",
+                "\$failed = (int) \$m[2];\nAgentshell_Test::\$passed += (int) \$m[1];\nAgentshell_Test::\$failed += (int) \$m[2];",
+            ),
+        ),
+    ),
 );
 
 $sandbox     = agentshell_mutation_sandbox_create();

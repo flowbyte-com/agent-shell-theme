@@ -148,6 +148,13 @@ Agentshell_Test::run(
             (bool) preg_match( '/(\d+)\s+passed,\s+(\d+)\s+failed/', $output, $m ),
             'the Node suite must report a result: ' . $output
         );
+        // A child that reported 0 passed and 0 failed asserted nothing,
+        // and both assertions above would still hold. The emptiness is
+        // judged on the child's numbers, so it is recorded as a failure
+        // of this suite. The counts are not added: this test asserts
+        // about the child rather than counting it.
+        agentshell_absorb_child_counts( (int) $m[1], (int) $m[2], $output, false );
+
         Agentshell_Test::assert_equals(
             0,
             (int) $m[2],

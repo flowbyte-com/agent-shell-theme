@@ -43,12 +43,12 @@ if ( ! preg_match( '/(\d+)\s+passed,\s+(\d+)\s+failed/', $output, $m ) ) {
     );
     return;
 }
-$passed = (int) $m[1];
-$failed = (int) $m[2];
+// A child that reported 0 passed and 0 failed asserted nothing. Adding
+// its zeroes to the aggregate would read as a pass, so the emptiness is
+// recorded as a failure of this suite instead.
+$failed = agentshell_absorb_child_counts( (int) $m[1], (int) $m[2], (string) $output );
 
 if ( defined( 'AGENTSHELL_TEST_AGGREGATE' ) ) {
-    Agentshell_Test::$passed += $passed;
-    Agentshell_Test::$failed += $failed;
     return;
 }
 exit( $failed === 0 ? 0 : 1 );

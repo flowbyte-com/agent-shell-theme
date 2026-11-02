@@ -166,9 +166,9 @@ php tests/doc-links-test.php          # links, anchors, and §2's tool coverage
 
 **CI runs the same runner.** See the job table below.
 
-**One known gap in the runner, recorded and not repaired here.** The PHP runner detects a suite that reports no verdict at all, and a suite that stops before the end of its file — both are reported as `incomplete`, and both fail the run. It does **not** detect a nested Node/browser child that reports a well-formed but *empty* count. The PHP wrappers that drive those children parse the child's `N passed, M failed` line and add the numbers to the aggregate; a child that died before its first assertion can print `0 passed, 0 failed`, and the aggregate reads that as a suite that passed with nothing to assert.
+**The runner refuses a suite that proves nothing.** A suite that reports no verdict at all, and a suite that stops before the end of its file, are both reported as `incomplete` and both fail the run. A suite that *completes* and reports `0 passed, 0 failed` is a failure too: it ran and asserted nothing, and a suite that proves nothing is not a suite that passed. The nested Node/browser children are judged the same way — each PHP wrapper that drives one routes the child's count through a shared guard, so a child that died before its first assertion is recorded as a failure of the wrapper rather than added to the aggregate as two zeroes. A declared skip is still a skip: it is unexecuted on purpose, and it is never counted as a failure either.
 
-Most Node suites are *also* run as their own CI step, where a crash fails the step and the job — so CI has a direct signal for those. But a crash that happens only inside the aggregate run, or in a suite with no direct step of its own, is not caught by the aggregate. **Do not read a green aggregate run as proof that every nested browser suite actually ran.** This is a separate corrective assignment with its own regression test; it is tracked, not fixed, in this change.
+The regression test for this is `tests/runner-verdict-test.php`; the mutants that remove each guarantee are in `tests/corrective-mutation.php`.
 
 ## Continuous integration
 
